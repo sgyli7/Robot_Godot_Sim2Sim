@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +70,20 @@ class LabStructureTests(TemporaryRepository):
         candidates, errors, _ = self.check()
         self.assertEqual(candidates, [new])
         self.assertEqual(len(errors), 1)
+
+    def test_legacy_record_cannot_exempt_an_uncommitted_new_file(self):
+        new = "godot/old_folder/unregistered.gd"
+        self.write(new)
+        self.policy["legacy_paths"].append(new)
+        self.save_policy()
+        self.assertEqual(len(self.check()[1]), 1)
+
+    def test_legacy_record_cannot_exempt_a_new_renamed_destination(self):
+        destination = "godot/old_folder/renamed.gd"
+        self.git("mv", self.old, destination)
+        self.policy["legacy_paths"].append(destination)
+        self.save_policy()
+        self.assertEqual(len(self.check()[1]), 1)
 
     def test_new_and_staged_runtime_data_resources_and_sidecars(self):
         values = [
@@ -191,6 +207,21 @@ class LabStructureTests(TemporaryRepository):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.check()
 
+    def test_cli_exit_codes_and_invalid_local_inventory(self):
+        def run():
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+                code = CHECKER.main(["--repo-root", str(self.root)])
+            return code, stderr.getvalue()
+        self.assertEqual(run()[0], 0)
+        self.write("godot/old_folder/new.gd")
+        self.assertEqual(run()[0], 1)
+        for invalid in [[], {"schema_version": 1, "repository_role": "lab", "legacy_paths": None},
+                        {"schema_version": 1, "repository_role": "lab", "source_records": ["bad record"]}]:
+            self.write("docs/directory_inventory.json", json.dumps(invalid))
+            code, error = run()
+            self.assertEqual(code, 2)
+            self.assertNotIn("Traceback", error)
+
 
 class ArtStructureTests(TemporaryRepository):
     role = "art"
@@ -221,6 +252,21 @@ class ArtStructureTests(TemporaryRepository):
         self.save_policy()
         self.assertEqual(len(self.check()[1]), 2)
 
+    def test_optional_peer_inventory_failures_remain_advisory(self):
+        with tempfile.TemporaryDirectory(prefix="directory peer ") as folder:
+            peer = Path(folder)
+            (peer / "docs").mkdir()
+            inventory = peer / "docs/directory_inventory.json"
+            for invalid in ["not JSON", "[]", '{"comparisons": null}', '{"comparisons": [null]}']:
+                inventory.write_text(invalid)
+                with self.subTest(invalid=invalid):
+                    _, errors, notes = self.check(peer_root=peer)
+                    self.assertEqual(errors, [])
+                    self.assertTrue(notes)
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        code = CHECKER.main(["--repo-root", str(self.root), "--peer-root", str(peer)])
+                    self.assertEqual(code, 0)
+
 
 class ForestForwardingTests(unittest.TestCase):
     def test_arguments_cwd_and_exit_status_with_a_stub_in_a_temporary_copy(self):
@@ -232,16 +278,17 @@ class ForestForwardingTests(unittest.TestCase):
             original.mkdir(parents=True)
             shutil.copy2(ROOT / "scripts/setup_forest_vendor.sh", scripts)
             stub = original / "setup_forest_vendor.sh"
-            stub.write_text("#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\nPath(os.environ['FOREST_TEST_OUTPUT']).write_text(json.dumps({'args':sys.argv[1:], 'cwd':os.getcwd()}))\nsys.exit(42)\n")
+            stub.write_text("#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\nPath(os.environ['FOREST_TEST_OUTPUT']).write_text(json.dumps({'args':sys.argv[1:], 'cwd':os.getcwd()}))\nsys.exit(int(os.environ['FOREST_TEST_EXIT']))\n")
             stub.chmod(0o755)
             caller = root / "caller with spaces"
             caller.mkdir()
             output = root / "output.json"
-            env = dict(os.environ, FOREST_TEST_OUTPUT=str(output))
-            arguments = ["--flag", "argument with spaces", "", "$(literal)", "*.glb"]
-            result = subprocess.run([str(scripts / "setup_forest_vendor.sh"), *arguments], cwd=caller, env=env)
-            self.assertEqual(result.returncode, 42)
-            self.assertEqual(json.loads(output.read_text()), {"args": arguments, "cwd": str(caller)})
+            for status, arguments in [(0, []), (42, ["--flag", "argument with spaces", "", "$(literal)", "*.glb"])]:
+                env = dict(os.environ, FOREST_TEST_OUTPUT=str(output), FOREST_TEST_EXIT=str(status))
+                with self.subTest(status=status, arguments=arguments):
+                    result = subprocess.run([str(scripts / "setup_forest_vendor.sh"), *arguments], cwd=caller, env=env)
+                    self.assertEqual(result.returncode, status)
+                    self.assertEqual(json.loads(output.read_text()), {"args": arguments, "cwd": str(caller)})
 
 
 if __name__ == "__main__":

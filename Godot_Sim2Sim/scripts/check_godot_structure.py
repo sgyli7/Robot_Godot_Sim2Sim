@@ -54,13 +54,20 @@ def load_policy(root):
         root = root / "Godot_Sim2Sim"
     path = root / "docs/directory_inventory.json"
     policy = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(policy, dict):
+        raise ValueError("清单根必须是 JSON object")
     if policy.get("schema_version") != 1 or policy.get("repository_role") not in {"lab", "art"}:
         raise ValueError("清单 schema_version 或 repository_role 无效")
+    for key in ("legacy_paths", "compatibility_additions", "source_records"):
+        if not isinstance(policy.get(key, []), list):
+            raise ValueError(f"清单 {key} 必须是数组")
     for value in policy.get("legacy_paths", []):
         relative_path(value)
     exceptions = {}
     for key in ("compatibility_additions", "source_records"):
         for item in policy.get(key, []):
+            if not isinstance(item, dict):
+                raise ValueError(f"清单 {key} 必须包含精确文件记录")
             value = relative_path(item["path"])
             required = ("reason",) if key == "compatibility_additions" else ("repository", "revision", "sha256")
             if any(not isinstance(item.get(field), str) or not item[field].strip() for field in required):
@@ -227,7 +234,10 @@ def peer_notes(root, policy, peer_root):
         # Read the single canonical comparison inventory, without requiring a
         # peer checkout for normal Art authoring or copying its data into Art.
         try:
-            comparisons = json.loads((lab / "docs/directory_inventory.json").read_text(encoding="utf-8")).get("comparisons", [])
+            peer_policy = json.loads((lab / "docs/directory_inventory.json").read_text(encoding="utf-8"))
+            if not isinstance(peer_policy, dict):
+                raise ValueError("peer 清单根不是 JSON object")
+            comparisons = peer_policy.get("comparisons", [])
         except (OSError, ValueError):
             notes.append("可选 peer 清单不可读，跳过副本比较；本地任务可继续")
     if not comparisons:
@@ -256,8 +266,16 @@ def peer_notes(root, policy, peer_root):
 
 def check(root, base=None, peer_root=None):
     root, policy, exceptions = load_policy(root.resolve())
-    candidates = changed_paths(root, base or policy["baseline_commit"])
-    legacy = set(policy.get("legacy_paths", []))
+    revision = base or policy["baseline_commit"]
+    candidates = changed_paths(root, revision)
+    # ls-tree paths are relative to the current scope, including when Lab is a
+    # subtree. A new file cannot become legacy simply by editing the inventory.
+    committed = {
+        value.decode("utf-8", errors="surrogateescape")
+        for value in git(root, "ls-tree", "-r", "--name-only", "-z", revision, "--").split(b"\0")
+        if value
+    }
+    legacy = set(policy.get("legacy_paths", [])) & committed
     existing_dirs = {parent.as_posix() for p in legacy for parent in PurePosixPath(p).parents}
     errors = []
     for value in candidates:

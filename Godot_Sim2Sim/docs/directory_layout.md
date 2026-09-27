@@ -50,6 +50,8 @@ python3 scripts/check_godot_structure.py
 # 可选跨仓库比较；两个根都由调用者明确选择
 python3 scripts/check_godot_structure.py --peer-root /path/to/Sai_Art
 python3 scripts/check_godot_structure.py --repo-root /path/to/Sai_Art
+# 修改检查工具或转发入口后的临时目录自测
+python3 -B -m unittest discover -s tests -p test_directory_structure.py
 ```
 
-默认与清单中的已提交基线比较。后续单个任务可用 `--base <任务起点提交>` 仅检查该任务新增/搬移的路径，避免重复检查基线之后已经交付的文件。相对于比较点的已有文件内容修改跳过；旧布局、冻结证据、历史副本分叉和缺失可选 peer 不成为失败项。新增/搬移路径违规返回非零。检查未接入启动、导出、训练、hook 或 CI；未实现语义/物理正确性验证。
+默认与清单中的已提交基线比较。后续单个任务可用 `--base <任务起点提交>` 仅检查该任务新增/搬移的路径，避免重复检查基线之后已经交付的文件。存量豁免只对比较点中已提交的精确路径生效，不能通过把新文件追加到存量列表跳过检查。相对于比较点的已有文件内容修改跳过；旧布局、冻结证据、历史副本分叉和缺失可选 peer 不成为失败项。新增/搬移路径违规返回非零。检查未接入启动、导出、训练、hook 或 CI；未实现语义/物理正确性验证。
