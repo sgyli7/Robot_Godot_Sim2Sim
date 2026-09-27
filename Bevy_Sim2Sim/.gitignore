@@ -1,0 +1,11 @@
+target/
+build/
+logs/
+.codegraph/
+.scratch/
+.claude/
+.DS_Store
+.cursor/*
+!.cursor/rules/
+.cursor/rules/*
+!.cursor/rules/*.mdc
