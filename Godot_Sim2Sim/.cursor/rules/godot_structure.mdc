@@ -1,0 +1,6 @@
+---
+description: 新增 Godot 文件、路径迁移或跨 Sai_Art 维护时读取统一规则
+alwaysApply: true
+---
+
+维护入口为 `Godot_Sim2Sim/AGENTS.md`；新增/迁移读 `godot_engineering_rules.md` 与 `docs/directory_layout.md`，跨仓库读 `docs/repository_ownership.md`。规范正文维护在这些文件，规则入口不另建版本。已有文件原位修复不要求顺带清理存量。

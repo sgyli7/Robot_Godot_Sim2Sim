@@ -1,5 +1,7 @@
 # Robot Godot Sim2Sim
 
+新增任务和目录迁移先看 [目录导航](docs/directory_layout.md)、[Godot 工程规则](godot_engineering_rules.md) 与 [Lab / Art 职责约定](docs/repository_ownership.md)。副本及兼容差异见 [来源清单](docs/directory_inventory.json)；森林说明见 [外层文档](docs/rough_forest.md)。既有运行入口与原位修复保持有效。
+
 ## 03 · 极地雪原 / Sainiverse v0.1
 
 ![Sainiverse v0.1 在极地雪原的四机位全车 PV](docs/media/sainiverse-polar-panorama.gif)
