@@ -1,121 +1,52 @@
----
-description: Godot 工程的目录结构、资产落点、模块分层与 GDScript 命名规范。新建或移动任何文件、新建模块、改目录名、提交 Git 前必须遵守。
-globs:
-alwaysApply: true
----
+# Godot 工程结构与命名规则
 
-# 工程结构与命名规范
+本文件是 Godot 自研结构的维护源。维护根是 `Sai_Lab/Godot_Sim2Sim`，资源根是其中的 `godot`（`res://`）。Python、研究文档、原生源码与 Unity 不套用 Godot 资源落点。跨仓库职责以 [统一约定](docs/repository_ownership.md) 为准。
 
-本文件是本工程唯一的结构与命名规范，从第一次提交起生效，无存量豁免。违反任一条即失败，无「先报告后修」通道。
-只约束自研内容，`addons/` 下的第三方包与 `plugins/**` 不受约束；自研 `addons/dev_tools/` 仍受约束。
-AI 配置只允许在工程根：`.cursor/` `.claude/` `.codex/` `.agents/` `AGENTS.md` `CLAUDE.md`。代码与资产目录下禁新建这些目录，以及文件名命中 `*规范*` `*RULE*` `AGENTS.md` `CLAUDE.md` `CODING_STYLE*` 的文本文件。
-跨工具规则入口固定为：Codex 使用 `AGENTS.md`，Claude 使用 `CLAUDE.md`，Cursor 使用 `.cursor/rules/**`。这些入口必须引用本文件，不得复制规范正文或另建冲突版本。
+## 适用与迁移
 
-## 目录
+- 新增和搬移自研文件按本规则；既有文件原位修复保持原布局，不要求顺带迁移、改名或格式化。
+- 已提交存量精确路径及基线范围见 `docs/directory_inventory.json`；不是整个旧目录的永久豁免。新增旧布局兼容文件登记精确路径、原因到 `compatibility_additions`。
+- 第三方、外部交付和部署副本通过 `source_records` 登记精确文件、来源仓库、版本和 SHA256；保留来源名称及许可，不靠任意目录获得豁免。
+- 实验基线、冻结源码及证据原位保留。当前 Tick 与运行相关迁移暂缓，正常业务授权不因存量目录问题失效。
+- AI 入口在维护根使用 AGENTS.md、CLAUDE.md、.cursor/rules；入口引用本文和目录导航，不复制正文。Godot 代码/资产目录内不另建规则入口。
 
-```text
-<project>/                    # 工程根，包含 project.godot；res:// 指向这里
-  project.godot               # 项目配置
-  export_presets.cfg          # 导出配置
-  game/                       # 自研代码与资产
-    scripts/                  # GDScript，一级见「模块分层」
-    arts/                     # 美术媒体源资产，领域 / 类型两级
-    instances/                # 可复用实例场景，按领域分
-    shaders/                  # 着色器代码
-    scenes/                   # 顶层场景
-    dynamic_assets/           # 运行时按路径加载的资产
-  i18n_assets/                # 本地化资源
-  addons/                     # 第三方插件与资源包
-    dev_tools/                # 自研编辑器与开发工具
-  plugins/                    # 原生扩展与平台库
-```
+## 新内容目录
 
-自研入库代码与资产只允许落在树中对应目录及其子目录，树外新增 → 失败。`game/` 根禁出现文件。引擎、Git、AI 入口与格式配置保留各自固定位置。
+按需创建，不预建空目录；`game` 根不放文件。
 
-下列位置的子目录名必须完全等于表内字面，按需创建，不预建空目录：
-
-| 位置 | 允许的目录名 |
+| 内容 | 落点（相对 res://） |
 |---|---|
-| `game/arts/` 与 `game/instances/` | `app` `effects` `entity` `environment` `game_play` `ui` |
-| `game/scenes/` | `frontend` `levels` `dev` |
-| `game/dynamic_assets/` | `game_data` `game_play` `scenes` `settings` `shaders` |
+| 公共 GDScript | `game/scripts/core/**` |
+| 业务 GDScript | `game/scripts/modules/<module>/**` |
+| 编辑器/开发验证脚本及工具资源 | `addons/dev_tools/**` |
+| 可复用场景 | `game/instances/<domain>/**` |
+| 正式顶层场景 | `game/scenes/frontend/**`、`game/scenes/levels/**`；可选 `game/scenes/init.tscn` |
+| 开发验证场景、fixture、资产 | `game/scenes/dev/**`；验证脚本仍在 dev_tools |
+| shader 代码 | `game/shaders/**`；按路径动态加载的 shader 可在 dynamic_assets/shaders |
+| 运行数据/配置/模型与策略部署 | `game/dynamic_assets/{game_data,game_play,scenes,settings,shaders}/**` |
+| 必需的美术导出/第三方资产副本 | `game/arts/<domain>/{models,textures,materials,animations,audio,fonts,videos}/**` |
+| 本地化 | `i18n_assets/**` |
+| 第三方插件/原生平台库 | `addons/<package>/**`、`plugins/**`；登记导入来源 |
 
-禁用拼写：`gameplay` `art` `video` `sprites` `localization`。
-目录名与 `<module>` 名入库后冻结，改名只走独立 commit。
+`<domain>` 允许 app、effects、entity、environment、game_play、ui；`<module>` 使用业务名词。制作源、模型编辑和贴图制作去 Sai_Art，Lab 只保留有来源的部署副本。JSON 配置、绑定映射和部署数据有正式落点，不因格式不是 tres 而禁止。
 
-## 文件落点
+## 文件类型与名称
 
-| 类型 | 唯一合法落点 |
-|---|---|
-| 运行时 `.gd` | `game/scripts/core/**`、`game/scripts/modules/<module>/**` |
-| 编辑器与开发工具 `.gd` | `addons/dev_tools/**` |
-| `.gdshader` `.gdshaderinc` `.glsl` | `game/shaders/**` |
-| 可复用实例 `.tscn` | `game/instances/<domain>/**` |
-| `.glb` `.gltf` `.fbx` `.obj` | `game/arts/<domain>/models/**` |
-| `.png` `.jpg` `.tga` `.exr` `.svg`；制作源 `.psd` | `game/arts/<domain>/textures/**` |
-| 材质 `.tres` | `game/arts/<domain>/materials/**` |
-| 动画及动画库 `.tres` | `game/arts/<domain>/animations/**` |
-| `.wav` `.mp3` `.ogg` | `game/arts/<domain>/audio/**` |
-| `.ttf` `.otf` | `game/arts/<domain>/fonts/**` |
-| 运行时视频 `.ogv`；制作源 `.mp4` | `game/arts/<domain>/videos/**` |
-| 顶层场景 `.tscn` | `game/scenes/init.tscn`，或 `game/scenes/<dir>/**` |
-| 配置与数据 `.tres` | `game/dynamic_assets/settings/**`、`game/dynamic_assets/game_data/**` |
-| 本地化 `.csv` `.po` `.pot` | `i18n_assets/**` |
+- 自研新目录及文件主名用 snake_case。类/枚举类型使用 UpperCamelCase，常量用 CONSTANT_CASE，方法/属性/信号用 snake_case；内部字段和方法按既有公开接口约定使用前导下划线。
+- 引擎固定名称、上游/导出模型名、关节/刚体/骨架/节点路径和资产附属文件按交付约定保留；特殊新增文件通过精确来源或兼容登记维护，不批量改名。
+- `.gd` 按 Runtime/开发职责归属；`@tool` 本身不表示纯开发内容，地形碰撞等运行代码仍属于业务模块。
+- 支持 gdshader/gdshaderinc/glsl；tscn/tres；glb/gltf/fbx/obj 与 bin/mtl 等附属文件；png/jpg/jpeg/webp/tga/exr/hdr/svg；wav/mp3/ogg；ttf/otf/ttc；ogv/mp4/webm；json/onnx/csv/yaml/yml/txt；本地化 csv/po/pot。类型按实际用途进入上表相应位置。
+- 模型、字体及交付资产所需 LICENSE/NOTICE/COPYING 等许可文档随资产维护。已有 uid/import 随主资产移动并保留值；本轮不修改忽略规则或生成/补齐 UID。
+- 新 GDScript 使用 UTF-8、LF、Tab 缩进、每行一条语句和官方声明顺序；既有脚本不因目录整理而全量格式化。配置与运行状态按职责区分，保留初始化/交付接口。
 
-- 表中未列出的自研资产扩展名禁止新增；引擎生成的 `.uid`、`.import`、项目与插件配置，以及主资产必需的 `.bin`、`.mtl` 等附属文件随其所属文件维护。
-- `game/dynamic_assets/settings/<module>/` 的 `<module>` 必须已存在于 `game/scripts/modules/`，或为 `core`、`project`；`project` 只放引擎级配置。与模块同批新建时，模块代码必须与配置在同一 commit，禁止只建配置空壳。
-- 明确作为动态加载内容的资产落 `game/dynamic_assets/<分类>/**`；开发验证资产落 `game/scenes/dev/**`。这两类专用落点优先于上表。
-- `.tscn` 内嵌的子资源随场景保存；外置资源按实际用途落点。模型自带的缓冲、材质和纹理保留有效相对引用。
+## 依赖与现有流程
 
-## 模块分层
+依赖方向为开发工具 → 业务模块 → 业务无关公共层。公共层不引用业务或开发工具，Runtime 不引用纯开发内容；模块之间显式引用并避免环。业务相关共享能力保持明确业务归属，不全部塞入 core。
 
-内层禁止引用外层：公共层（业务无关）→ 业务层（只做 Runtime）→ 开发层（Editor 与 Dev 工具）。
+保留现有 main_scene 及 feature override，不强制改成 init。已有启动、组装、动态加载、物理/策略协议和资源查找行为原样保留。新增静态/动态资源必须核查依赖与导出范围；已有导出过滤、UID 忽略和 shader 合并作为单独验证后的迁移项。
 
-| 层 | 目录 | 边界 |
-|---|---|---|
-| 公共层 | `game/scripts/core/` | 公共脚本 |
-| 业务层 | `game/scripts/modules/<module>/` | 每个目录一个业务模块 |
-| 开发层 | `addons/dev_tools/` | 编辑器与开发工具，排除出发布内容 |
+## 检查与提交
 
-- 自研 `.gd` 必须归属上表某层；模块依赖按脚本类型与资源引用检查。
-- 出现「公共层 → 业务层」「公共层 → 开发层」「业务层 → 开发层」引用 → 失败。
-- 业务模块之间允许单向引用，通过脚本类型或资源路径显式表达；出现环 → 失败。跨模块共用接口下沉到公共层。
+从维护根运行 `python3 scripts/check_godot_structure.py`；`--base` 可选已提交比较点。工具只做新增/搬移文件的路径、类型、命名和精确登记检查，已有内容修改/布局及历史副本分叉不失败。依赖、语义、导出和物理行为仍按任务完成适用验证。
 
-## 命名
-
-自研目录名与文件主名只允许 `A-Z a-z 0-9 _`，禁空格、中文、连字符 `-`、其它符号；扩展名与引擎、工具固定文件名除外。
-
-| 目标 | 写法 |
-|---|---|
-| 自研目录、文件主名、`<module>`、`<domain>` | `all_lower_with_underscore`，正则 `^[a-z][a-z0-9]*(_[a-z0-9]+)*$` |
-| 类、声明的 `class_name`、枚举类型、节点名 | `UpperCamelCase` |
-| 常量、枚举成员 | `CONSTANT_CASE`，如 `MAX_SPEED`；绑定脚本类型的常量使用类型名 |
-| 对外方法、属性、普通变量、参数 | `snake_case` |
-| 内部方法、内部字段 | `_snake_case` |
-| `@export` 配置字段 | `snake_case`，如 `max_speed` |
-| 信号 | `snake_case`，用已发生的事件命名，如 `health_changed` |
-| 引擎回调 | 保留引擎要求的名称 |
-
-- `<module>` 与 `<domain>` 用业务名词。
-- 启动场景 `game/scenes/init.tscn` 必须设为 `project.godot` 的 `application/run/main_scene`。
-- 其余顶层场景主名正则 `^[a-z][a-z0-9]*(_[a-z0-9]+){1,2}$`（`_` 分隔 2～3 段）。单段例外只有 `loading`；实例场景按普通文件命名。
-- 禁止发明表外前缀。
-- GDScript 排版采用 Godot 官方脚本风格：UTF-8、LF、Tab 缩进，函数之间空两行，每行一条语句；工程根 `.editorconfig` 与此保持一致。
-- 脚本按声明、信号、枚举、常量、字段、方法组织；字段按静态、导出、普通、`@onready` 排列；实例方法中引擎回调在前，对外方法其次，内部方法在后。
-
-## GDScript 约束
-
-- `@export` 配置字段禁止被运行时代码赋值；需运行时改写的另设非导出字段。
-- 类、函数、字段的文档注释用 `##`，普通注释用 `#`；类说明位于 `class_name` / `extends` 之后；注释禁止只含数字。
-
-## 构建
-
-- 发布导出排除 `game/scenes/dev/**` 与 `addons/dev_tools/**`；其余正式场景允许同时纳入导出。
-- 正式入口场景及 Autoload 的静态依赖闭包中，禁止出现开发内容与 `game/dynamic_assets/**`；动态资产通过运行时加载，并显式纳入导出范围。静态依赖包含场景、资源引用和 `preload` 引用。
-
-## Git
-
-- 新增或移动资产时，源文件、已有 `.uid`、`.import` 与引用更新必须在同一 commit；移动保留原 UID。
-- 场景与外置资源使用 `.tscn`、`.tres` 文本格式；文本文件与二进制资产按实际内容处理。`project.godot`、`export_presets.cfg` 及需保留的 `.uid`、`.import` 随工程入库。
-- `.gitignore` 必须含 `.godot/`、生成的 `*.translation`、`build/`、`logs/`、`.codegraph/`、`.scratch/`、`.claude/`；忽略 `.cursor/` 中的本机内容，但保留 `.cursor/rules/**`。
-- Agent 临时产出物禁止入库：review 报告、临时脚本、抓取的证据、日志。只允许共享工程根的 `AGENTS.md`、`CLAUDE.md` 与 `.cursor/rules/**` 作为跨工具规则入口；入口不得复制规范正文。
+源文件、已有 uid/import 与调用者更新在同批变更中审阅。持久目录导航、来源清单及结果说明放 docs；临时报告、抓取日志和临时脚本使用忽略的本机位置。检查不接入现有启动、训练、导出、hook 或 CI。
