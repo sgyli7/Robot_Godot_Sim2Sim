@@ -43,7 +43,10 @@ fn ground_color(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     for (var i=0u;i<3u;i++) { road=min(road,segment(q,pigment.ridge_waypoints[i].xz,pigment.ridge_waypoints[i+1u].xz)-pigment.ridge_width*.5); }
     let plaza=rect(q,pigment.plaza.xy,pigment.plaza.zw,.65);
     let berth=rect(q,pigment.berth.xy,pigment.berth.zw,.3);
-    let prepared=min(min(road,plaza),berth);
+    // The wing door gets a narrow flush apron onto the old court ground.
+    // This changes pigment only, never support height or a collision face.
+    let wing_apron=segment(q,vec2(-7.8,-13.9),vec2(-7.8,-12.3))-1.12;
+    let prepared=min(min(road,plaza),min(berth,wing_apron));
     let slab=1.-aa_edge(prepared);
     let mottling=(sin(q.x*.19+q.y*.087)+sin(q.y*.23-q.x*.055))*.004;
     let enamel=vec3(.84,.80,.67)+vec3(mottling);
