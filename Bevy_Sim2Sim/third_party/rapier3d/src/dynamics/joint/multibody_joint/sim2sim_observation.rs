@@ -128,6 +128,9 @@ pub struct MultibodyObservation {
     pub energy_guard_fallback: bool,
     /// Whether the original last-chance fallback cleared acceleration.
     pub energy_guard_acceleration_cleared: bool,
+    /// A separate diagnostic request bypassed the implicit velocity-dependent matrix.
+    #[cfg(feature = "sim2sim-plain-mass-probe")]
+    pub plain_mass_probe_selected: bool,
     /// Sum of actual signed original normal-contact J times final total impulse.
     pub contact_normal_impulse: Vec<Real>,
     /// Sum of both actual original tangential-contact rows times final total impulse.

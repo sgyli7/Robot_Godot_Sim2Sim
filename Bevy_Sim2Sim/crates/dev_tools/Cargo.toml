@@ -9,6 +9,7 @@ license.workspace = true
 default = []
 sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_limit_row_trace"]
+sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]
 rendering_preview = ["dep:rendering_minigame"]
 
 [dependencies]

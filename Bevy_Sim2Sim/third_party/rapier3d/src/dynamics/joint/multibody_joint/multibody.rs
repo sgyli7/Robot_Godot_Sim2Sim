@@ -100,6 +100,10 @@ pub struct Multibody {
     #[cfg(feature = "sim2sim-observation")]
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
     pub(crate) sim2sim_observation: MultibodyObservation,
+    /// Diagnostic only; default simulation always uses the original implicit solve.
+    #[cfg(feature = "sim2sim-plain-mass-probe")]
+    #[cfg_attr(feature = "serde-serialize", serde(skip))]
+    sim2sim_plain_mass_probe: bool,
     // TODO: serialization: skip the workspace fields.
     pub(crate) links: MultibodyLinkVec,
     pub(crate) velocities: DVector,
@@ -170,6 +174,13 @@ impl Multibody {
         (observation.epoch, observation.valid, observation.contact_coverage)
     }
 
+    /// Select the plain articulated mass matrix for a one-step causal probe.
+    /// This setting exists only in the opt-in diagnostic build and defaults off.
+    #[cfg(feature = "sim2sim-plain-mass-probe")]
+    pub fn sim2sim_set_plain_mass_probe(&mut self, enabled: bool) {
+        self.sim2sim_plain_mass_probe = enabled;
+    }
+
     /// Creates a new multibody with no link.
     pub fn new() -> Self {
         Self::with_self_contacts(true)
@@ -179,6 +190,8 @@ impl Multibody {
         Multibody {
             #[cfg(feature = "sim2sim-observation")]
             sim2sim_observation: MultibodyObservation::default(),
+            #[cfg(feature = "sim2sim-plain-mass-probe")]
+            sim2sim_plain_mass_probe: false,
             links: MultibodyLinkVec(Vec::new()),
             velocities: DVector::zeros(0),
             damping: DVector::zeros(0),
@@ -539,9 +552,16 @@ impl Multibody {
         // To prevent that, we enable a check that verifies the result and fallbacks
         // to the explicit term if needed
         let check_implicit_coriolis_divergence = dt * self.velocities.amax() >= 1.0e-3;
+        #[cfg(feature = "sim2sim-plain-mass-probe")]
+        let check_implicit_coriolis_divergence =
+            check_implicit_coriolis_divergence && !self.sim2sim_plain_mass_probe;
         #[cfg(feature = "sim2sim-observation")]
         {
             self.sim2sim_observation.energy_guard_evaluated = check_implicit_coriolis_divergence;
+            #[cfg(feature = "sim2sim-plain-mass-probe")]
+            {
+                self.sim2sim_observation.plain_mass_probe_selected = self.sim2sim_plain_mass_probe;
+            }
         }
         // Generalized forces that derive from positions or external inputs
         // (gravity, user forces, spring position terms).
@@ -673,6 +693,13 @@ impl Multibody {
 
         self.augmented_mass_indices
             .with_rearranged_rows_mut(&mut self.accelerations, |accs| {
+                #[cfg(feature = "sim2sim-plain-mass-probe")]
+                if self.sim2sim_plain_mass_probe {
+                    self.inv_augmented_mass.solve_mut(accs);
+                } else {
+                    self.acc_inv_augmented_mass.solve_mut(accs);
+                }
+                #[cfg(not(feature = "sim2sim-plain-mass-probe"))]
                 self.acc_inv_augmented_mass.solve_mut(accs);
             });
 

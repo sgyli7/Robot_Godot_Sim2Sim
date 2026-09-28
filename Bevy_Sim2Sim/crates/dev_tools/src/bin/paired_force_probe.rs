@@ -24,9 +24,13 @@ fn read_checked(path: &str, expected_sha256: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn run(args: &[String]) -> Result<Value, String> {
+fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
     if !Multibody::sim2sim_observation_backend_supported() {
         return Err("native Rapier observation backend is unavailable".into());
+    }
+    #[cfg(not(feature = "sim2sim_plain_mass_probe"))]
+    if plain_mass_diagnostic {
+        return Err("plain-mass diagnostic requires sim2sim_plain_mass_probe feature".into());
     }
     let definition_bytes = read_checked(&args[0], &args[1])?;
     let definition = match Path::new(&args[0]).extension().and_then(|v| v.to_str()) {
@@ -91,6 +95,15 @@ fn run(args: &[String]) -> Result<Value, String> {
         .ok_or("source articulation disappeared")?;
     let initial_native_root_velocity: [f32; 6] =
         std::array::from_fn(|index| root_multibody.generalized_velocity()[index]);
+    #[cfg(feature = "sim2sim_plain_mass_probe")]
+    if plain_mass_diagnostic {
+        let (multibody, _) = simulation
+            .world
+            .multibody_joints
+            .get_mut(root_mapping.handle)
+            .ok_or("source articulation disappeared before diagnostic selection")?;
+        multibody.sim2sim_set_plain_mass_probe(true);
+    }
     let before = assembly
         .actuator_joint_feedback(&simulation.world, &definition)
         .map_err(|error| error.to_string())?;
@@ -130,6 +143,8 @@ fn run(args: &[String]) -> Result<Value, String> {
     let mut rows = Vec::with_capacity(before.len());
     let mut common_epoch = None;
     let mut common_topology = None;
+    #[cfg(feature = "sim2sim_plain_mass_probe")]
+    let mut common_mass_diagnostic = None;
     for (initial, final_state) in before.iter().zip(&after) {
         if initial.source_joint != final_state.source_joint
             || initial.source_dof != final_state.source_dof
@@ -170,6 +185,19 @@ fn run(args: &[String]) -> Result<Value, String> {
         }
         common_epoch = Some(epoch);
         common_topology = Some(observation.topology_epoch);
+        #[cfg(feature = "sim2sim_plain_mass_probe")]
+        {
+            let mass_diagnostic = (
+                observation.plain_mass_probe_selected,
+                observation.energy_guard_evaluated,
+                observation.energy_guard_fallback,
+                observation.energy_guard_acceleration_cleared,
+            );
+            if common_mass_diagnostic.is_some_and(|first| first != mass_diagnostic) {
+                return Err("free-acceleration matrix status differs across driven DOFs".into());
+            }
+            common_mass_diagnostic = Some(mass_diagnostic);
+        }
         let dof = initial.backend_dof;
         let inertial = *observation
             .inertial_projection
@@ -325,18 +353,44 @@ fn run(args: &[String]) -> Result<Value, String> {
         report["actuator_torque_file_sha256"] = json!(sha);
         report["source_applied_actuator_nm"] = json!(torques);
     }
+    #[cfg(feature = "sim2sim_plain_mass_probe")]
+    {
+        let (diagnostic, evaluated, fallback, cleared) =
+            common_mass_diagnostic.ok_or("free-acceleration matrix status was not recorded")?;
+        if diagnostic != plain_mass_diagnostic {
+            return Err("diagnostic mass selection was not applied to this articulation".into());
+        }
+        report["selected_free_acceleration_matrix"] = json!(if diagnostic {
+            "plain_mass_diagnostic"
+        } else if cleared {
+            "acceleration_cleared_after_plain_mass_fallback"
+        } else if fallback {
+            "plain_mass_energy_guard_fallback"
+        } else {
+            "implicit_gyro_coriolis_mass"
+        });
+        report["energy_guard_evaluated"] = json!(evaluated);
+        report["energy_guard_fallback"] = json!(fallback);
+        report["energy_guard_acceleration_cleared"] = json!(cleared);
+    }
     Ok(report)
 }
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    let plain_mass_diagnostic = args
+        .first()
+        .is_some_and(|arg| arg == "--plain-mass-diagnostic");
+    if plain_mass_diagnostic {
+        args.remove(0);
+    }
     if args.len() != 5 && args.len() != 7 && args.len() != 9 {
         eprintln!(
-            "usage: paired_force_probe MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
+            "usage: paired_force_probe [--plain-mass-diagnostic] MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
         );
         std::process::exit(2);
     }
-    let report = match run(&args) {
+    let report = match run(&args, plain_mass_diagnostic) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("paired force probe: {error}");
