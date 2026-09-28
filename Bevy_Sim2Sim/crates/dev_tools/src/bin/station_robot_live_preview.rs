@@ -9,7 +9,7 @@ use bevy::{
     render::{
         Render, RenderApp, RenderSystems,
         render_resource::{CachedPipelineState, PipelineCache, PollType},
-        renderer::RenderDevice,
+        renderer::{RenderAdapterInfo, RenderDevice},
         view::screenshot::{Screenshot, ScreenshotCaptured},
     },
     shader::{Shader, ShaderCacheError},
@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use simulation_minigame::fixed_step_runtime::FrameOutcome;
 use std::{
+    env::{self, VarError},
     error::Error,
     fs,
     path::{Path, PathBuf},
@@ -33,12 +34,145 @@ use std::{
 };
 
 const LIVE_SCHEMA: &str = "station_robot_live_preview_v2";
+const PROFILE_ENV: &str = "SAI_LAB_LIVE_PROFILE";
+const PROFILE_RESOLUTION_ENV: &str = "SAI_LAB_LIVE_PROFILE_RESOLUTION";
+const PROFILE_PRESENT_MODE_ENV: &str = "SAI_LAB_LIVE_PROFILE_PRESENT_MODE";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiveProfileConfig {
+    width: u32,
+    height: u32,
+    present_mode: bevy::window::PresentMode,
+}
+
+impl LiveProfileConfig {
+    fn requested_config(self) -> Value {
+        let present_mode = match self.present_mode {
+            bevy::window::PresentMode::AutoVsync => "auto_vsync",
+            bevy::window::PresentMode::AutoNoVsync => "auto_no_vsync",
+            _ => unreachable!("profile parser admits only the two requested modes"),
+        };
+        json!({
+            "requested_resolution": [self.width, self.height],
+            "requested_present_mode": present_mode,
+        })
+    }
+}
+
+fn parse_live_profile_config(
+    enabled: Option<&str>,
+    resolution: Option<&str>,
+    present_mode: Option<&str>,
+) -> Result<Option<LiveProfileConfig>, String> {
+    match enabled {
+        None if resolution.is_none() && present_mode.is_none() => return Ok(None),
+        None => return Err(format!("{PROFILE_ENV}=1 is required for profile settings")),
+        Some("1") => {}
+        Some(_) => return Err(format!("{PROFILE_ENV} must be exactly 1")),
+    }
+    let (width, height) = match resolution.unwrap_or("1920x1080") {
+        "1920x1080" => (1920, 1080),
+        "960x540" => (960, 540),
+        _ => {
+            return Err(format!(
+                "{PROFILE_RESOLUTION_ENV} must be 1920x1080 or 960x540"
+            ));
+        }
+    };
+    let present_mode = match present_mode.unwrap_or("auto_vsync") {
+        "auto_vsync" => bevy::window::PresentMode::AutoVsync,
+        "auto_no_vsync" => bevy::window::PresentMode::AutoNoVsync,
+        _ => {
+            return Err(format!(
+                "{PROFILE_PRESENT_MODE_ENV} must be auto_vsync or auto_no_vsync"
+            ));
+        }
+    };
+    Ok(Some(LiveProfileConfig {
+        width,
+        height,
+        present_mode,
+    }))
+}
+
+fn profile_env_value(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(format!("{name} must be valid Unicode")),
+    }
+}
+
+fn live_profile_config_from_env() -> Result<Option<LiveProfileConfig>, String> {
+    let enabled = profile_env_value(PROFILE_ENV)?;
+    let resolution = profile_env_value(PROFILE_RESOLUTION_ENV)?;
+    let present_mode = profile_env_value(PROFILE_PRESENT_MODE_ENV)?;
+    parse_live_profile_config(
+        enabled.as_deref(),
+        resolution.as_deref(),
+        present_mode.as_deref(),
+    )
+}
+
+#[derive(Default)]
+struct TimingSummary {
+    count: u64,
+    sum_ns: u64,
+    max_ns: u64,
+}
+
+impl TimingSummary {
+    fn record(&mut self, duration: Duration) {
+        let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        self.count = self.count.saturating_add(1);
+        self.sum_ns = self.sum_ns.saturating_add(nanos);
+        self.max_ns = self.max_ns.max(nanos);
+    }
+
+    fn report(&self) -> Value {
+        json!({"count": self.count, "sum_ns": self.sum_ns, "max_ns": self.max_ns})
+    }
+}
+
+struct LiveProfile {
+    config: LiveProfileConfig,
+    adapter: Option<GpuAdapterReceipt>,
+    frame_start_to_start: TimingSummary,
+    advance_frame_cpu: TimingSummary,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct GpuAdapterReceipt {
+    name: String,
+    backend: String,
+}
+
+impl LiveProfile {
+    fn new(config: LiveProfileConfig) -> Self {
+        Self {
+            config,
+            adapter: None,
+            frame_start_to_start: TimingSummary::default(),
+            advance_frame_cpu: TimingSummary::default(),
+        }
+    }
+
+    fn report(&self) -> Value {
+        let mut report = self.config.requested_config();
+        report["render_adapter"] = json!(self.adapter);
+        report["frame_start_to_start"] = self.frame_start_to_start.report();
+        report["advance_frame_cpu"] = self.advance_frame_cpu.report();
+        report
+    }
+}
 
 #[derive(Default)]
 struct GpuReadiness {
     ready: bool,
     error: Option<String>,
     render_schedule_cleanup_count: u64,
+    collect_adapter: bool,
+    adapter: Option<GpuAdapterReceipt>,
 }
 
 #[derive(Resource, Clone)]
@@ -73,8 +207,15 @@ fn check_gpu_pipelines(
     shaders: Res<RequiredShaders>,
     readiness: Res<SharedGpuReadiness>,
     device: Res<RenderDevice>,
+    adapter: Res<RenderAdapterInfo>,
 ) {
     let mut status = readiness.0.lock().unwrap();
+    if status.collect_adapter && status.adapter.is_none() {
+        status.adapter = Some(GpuAdapterReceipt {
+            name: adapter.name.clone(),
+            backend: format!("{:?}", adapter.backend),
+        });
+    }
     let mut enamel_ready = false;
     let mut ink_ready = false;
     let mut pending = 0;
@@ -116,6 +257,7 @@ fn check_gpu_pipelines(
 struct LiveRun {
     session: DiagnosticSession,
     output: PathBuf,
+    profile: Option<LiveProfile>,
     started: Instant,
     last_running_frame: Option<Instant>,
     display_frames: u64,
@@ -141,6 +283,7 @@ impl LiveRun {
         let actual_steps = self.session.global_step();
         let minimum_ticks = self.session.ticks();
         let counts_passed = self.session.finish_expected_steps(actual_steps);
+        let profile_report = self.profile.as_ref().map(LiveProfile::report);
         let report = self.session.report_mut();
         report["schema"] = json!(LIVE_SCHEMA);
         report["scope"] =
@@ -156,6 +299,9 @@ impl LiveRun {
         report["props_physical"] = json!(false);
         report["live_visual_qualified"] = json!(false);
         report["performance_qualified"] = json!(false);
+        if let Some(profile_report) = profile_report {
+            report["live_profile"] = profile_report;
+        }
         report["render_schedule_cleanup_count"] =
             json!(self.observed_render_schedule_cleanup_count);
         report["render_schedule_cleanups_after_final_publish"] = json!(
@@ -299,13 +445,24 @@ fn advance_live(
         }
         return;
     }
+    if let Some(profile) = run.profile.as_mut() {
+        if profile.adapter.is_none() {
+            profile.adapter = gpu_state.adapter.clone();
+        }
+    }
     drop(gpu_state);
     let now = Instant::now();
-    let elapsed = run
-        .last_running_frame
-        .replace(now)
-        .map_or(Duration::ZERO, |last| now.duration_since(last));
-    let outcome = match run.session.advance_frame(elapsed) {
+    let previous_start = run.last_running_frame.replace(now);
+    let elapsed = previous_start.map_or(Duration::ZERO, |last| now.duration_since(last));
+    if let (Some(_), Some(profile)) = (previous_start, run.profile.as_mut()) {
+        profile.frame_start_to_start.record(elapsed);
+    }
+    let advance_started = run.profile.as_ref().map(|_| Instant::now());
+    let advance_result = run.session.advance_frame(elapsed);
+    if let (Some(started), Some(profile)) = (advance_started, run.profile.as_mut()) {
+        profile.advance_frame_cpu.record(started.elapsed());
+    }
+    let outcome = match advance_result {
         Ok(outcome) => outcome,
         Err(error) => {
             fail(&mut run, &mut input, &mut exit, error);
@@ -533,12 +690,20 @@ fn validate_live_exit(exit: AppExit, report: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn run(args: &[String], output: PathBuf, final_png_path: Option<PathBuf>) -> Result<(), String> {
+fn run(
+    args: &[String],
+    output: PathBuf,
+    final_png_path: Option<PathBuf>,
+    profile_config: Option<LiveProfileConfig>,
+) -> Result<(), String> {
     let mut report = initial_report();
     report["schema"] = json!(LIVE_SCHEMA);
     report["scope"] = json!("dev_only_live_bevy_single_rapier_world_native_ort_p_only_diagnostic");
     report["final_png_required"] = json!(final_png_path.is_some());
     report["final_png"] = Value::Null;
+    if let Some(config) = profile_config {
+        report["live_profile"] = config.requested_config();
+    }
     let session = match prepare(&args[..9], &mut report) {
         Ok(session) => session,
         Err(error) => {
@@ -585,6 +750,7 @@ fn run(args: &[String], output: PathBuf, final_png_path: Option<PathBuf>) -> Res
     let live = LiveRun {
         session,
         output,
+        profile: profile_config.map(LiveProfile::new),
         started: Instant::now(),
         last_running_frame: None,
         display_frames: 0,
@@ -599,8 +765,15 @@ fn run(args: &[String], output: PathBuf, final_png_path: Option<PathBuf>) -> Res
         final_png_receipt: None,
         report_written: false,
     };
-    let readiness = SharedGpuReadiness(Arc::new(Mutex::new(GpuReadiness::default())));
+    let readiness = SharedGpuReadiness(Arc::new(Mutex::new(GpuReadiness {
+        collect_adapter: profile_config.is_some(),
+        ..default()
+    })));
     let screenshot = SharedScreenshotState(Arc::new(Mutex::new(ScreenshotState::default())));
+    let (width, height, present_mode) = profile_config.map_or(
+        (1920, 1080, bevy::window::PresentMode::AutoVsync),
+        |config| (config.width, config.height, config.present_mode),
+    );
     let mut app = App::new();
     app.insert_resource(bevy::winit::WinitSettings::continuous())
         .insert_resource(scene)
@@ -619,8 +792,8 @@ fn run(args: &[String], output: PathBuf, final_png_path: Option<PathBuf>) -> Res
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "DEV ONLY — MicroDuck 60 Hz P-only live diagnostic".into(),
-                        resolution: (1920, 1080).into(),
-                        present_mode: bevy::window::PresentMode::AutoVsync,
+                        resolution: (width, height).into(),
+                        present_mode,
                         ..default()
                     }),
                     ..default()
@@ -688,7 +861,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             fs::create_dir_all(parent)?;
         }
     }
-    let result = run(&args, output.clone(), final_png_path.clone());
+    let profile_config = live_profile_config_from_env();
+    let result = match &profile_config {
+        Ok(config) => run(&args, output.clone(), final_png_path.clone(), *config),
+        Err(error) => Err(error.clone()),
+    };
     if let Err(error) = &result {
         if !output.exists() {
             let mut report = initial_report();
@@ -696,6 +873,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             report["scope"] =
                 json!("dev_only_live_bevy_single_rapier_world_native_ort_p_only_diagnostic");
             report["final_png_required"] = json!(final_png_path.is_some());
+            if let Ok(Some(config)) = profile_config {
+                report["live_profile"] = config.requested_config();
+            }
             report["error"] = json!(error);
             fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
         }
@@ -706,6 +886,52 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_requires_explicit_enable_and_accepts_only_the_two_experiment_settings() {
+        assert!(
+            parse_live_profile_config(None, None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(parse_live_profile_config(None, Some("960x540"), None).is_err());
+        assert!(parse_live_profile_config(None, None, Some("auto_no_vsync")).is_err());
+        assert!(parse_live_profile_config(Some("0"), None, None).is_err());
+        assert!(parse_live_profile_config(Some("true"), None, None).is_err());
+        assert!(parse_live_profile_config(Some("1"), Some("960X540"), None).is_err());
+        assert!(parse_live_profile_config(Some("1"), Some("960x540 "), None).is_err());
+        assert!(parse_live_profile_config(Some("1"), None, Some("immediate")).is_err());
+
+        let default = parse_live_profile_config(Some("1"), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(default.width, 1920);
+        assert_eq!(default.height, 1080);
+        assert_eq!(default.present_mode, bevy::window::PresentMode::AutoVsync);
+        assert_eq!(
+            default.requested_config()["requested_present_mode"],
+            "auto_vsync"
+        );
+
+        let alternate =
+            parse_live_profile_config(Some("1"), Some("960x540"), Some("auto_no_vsync"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(alternate.width, 960);
+        assert_eq!(alternate.height, 540);
+        assert_eq!(
+            alternate.present_mode,
+            bevy::window::PresentMode::AutoNoVsync
+        );
+        assert_eq!(
+            alternate.requested_config()["requested_resolution"],
+            json!([960, 540])
+        );
+        assert_eq!(
+            alternate.requested_config()["requested_present_mode"],
+            "auto_no_vsync"
+        );
+    }
 
     fn pose(step: u64) -> Arc<RobotPoseFrame> {
         Arc::new(RobotPoseFrame {
