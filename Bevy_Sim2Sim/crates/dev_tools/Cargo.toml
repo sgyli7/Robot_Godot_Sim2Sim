@@ -11,13 +11,14 @@ sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_limit_row_trace"]
 sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]
 sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "simulation_minigame/sim2sim_source_limit_probe"]
-rendering_preview = ["dep:rendering_minigame"]
+rendering_preview = ["dep:rendering_minigame", "dep:bevy"]
 
 [dependencies]
 common_minigame.workspace = true
 robot_minigame.workspace = true
 simulation_minigame.workspace = true
 rendering_minigame = { workspace = true, optional = true }
+bevy = { workspace = true, optional = true }
 rapier3d.workspace = true
 ort.workspace = true
 serde.workspace = true
@@ -33,6 +34,11 @@ required-features = ["rendering_preview"]
 [[bin]]
 name = "station_robot_60hz_diagnostic"
 path = "src/bin/station_robot_60hz_diagnostic.rs"
+required-features = ["rendering_preview"]
+
+[[bin]]
+name = "station_robot_live_preview"
+path = "src/bin/station_robot_live_preview.rs"
 required-features = ["rendering_preview"]
 
 [[bin]]

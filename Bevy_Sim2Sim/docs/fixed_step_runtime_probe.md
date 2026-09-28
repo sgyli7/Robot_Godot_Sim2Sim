@@ -8,4 +8,8 @@
 
 随后已从上述**新驱动报告**在同一冻结 v18AJ 资产上重新 GPU 截取九段，生成带 `FixedStepRuntime 60/60` 来源字幕的[新合辑和独立收据](legacy_nine_onnx_aj_fixed_step_video.md)：1,209 帧、1920×1080、30 fps、40.30 秒，视频 SHA256 `4bcc81c41f8783617f6642cf0987096489223e70423c19ac8911d0beb3b79735`。新旧 1,209 个姿态 SHA 一致，1,202 张 PNG 逐字节一致，其余七帧仅有 1–2 个像素微差；九段单片 SHA 均与旧单片相同。新合辑来源身份与字幕不同，旧证据未覆盖。此复录并没有改善这些旧策略的站立或行走表现。
 
-**资格边界：** 这些真实 ONNX 回放依旧是旧 200/50 策略在 60/60 的 P-only 诊断；它不包含合格 BAM 上一步外载、源接触等价、道具交互或技能成功。业务驱动提供了正式生命周期接口，但 `src/main.rs` 当前仍是无机器人视觉预览，尚未把真实机器人控制器和快照写回接入正式 Bevy 游玩循环。此项接线回归不能替代完整游戏、接触修正、十技能训练与验收。
+开发工具现另有 `station_robot_live_preview` **实时窗口接线探针**。它与离线诊断复用同一套模型／场景装配和 P-only 控制器，在一个 Rapier 世界中按真实显示帧耗时推进 `FixedStepRuntime`，每个完成 Tick 都保留推理、积分和位姿账本；Bevy 当前显示帧取最后一张完成位姿，`RobotVisualInput` 在同帧 `PostUpdate` 验证并写回模型。程序只有在最终位姿的 `RobotVisualStatus` 为正确 Tick、且该发布后又完成 GPU 渲染流程时才成功退出。正式 `src/main.rs` 仍拒绝机器人模式，不把诊断控制器装进正式游戏。
+
+用原始 `alpha_stand.onnx`、冻结 AJ 资产和 `MIN_TICKS=60` 的真实窗口实跑：因一次显示帧最多追 8 Tick，**实际完成 64 Tick**，超出下界 4 Tick；64 次推理、64 次积分、64 次位姿发布，报告 64 条逐 Tick trace 与含零步的 65 张位姿，视觉停在第 64 Tick，最终发布后有 1 次 GPU 渲染流程。收据 `.scratch/live_runtime_dev/alpha_stand_min60_v3.json` 的 SHA256 为 `ca1226ad7e790146d804b9ad5bf5f05c6558b8a371d05fa0aaedafca2dc85689`。调试构建仅 9 个显示帧完成本次窗口探针时尚欠 416 Tick（约 6.93 秒），因此**没有达到实时性能资格**；`passed=true` 只表示这条开发接线的计数和最终画面核对通过。抽出共享控制器后，另在全新输出目录重跑九份原 ONNX 离线报告，全部与冻结 `run_a` 报告逐字节相同，累计仍为 2,400 Tick；独立复核收据 `.scratch/live_runtime_dev/offline_refactor_recheck/comparison.json` 的 SHA256 为 `a3254ba5eeed136e882087feb27e97dd049640c918dab0c9abdc39d64aa417be`。实时入口的连续步、追帧取末帧与零步显示边界测试通过。
+
+**资格边界：** 这些真实 ONNX 回放依旧是旧 200/50 策略在 60/60 的 P-only 诊断；它不包含合格 BAM 上一步外载、源接触等价、道具交互或技能成功。实时窗口探针仍在 `dev_tools`，20 个可移动道具碰撞体尚未导入；`src/main.rs` 当前只提供无机器人视觉预览，正式游戏还没有合格的机器人控制及场景交互。此项接线回归不能替代完整游戏、接触修正、十技能训练与 1080p／60 FPS 验收。

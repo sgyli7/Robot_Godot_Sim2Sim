@@ -1759,6 +1759,7 @@ dependencies = [
 name = "dev_tools_minigame"
 version = "0.1.0"
 dependencies = [
+ "bevy",
  "common_minigame",
  "ort",
  "rapier3d",
