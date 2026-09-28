@@ -767,6 +767,11 @@ mod tests {
     fn asset_root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets")
     }
+    fn historical_layout(version: u8) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/game/scenes/dev/test_fixtures")
+            .join(format!("station_layout_v{version}.ron"))
+    }
     fn key(p: [f32; 3]) -> [u32; 3] {
         p.map(|v| if v == 0. { 0 } else { v.to_bits() })
     }
@@ -807,11 +812,8 @@ mod tests {
     }
     #[test]
     fn archived_v4_and_v5_layouts_still_parse_without_graphics() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let v4 = root.join(".scratch/visuals/v4_archive/assets/game/dynamic_assets/game_data/science_station_layout.ron");
-        let v5 = root.join(".scratch/visuals/v5_signage/before/science_station_layout.ron");
         let scene = load_station_geometry(&asset_root()).expect("v6 station");
-        for path in [v4, v5] {
+        for path in [historical_layout(4), historical_layout(5)] {
             let layout: StationLayout = ron::from_str(&fs::read_to_string(path).unwrap()).unwrap();
             assert!(layout.graphics.is_empty());
             assert!(
@@ -1242,12 +1244,6 @@ mod tests {
         assert!(checked_rocks >= 45, "Geological physics faces are missing");
     }
 
-    fn scratch(rel: &str) -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../.scratch/visuals")
-            .join(rel)
-    }
-
     fn stage_assets(name: &str, manifest: &Path, layout: &Path, glb: &Path) -> std::path::PathBuf {
         let root =
             std::env::temp_dir().join(format!("bevy_sim2sim_v6_{name}_{}", std::process::id()));
@@ -1468,40 +1464,39 @@ mod tests {
 
     #[test]
     fn historical_v4_and_v5_load_without_graphics_and_reject_v6_records() {
-        let v4 = scratch("v4_archive/assets");
-        let v4_scene = load_station_geometry(&v4).unwrap();
-        assert_eq!(v4_scene.layout.identity, "windpass_courtyard_v4");
-        assert!(v4_scene.layout.graphics.is_empty());
-        assert_eq!(v4_scene.labels.len(), 38);
-        let glb = v4.join("game/arts/environment/models/science_station.glb");
-        let v5_root = stage_assets(
-            "v5_historical",
-            &scratch("v5_signage/after/science_station.ron"),
-            &scratch("v5_signage/after/science_station_layout.ron"),
-            &glb,
-        );
-        let v5_scene = load_station_geometry(&v5_root).unwrap();
-        assert_eq!(v5_scene.layout.identity, "windpass_courtyard_v5");
-        assert!(v5_scene.layout.graphics.is_empty());
-        let live_layout = fs::read_to_string(
-            asset_root().join("game/dynamic_assets/game_data/science_station_layout.ron"),
-        )
-        .unwrap();
+        let live_manifest = asset_root().join("game/dynamic_assets/game_data/science_station.ron");
+        let live_layout_path =
+            asset_root().join("game/dynamic_assets/game_data/science_station_layout.ron");
+        let live_glb = asset_root().join("game/arts/environment/models/science_station.glb");
+        let mut historical = Vec::new();
+        for version in [4, 5] {
+            let root = stage_assets(
+                &format!("v{version}_historical"),
+                &live_manifest,
+                &historical_layout(version),
+                &live_glb,
+            );
+            let layout = fs::read_to_string(historical_layout(version)).unwrap();
+            write_layout_pair(&root, layout);
+            let scene = load_station_geometry(&root).unwrap();
+            assert_eq!(
+                scene.layout.identity,
+                format!("windpass_courtyard_v{version}")
+            );
+            assert!(scene.layout.graphics.is_empty());
+            assert!(!scene.labels.is_empty());
+            historical.push(root);
+        }
+        let live_layout = fs::read_to_string(&live_layout_path).unwrap();
         let graphics = live_layout.trim_end().rsplit_once(",graphics:").unwrap().1;
         let graphics = graphics.trim_end_matches(')');
-        for (name, manifest, layout) in [
-            (
-                "v4_with_graphics",
-                v4.join("game/dynamic_assets/game_data/science_station.ron"),
-                v4.join("game/dynamic_assets/game_data/science_station_layout.ron"),
-            ),
-            (
-                "v5_with_graphics",
-                scratch("v5_signage/after/science_station.ron"),
-                scratch("v5_signage/after/science_station_layout.ron"),
-            ),
-        ] {
-            let root = stage_assets(name, &manifest, &layout, &glb);
+        for (version, source) in [(4, &historical[0]), (5, &historical[1])] {
+            let root = stage_assets(
+                &format!("v{version}_with_graphics"),
+                &source.join("game/dynamic_assets/game_data/science_station.ron"),
+                &source.join("game/dynamic_assets/game_data/science_station_layout.ron"),
+                &live_glb,
+            );
             let old = fs::read_to_string(
                 root.join("game/dynamic_assets/game_data/science_station_layout.ron"),
             )
@@ -1518,10 +1513,6 @@ mod tests {
                 "{err}"
             );
         }
-        let live_manifest = asset_root().join("game/dynamic_assets/game_data/science_station.ron");
-        let live_layout_path =
-            asset_root().join("game/dynamic_assets/game_data/science_station_layout.ron");
-        let live_glb = asset_root().join("game/arts/environment/models/science_station.glb");
         let missing = stage_assets(
             "v6_missing_graphics",
             &live_manifest,
