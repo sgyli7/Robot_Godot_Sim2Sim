@@ -13,7 +13,10 @@ use std::{
 
 use rapier3d::prelude::*;
 use robot_minigame::{
-    RobotError, collision_profile::SourceCollisionProfile, definition::RobotDefinition,
+    RobotError,
+    collision_profile::SourceCollisionProfile,
+    definition::RobotDefinition,
+    joint_feedback::{JointFeedbackFrame, PreviousSolveLoad},
     kinematics::source_body_poses,
 };
 use serde::Serialize;
@@ -26,6 +29,14 @@ use crate::{
 
 static NEXT_WORLD_EPOCH: AtomicU64 = AtomicU64::new(1);
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(feature = "sim2sim_observation")]
+mod previous_solve;
+#[cfg(feature = "sim2sim_observation")]
+pub use previous_solve::{
+    NativeSolveCandidateChannel, NativeSolveCandidateFrame, PreviousSolveDiagnostic,
+    PreviousSolveUnavailable,
+};
 const SOURCE_HOOKS: ActiveHooks = ActiveHooks::from_bits_retain(
     ActiveHooks::FILTER_CONTACT_PAIRS.bits() | ActiveHooks::FILTER_INTERSECTION_PAIR.bits(),
 );
@@ -138,6 +149,34 @@ impl SourceCollisionWorld {
 
     pub fn snapshot(&self) -> StepSnapshot {
         self.simulation.snapshot()
+    }
+
+    /// Read all 14 driven joints from the registered instance and this world's
+    /// current tick. Native previous-solve load is explicitly unavailable: the
+    /// current read-only Rapier primitives do not qualify BAM feedback.
+    pub fn joint_feedback_frame(
+        &self,
+        token: RobotInstanceToken,
+    ) -> BoundaryResult<JointFeedbackFrame> {
+        self.validate_boundary(token)?;
+        let assembly = self
+            .assembly
+            .as_ref()
+            .ok_or_else(|| invalid("joint feedback assembly is absent"))?;
+        let channels =
+            assembly.actuator_joint_feedback(&self.simulation.world, &self.definition)?;
+        let snapshot = self.simulation.snapshot();
+        Ok(JointFeedbackFrame {
+            model_file_sha256: self.definition.file_sha256().into(),
+            collision_profile_file_sha256: self.profile.file_sha256().into(),
+            world_epoch: token.world_epoch,
+            robot_instance: token.instance,
+            episode_id: snapshot.episode_id,
+            global_step: snapshot.global_step,
+            episode_step: snapshot.episode_step,
+            channels,
+            previous_solve_load: PreviousSolveLoad::Unavailable,
+        })
     }
 
     pub fn counts(&self) -> WorldCounts {
@@ -775,6 +814,91 @@ mod tests {
         let counter = AtomicU64::new(u64::MAX - 1);
         assert_eq!(allocate(&counter).unwrap(), u64::MAX - 1);
         assert!(allocate(&counter).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires explicit hash-checked frozen native source fixtures"]
+    fn zero_step_joint_feedback_uses_live_source_articulations() {
+        for (definition, profile) in fixtures() {
+            let mut world = new_world(&definition, &profile);
+            let token = world.instance_token().unwrap();
+            let first = world.joint_feedback_frame(token).unwrap();
+            let snapshot = world.snapshot();
+            let poses = world
+                .assembly
+                .as_ref()
+                .unwrap()
+                .pose_frame(&snapshot)
+                .unwrap();
+            assert_eq!(first.model_file_sha256, definition.file_sha256());
+            assert_eq!(first.collision_profile_file_sha256, profile.file_sha256());
+            assert_eq!(
+                (first.world_epoch, first.robot_instance),
+                (token.world_epoch, token.instance)
+            );
+            assert_eq!(
+                (first.global_step, first.episode_id, first.episode_step),
+                (0, 0, 0)
+            );
+            assert_eq!(first.previous_solve_load, PreviousSolveLoad::Unavailable);
+            assert_eq!(
+                serde_json::to_value(&first).unwrap()["previous_solve_load"],
+                "Unavailable"
+            );
+            assert_eq!(snapshot.integration_count, 0);
+            assert_eq!(snapshot.torque_update_count, 0);
+            let model = definition.model();
+            for (index, channel) in first.channels.iter().enumerate() {
+                let joint = definition.actuator_joint_ids()[index];
+                let dof = model.fields.jnt_dofadr[joint];
+                let body = model.fields.jnt_bodyid[joint];
+                let expected = model.fields.key_qpos[0][model.fields.jnt_qposadr[joint]] as f32;
+                assert_eq!((channel.source_joint, channel.source_dof), (joint, dof));
+                assert!((channel.position - expected).abs() <= 2e-6);
+                assert_eq!(channel.velocity, 0.0);
+                let pose = poses
+                    .poses
+                    .iter()
+                    .find(|pose| pose.source_body_id == body)
+                    .unwrap();
+                assert_eq!(
+                    (channel.body_handle.index, channel.body_handle.generation),
+                    (pose.backend_handle[0], pose.backend_handle[1])
+                );
+                let mapping = world
+                    .assembly
+                    .as_ref()
+                    .unwrap()
+                    .joint_mapping()
+                    .iter()
+                    .find(|mapping| mapping.source_joint == joint)
+                    .unwrap();
+                assert_eq!(
+                    (channel.joint_handle.index, channel.joint_handle.generation),
+                    mapping.handle.into_raw_parts()
+                );
+                assert_eq!(channel.backend_dof, mapping.backend_dof);
+            }
+
+            let mut shifted = model.fields.key_qpos[0].clone();
+            let joint = definition.actuator_joint_ids()[0];
+            let qpos_index = model.fields.jnt_qposadr[joint];
+            shifted[qpos_index] += 0.01;
+            world.remove_robot(token).unwrap();
+            assert!(world.joint_feedback_frame(token).is_err());
+            let replacement = world.rebuild_robot(&shifted).unwrap();
+            assert_ne!(replacement, token);
+            assert!(world.joint_feedback_frame(token).is_err());
+            let second = world.joint_feedback_frame(replacement).unwrap();
+            assert_eq!(
+                (second.global_step, second.episode_id, second.episode_step),
+                (0, 1, 0)
+            );
+            assert!((second.channels[0].position - shifted[qpos_index] as f32).abs() <= 2e-6);
+            assert_eq!(second.previous_solve_load, PreviousSolveLoad::Unavailable);
+            assert_eq!(world.snapshot().integration_count, 0);
+            assert_eq!(world.snapshot().torque_update_count, 0);
+        }
     }
 
     #[test]

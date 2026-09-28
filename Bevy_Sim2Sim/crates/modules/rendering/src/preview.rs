@@ -1,4 +1,6 @@
 //! Actual GPU preview, pipeline status and screenshot capture lifecycle.
+mod sequence;
+
 use crate::{
     PreviewOptions, RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin,
     RobotVisualStatus, RobotVisualSystems, StationCameraControl, StationScene, StationVisualPlugin,
@@ -14,6 +16,10 @@ use bevy::{
     },
     shader::{Shader, ShaderCacheError},
 };
+pub use sequence::{
+    RobotPoseCaptureFrame, RobotPoseSequenceCaptureOptions, RobotPoseSequenceCaptureReceipt,
+    RobotPoseSequenceCaptureResources, run_robot_pose_sequence_capture,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -28,6 +34,7 @@ struct Status {
     compiled: usize,
     pending: usize,
     captured: bool,
+    captured_count: usize,
     initialization_ready: bool,
 }
 #[derive(Resource)]

@@ -8,6 +8,7 @@ pub mod collision_profile;
 pub mod contract;
 pub mod definition;
 pub mod delay;
+pub mod joint_feedback;
 pub mod kinematics;
 pub mod policy;
 

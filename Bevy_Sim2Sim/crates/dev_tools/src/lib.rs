@@ -1,5 +1,7 @@
 //! Optional development verification; never called by a release game by default.
 
+pub mod legacy_cpu_actor;
+
 use std::{path::Path, time::Duration};
 
 use common_minigame::{

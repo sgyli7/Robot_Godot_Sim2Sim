@@ -1760,6 +1760,7 @@ name = "dev_tools_minigame"
 version = "0.1.0"
 dependencies = [
  "common_minigame",
+ "ort",
  "rapier3d",
  "rendering_minigame",
  "robot_minigame",

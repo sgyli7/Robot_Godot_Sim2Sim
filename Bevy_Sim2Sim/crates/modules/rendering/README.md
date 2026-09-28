@@ -163,6 +163,49 @@ and capture to a nonempty directory. A previous v2 late-WGSL experiment exited
 139; its original failure log is retained. The v3 results cover those recorded
 cases only.
 
+## Completed-pose sequence capture
+
+`run_robot_pose_sequence_capture` opens the same station and verified robot
+visuals, then saves one actual GPU PNG for each sampled input pose. The caller
+must supply every consecutive completed `RobotPoseFrame` from one 60 Hz
+episode, plus the same verified model/scene inputs as the initialization
+preview. The renderer checks model identity, body coverage, assembly handles,
+episode and contiguous step counters before opening the window. It refuses a
+sequence whose sampled poses are all bit-identical. None of these checks proves
+the caller's physics provenance or the stability of its controller.
+
+```rust,ignore
+let receipt = rendering_minigame::run_robot_pose_sequence_capture(
+    rendering_minigame::RobotPoseSequenceCaptureResources {
+        asset_root,
+        scene,
+        model,
+        camera,
+        poses_60hz: completed_world_poses, // one real completed frame per 60 Hz tick
+    },
+    rendering_minigame::RobotPoseSequenceCaptureOptions {
+        output_dir,
+        output_fps: 30,
+    },
+)?;
+```
+
+The output rate may be any integer from 1 through 60 fps. Output frame `n`
+uses source tick `floor(n * 60 / output_fps)`; the renderer does not invent
+intermediate poses or repeat one tick to fill a timeline. It advances to the
+next pose only after the current screenshot is saved and checked. The output
+directory gets `frame_000000.png` onward and `capture_manifest.json`, which
+records each output frame's source tick, episode, pose SHA-256, and PNG path.
+Existing output filenames are rejected to avoid mixing capture runs. Failed
+runs may leave partial PNGs but no successful manifest.
+
+This entry captures one continuous episode at a time. A development runner
+can capture each skill separately and assemble the successful PNG sequences
+into a video, for example with
+`ffmpeg -framerate 30 -i frame_%06d.png -c:v libx264 -pix_fmt yuv420p skill.mp4`.
+The renderer itself neither runs ONNX
+inference nor steps physics.
+
 `StationVisualPlugin` can be embedded in a runtime application. Font render
 targets currently freeze through the preview lifecycle; runtime integration
 must provide the same readiness/freeze lifecycle. Actual robot rendering,

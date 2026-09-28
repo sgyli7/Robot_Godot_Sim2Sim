@@ -9,6 +9,7 @@
 3. [历史研究](research.md)：此前 Godot200 Hz调查，仅供定位旧代码与失败经验。
 4. [运行说明](../README.md)：仅以实际验证后的命令和功能为准。
 5. [科学站整体地编方案](station_layout_redesign.md)：v17 两案灰盒与正式场景门槛；当前 live 仍是 v10B。
+6. [九个原始 ONNX 的 60 Hz 科学站诊断](legacy_nine_onnx_60hz_diagnostic.md)：真实推理、积分和视频证据及未通过项。
 
 ## 当前授权与范围
 

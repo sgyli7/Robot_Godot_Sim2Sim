@@ -94,6 +94,12 @@ pub struct MultibodyObservation {
 }
 
 impl MultibodyObservation {
+    /// The actual full-pipeline time step associated with these solver operands.
+    /// It is zero for an invalidated cold state, never an inferred display rate.
+    pub fn full_step_dt(&self) -> Real {
+        self.full_step_dt
+    }
+
     pub(crate) fn begin(epoch: u64, topology_epoch: u32, dt: Real) -> Self {
         Self {
             epoch,

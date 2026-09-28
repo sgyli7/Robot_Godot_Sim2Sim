@@ -14,8 +14,11 @@ use robot_minigame::{
     body_pose::{RobotBodyPose, RobotPoseFrame},
     collision_hull,
     definition::RobotDefinition,
+    joint_feedback::{JointFeedbackChannel, NativeHandleIdentity},
     kinematics::source_body_poses,
 };
+
+use crate::BodyTorque;
 
 #[derive(Debug)]
 pub struct SourceJointMapping {
@@ -110,6 +113,185 @@ impl RobotAssembly {
                 ))
             })
             .collect()
+    }
+
+    /// Read each driven joint in the contract order from live native links.
+    /// The caller owns the world and must separately bind this read to its
+    /// instance token and snapshot tick; no inferred observation is produced.
+    pub fn actuator_joint_feedback(
+        &self,
+        world: &PhysicsWorld,
+        definition: &RobotDefinition,
+    ) -> Result<[JointFeedbackChannel; ACTION_DIMENSION], RobotError> {
+        if self.source_file_sha256 != definition.file_sha256()
+            || self.actuator_joints != *definition.actuator_joint_ids()
+        {
+            return Err(invalid("joint feedback definition identity changed"));
+        }
+        let fields = &definition.model().fields;
+        let mut channels = Vec::with_capacity(ACTION_DIMENSION);
+        for source_joint in self.actuator_joints {
+            let mut mappings = self
+                .joint_mapping
+                .iter()
+                .filter(|mapping| mapping.source_joint == source_joint);
+            let mapping = mappings
+                .next()
+                .ok_or_else(|| invalid("driven source joint mapping is missing"))?;
+            if mappings.next().is_some()
+                || source_joint == 0
+                || source_joint >= fields.jnt_bodyid.len()
+                || mapping.source_dof != fields.jnt_dofadr[source_joint]
+            {
+                return Err(invalid(
+                    "driven source joint mapping is duplicated or changed",
+                ));
+            }
+            let source_body = fields.jnt_bodyid[source_joint];
+            let body_handle = self
+                .body_handles
+                .get(source_body)
+                .and_then(|handle| *handle)
+                .ok_or_else(|| invalid("driven source body generation is missing"))?;
+            if world.bodies.get(body_handle).is_none() {
+                return Err(invalid("driven source body generation is stale"));
+            }
+            let (multibody, link_id) = world
+                .multibody_joints
+                .get(mapping.handle)
+                .ok_or_else(|| invalid("driven joint generation is stale"))?;
+            let link = multibody
+                .link(link_id)
+                .ok_or_else(|| invalid("driven joint link is absent"))?;
+            if link.rigid_body_handle() != body_handle
+                || link.assembly_id() != mapping.backend_dof
+                || link.joint().ndofs() != 1
+                || mapping.backend_dof >= multibody.generalized_velocity().len()
+            {
+                return Err(invalid("driven native articulation topology changed"));
+            }
+            let position = mapping.reference + link.joint().coords()[3];
+            let velocity = multibody.generalized_velocity()[mapping.backend_dof];
+            if !position.is_finite() || !velocity.is_finite() {
+                return Err(invalid("non-finite driven native joint feedback"));
+            }
+            let (joint_index, joint_generation) = mapping.handle.into_raw_parts();
+            let (body_index, body_generation) = body_handle.into_raw_parts();
+            channels.push(JointFeedbackChannel {
+                source_joint,
+                source_dof: mapping.source_dof,
+                backend_dof: mapping.backend_dof,
+                joint_handle: NativeHandleIdentity {
+                    index: joint_index,
+                    generation: joint_generation,
+                },
+                body_handle: NativeHandleIdentity {
+                    index: body_index,
+                    generation: body_generation,
+                },
+                position,
+                velocity,
+            });
+        }
+        channels
+            .try_into()
+            .map_err(|_| invalid("driven native feedback channel count changed"))
+    }
+
+    /// Map source-signed scalar actuator torques to world-space body pairs.
+    ///
+    /// The joint axis is expressed in the source child-body frame. This only
+    /// maps already-computed torques; it does not evaluate BAM or step physics.
+    /// The caller must separately guard the current world instance and tick.
+    pub fn actuator_body_torques(
+        &self,
+        world: &PhysicsWorld,
+        definition: &RobotDefinition,
+        source_torques: &[f32; ACTION_DIMENSION],
+    ) -> Result<Vec<BodyTorque>, RobotError> {
+        if source_torques.iter().any(|torque| !torque.is_finite()) {
+            return Err(invalid("non-finite source actuator torque"));
+        }
+        // Recheck all 14 source IDs, DOF slots, handles and live link owners
+        // before constructing any contribution from a rebuilt articulation.
+        let feedback = self.actuator_joint_feedback(world, definition)?;
+        let fields = &definition.model().fields;
+        let mut contributions = Vec::with_capacity(2 * ACTION_DIMENSION);
+        for (index, channel) in feedback.iter().enumerate() {
+            let source_joint = channel.source_joint;
+            let child_source = *fields
+                .jnt_bodyid
+                .get(source_joint)
+                .ok_or_else(|| invalid("driven source joint body is absent"))?;
+            let parent_source = *fields
+                .body_parentid
+                .get(child_source)
+                .ok_or_else(|| invalid("driven source joint parent is absent"))?;
+            if parent_source == 0 || parent_source == child_source {
+                return Err(invalid("driven source joint has no physical parent"));
+            }
+            let parent_handle = self
+                .body_handles
+                .get(parent_source)
+                .and_then(|handle| *handle)
+                .ok_or_else(|| invalid("driven native parent body is absent"))?;
+            let child_handle = self
+                .body_handles
+                .get(child_source)
+                .and_then(|handle| *handle)
+                .ok_or_else(|| invalid("driven native child body is absent"))?;
+            let parent = world
+                .bodies
+                .get(parent_handle)
+                .ok_or_else(|| invalid("driven native parent body generation is stale"))?;
+            let child = world
+                .bodies
+                .get(child_handle)
+                .ok_or_else(|| invalid("driven native child body generation is stale"))?;
+            if parent.user_data != parent_source as u128
+                || child.user_data != child_source as u128
+                || world
+                    .multibody_joints
+                    .joint_between(parent_handle, child_handle)
+                    .is_none_or(|(handle, _, _)| {
+                        handle.into_raw_parts()
+                            != (channel.joint_handle.index, channel.joint_handle.generation)
+                    })
+            {
+                return Err(invalid("driven native parent-child topology changed"));
+            }
+            for body in [parent, child] {
+                let rotation = body.rotation();
+                if !body.position().translation.is_finite()
+                    || !rotation.is_finite()
+                    || (rotation.length_squared() - 1.0).abs() > 1e-5
+                {
+                    return Err(invalid("driven native body pose is invalid"));
+                }
+            }
+            let axis = engine_vector(
+                *fields
+                    .jnt_axis
+                    .get(source_joint)
+                    .ok_or_else(|| invalid("driven source joint axis is absent"))?,
+            )?;
+            if (axis.length_squared() - 1.0).abs() > 1e-5 {
+                return Err(invalid("driven source joint axis is not unit length"));
+            }
+            let world_axis = *child.rotation() * axis;
+            let child_torque = world_axis * source_torques[index];
+            if !child_torque.is_finite() {
+                return Err(invalid(
+                    "world actuator torque cannot be represented in float32",
+                ));
+            }
+            contributions.extend(BodyTorque::joint_pair(
+                parent_handle,
+                child_handle,
+                child_torque.to_array(),
+            ));
+        }
+        Ok(contributions)
     }
 
     /// Force measurements and source collision filtering are deliberately still
@@ -390,4 +572,236 @@ fn engine_pose(position: [f64; 3], rotation: [f64; 4]) -> Result<Pose, RobotErro
 }
 fn invalid(message: impl Into<String>) -> RobotError {
     RobotError::Contract(message.into())
+}
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    use std::{fs, path::Path};
+
+    fn frozen_definitions() -> Vec<RobotDefinition> {
+        let fixture_root = std::env::var("SOURCE_COLLISION_FIXTURES")
+            .expect("explicit frozen metadata fixture root is required");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(Path::new(&fixture_root).join("metadata_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        [0, 2]
+            .into_iter()
+            .map(|index| {
+                let row = &manifest["profiles"][index]["definition"];
+                RobotDefinition::load_json(
+                    Path::new(row["path"].as_str().unwrap()),
+                    row["sha256"].as_str().unwrap(),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn source_quat_rotate([w, x, y, z]: [f64; 4], [vx, vy, vz]: [f64; 3]) -> [f64; 3] {
+        let uv = [y * vz - z * vy, z * vx - x * vz, x * vy - y * vx];
+        let uuv = [
+            y * uv[2] - z * uv[1],
+            z * uv[0] - x * uv[2],
+            x * uv[1] - y * uv[0],
+        ];
+        [
+            vx + 2.0 * (w * uv[0] + uuv[0]),
+            vy + 2.0 * (w * uv[1] + uuv[1]),
+            vz + 2.0 * (w * uv[2] + uuv[2]),
+        ]
+    }
+
+    #[test]
+    #[ignore = "requires explicit hash-checked frozen native source fixtures"]
+    fn zero_step_actuator_torque_pairs_follow_source_axes_and_signs() {
+        for definition in frozen_definitions() {
+            let fields = &definition.model().fields;
+            let mut qpos = fields.key_qpos[0].clone();
+            let half = 0.31_f64;
+            qpos[3..7].copy_from_slice(&[half.cos(), half.sin(), 0.0, 0.0]);
+            let first = definition.actuator_joint_ids()[0];
+            qpos[fields.jnt_qposadr[first]] += 0.17;
+            let source_poses = source_body_poses(&definition, &qpos).unwrap();
+            let mut simulation = crate::SimulationWorld::new();
+            let assembly = build_structure(&mut simulation.world, &definition, &qpos).unwrap();
+            let scalars = std::array::from_fn(|index| {
+                let magnitude = 0.07 * (index + 1) as f32;
+                if index % 2 == 0 {
+                    magnitude
+                } else {
+                    -magnitude
+                }
+            });
+            let pairs = assembly
+                .actuator_body_torques(&simulation.world, &definition, &scalars)
+                .unwrap();
+            assert_eq!(pairs.len(), 2 * ACTION_DIMENSION);
+            for (index, pair) in pairs.chunks_exact(2).enumerate() {
+                let joint = definition.actuator_joint_ids()[index];
+                let child = fields.jnt_bodyid[joint];
+                let parent = fields.body_parentid[child];
+                assert_eq!(pair[0].body, assembly.body_handles[parent].unwrap());
+                assert_eq!(pair[1].body, assembly.body_handles[child].unwrap());
+                let source_world_axis =
+                    source_quat_rotate(source_poses[child].rotation_wxyz, fields.jnt_axis[joint]);
+                let expected_axis = source_to_engine_vector(source_world_axis.map(|v| v as f32));
+                for component in 0..3 {
+                    let expected = expected_axis[component] * scalars[index];
+                    assert!(
+                        (pair[1].world_torque[component] - expected).abs() < 2e-5,
+                        "joint {joint}, component {component}: actual={} expected={expected}",
+                        pair[1].world_torque[component]
+                    );
+                    assert_eq!(
+                        pair[0].world_torque[component].to_bits(),
+                        (-pair[1].world_torque[component]).to_bits()
+                    );
+                }
+            }
+            assert_eq!(simulation.snapshot().integration_count, 0);
+            assert_eq!(simulation.snapshot().torque_update_count, 0);
+            for body in assembly.body_handles.iter().flatten() {
+                assert_eq!(simulation.world.bodies[*body].user_torque(), Vector::ZERO);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires explicit hash-checked frozen native source fixtures"]
+    fn zero_step_actuator_torque_pairs_reject_stale_or_wrong_identity() {
+        let definitions = frozen_definitions();
+        let definition = &definitions[0];
+        let mut simulation = crate::SimulationWorld::new();
+        let mut assembly = build_structure(
+            &mut simulation.world,
+            definition,
+            &definition.model().fields.key_qpos[0],
+        )
+        .unwrap();
+        let scalar = [0.1; ACTION_DIMENSION];
+        assert!(
+            assembly
+                .actuator_body_torques(&simulation.world, &definitions[1], &scalar)
+                .is_err()
+        );
+        let mut nonfinite = scalar;
+        nonfinite[11] = f32::NAN;
+        assert!(
+            assembly
+                .actuator_body_torques(&simulation.world, definition, &nonfinite)
+                .is_err()
+        );
+        let joint = definition.actuator_joint_ids()[0];
+        let child = definition.model().fields.jnt_bodyid[joint];
+        let parent = definition.model().fields.body_parentid[child];
+        let original_parent = assembly.body_handles[parent].unwrap();
+        let (index, generation) = original_parent.into_raw_parts();
+        assembly.body_handles[parent] = Some(RigidBodyHandle::from_raw_parts(
+            index,
+            generation.wrapping_add(1),
+        ));
+        assert!(
+            assembly
+                .actuator_body_torques(&simulation.world, definition, &scalar)
+                .is_err()
+        );
+        assembly.body_handles[parent] = Some(original_parent);
+        let mapping_index = assembly
+            .joint_mapping
+            .iter()
+            .position(|mapping| mapping.source_joint == joint)
+            .unwrap();
+        let original_joint = assembly.joint_mapping[mapping_index].handle;
+        let (index, generation) = original_joint.into_raw_parts();
+        assembly.joint_mapping[mapping_index].handle =
+            MultibodyJointHandle::from_raw_parts(index, generation.wrapping_add(1));
+        assert!(
+            assembly
+                .actuator_body_torques(&simulation.world, definition, &scalar)
+                .is_err()
+        );
+        assembly.joint_mapping[mapping_index].handle = original_joint;
+        assert_eq!(
+            assembly
+                .actuator_body_torques(&simulation.world, definition, &scalar)
+                .unwrap()
+                .len(),
+            2 * ACTION_DIMENSION
+        );
+        assert_eq!(simulation.snapshot().integration_count, 0);
+        assert_eq!(simulation.snapshot().torque_update_count, 0);
+    }
+
+    #[test]
+    #[ignore = "requires explicit hash-checked frozen native source fixtures"]
+    fn zero_step_joint_feedback_rejects_stale_and_duplicated_mappings() {
+        for definition in frozen_definitions() {
+            let mut simulation = crate::SimulationWorld::new();
+            let mut assembly = build_structure(
+                &mut simulation.world,
+                &definition,
+                &definition.model().fields.key_qpos[0],
+            )
+            .unwrap();
+            assert!(
+                assembly
+                    .actuator_joint_feedback(&simulation.world, &definition)
+                    .is_ok()
+            );
+            let first_joint = definition.actuator_joint_ids()[0];
+            let mapping_index = assembly
+                .joint_mapping
+                .iter()
+                .position(|mapping| mapping.source_joint == first_joint)
+                .unwrap();
+            let source_body = definition.model().fields.jnt_bodyid[first_joint];
+
+            let original_joint = assembly.joint_mapping[mapping_index].handle;
+            let (joint_index, generation) = original_joint.into_raw_parts();
+            assembly.joint_mapping[mapping_index].handle =
+                MultibodyJointHandle::from_raw_parts(joint_index, generation.wrapping_add(1));
+            assert!(
+                assembly
+                    .actuator_joint_feedback(&simulation.world, &definition)
+                    .is_err()
+            );
+            assembly.joint_mapping[mapping_index].handle = original_joint;
+
+            let original_body = assembly.body_handles[source_body].unwrap();
+            let (body_index, generation) = original_body.into_raw_parts();
+            assembly.body_handles[source_body] = Some(RigidBodyHandle::from_raw_parts(
+                body_index,
+                generation.wrapping_add(1),
+            ));
+            assert!(
+                assembly
+                    .actuator_joint_feedback(&simulation.world, &definition)
+                    .is_err()
+            );
+            assembly.body_handles[source_body] = Some(original_body);
+
+            let duplicate_index = assembly
+                .joint_mapping
+                .iter()
+                .position(|mapping| mapping.source_joint != first_joint)
+                .unwrap();
+            let original_source_joint = assembly.joint_mapping[duplicate_index].source_joint;
+            assembly.joint_mapping[duplicate_index].source_joint = first_joint;
+            assert!(
+                assembly
+                    .actuator_joint_feedback(&simulation.world, &definition)
+                    .is_err()
+            );
+            assembly.joint_mapping[duplicate_index].source_joint = original_source_joint;
+            assert!(
+                assembly
+                    .actuator_joint_feedback(&simulation.world, &definition)
+                    .is_ok()
+            );
+            assert_eq!(simulation.snapshot().integration_count, 0);
+            assert_eq!(simulation.snapshot().torque_update_count, 0);
+        }
+    }
 }

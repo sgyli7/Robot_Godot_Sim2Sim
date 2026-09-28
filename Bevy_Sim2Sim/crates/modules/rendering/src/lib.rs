@@ -20,8 +20,9 @@ use bevy::{
 use geometry::{StationGeometry, load_station_geometry};
 use material::{InkMaterial, StationEnamel, StationMaterial};
 pub use preview::{
-    RobotInitializationPreviewResources, run_preview, run_preview_with_options,
-    run_robot_initialization_preview,
+    RobotInitializationPreviewResources, RobotPoseCaptureFrame, RobotPoseSequenceCaptureOptions,
+    RobotPoseSequenceCaptureReceipt, RobotPoseSequenceCaptureResources, run_preview,
+    run_preview_with_options, run_robot_initialization_preview, run_robot_pose_sequence_capture,
 };
 pub use robot_visual::{
     RobotRenderStyle, RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin,
