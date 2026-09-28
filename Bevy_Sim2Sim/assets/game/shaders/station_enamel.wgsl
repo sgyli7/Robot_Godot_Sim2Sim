@@ -85,6 +85,29 @@ fn ground_color(p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
       *smoothstep(4.20,5.0,abs(q.x-pigment.skills.x))
       *smoothstep(2.9,3.8,abs(q.y-pigment.skills.y));
     color=mix(color,vec3(.31,.53,.63),corner*slab*.43);
+
+    // v18AE visual-only active-yard surveying: a 1 m calibration lattice,
+    // stronger 2 m axes, and four datum rings. It does not alter any surface
+    // height, contact shape, spawn, controller, or path.
+    let inside=(1.-smoothstep(-.15,.12,action))*slab;
+    let gx=abs(fract(q.x+.5)-.5);
+    let gz=abs(fract(q.y+.5)-.5);
+    let fine_x=1.-smoothstep(.010,.010+fwidth(q.x)*1.2,gx);
+    let fine_z=1.-smoothstep(.010,.010+fwidth(q.y)*1.2,gz);
+    let fine=max(fine_x,fine_z)*inside;
+    color=mix(color,vec3(.42,.55,.55),fine*.24);
+    let mx=abs(fract(q.x*.5+.5)-.5);
+    let mz=abs(fract((q.y+2.5)*.5+.5)-.5);
+    let major=max(1.-smoothstep(.008,.008+fwidth(q.x*.5)*1.2,mx),
+                  1.-smoothstep(.008,.008+fwidth(q.y*.5)*1.2,mz))*inside;
+    color=mix(color,vec3(.26,.48,.54),major*.22);
+    let f0=length(q-vec2(-4.5,-6.0));
+    let f1=length(q-vec2(4.5,-6.0));
+    let f2=length(q-vec2(-4.5,1.0));
+    let f3=length(q-vec2(4.5,1.0));
+    let datum=max(max(ink(f0-.25,.018),ink(f1-.25,.018)),
+                  max(ink(f2-.25,.018),ink(f3-.25,.018)))*inside;
+    color=mix(color,vec3(.22,.48,.55),datum*.37);
     // A few construction joints serve the main entrance; no tiled grid or
     // skill-area outline is painted through the open action space.
     let entrance_joint=ink(q.y+9.6,.009)*(1.-aa_edge(plaza))*(1.-smoothstep(6.0,8.0,abs(q.x)));

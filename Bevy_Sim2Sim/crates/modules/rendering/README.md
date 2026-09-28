@@ -24,7 +24,7 @@ matching `science_station_layout.ron`, and the SHA-256 checked GLB at
 assets, mismatched hashes, inconsistent layout definitions, and invalid indices.
 `BEVY_SIM2SIM_ASSETS` selects an explicit asset root.
 
-The current static layout is `windpass_courtyard_v6`, revision 6. It defines
+The current static layout is `windpass_compound_v7`, revision 7. It defines
 the main-building forecourt, three metre wide circulation lane, berth, open
 skills area, four peripheral facility groups with workbenches, connectors,
 equipment and route boards, six review cameras, three safe points, and the
@@ -50,6 +50,16 @@ continuous sand color fade toward the far dunes. All six new static GPU views
 were reviewed; the promoted live shader reproduced the candidate overview PNG
 exactly. The layout identity remains v6, while visual evidence binds the new
 shader hash separately. The distant geometry silhouette remains unchanged.
+Revision 7 organizes the west sample/plant facilities into one work band,
+relocates the service cabin and both survey towers as complete display/collider
+groups, and adds an open east service arcade. The central 11 by 9 metre action
+area stays obstacle-free and gains a visual-only one-metre calibration lattice.
+Five new 2.6 metre path segments mark a continuous route from the north ring
+to the two relocated towers (eight path records in total); the three-metre ring and 2.8 metre ridge path are
+unchanged. The old v6 layout is retained as a historical fixture. Source
+geometry and collision records are preserved apart from the three audited
+facility moves and 56 new, same-index display/collider pairs. This
+new scene identity invalidates earlier scene-bound motion and video receipts.
 
 Station coordinates are metres in a right-handed, Y-up frame. Static surfaces
 and colliders use baked world coordinates; surfaces/colliders belonging to a

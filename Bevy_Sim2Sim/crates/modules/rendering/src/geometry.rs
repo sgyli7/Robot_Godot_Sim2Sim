@@ -85,8 +85,8 @@ pub struct StationFixture {
 }
 /// One approved code-native graphic lying on an existing carrier face.
 ///
-/// Unknown fields are rejected. v4 and v5 omit the list; v6 requires the
-/// five approved records exactly.
+/// Unknown fields are rejected. v4 and v5 omit the list; v6 and v7 require
+/// the five approved records exactly.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StationSurfaceGraphic {
@@ -122,7 +122,7 @@ pub struct StationLayout {
     /// Continuous approach plane; clamp height between zero and the last waypoint Y.
     pub ridge_grade_plane: [f32; 3],
     pub fixtures: Vec<StationFixture>,
-    /// Empty unless this is the v6 functional-graphic revision.
+    /// Empty in v4/v5; required for the v6/v7 functional-graphic revisions.
     #[serde(default)]
     pub graphics: Vec<StationSurfaceGraphic>,
 }
@@ -554,11 +554,14 @@ pub(crate) fn validate_surface_graphics(
         }
         return Err("Historical station layout cannot contain surface graphics".into());
     }
-    if layout.revision != 6 || layout.identity != "windpass_courtyard_v6" {
+    if !matches!(
+        (layout.revision, layout.identity.as_str()),
+        (6, "windpass_courtyard_v6") | (7, "windpass_compound_v7")
+    ) {
         return Err("Unsupported station circulation plan".into());
     }
     if layout.graphics.len() != APPROVED_SURFACE_GRAPHICS.len() {
-        return Err("Station v6 requires exactly five surface graphics".into());
+        return Err("Station v6/v7 requires exactly five surface graphics".into());
     }
     let mut seen = BTreeSet::new();
     for graphic in &layout.graphics {
@@ -603,7 +606,10 @@ pub fn load_station_geometry(asset_root: &Path) -> Result<StationGeometry, Strin
     }
     if !matches!(
         (layout.revision, layout.identity.as_str()),
-        (4, "windpass_courtyard_v4") | (5, "windpass_courtyard_v5") | (6, "windpass_courtyard_v6")
+        (4, "windpass_courtyard_v4")
+            | (5, "windpass_courtyard_v5")
+            | (6, "windpass_courtyard_v6")
+            | (7, "windpass_compound_v7")
     ) || layout.paths.is_empty()
         || layout.paths.len() > 8
         || layout.loop_width < 2.5
@@ -790,8 +796,8 @@ mod tests {
         assert!(validate_carrier_rectangle(&[face], "paper", corners).is_err());
     }
     #[test]
-    fn v6_graphics_fail_when_carrier_missing_or_metadata_unknown() {
-        let scene = load_station_geometry(&asset_root()).expect("v6 station");
+    fn current_graphics_fail_when_carrier_missing_or_metadata_unknown() {
+        let scene = load_station_geometry(&asset_root()).expect("current station");
         let mut stripped = scene.surfaces.clone();
         stripped.retain(|surface| surface.role != "paper");
         assert!(
@@ -812,7 +818,7 @@ mod tests {
     }
     #[test]
     fn archived_v4_and_v5_layouts_still_parse_without_graphics() {
-        let scene = load_station_geometry(&asset_root()).expect("v6 station");
+        let scene = load_station_geometry(&asset_root()).expect("current station");
         for path in [historical_layout(4), historical_layout(5)] {
             let layout: StationLayout = ron::from_str(&fs::read_to_string(path).unwrap()).unwrap();
             assert!(layout.graphics.is_empty());
@@ -821,6 +827,22 @@ mod tests {
                     .is_ok()
             );
         }
+    }
+    #[test]
+    fn archived_v6_layout_still_loads_with_approved_graphics() {
+        let live_root = asset_root();
+        let staged = stage_assets(
+            "v6_historical_with_current_geometry",
+            &live_root.join("game/dynamic_assets/game_data/science_station.ron"),
+            &historical_layout(6),
+            &live_root.join("game/arts/environment/models/science_station.glb"),
+        );
+        let layout = fs::read_to_string(historical_layout(6)).unwrap();
+        write_layout_pair(&staged, layout);
+        let scene = load_station_geometry(&staged).unwrap();
+        assert_eq!(scene.layout.identity, "windpass_courtyard_v6");
+        assert_eq!(scene.layout.revision, 6);
+        assert_eq!(scene.layout.graphics.len(), APPROVED_SURFACE_GRAPHICS.len());
     }
     #[test]
     fn source_terrain_triangles_are_identical_for_display_and_collision() {
@@ -1320,10 +1342,10 @@ mod tests {
     }
 
     #[test]
-    fn v6_graphics_and_sample_caps_match_the_approved_station() {
+    fn current_graphics_and_sample_caps_match_the_approved_station() {
         let scene = load_station_geometry(&asset_root()).unwrap();
-        assert_eq!(scene.layout.identity, "windpass_courtyard_v6");
-        assert_eq!(scene.layout.revision, 6);
+        assert_eq!(scene.layout.identity, "windpass_compound_v7");
+        assert_eq!(scene.layout.revision, 7);
         assert_eq!(scene.labels.len(), 38);
         assert_eq!(
             scene
