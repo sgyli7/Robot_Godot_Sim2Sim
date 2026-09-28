@@ -49,3 +49,8 @@ required-features = ["rendering_preview"]
 name = "paired_force_probe"
 path = "src/bin/paired_force_probe.rs"
 required-features = ["sim2sim_observation"]
+
+[[bin]]
+name = "source_limit_continuous_probe"
+path = "src/bin/source_limit_continuous_probe.rs"
+required-features = ["sim2sim_source_limit_probe"]
