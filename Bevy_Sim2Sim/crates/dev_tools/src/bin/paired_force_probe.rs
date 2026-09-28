@@ -29,6 +29,8 @@ fn run(
     plain_mass_diagnostic: bool,
     head_roll_free_acceleration_diagnostic: bool,
     source_limit_diagnostic: bool,
+    all_source_limits_diagnostic: bool,
+    source_limit_pgs_iterations: Option<usize>,
 ) -> Result<Value, String> {
     if !Multibody::sim2sim_observation_backend_supported() {
         return Err("native Rapier observation backend is unavailable".into());
@@ -38,8 +40,14 @@ fn run(
         return Err("plain-mass diagnostic requires sim2sim_plain_mass_probe feature".into());
     }
     #[cfg(not(feature = "sim2sim_source_limit_probe"))]
-    if source_limit_diagnostic {
+    if source_limit_diagnostic || all_source_limits_diagnostic {
         return Err("source-limit diagnostic requires sim2sim_source_limit_probe feature".into());
+    }
+    if source_limit_diagnostic && all_source_limits_diagnostic {
+        return Err("select exactly one source-limit diagnostic scope".into());
+    }
+    if source_limit_pgs_iterations.is_some() && !all_source_limits_diagnostic {
+        return Err("source-limit PGS override requires all-limits diagnostic scope".into());
     }
     let definition_bytes = read_checked(&args[0], &args[1])?;
     let definition = match Path::new(&args[0]).extension().and_then(|v| v.to_str()) {
@@ -73,7 +81,13 @@ fn run(
         .get(head_roll_qpos)
         .ok_or("source head_roll input position is missing")?;
     let mut simulation = SimulationWorld::new();
-    if source_limit_diagnostic {
+    if let Some(iterations) = source_limit_pgs_iterations {
+        simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = iterations;
+    }
+    if source_limit_diagnostic || all_source_limits_diagnostic {
         let params = &simulation.world.integration_parameters;
         if (params.dt - 1.0 / 60.0).abs() > 1.0e-8
             || params.num_solver_iterations != 1
@@ -85,7 +99,7 @@ fn run(
     let assembly = build_structure(&mut simulation.world, &definition, &qpos)
         .map_err(|error| error.to_string())?;
     #[cfg(feature = "sim2sim_source_limit_probe")]
-    if source_limit_diagnostic {
+    if source_limit_diagnostic || all_source_limits_diagnostic {
         let expected_sha = match definition.model().family.as_str() {
             "leg_allcollisions" => {
                 "e91d67ba25efe3b61b65e77c754a4278f24f37253a86acdf81543a7de51f67bb"
@@ -108,42 +122,56 @@ fn run(
         let solref = fields
             .jnt_solref
             .as_ref()
-            .ok_or("source jnt_solref is absent")?[head_roll_joint];
+            .ok_or("source jnt_solref is absent")?;
         let solimp = fields
             .jnt_solimp
             .as_ref()
-            .ok_or("source jnt_solimp is absent")?[head_roll_joint];
+            .ok_or("source jnt_solimp is absent")?;
         let margin = fields
             .jnt_margin
             .as_ref()
-            .ok_or("source jnt_margin is absent")?[head_roll_joint];
-        let dof_invweight0 = fields
+            .ok_or("source jnt_margin is absent")?;
+        let invweight = fields
             .dof_invweight0
             .as_ref()
-            .ok_or("source dof_invweight0 is absent")?[head_roll_source_dof];
-        let mapping = assembly
-            .joint_mapping()
-            .iter()
-            .find(|mapping| mapping.source_joint == head_roll_joint)
-            .ok_or("head_roll mapping is absent")?;
-        let (multibody, link_id) = simulation
-            .world
-            .multibody_joints
-            .get_mut(mapping.handle)
-            .ok_or("head_roll articulation is absent")?;
-        let joint = &mut multibody
-            .link_mut(link_id)
-            .ok_or("head_roll link is absent")?
-            .joint;
-        if !joint.sim2sim_set_source_limit_probe(
-            solref.map(|v| v as f32),
-            solimp.map(|v| v as f32),
-            margin as f32,
-            dof_invweight0 as f32,
-        ) {
-            return Err(
-                "source-limit parameters fail the frozen single-axis probe contract".into(),
-            );
+            .ok_or("source dof_invweight0 is absent")?;
+        let selected: Vec<usize> = if all_source_limits_diagnostic {
+            fields
+                .jnt_limited
+                .iter()
+                .enumerate()
+                .filter_map(|(joint, limited)| limited.then_some(joint))
+                .collect()
+        } else {
+            vec![head_roll_joint]
+        };
+        if selected.len() != if all_source_limits_diagnostic { 14 } else { 1 } {
+            return Err("frozen source limited-joint count differs".into());
+        }
+        for source_joint in selected {
+            let source_dof = fields.jnt_dofadr[source_joint];
+            let mapping = assembly
+                .joint_mapping()
+                .iter()
+                .find(|mapping| mapping.source_joint == source_joint)
+                .ok_or("source limit joint mapping is absent")?;
+            let (multibody, link_id) = simulation
+                .world
+                .multibody_joints
+                .get_mut(mapping.handle)
+                .ok_or("source limit articulation is absent")?;
+            let joint = &mut multibody
+                .link_mut(link_id)
+                .ok_or("source limit link is absent")?
+                .joint;
+            if !joint.sim2sim_set_source_limit_probe(
+                solref[source_joint].map(|v| v as f32),
+                solimp[source_joint].map(|v| v as f32),
+                margin[source_joint] as f32,
+                invweight[source_dof] as f32,
+            ) {
+                return Err("source-limit parameters fail the frozen joint-row contract".into());
+            }
         }
     }
     let (qvel_sha256, head_roll_input_velocity) = if args.len() >= 7 {
@@ -548,9 +576,21 @@ fn run(
     if let Some(head_roll_free_acceleration) = head_roll_free_acceleration {
         report["head_roll_free_acceleration_diagnostic"] = head_roll_free_acceleration;
     }
-    if source_limit_diagnostic {
+    if source_limit_diagnostic || all_source_limits_diagnostic {
         report["source_limit_probe_selected"] = json!(true);
-        report["source_limit_probe_joint"] = json!("head_roll");
+        report["source_limit_probe_joint"] = json!(if all_source_limits_diagnostic {
+            "all_limited"
+        } else {
+            "head_roll"
+        });
+    }
+    if all_source_limits_diagnostic {
+        report["source_limit_internal_pgs_iterations"] = json!(
+            simulation
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations
+        );
     }
     #[cfg(feature = "sim2sim_plain_mass_probe")]
     {
@@ -580,6 +620,8 @@ fn main() {
     let mut plain_mass_diagnostic = false;
     let mut head_roll_free_acceleration_diagnostic = false;
     let mut source_limit_diagnostic = false;
+    let mut all_source_limits_diagnostic = false;
+    let mut source_limit_pgs_iterations = None;
     while let Some(option) = args.first() {
         match option.as_str() {
             "--plain-mass-diagnostic" if !plain_mass_diagnostic => {
@@ -593,13 +635,28 @@ fn main() {
             "--head-roll-source-limit-diagnostic" if !source_limit_diagnostic => {
                 source_limit_diagnostic = true;
             }
+            "--all-source-limits-diagnostic" if !all_source_limits_diagnostic => {
+                all_source_limits_diagnostic = true;
+            }
+            value
+                if value.starts_with("--source-limit-pgs-iterations=")
+                    && source_limit_pgs_iterations.is_none() =>
+            {
+                source_limit_pgs_iterations = value
+                    .split_once('=')
+                    .and_then(|(_, count)| count.parse::<usize>().ok());
+                if !matches!(source_limit_pgs_iterations, Some(1 | 2 | 4 | 8 | 16)) {
+                    eprintln!("source limit diagnostic PGS iterations must be 1, 2, 4, 8 or 16");
+                    std::process::exit(2);
+                }
+            }
             _ => break,
         }
         args.remove(0);
     }
     if args.len() != 5 && args.len() != 7 && args.len() != 9 {
         eprintln!(
-            "usage: paired_force_probe [--plain-mass-diagnostic] [--head-roll-free-acceleration-diagnostic] [--head-roll-source-limit-diagnostic] MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
+            "usage: paired_force_probe [--plain-mass-diagnostic] [--head-roll-free-acceleration-diagnostic] [--head-roll-source-limit-diagnostic|--all-source-limits-diagnostic [--source-limit-pgs-iterations=1|2|4|8|16]] MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
         );
         std::process::exit(2);
     }
@@ -608,6 +665,8 @@ fn main() {
         plain_mass_diagnostic,
         head_roll_free_acceleration_diagnostic,
         source_limit_diagnostic,
+        all_source_limits_diagnostic,
+        source_limit_pgs_iterations,
     ) {
         Ok(report) => report,
         Err(error) => {
