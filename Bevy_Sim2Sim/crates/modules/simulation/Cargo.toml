@@ -1,0 +1,21 @@
+[package]
+name = "simulation_minigame"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+sim2sim_observation = ["rapier3d/sim2sim-observation"]
+
+[dependencies]
+common_minigame.workspace = true
+robot_minigame.workspace = true
+bevy_ecs.workspace = true
+rapier3d.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

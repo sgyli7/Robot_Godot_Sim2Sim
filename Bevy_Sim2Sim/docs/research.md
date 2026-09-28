@@ -1,6 +1,8 @@
-# Bevy Sim2Sim 调研与验证记录
+# Bevy Sim2Sim 历史调研与验证记录
 
-更新日期：2026-09-28。本文保存 MicroDuck 开发需要的来源、契约、检查摘要及待验证风险。实施顺序见 [计划](implementation_plan.md)，接续环境见 [交接入口](handoff.md)。
+历史资料日期：2026-09-28。本文记录此前 Godot 200 Hz 迁移调查，不作为本次 Pollen/BAM 真60 Hz的实现契约。当前范围、版本、工作流程和验收以 [实施计划](implementation_plan.md) 为准；下述旧控制参数、滤波和权重只用于历史追溯。
+
+本文保存 MicroDuck 开发需要的来源、契约、检查摘要及待验证风险。实施顺序见 [计划](implementation_plan.md)，接续环境见 [交接入口](handoff.md)。
 
 证据分为「源码/契约核查」「本会话局部实测」「项目待验证」。局部结果不能自动升级为 Bevy 机器人闭环或平台验收通过。
 

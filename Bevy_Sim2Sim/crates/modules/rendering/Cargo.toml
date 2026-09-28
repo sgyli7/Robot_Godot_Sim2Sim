@@ -1,0 +1,14 @@
+[package]
+name = "rendering_minigame"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+bevy = { workspace = true, features = ["bevy_text", "bevy_sprite", "bevy_sprite_render"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
+sha2 = "0.10"
+robot_minigame.workspace = true
+serde_json.workspace = true

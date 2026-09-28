@@ -1,0 +1,66 @@
+[workspace]
+members = [
+    ".",
+    "crates/core",
+    "crates/modules/robot",
+    "crates/modules/simulation",
+    "crates/modules/rendering",
+    "crates/dev_tools",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+bevy = { version = "=0.19.1", default-features = false, features = [
+    "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log",
+    "bevy_window", "bevy_winit", "bevy_camera", "bevy_color", "bevy_image",
+    "bevy_mesh", "bevy_light", "bevy_pbr", "bevy_render", "bevy_shader",
+    "bevy_core_pipeline", "bevy_gizmos", "bevy_gizmos_render", "png", "x11",
+    "tonemapping_luts", "reflect_auto_register", "zstd_rust",
+] }
+bevy_ecs = "=0.19.1"
+rapier3d = "=0.35.3"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-28"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+common_minigame = { path = "crates/core" }
+robot_minigame = { path = "crates/modules/robot" }
+simulation_minigame = { path = "crates/modules/simulation" }
+rendering_minigame = { path = "crates/modules/rendering" }
+dev_tools_minigame = { path = "crates/dev_tools" }
+
+[package]
+name = "bevy_sim2sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+dev_tools = ["dep:dev_tools_minigame"]
+sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
+
+[dependencies]
+common_minigame.workspace = true
+robot_minigame.workspace = true
+simulation_minigame.workspace = true
+rendering_minigame.workspace = true
+dev_tools_minigame = { workspace = true, optional = true }
+
+[patch.crates-io]
+rapier3d = { path = "third_party/rapier3d" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

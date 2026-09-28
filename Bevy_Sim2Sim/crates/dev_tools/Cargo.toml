@@ -1,0 +1,32 @@
+[package]
+name = "dev_tools_minigame"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
+rendering_preview = ["dep:rendering_minigame"]
+
+[dependencies]
+common_minigame.workspace = true
+robot_minigame.workspace = true
+simulation_minigame.workspace = true
+rendering_minigame = { workspace = true, optional = true }
+rapier3d.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "robot_initialization_preview"
+path = "src/bin/robot_initialization_preview.rs"
+required-features = ["rendering_preview"]
+
+[[bin]]
+name = "v8_geology_contact_probe"
+path = "src/bin/v8_geology_contact_probe.rs"
+required-features = ["rendering_preview"]
