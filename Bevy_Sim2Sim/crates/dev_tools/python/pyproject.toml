@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "bevy-microduck-tools"
-version = "0.1.8"
+version = "0.1.9"
 description = "Content-addressed MicroDuck source adoption, raw capture, and qualification tools"
 requires-python = ">=3.12,<3.13"
 dependencies = []

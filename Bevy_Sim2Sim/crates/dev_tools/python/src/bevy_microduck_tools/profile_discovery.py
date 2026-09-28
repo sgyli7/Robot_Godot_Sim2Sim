@@ -1,8 +1,9 @@
-"""Typed, single-use, zero-update source profile discovery.
+"""Historical zero-update source profile accounting and CPU diagnostics.
 
-The production source child is deliberately separate from the learning entry.
-CPU fixtures exercise authorization and observation without creating a source
-environment.  A discovery receipt never grants learning or native completeness.
+The public discovery entry and the old private source worker are disabled.
+CPU fixtures can exercise authorization and observation without creating a
+source environment. A discovery receipt never grants learning or native
+completeness.
 """
 from __future__ import annotations
 
@@ -308,54 +309,8 @@ def prepare_source_inputs(*, source_root: Path, runtime_receipt: Path, origin_pa
 
 
 def _worker(binding_path: Path, result_path: Path, source_output: Path, phase_path: Path) -> int:
-    """Private child; consumed claim and full bytes before first source compile."""
-    from .profile_identity import verify_declared_inputs
-    from .profile_observer import PhaseJournal
-    started = time.monotonic()
-    try:
-        binding = json.loads(binding_path.read_text())
-        manifest = claim_worker(binding)
-        token = verify_declared_inputs(manifest, manifest_path=Path(binding["manifest_path"]),
-                                       require_runtime=True, for_child=True)
-        require_claimed_worker(binding, token, manifest)
-        cache_root = Path(manifest["private_cache_root"])
-        if cache_root.exists():
-            raise Rejection("Run-private Warp/CUDA caches must be newly empty")
-        (cache_root / "warp").mkdir(parents=True)
-        (cache_root / "cuda").mkdir()
-        phases = PhaseJournal(phase_path)
-        phases.mark("verified_declared_inputs", input_id=token.input_id,
-                    child_preflight_cpu_seconds=time.monotonic() - started,
-                    native_profile_complete=False)
-        from .cli import _audit_capture
-        origin = manifest["checkpoint_origin"]
-        result = _audit_capture(Path(manifest["source_root"]), source_output, "standing",
-                 steps=None, substeps=1, seed=PROFILE["seed"], device="cuda:0", video=True,
-                 learning_iterations=0, resume=Path(origin["checkpoint_path"]),
-                 resume_origin=Path(origin["path"]), _profile_binding=binding,
-                 _profile_manifest=manifest, _profile_token=token, _phase_journal=phases)
-        post_started = time.monotonic()
-        post_token = verify_declared_inputs(manifest, manifest_path=Path(binding["manifest_path"]),
-                                            require_runtime=True, for_child=True)
-        require_claimed_worker(binding, post_token, manifest)
-        phases.mark("post_execution_declared_inputs_verified", elapsed_seconds=time.monotonic() - post_started,
-                    input_id=post_token.input_id, unchanged_since_preflight=post_token.input_id == token.input_id)
-        if post_token.input_id != token.input_id:
-            raise Rejection("Source declared inputs changed after execution")
-        payload = {"schema": "microduck_source_discovery_worker_result_v2", "status": "completed",
-                   "input_id": token.input_id, "nonce": token.nonce, "run_id": binding["run_id"],
-                   "learning_updates_this_run": 0, "native_profile_complete": False,
-                   "child_preflight_cpu_seconds": phases.events[0]["details"]["child_preflight_cpu_seconds"],
-                   "result": result}
-    except BaseException as error:
-        payload = {"schema": "microduck_source_discovery_worker_result_v2", "status": "failed",
-                   "error_type": type(error).__name__, "error": str(error),
-                   "learning_updates_this_run": 0, "native_profile_complete": False}
-    if result_path.exists():
-        return 1
-    from .training import _atomic_worker_result
-    _atomic_worker_result(result_path, payload)
-    return 0 if payload["status"] == "completed" else 1
+    """Reject the retired v2 source child before reading or writing any path."""
+    raise Rejection("Private v2 source worker disabled until a new live scope and budget protocol exists")
 
 
 def _profile_candidate(source_output: Path, manifest_path: Path, review_path: Path,

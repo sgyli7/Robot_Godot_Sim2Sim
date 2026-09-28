@@ -1,5 +1,19 @@
 # MicroDuck source workflow tools
 
+Version `0.1.9` adds a read-only CPU v3 identity and review check. It binds
+the v2 input file bytes, a freshly sealed finite negative-lookup envelope,
+an exact scope plan and an acyclic review request. The review check validates
+exact request bytes and expiry without claiming or consuming approval.
+Single-use authorization is **not implemented**; the earlier scratch claim
+prototype failed independent directory, lock-inode and deadline audits and
+was removed from the shipped package. The public discovery command remains
+disabled. No review of this CPU identity authorizes source or learning work.
+The retired v2 private profile worker also rejects immediately, including
+direct module invocation. The historical `reserve_discovery` Python function
+remains callable for CPU budget-accounting fixtures and can write a ledger if
+explicitly invoked; it does not make the retired profile worker available or
+grant a positive profile. Do not use it with a real review or budget ledger.
+
 Version `0.1.8` closes a zero-update discovery budget in one locked ledger
 transaction. Every requested outcome is recorded only as `budget_exhausted`
 with its requested status and an explicit uncertainty reason: a clock check
@@ -35,7 +49,8 @@ older diagnostic trace. Even matching all 80 failures in that old trace leaves
 17 unrelated diagnostics, so that old trace is not made complete by this tool.
 
 The following v11 command examples are retained for historical interface
-reference only. Running `discover` with this v12 package always rejects.
+reference only. Running `discover` with this package always rejects, as does
+the retired private profile worker.
 
 The profile is fixed to official source commit
 `5946fd9cdbc58956424420153e51975af3b30d77`, standing,

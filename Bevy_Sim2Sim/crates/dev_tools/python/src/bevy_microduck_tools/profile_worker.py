@@ -1,17 +1,11 @@
-"""Private traced child for a consumed zero-update discovery run."""
+"""Retired private source worker entry; kept only to reject old invocations."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-from .profile_discovery import _worker
+from .authorization import Rejection
 
 
 def main(argv=None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 4:
-        raise SystemExit("private worker requires consumed binding, result, source and phase paths")
-    return _worker(*(Path(value) for value in args))
+    raise Rejection("Private v2 source worker disabled until a new live scope and budget protocol exists")
 
 
 if __name__ == "__main__":
