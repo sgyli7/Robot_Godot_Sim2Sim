@@ -27,7 +27,9 @@
 
 目前执行器是公开标明的诊断 P-only 法则：`τ = clamp(0.55 × (target − q), ±0.6405236)`，`Kd=0`。旧命令相位、动作幅度和头/腿目标滤波按旧场景语义移植到实验性的 60 Hz 时钟，但 BAM 的前次求解负载、动态摩擦、延迟队列与限幅后历史尚未进入此闭环。因此视频不能验证约定的完整物理/推理框架，更不能说明旧 200/50 模型可直接作为新 60/60 策略。站体接触等价和源机器人自碰撞过滤均未通过资格门禁；20 个动态道具碰撞体延后导入，踢球两段无实体球。静态站场画面、模型和场景 SHA 均绑定在原始报告中；地编资产变化后须重新运行并录制。
 
-BAM 源码当前读取上一步 `-qfrc_bias + qfrc_constraint - own_dof_friction_force` 作为外载，并另保存**实际上一步施加的** `qfrc_actuator`。Rapier 可观测的重力/惯性广义力与 joint/contact 冲量只能构成待验证候选，不能直接声称等价。下一步先做带观测 epoch、真实步长、关节 DOF 映射及实例/episode 身份的上一求解帧，再对同一冻结本体做 MuJoCo/Rapier 分项对照；验证后才打开生产 BAM 入口。随后接通源自碰撞过滤、站体和道具接触，重训或适配 60/60 策略，并按实施计划逐技能验收。
+BAM 源码当前读取上一步 `-qfrc_bias + qfrc_constraint - own_dof_friction_force` 作为外载，并另保存**实际上一步施加的** `qfrc_actuator`。Rapier 可观测的重力/惯性广义力与 joint/contact 冲量只能构成待验证候选，不能直接声称等价。带观测 epoch、真实步长、关节 DOF 映射及实例/episode 身份的上一求解帧已作为诊断实现；冻结本体的第一批 MuJoCo/Rapier 分项对照也已完成，结果仍不足以打开生产 BAM 入口。后续须解决限位语义、源自碰撞过滤、站体和道具接触及实际上一步 actuator torque，再重训或适配 60/60 策略，并按实施计划逐技能验收。
+
+后续受力对照已记录在 [MuJoCo / Rapier 逐关节受力对照](paired_force_comparison.md)：无约束的重力/惯性样本接近，但故意触发关节上限时出现约 `0.03511 N·m` 的缺失约束力和不同的步末状态。因此 BAM 入口继续关闭；这份视频的诊断性质不变。
 
 本地原始证据与媒体不入 Git：`.scratch/legacy_nine_native_probe/report.json`、`nine_full_v2/`、`nine_full_video_v2/video_delivery_manifest.json`、`nine_full_video_v2/nine_onnx_rapier_60hz_zero_shot_diagnostic.mp4`。视频收据包含每段原 ONNX SHA、运行报告 SHA、视频 SHA、原生库 SHA、物理/推理/采样计数及场景身份。MP4 上方逐段显示模型与频率，下方持续注明 P-only、BAM/接触/技能未验收与踢球无实体球。
 

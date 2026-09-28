@@ -41,3 +41,8 @@ required-features = ["rendering_preview"]
 name = "v8_geology_contact_probe"
 path = "src/bin/v8_geology_contact_probe.rs"
 required-features = ["rendering_preview"]
+
+[[bin]]
+name = "paired_force_probe"
+path = "src/bin/paired_force_probe.rs"
+required-features = ["sim2sim_observation"]
