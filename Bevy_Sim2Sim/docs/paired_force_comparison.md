@@ -51,3 +51,5 @@ cargo run --locked -p dev_tools_minigame --features sim2sim_limit_row_trace \
 这批证据绑定腿式 `.mjb` SHA `832e1f08a1e328d8498be565874691348b89bc13041ff0d9eebf3f06c6bdc47c`、轮式 `.mjb` SHA `ea54c7c2b0aa8fbc3e9a0e3a431214650cbd4bdbd934d6707bb0aa52ac475191`，以及两个带原碰撞凸包的编译定义 SHA `eb7a276a5199c757181c60681de54a7eb3e490431929d1fb043f8fb25a964299` / `a4524cb0b63a64fd88f3fff1375c8fac375d2ec88254545409ca6b6eaca768fd`。各 `qpos`/`qvel` SHA 写在报告中，运行时逐一核对。
 
 下一门禁是确定与源相容的限位法则，并以同状态、同控制的受力和步末运动对照验收；不能只把位置钳制量伪装为 MuJoCo `qfrc_constraint`。随后要在同一个真实世界中核对源自碰撞过滤、站体/地面和道具接触，覆盖摩擦、限位、接触的负载历史，再接入上一步实际施加的 actuator torque 与 BAM。生产 `previous_solve_load` 继续明确为 `Unavailable`，九个旧 ONNX 的视频仍仅为 P-only、60/60 零样本诊断。
+
+非零执行器输入与 oracle 限位力的后续同态对照见 [同力矩单步对照](paired_actuation_comparison.md)：14 路实际广义力矩投影接近，但本来就在运动的状态仍有明确的步末速度差，故生产 BAM 门禁不变。

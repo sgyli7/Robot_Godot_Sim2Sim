@@ -609,11 +609,14 @@ impl Multibody {
             {
                 let inertial = Force::new(rb_mass * acc.linvel, gyroscopic + rb_inertia * acc.angvel);
                 let gravity = Force::new(rb.forces.force - rb.forces.user_force, Default::default());
+                let user = Force::new(rb.forces.user_force, rb.forces.user_torque);
                 let projected_inertial = self.body_jacobians[i].transpose() * inertial.as_vector();
                 let projected_gravity = self.body_jacobians[i].transpose() * gravity.as_vector();
+                let projected_user = self.body_jacobians[i].transpose() * user.as_vector();
                 for index in 0..self.ndofs {
                     self.sim2sim_observation.inertial_projection[index] += projected_inertial[index];
                     self.sim2sim_observation.gravity_projection[index] += projected_gravity[index];
+                    self.sim2sim_observation.user_force_projection[index] += projected_user[index];
                 }
             }
             self.accelerations.gemv_tr(

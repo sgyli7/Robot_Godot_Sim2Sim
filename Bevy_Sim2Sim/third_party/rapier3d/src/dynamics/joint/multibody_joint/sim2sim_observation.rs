@@ -108,6 +108,9 @@ pub struct MultibodyObservation {
     /// Jᵀ(effective linear force − user force, 0), before M⁻¹.
     /// This records the actual effective-force subtraction, including its rounding.
     pub gravity_projection: Vec<Real>,
+    /// Jᵀ of the world-space user force and torque actually queued on bodies.
+    /// This read-only diagnostic does not change the articulation solve.
+    pub user_force_projection: Vec<Real>,
     /// Sum of signed original, unweighted generic-joint J λ rows only.
     pub generic_joint_impulse: Vec<Real>,
     /// Subset of generic_joint_impulse from native articulation dry-friction rows.
@@ -173,6 +176,8 @@ impl MultibodyObservation {
         self.inertial_projection.fill(0.0);
         self.gravity_projection.resize(ndofs, 0.0);
         self.gravity_projection.fill(0.0);
+        self.user_force_projection.resize(ndofs, 0.0);
+        self.user_force_projection.fill(0.0);
         self.generic_joint_impulse.resize(ndofs, 0.0);
         self.generic_joint_impulse.fill(0.0);
         self.own_dry_friction_impulse.resize(ndofs, 0.0);
@@ -198,6 +203,7 @@ impl MultibodyObservation {
                 .inertial_projection
                 .iter()
                 .chain(&self.gravity_projection)
+                .chain(&self.user_force_projection)
                 .chain(&self.generic_joint_impulse)
                 .chain(&self.own_dry_friction_impulse)
                 .all(|value| value.is_finite());

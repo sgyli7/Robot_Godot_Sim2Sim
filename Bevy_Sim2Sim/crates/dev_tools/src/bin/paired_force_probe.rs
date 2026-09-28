@@ -40,7 +40,7 @@ fn run(args: &[String]) -> Result<Value, String> {
     let mut simulation = SimulationWorld::new();
     let assembly = build_structure(&mut simulation.world, &definition, &qpos)
         .map_err(|error| error.to_string())?;
-    let qvel_sha256 = if args.len() == 7 {
+    let qvel_sha256 = if args.len() >= 7 {
         let bytes = read_checked(&args[4], &args[5])?;
         let qvel: Vec<f64> = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         if qvel.len() != definition.model().counts.nv || qvel.len() < 6 {
@@ -94,8 +94,35 @@ fn run(args: &[String]) -> Result<Value, String> {
     let before = assembly
         .actuator_joint_feedback(&simulation.world, &definition)
         .map_err(|error| error.to_string())?;
+    let (actuator_torque_file_sha256, source_applied_actuator_nm, contributions) = if args.len()
+        == 9
+    {
+        let bytes = read_checked(&args[6], &args[7])?;
+        let values: Vec<f64> = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let torques: [f32; robot_minigame::ACTION_DIMENSION] = values
+            .into_iter()
+            .map(|value| value as f32)
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "actuator torque file must have 14 source-ordered values")?;
+        if torques.iter().any(|torque| !torque.is_finite()) {
+            return Err("actuator torque exceeds the float32 backend range".into());
+        }
+        if torques.iter().enumerate().any(|(index, torque)| {
+            let [lower, upper] = definition.model().fields.actuator_forcerange[index];
+            f64::from(*torque) < lower || f64::from(*torque) > upper
+        }) {
+            return Err("actuator torque exceeds the frozen source force range".into());
+        }
+        let contributions = assembly
+            .actuator_body_torques(&simulation.world, &definition, &torques)
+            .map_err(|error| error.to_string())?;
+        (Some(sha256(&bytes)), Some(torques), contributions)
+    } else {
+        (None, None, Vec::new())
+    };
     let snapshot = simulation
-        .step_with_torques(&[])
+        .step_with_torques(&contributions)
         .map_err(|error| error.to_string())?;
     let after = assembly
         .actuator_joint_feedback(&simulation.world, &definition)
@@ -202,6 +229,18 @@ fn run(args: &[String]) -> Result<Value, String> {
             "contact_tangent_impulse_nms":contact_tangent,
             "candidate_residual_nm":residual,
         });
+        if let Some(torques) = source_applied_actuator_nm {
+            let projected = *observation
+                .user_force_projection
+                .get(dof)
+                .ok_or("native applied-force projection DOF missing")?;
+            if !projected.is_finite() {
+                return Err("native applied-force projection is non-finite".into());
+            }
+            let input_index = rows.len();
+            row["native_user_force_projection_nm"] = json!(projected);
+            row["requested_source_actuator_nm"] = json!(torques[input_index]);
+        }
         #[cfg(feature = "sim2sim_limit_row_trace")]
         {
             let limit_samples: Vec<_> = observation
@@ -264,7 +303,7 @@ fn run(args: &[String]) -> Result<Value, String> {
             })
         })
         .collect();
-    Ok(json!({
+    let mut report = json!({
         "scope":"robot_only_rapier_one_step_raw_force_diagnostic",
         "model_file_sha256":sha256(&definition_bytes),
         "qpos_file_sha256":sha256(&qpos_bytes),
@@ -281,14 +320,19 @@ fn run(args: &[String]) -> Result<Value, String> {
         "rows":rows,
         "bam_external_load_qualified":false,
         "source_target_equivalent":false,
-    }))
+    });
+    if let (Some(sha), Some(torques)) = (actuator_torque_file_sha256, source_applied_actuator_nm) {
+        report["actuator_torque_file_sha256"] = json!(sha);
+        report["source_applied_actuator_nm"] = json!(torques);
+    }
+    Ok(report)
 }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.len() != 5 && args.len() != 7 {
+    if args.len() != 5 && args.len() != 7 && args.len() != 9 {
         eprintln!(
-            "usage: paired_force_probe MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA] OUTPUT.json"
+            "usage: paired_force_probe MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
         );
         std::process::exit(2);
     }

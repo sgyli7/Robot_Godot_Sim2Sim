@@ -33,6 +33,8 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--qvel", type=Path)
     parser.add_argument("--qvel-sha256")
+    parser.add_argument("--torques", type=Path)
+    parser.add_argument("--torques-sha256")
     args = parser.parse_args()
 
     checked_bytes(args.mjb, args.mjb_sha256)
@@ -54,13 +56,49 @@ def main() -> None:
         if rapier["qvel_file_sha256"] is not None:
             raise ValueError("Rapier used a nonzero qvel input")
     if rapier["physics_integrations"] != 1 or rapier["policy_inferences"] != 0:
-        raise ValueError("Rapier report is not one uncontrolled physical step")
+        raise ValueError("Rapier report is not one physical step without policy inference")
+    if (args.torques is None) != (args.torques_sha256 is None):
+        raise ValueError("torque path and SHA256 must be provided together")
+    if args.torques is not None:
+        torques = json.loads(checked_bytes(args.torques, args.torques_sha256))
+        if rapier.get("actuator_torque_file_sha256") != args.torques_sha256:
+            raise ValueError("Rapier and MuJoCo actuator torque inputs differ")
+    else:
+        torques = None
+        if "actuator_torque_file_sha256" in rapier:
+            raise ValueError("Rapier used nonzero actuator torque input")
 
     model = mujoco.MjModel.from_binary_path(str(args.mjb))
     if len(qpos) != model.nq or len(rapier["rows"]) != model.nu:
         raise ValueError("source state or driven channel dimension differs")
     if qvel is not None and len(qvel) != model.nv:
         raise ValueError("source velocity dimension differs")
+    if torques is not None:
+        if len(torques) != model.nu or any(not math.isfinite(float(value)) for value in torques):
+            raise ValueError("source torque vector is invalid")
+        if len(rapier["source_applied_actuator_nm"]) != model.nu:
+            raise ValueError("native actuator torque dimension differs")
+        for index, requested in enumerate(torques):
+            joint = int(model.actuator_trnid[index, 0])
+            if (
+                model.actuator_trntype[index] != mujoco.mjtTrn.mjTRN_JOINT
+                or model.actuator_gaintype[index] != mujoco.mjtGain.mjGAIN_FIXED
+                or model.actuator_biastype[index] != mujoco.mjtBias.mjBIAS_NONE
+                or not math.isclose(float(model.actuator_gear[index, 0]), 1.0, abs_tol=1e-12)
+                or not math.isclose(float(model.actuator_gainprm[index, 0]), 1.0, abs_tol=1e-12)
+                or model.jnt_dofadr[joint] < 6
+            ):
+                raise ValueError("source actuator is not a unit-gain joint motor")
+            if model.actuator_ctrllimited[index] and not (
+                model.actuator_ctrlrange[index, 0] <= requested <= model.actuator_ctrlrange[index, 1]
+            ):
+                raise ValueError("source torque exceeds actuator control range")
+            if model.actuator_forcelimited[index] and not (
+                model.actuator_forcerange[index, 0] <= requested <= model.actuator_forcerange[index, 1]
+            ):
+                raise ValueError("source torque would be force-clamped")
+            if abs(float(rapier["source_applied_actuator_nm"][index]) - requested) > 1e-6:
+                raise ValueError("native applied actuator differs from torque input")
     source_root_velocity = qvel[:6] if qvel is not None else [0.0] * 6
     expected_native_root_velocity = [
         source_root_velocity[0], source_root_velocity[2], -source_root_velocity[1],
@@ -80,7 +118,7 @@ def main() -> None:
     data = mujoco.MjData(model)
     data.qpos[:] = qpos
     data.qvel[:] = qvel if qvel is not None else 0.0
-    data.ctrl[:] = 0.0
+    data.ctrl[:] = torques if torques is not None else 0.0
     mujoco.mj_forward(model, data)
     before_contacts = int(data.ncon)
     before_bias = data.qfrc_bias.copy()
@@ -105,6 +143,8 @@ def main() -> None:
 
     rows = []
     force_errors = []
+    applied_actuator_errors = []
+    native_projection_errors = []
     forward_to_solve_force_deltas = []
     initial_position_errors = []
     initial_velocity_errors = []
@@ -121,6 +161,13 @@ def main() -> None:
         forward_external = float(-before_bias[source_dof] + before_constraint[source_dof])
         source_external_post = float(-post_bias[source_dof] + post_constraint[source_dof])
         native_external = float(native["candidate_residual_nm"])
+        if torques is not None:
+            applied_actuator_errors.append(
+                abs(float(solve_actuator[source_dof]) - float(torques[index]))
+            )
+            native_projection_errors.append(
+                abs(float(native["native_user_force_projection_nm"]) - float(torques[index]))
+            )
         force_error = abs(native_external - source_external)
         initial_position_error = abs(float(native["initial_position"]) - float(before_qpos[source_qpos]))
         initial_velocity_error = abs(float(native["initial_velocity"]) - float(before_qvel[source_dof]))
@@ -190,6 +237,12 @@ def main() -> None:
         "bam_external_load_qualified": False,
         "source_target_contact_qualified": False,
     }
+    if torques is not None:
+        report["actuator_torque_file_sha256"] = args.torques_sha256
+        report["max_source_applied_actuator_abs_error_nm"] = max(applied_actuator_errors)
+        report["max_native_user_force_projection_abs_error_nm"] = max(native_projection_errors)
+        if report["max_source_applied_actuator_abs_error_nm"] > 1e-9:
+            raise ValueError("MuJoCo actuator did not apply requested torque")
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
 
 
