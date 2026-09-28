@@ -4,6 +4,7 @@
 //! load remains unavailable. Every pose is read after a real integration. This
 //! cannot qualify the plant, policy, station contacts or any skill.
 
+use common_minigame::events::TickEvent;
 use dev_tools_minigame::legacy_cpu_actor::LegacyCpuActor;
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, Vector};
 use rendering_minigame::{
@@ -19,8 +20,12 @@ use robot_minigame::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use simulation_minigame::{PHYSICS_HZ, SimulationWorld, robot_builder::build_structure};
-use std::{error::Error, fs, path::Path, sync::Arc};
+use simulation_minigame::{
+    BodyTorque, PHYSICS_HZ, SimulationWorld, StepSnapshot,
+    fixed_step_runtime::{FixedStepRuntime, TickController},
+    robot_builder::{RobotAssembly, build_structure},
+};
+use std::{error::Error, fs, path::Path, sync::Arc, time::Duration};
 
 const LEGACY_HOME: [f32; ACTION_DIMENSION] = [
     0.0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0.0, 0.0, 0.0, 0.0873, 0.4579, 0.0049,
@@ -196,7 +201,7 @@ fn import_station(
 
 fn native_state(
     world: &SimulationWorld,
-    assembly: &simulation_minigame::robot_builder::RobotAssembly,
+    assembly: &RobotAssembly,
     definition: &RobotDefinition,
 ) -> Result<(NativeState, [f32; 3]), String> {
     let handle = assembly.body_handles()[1].ok_or("source root body handle is missing")?;
@@ -227,6 +232,114 @@ fn native_state(
     ))
 }
 
+struct PendingTick {
+    row: Value,
+    action: [f32; ACTION_DIMENSION],
+    target: [f32; ACTION_DIMENSION],
+}
+
+struct DiagnosticController<'a> {
+    policy: DiagnosticPolicy,
+    definition: Arc<RobotDefinition>,
+    assembly: RobotAssembly,
+    previous_action: [f32; ACTION_DIMENSION],
+    previous_target: Option<[f32; ACTION_DIMENSION]>,
+    pending: Option<PendingTick>,
+    report: &'a mut Value,
+}
+
+impl TickController<()> for DiagnosticController<'_> {
+    fn inference_count(&self) -> u64 {
+        self.policy.successful_inference_count()
+    }
+
+    fn synchronize_scene(
+        &mut self,
+        _world: &mut SimulationWorld,
+        events: Vec<TickEvent<()>>,
+        _boundary: u64,
+    ) -> Result<(), String> {
+        if !events.is_empty() {
+            return Err("diagnostic station does not admit scene events".into());
+        }
+        Ok(())
+    }
+
+    fn infer_and_actuate(
+        &mut self,
+        world: &SimulationWorld,
+        boundary: u64,
+    ) -> Result<Vec<BodyTorque>, String> {
+        if self.pending.is_some() {
+            return Err("previous diagnostic tick was not published".into());
+        }
+        let tick = usize::try_from(boundary).map_err(|_| "diagnostic tick exceeds usize")?;
+        let (state, root_before) = native_state(world, &self.assembly, &self.definition)?;
+        let command = self.policy.command(tick);
+        let observation = self
+            .policy
+            .observation(&state, &command, &self.previous_action)?;
+        let action = self.policy.infer(&observation)?;
+        let raw_target = self.policy.targets(&action)?;
+        let target = self
+            .policy
+            .applied_targets(raw_target, self.previous_target);
+        // Diagnostic only: this P-only law omits BAM, delays and dry-friction loads.
+        let torque: [f32; ACTION_DIMENSION] = std::array::from_fn(|i| {
+            (0.55 * (target[i] - state.joint_position[i])).clamp(-0.640_523_6, 0.640_523_6)
+        });
+        let contributions = self
+            .assembly
+            .actuator_body_torques(&world.world, &self.definition, &torque)
+            .map_err(|error| error.to_string())?;
+        self.pending = Some(PendingTick {
+            row: json!({
+                "tick_before":tick,
+                "observation":observation.as_slice(),
+                "command":{"locomotion":command.locomotion,"head":command.head,"body":command.body},
+                "action":action,
+                "raw_target":raw_target,
+                "target":target,
+                "torque":torque,
+                "joint_position":state.joint_position,
+                "joint_velocity":state.joint_velocity,
+                "root_before":root_before,
+            }),
+            action,
+            target,
+        });
+        Ok(contributions)
+    }
+
+    fn publish(&mut self, snapshot: &StepSnapshot) -> Result<(), String> {
+        let pending = self
+            .pending
+            .take()
+            .ok_or("diagnostic tick has no matching inference")?;
+        let pose = self
+            .assembly
+            .pose_frame(snapshot)
+            .map_err(|error| error.to_string())?;
+        let mut row = pending.row;
+        row["root_after"] = json!(pose.poses[0].translation);
+        row["contact_pairs"] = json!(snapshot.contact_pair_count);
+        row["active_contact_pairs"] = json!(snapshot.active_contact_pair_count);
+        self.report["trace"]
+            .as_array_mut()
+            .ok_or("trace report changed type")?
+            .push(row);
+        self.report["pose_frames"]
+            .as_array_mut()
+            .ok_or("pose report changed type")?
+            .push(json!(pose));
+        self.previous_action = pending.action;
+        self.previous_target = Some(pending.target);
+        self.report["integration_count"] = json!(snapshot.integration_count);
+        self.report["policy_inference_count"] = json!(self.policy.successful_inference_count());
+        Ok(())
+    }
+}
+
 fn run(arguments: &[String], report: &mut Value) -> Result<(), String> {
     let model_bytes = fs::read(&arguments[0]).map_err(|error| error.to_string())?;
     if digest(&model_bytes) != arguments[1] {
@@ -255,7 +368,7 @@ fn run(arguments: &[String], report: &mut Value) -> Result<(), String> {
         "manifest_sha256":scene.0.manifest_sha256,
         "layout_sha256":scene.0.layout_sha256,
     });
-    let mut policy = if arguments[6] == "--legacy-original" {
+    let policy = if arguments[6] == "--legacy-original" {
         let name = Path::new(&arguments[5])
             .file_stem()
             .and_then(|value| value.to_str())
@@ -314,68 +427,46 @@ fn run(arguments: &[String], report: &mut Value) -> Result<(), String> {
     report["initial_counts"] = json!(simulation.counts());
     report["initial_snapshot"] = json!(simulation.snapshot());
     report["model_file_sha256"] = json!(definition.file_sha256());
-    let mut previous_action = [0.0_f32; ACTION_DIMENSION];
-    let mut previous_target: Option<[f32; ACTION_DIMENSION]> = None;
+    let previous_action = [0.0_f32; ACTION_DIMENSION];
+    let previous_target: Option<[f32; ACTION_DIMENSION]> = None;
     let first_pose = assembly
         .pose_frame(&simulation.snapshot())
         .map_err(|error| error.to_string())?;
     report["pose_frames"] = json!([first_pose]);
     report["trace"] = json!([]);
-    for tick in 0..ticks {
-        let (state, root_before) = native_state(&simulation, &assembly, &definition)?;
-        let command = policy.command(tick);
-        let observation = policy.observation(&state, &command, &previous_action)?;
-        let action = policy
-            .infer(&observation)
-            .map_err(|error| error.to_string())?;
-        let raw_target = policy.targets(&action)?;
-        let target = policy.applied_targets(raw_target, previous_target);
-        // Diagnostic only: the legacy Godot-style P-only control is explicitly
-        // not the agreed BAM plant, and it omits delays and dry-friction loads.
-        let torque: [f32; ACTION_DIMENSION] = std::array::from_fn(|i| {
-            (0.55 * (target[i] - state.joint_position[i])).clamp(-0.640_523_6, 0.640_523_6)
-        });
-        let contributions = assembly
-            .actuator_body_torques(&simulation.world, &definition, &torque)
-            .map_err(|error| error.to_string())?;
-        let snapshot = simulation
-            .step_with_torques(&contributions)
-            .map_err(|error| format!("Rapier step {}: {error}", tick + 1))?;
-        let pose = assembly
-            .pose_frame(&snapshot)
-            .map_err(|error| error.to_string())?;
-        let row = json!({
-            "tick_before":tick,
-            "observation":observation.as_slice(),
-            "command":{"locomotion":command.locomotion,"head":command.head,"body":command.body},
-            "action":action,
-            "raw_target":raw_target,
-            "target":target,
-            "torque":torque,
-            "joint_position":state.joint_position,
-            "joint_velocity":state.joint_velocity,
-            "root_before":root_before,
-            "root_after":pose.poses[0].translation,
-            "contact_pairs":snapshot.contact_pair_count,
-            "active_contact_pairs":snapshot.active_contact_pair_count,
-        });
-        report["trace"]
-            .as_array_mut()
-            .ok_or("trace report changed type")?
-            .push(row);
-        report["pose_frames"]
-            .as_array_mut()
-            .ok_or("pose report changed type")?
-            .push(json!(pose));
-        previous_action = action;
-        previous_target = Some(target);
-        report["integration_count"] = json!(simulation.snapshot().integration_count);
-        report["policy_inference_count"] = json!(policy.successful_inference_count());
+    let mut runtime = FixedStepRuntime::<()>::new(simulation).map_err(|error| error.to_string())?;
+    let mut controller = DiagnosticController {
+        policy,
+        definition,
+        assembly,
+        previous_action,
+        previous_target,
+        pending: None,
+        report,
+    };
+    let mut last_nanos = 0_u64;
+    for tick in 1..=ticks {
+        // Rational wall-time boundaries provide exactly one 60 Hz budget each.
+        let target_nanos = (tick as u64 * 1_000_000_000).div_ceil(PHYSICS_HZ as u64);
+        let elapsed = Duration::from_nanos(target_nanos - last_nanos);
+        last_nanos = target_nanos;
+        let outcome = runtime
+            .advance_frame(elapsed, &mut controller)
+            .map_err(|error| format!("fixed-step diagnostic tick {tick}: {error}"))?;
+        if outcome.completed_steps != 1 || outcome.pending_ticks != 0 {
+            return Err(format!(
+                "diagnostic tick {tick} did not complete exactly once"
+            ));
+        }
     }
-    report["final_snapshot"] = json!(simulation.snapshot());
-    report["passed"] = json!(
-        policy.successful_inference_count() == ticks as u64
-            && simulation.snapshot().integration_count == ticks as u64
+    let final_snapshot = runtime.world_snapshot();
+    controller.report["final_snapshot"] = json!(final_snapshot);
+    controller.report["fixed_step_driver"] = json!("FixedStepRuntime");
+    controller.report["final_clock"] = json!(runtime.clock_snapshot());
+    controller.report["passed"] = json!(
+        controller.policy.successful_inference_count() == ticks as u64
+            && final_snapshot.integration_count == ticks as u64
+            && runtime.clock_snapshot().global_step == ticks as u64
     );
     Ok(())
 }
