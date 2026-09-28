@@ -15,6 +15,8 @@ use crate::dynamics::solver::joint_constraint::GenericJointConstraintBuilder;
 use crate::dynamics::solver::solver_body::SOLVER_BODY_ALLOW_FAST_ROTATION;
 use crate::dynamics::solver::solver_contact_graph::ContactRef;
 use crate::dynamics::{JointGraphEdge, RigidBodyType, RigidBodyVelocity};
+#[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+use crate::dynamics::LimitRowTracePhase;
 use crate::geometry::ContactManifold;
 use crate::math::Real;
 use parry::math::SIMD_WIDTH;
@@ -28,6 +30,26 @@ use super::{BODY_BATCH, SharedCtx, chunk_at, stage_batch};
 // The cast is a no-op in f64 mode but narrows in f32 mode, so it has to stay.
 #[allow(clippy::unnecessary_cast)]
 const MAX_ROTATION: Real = core::f64::consts::FRAC_PI_4 as Real;
+
+/// Worker 0 reads the current native limit rows only at completed stage barriers.
+#[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+unsafe fn trace_limit_rows(
+    ctx: &SharedCtx<'_>,
+    phase: LimitRowTracePhase,
+    substep_id: usize,
+) {
+    let velocity_solver = unsafe { &*ctx.velocity_solver };
+    let joints = unsafe { &*ctx.joint_constraints };
+    let multibodies = unsafe { &mut *ctx.multibodies };
+    multibodies.observe_limit_row_timing(
+        &velocity_solver.multibody_roots,
+        &joints.generic_velocity_constraints,
+        joints.generic_jacobians.as_slice(),
+        velocity_solver.generic_solver_vels.as_slice(),
+        phase,
+        substep_id,
+    );
+}
 
 /// The stage machine executed by every worker. See [`SharedCtx`] for the safety contract.
 pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
@@ -560,6 +582,10 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
                     )
                 };
             }
+            #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+            if worker_id == 0 && params.num_internal_pgs_iterations > 0 {
+                unsafe { trace_limit_rows(ctx, LimitRowTracePhase::AfterBiasedSolve, substep_id) };
+            }
 
             /*
              * Stage: integrate positions (parallel over claimed body slots).
@@ -630,6 +656,12 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
                 }
                 stage = sync.sync(stage, num_group_bodies + 1);
             }
+            #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+            if worker_id == 0 {
+                unsafe {
+                    trace_limit_rows(ctx, LimitRowTracePhase::AfterPositionIntegration, substep_id)
+                };
+            }
 
             /*
              * Stages: solve without bias.
@@ -647,6 +679,10 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
                         solved_dt + params.dt,
                     )
                 };
+            }
+            #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+            if worker_id == 0 && params.num_internal_stabilization_iterations > 0 {
+                unsafe { trace_limit_rows(ctx, LimitRowTracePhase::AfterUnbiasedSolve, substep_id) };
             }
         }
 

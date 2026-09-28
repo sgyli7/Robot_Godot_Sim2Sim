@@ -8,6 +8,8 @@ use crate::dynamics::solver::{GenericJointConstraint, WritebackId};
 use crate::dynamics::{Multibody, MultibodyIndex, RigidBodyHandle};
 use crate::dynamics::{MultibodyJointSet, MultibodyLinkId};
 use crate::math::Real;
+#[cfg(feature = "sim2sim-limit-row-trace")]
+use crate::math::SPATIAL_DIM;
 use alloc::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -31,6 +33,59 @@ pub(crate) struct ContactConstraintIdentity {
 pub(crate) struct ContactObservationManifest {
     pub complete: bool,
     pub constraints: Vec<ContactConstraintIdentity>,
+}
+
+/// A read-only checkpoint in the staged solver. These samples are diagnostic
+/// operands, not MuJoCo forces or a qualified BAM external load.
+#[cfg(feature = "sim2sim-limit-row-trace")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitRowTracePhase {
+    /// The position-bias pass has solved the limit row.
+    AfterBiasedSolve,
+    /// The biased velocity has been integrated into the coordinate.
+    AfterPositionIntegration,
+    /// The relaxation pass has removed the position-bias RHS.
+    AfterUnbiasedSolve,
+}
+
+#[cfg(feature = "sim2sim-limit-row-trace")]
+impl LimitRowTracePhase {
+    /// A stable label for diagnostic reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterBiasedSolve => "after_biased_solve",
+            Self::AfterPositionIntegration => "after_position_integration",
+            Self::AfterUnbiasedSolve => "after_unbiased_solve",
+        }
+    }
+}
+
+/// One internal limit row at one checkpoint within a solver substep.
+#[cfg(feature = "sim2sim-limit-row-trace")]
+#[derive(Clone, Copy, Debug)]
+pub struct LimitRowTraceSample {
+    /// Point within one staged solver substep.
+    pub phase: LimitRowTracePhase,
+    /// Solver substep ordinal, starting at zero.
+    pub substep_id: usize,
+    /// Index in the generic joint constraint vector.
+    pub row_index: usize,
+    /// Row's DOF index within the owning joint.
+    pub joint_local_dof: usize,
+    /// Row's DOF index within the multibody articulation.
+    pub backend_dof: usize,
+    /// Generalized coordinate at this checkpoint.
+    pub coordinate: Real,
+    /// Generalized solver velocity at this checkpoint.
+    pub generalized_velocity: Real,
+    /// Current constraint RHS, including bias before relaxation.
+    pub rhs: Real,
+    /// RHS retained when the position bias is removed.
+    pub rhs_without_bias: Real,
+    /// Raw solver lambda; the generalized impulse is `-J * lambda` on side 2.
+    pub impulse: Real,
+    /// Nonnegative upper-limit or nonpositive lower-limit impulse bounds.
+    pub impulse_bounds: [Real; 2],
 }
 
 /// Partial measurements from one completed full pipeline step.
@@ -59,6 +114,9 @@ pub struct MultibodyObservation {
     pub own_dry_friction_impulse: Vec<Real>,
     /// Number of recorded generic-joint row sides for this articulation.
     pub generic_joint_row_side_count: usize,
+    /// Stage-specific internal limit rows, only when the separate trace feature is enabled.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub limit_row_timing: Vec<LimitRowTraceSample>,
     /// Number of recorded native dry-friction row sides.
     pub own_dry_friction_row_side_count: usize,
     /// Whether the existing implicit-Coriolis energy guard was evaluated.
@@ -165,6 +223,93 @@ impl MultibodyObservation {
 }
 
 impl MultibodyJointSet {
+    /// Capture one checkpoint without changing constraint state or solver velocity.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub(crate) fn observe_limit_row_timing(
+        &mut self,
+        roots: &[MultibodyLinkId],
+        constraints: &[GenericJointConstraint],
+        jacobians: &[Real],
+        solver_velocities: &[Real],
+        phase: LimitRowTracePhase,
+        substep_id: usize,
+    ) {
+        for (row_index, constraint) in constraints.iter().enumerate() {
+            let WritebackId::Limit(joint_local_dof) = constraint.writeback_id else {
+                continue;
+            };
+            if constraint.joint_id != usize::MAX || constraint.is_rigid_body2 {
+                continue;
+            }
+            // Internal motor rows currently carry a Limit writeback tag too;
+            // their symmetric bounds distinguish them from a one-sided limit.
+            if constraint.impulse_bounds[0] < 0.0 && constraint.impulse_bounds[1] > 0.0 {
+                continue;
+            }
+            let Some(root) = roots.iter().find(|root| {
+                let multibody = &self.multibodies[root.multibody.0];
+                multibody.solver_id == constraint.solver_vel2
+                    && multibody.ndofs() == constraint.ndofs2
+            }) else {
+                continue;
+            };
+            let Some(row) = constraint
+                .j_id2
+                .checked_add(constraint.ndofs2)
+                .and_then(|end| jacobians.get(constraint.j_id2..end))
+            else {
+                continue;
+            };
+            let Some(backend_dof) = row.iter().position(|value| *value == 1.0) else {
+                continue;
+            };
+            // Native internal limit rows contain exactly one unit Jacobian entry.
+            if row.iter().enumerate().any(|(index, value)| {
+                index != backend_dof && *value != 0.0
+            }) {
+                continue;
+            }
+            let multibody = &self.multibodies[root.multibody.0];
+            let Some(link) = multibody.links().find(|link| {
+                link.assembly_id() <= backend_dof
+                    && backend_dof < link.assembly_id() + link.joint().ndofs()
+            }) else {
+                continue;
+            };
+            let local_dof = backend_dof - link.assembly_id();
+            let locked_bits = link.joint().data.locked_axes.bits();
+            let Some(axis) = (0..SPATIAL_DIM)
+                .filter(|axis| locked_bits & (1 << axis) == 0)
+                .nth(local_dof)
+            else {
+                continue;
+            };
+            let coordinate = link.joint().coords()[axis];
+            let Some(&generalized_velocity) = solver_velocities
+                .get(constraint.solver_vel2 as usize + backend_dof)
+            else {
+                continue;
+            };
+            let sample = LimitRowTraceSample {
+                phase,
+                substep_id,
+                row_index,
+                joint_local_dof,
+                backend_dof,
+                coordinate,
+                generalized_velocity,
+                rhs: constraint.rhs,
+                rhs_without_bias: constraint.rhs_wo_bias,
+                impulse: constraint.impulse,
+                impulse_bounds: constraint.impulse_bounds,
+            };
+            self.multibodies[root.multibody.0]
+                .sim2sim_observation
+                .limit_row_timing
+                .push(sample);
+        }
+    }
+
     /// Invalidates diagnostics after a caller-managed cold state reset, without stepping.
     /// Topology insertion/removal invokes this automatically.
     pub fn invalidate_sim2sim_observations(&mut self) {

@@ -185,7 +185,8 @@ fn run(args: &[String]) -> Result<Value, String> {
         {
             return Err("native force term is non-finite".into());
         }
-        rows.push(json!({
+        #[allow(unused_mut)]
+        let mut row = json!({
             "source_joint":initial.source_joint,
             "source_dof":initial.source_dof,
             "backend_dof":dof,
@@ -200,7 +201,50 @@ fn run(args: &[String]) -> Result<Value, String> {
             "contact_normal_impulse_nms":contact_normal,
             "contact_tangent_impulse_nms":contact_tangent,
             "candidate_residual_nm":residual,
-        }));
+        });
+        #[cfg(feature = "sim2sim_limit_row_trace")]
+        {
+            let limit_samples: Vec<_> = observation
+                .limit_row_timing
+                .iter()
+                .filter(|sample| sample.backend_dof == dof)
+                .collect();
+            if limit_samples.iter().any(|sample| {
+                [
+                    sample.coordinate,
+                    sample.generalized_velocity,
+                    sample.rhs,
+                    sample.rhs_without_bias,
+                    sample.impulse,
+                    sample.impulse_bounds[0],
+                    sample.impulse_bounds[1],
+                ]
+                .iter()
+                .any(|value| !value.is_finite())
+            }) {
+                return Err("native limit-row trace contains a non-finite operand".into());
+            }
+            row["limit_row_timing"] = json!(
+                limit_samples
+                    .into_iter()
+                    .map(|sample| json!({
+                        "phase":sample.phase.as_str(),
+                        "substep_id":sample.substep_id,
+                        "row_index":sample.row_index,
+                        "joint_local_dof":sample.joint_local_dof,
+                        "backend_dof":sample.backend_dof,
+                        "coordinate":sample.coordinate,
+                        "generalized_velocity":sample.generalized_velocity,
+                        "rhs":sample.rhs,
+                        "rhs_without_bias":sample.rhs_without_bias,
+                        "impulse_nms":sample.impulse,
+                        "signed_generalized_impulse_nms":-sample.impulse,
+                        "impulse_bounds":sample.impulse_bounds,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        rows.push(row);
     }
     let active_contact_pairs: Vec<Value> = simulation
         .world

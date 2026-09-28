@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 sim2sim_observation = ["rapier3d/sim2sim-observation"]
+sim2sim_limit_row_trace = ["sim2sim_observation", "rapier3d/sim2sim-limit-row-trace"]
 
 [dependencies]
 common_minigame.workspace = true

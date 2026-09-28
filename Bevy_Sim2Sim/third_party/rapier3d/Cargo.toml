@@ -92,6 +92,7 @@ serde-serialize = [
 simd8 = ["parry3d/simd8"]
 solver-bounds-checks = []
 sim2sim-observation = []
+sim2sim-limit-row-trace = ["sim2sim-observation"]
 std = [
     "alloc",
     "parry3d/std",
