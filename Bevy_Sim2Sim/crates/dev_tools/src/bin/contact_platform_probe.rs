@@ -58,7 +58,7 @@ fn run(args: &[String]) -> Result<Value, String> {
     if !(1..=8).contains(&steps) {
         return Err("platform probe supports one through eight 60 Hz steps".into());
     }
-    let pgs_iterations: usize = if args.len() == 9 {
+    let pgs_iterations: usize = if args.len() >= 9 {
         args[8].parse().map_err(|_| "invalid internal PGS count")?
     } else {
         1
@@ -66,6 +66,17 @@ fn run(args: &[String]) -> Result<Value, String> {
     if !(1..=16).contains(&pgs_iterations) {
         return Err("internal PGS count must be 1..=16".into());
     }
+    let foot_friction_override: Option<f32> = if args.len() == 10 {
+        let friction: f32 = args[9]
+            .parse()
+            .map_err(|_| "invalid diagnostic foot friction")?;
+        if !friction.is_finite() || !(0.0..=2.0).contains(&friction) {
+            return Err("diagnostic foot friction must be finite and in 0..=2".into());
+        }
+        Some(friction)
+    } else {
+        None
+    };
     let definition_bytes = read_checked(&args[0], &args[1])?;
     if digest(&definition_bytes) != FROZEN_LEG_MODEL_SHA256 {
         return Err("platform probe requires the frozen original leg definition".into());
@@ -118,6 +129,25 @@ fn run(args: &[String]) -> Result<Value, String> {
     );
     let assembly = build_structure(&mut simulation.world, &definition, &qpos)
         .map_err(|error| error.to_string())?;
+    if let Some(friction) = foot_friction_override {
+        // Scratch-only contact-law isolation. The original definition remains
+        // SHA-bound; only this copied world's one left-foot collider changes.
+        let foot: Vec<_> = assembly
+            .collision_handles()
+            .iter()
+            .filter(|(source_geom, _)| *source_geom == 28)
+            .map(|(_, handle)| *handle)
+            .collect();
+        if foot.len() != 1 {
+            return Err("frozen left-foot collider identity is not unique".into());
+        }
+        simulation
+            .world
+            .colliders
+            .get_mut(foot[0])
+            .ok_or("frozen left-foot collider is missing")?
+            .set_friction(friction);
+    }
     let mut step_reports = Vec::with_capacity(steps);
     for step in 1..=steps {
         let before_snapshot = simulation.snapshot();
@@ -250,6 +280,9 @@ fn run(args: &[String]) -> Result<Value, String> {
         "bam_external_load_qualified": false,
         "skill_qualified": false,
     });
+    if let Some(friction) = foot_friction_override {
+        report["diagnostic_foot_friction_override"] = json!(friction);
+    }
     if steps == 1 {
         for (key, value) in step_reports
             .pop()
@@ -269,8 +302,8 @@ fn run(args: &[String]) -> Result<Value, String> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
-    if !(7..=9).contains(&args.len()) {
-        return Err("usage: contact_platform_probe MODEL.json SHA QPOS.json SHA PLATFORM.json SHA NEW_REPORT.json [STEPS 1..8 [INTERNAL_PGS 1..16]]".into());
+    if !(7..=10).contains(&args.len()) {
+        return Err("usage: contact_platform_probe MODEL.json SHA QPOS.json SHA PLATFORM.json SHA NEW_REPORT.json [STEPS 1..8 [INTERNAL_PGS 1..16 [DIAGNOSTIC_FOOT_FRICTION 0..=2]]]".into());
     }
     let output = Path::new(&args[6]);
     if output.exists() {
