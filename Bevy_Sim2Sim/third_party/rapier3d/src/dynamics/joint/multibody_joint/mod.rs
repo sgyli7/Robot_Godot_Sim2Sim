@@ -25,6 +25,8 @@ pub use self::multibody_link::MultibodyLink;
 pub use self::unit_multibody_joint::{
     unit_joint_friction_constraint, unit_joint_limit_constraint, unit_joint_motor_constraint,
 };
+#[cfg(all(feature = "alloc", feature = "sim2sim-source-limit-probe"))]
+pub(crate) use self::unit_multibody_joint::{SourceLimitProbe, unit_joint_source_limit_probe_constraint};
 
 #[cfg(feature = "alloc")]
 mod multibody;

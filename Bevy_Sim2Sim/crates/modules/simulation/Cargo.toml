@@ -10,6 +10,7 @@ default = []
 sim2sim_observation = ["rapier3d/sim2sim-observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "rapier3d/sim2sim-limit-row-trace"]
 sim2sim_plain_mass_probe = ["sim2sim_observation", "rapier3d/sim2sim-plain-mass-probe"]
+sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "rapier3d/sim2sim-source-limit-probe"]
 
 [dependencies]
 common_minigame.workspace = true

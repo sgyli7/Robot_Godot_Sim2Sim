@@ -36,6 +36,10 @@ pub struct MultibodyJoint {
     /// (same convention as [`Self::coords`]). Only meaningful where
     /// `spring_stiffness` is non-zero.
     pub(crate) spring_ref: SpatialVector,
+    /// Explicitly selected, single-axis source-limit experiment.
+    #[cfg(feature = "sim2sim-source-limit-probe")]
+    #[cfg_attr(feature = "serde-serialize", serde(skip))]
+    sim2sim_source_limit_probe: Option<joint::SourceLimitProbe>,
 }
 
 impl MultibodyJoint {
@@ -48,6 +52,8 @@ impl MultibodyJoint {
             joint_rot: Rotation::IDENTITY,
             spring_stiffness: Default::default(),
             spring_ref: Default::default(),
+            #[cfg(feature = "sim2sim-source-limit-probe")]
+            sim2sim_source_limit_probe: None,
         }
     }
 
@@ -63,6 +69,39 @@ impl MultibodyJoint {
     /// [`Self::set_spring`]. `(0, 0)` if no spring is set on that axis.
     pub fn spring(&self, axis: usize) -> (Real, Real) {
         (self.spring_stiffness[axis], self.spring_ref[axis])
+    }
+
+    /// Select the MuJoCo-style AngX limit-row experiment on this joint only.
+    #[cfg(feature = "sim2sim-source-limit-probe")]
+    pub fn sim2sim_set_source_limit_probe(
+        &mut self,
+        solref: [Real; 2],
+        solimp: [Real; 5],
+        margin: Real,
+        dof_invweight0: Real,
+    ) -> bool {
+        let valid = solref.iter().chain(solimp.iter()).all(|v| v.is_finite())
+            && margin == 0.0
+            && solref[0] > 0.0
+            && solref[1] > 0.0
+            && 0.0 < solimp[0]
+            && solimp[0] <= solimp[1]
+            && solimp[1] < 1.0
+            && solimp[2] > 0.0
+            && solimp[3] == 0.5
+            && solimp[4] == 2.0
+            && dof_invweight0.is_finite()
+            && dof_invweight0 > 0.0
+            && self.data.limit_axes.contains(crate::dynamics::JointAxis::AngX.into());
+        if valid {
+            self.sim2sim_source_limit_probe = Some(joint::SourceLimitProbe {
+                solref,
+                solimp,
+                margin,
+                dof_invweight0,
+            });
+        }
+        valid
     }
 
     pub(crate) fn free(pos: Pose) -> Self {
@@ -401,6 +440,37 @@ impl MultibodyJoint {
             if (locked_bits & (1 << i)) == 0 {
                 let limits = if (limit_bits & (1 << i)) != 0 {
                     let limits = [self.data.limits[i].min, self.data.limits[i].max];
+                    #[cfg(feature = "sim2sim-source-limit-probe")]
+                    if i == DIM && self.sim2sim_source_limit_probe.is_some() {
+                        joint::unit_joint_source_limit_probe_constraint(
+                            params,
+                            multibody,
+                            link,
+                            limits,
+                            self.coords[i],
+                            curr_free_dof,
+                            j_id,
+                            jacobians,
+                            constraints,
+                            &mut num_constraints,
+                            self.sim2sim_source_limit_probe.as_ref().unwrap(),
+                        );
+                    } else {
+                        joint::unit_joint_limit_constraint(
+                            params,
+                            multibody,
+                            link,
+                            limits,
+                            self.coords[i],
+                            curr_free_dof,
+                            j_id,
+                            jacobians,
+                            constraints,
+                            &mut num_constraints,
+                            self.data.softness,
+                        );
+                    }
+                    #[cfg(not(feature = "sim2sim-source-limit-probe"))]
                     joint::unit_joint_limit_constraint(
                         params,
                         multibody,

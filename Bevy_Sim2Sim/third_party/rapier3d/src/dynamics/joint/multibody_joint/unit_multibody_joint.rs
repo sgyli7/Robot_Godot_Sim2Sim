@@ -6,6 +6,106 @@ use crate::dynamics::solver::{GenericJointConstraint, WritebackId};
 use crate::dynamics::{IntegrationParameters, JointMotor, Multibody};
 use crate::math::{DVector, Real};
 
+/// Parameters from the frozen compiled source model, present only in a
+/// manually selected, single-axis experiment. The source's current frozen
+/// impedance uses midpoint 0.5 and power 2; other curves are refused.
+#[cfg(feature = "sim2sim-source-limit-probe")]
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct SourceLimitProbe {
+    pub solref: [Real; 2],
+    pub solimp: [Real; 5],
+    pub margin: Real,
+    pub dof_invweight0: Real,
+}
+
+/// Diagnostic counterpart to the source's one active unilateral limit row.
+/// Rapier's internal row uses +e_dof with positive impulse opposing an upper
+/// violation. The source row uses -e_dof with positive force. A velocity
+/// impulse is dt times source force, with R in the row denominator as CFM.
+/// Keeping rhs_wo_bias equal to rhs prevents Rapier's later stabilization
+/// pass from cancelling the physical soft-limit impulse after integration.
+#[cfg(feature = "sim2sim-source-limit-probe")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unit_joint_source_limit_probe_constraint(
+    params: &IntegrationParameters,
+    multibody: &Multibody,
+    link: &MultibodyLink,
+    limits: [Real; 2],
+    curr_pos: Real,
+    dof_id: usize,
+    j_id: &mut usize,
+    jacobians: &mut DVector,
+    constraints: &mut [GenericJointConstraint],
+    insert_at: &mut usize,
+    probe: &SourceLimitProbe,
+) {
+    let ndofs = multibody.ndofs();
+    let backend_dof = dof_id + link.assembly_id;
+    let initial_velocity = multibody.generalized_velocity()[backend_dof];
+    let upper_depth = curr_pos - limits[1] + probe.margin;
+    let lower_depth = limits[0] - curr_pos + probe.margin;
+    let (direction, depth, impulse_bounds) = if upper_depth > 0.0 {
+        (1.0, upper_depth, [0.0, Real::MAX])
+    } else if lower_depth > 0.0 {
+        (-1.0, lower_depth, [-Real::MAX, 0.0])
+    } else {
+        (0.0, 0.0, [0.0, 0.0])
+    };
+
+    jacobians.rows_mut(*j_id, ndofs * 2).fill(0.0);
+    let dof_j_id = *j_id + backend_dof;
+    jacobians[dof_j_id] = 1.0;
+    jacobians[dof_j_id + ndofs] = 1.0;
+    multibody
+        .inv_augmented_mass()
+        .solve_mut(&mut jacobians.rows_mut(*j_id + ndofs, ndofs));
+    let lhs = jacobians[dof_j_id + ndofs];
+
+    // This interpolation is the frozen source's (midpoint=.5, power=2)
+    // quadratic solimp curve. refsafe is enabled in the frozen source model.
+    let x = (depth / probe.solimp[2]).clamp(0.0, 1.0);
+    let s = if x <= 0.5 {
+        2.0 * x * x
+    } else {
+        1.0 - 2.0 * (1.0 - x) * (1.0 - x)
+    };
+    let d = probe.solimp[0] + (probe.solimp[1] - probe.solimp[0]) * s;
+    let tau = probe.solref[0].max(2.0 * params.dt);
+    let b = 2.0 / (probe.solimp[1] * tau);
+    let k = d / (probe.solimp[1] * probe.solimp[1] * tau * tau * probe.solref[1] * probe.solref[1]);
+    let aref = k * depth + b * direction * initial_velocity;
+    let r = (1.0 - d) / d * probe.dof_invweight0;
+    // At the beginning of the solve, v = v0 + dt*a_free. This RHS makes the
+    // row impulse direction*dt*(aref - J*a_free)/(lhs + R), J=-direction.
+    let rhs = if direction != 0.0 {
+        params.dt * direction * aref - initial_velocity
+    } else {
+        0.0
+    };
+
+    constraints[*insert_at] = GenericJointConstraint {
+        is_rigid_body1: false,
+        solver_vel1: u32::MAX,
+        ndofs1: 0,
+        j_id1: 0,
+        is_rigid_body2: false,
+        solver_vel2: multibody.solver_id,
+        ndofs2: ndofs,
+        j_id2: *j_id,
+        joint_id: usize::MAX,
+        impulse: 0.0,
+        impulse_bounds,
+        inv_lhs: crate::utils::inv(lhs + r),
+        rhs,
+        rhs_wo_bias: rhs,
+        cfm_coeff: 0.0,
+        cfm_gain: r,
+        writeback_id: WritebackId::Limit(dof_id),
+    };
+    *insert_at += 1;
+    *j_id += 2 * ndofs;
+}
+
 /// Initializes and generate the velocity constraints applicable to the multibody links attached
 /// to this multibody_joint.
 pub fn unit_joint_limit_constraint(
