@@ -1,10 +1,24 @@
 # MicroDuck source workflow tools
 
+Version `0.1.10` adds a separate **CPU-only admission ledger fixture**. One
+SQLite transaction binds a fixture review UUID, nonce, v3 input identity,
+self-declared fake scope identity, store identity, and a conservatively
+charged 180 GPU-second test budget. After commit and directory sync it checks
+the review and fake-scope deadline again. The receipt records consumption;
+it does **not** release or attest an actual barrier or worker. A crash or
+expiry after commitment leaves the claim spent in that stable database.
+The review schema is distinct from the read-only v3 review. The caller-owned
+fixture directory is not a protected production namespace: a hostile same-UID
+process could replace its database or journal between checks. This module
+grants no source, MuJoCo, CUDA/GPU, PPO, or learning capability; public
+discovery and the retired private worker remain disabled. The real
+`TrainingBudget` ledger is never opened by this fixture.
+
 Version `0.1.9` adds a read-only CPU v3 identity and review check. It binds
 the v2 input file bytes, a freshly sealed finite negative-lookup envelope,
 an exact scope plan and an acyclic review request. The review check validates
 exact request bytes and expiry without claiming or consuming approval.
-Single-use authorization is **not implemented**; the earlier scratch claim
+Production single-use authorization is **not implemented**; the earlier scratch claim
 prototype failed independent directory, lock-inode and deadline audits and
 was removed from the shipped package. The public discovery command remains
 disabled. No review of this CPU identity authorizes source or learning work.
