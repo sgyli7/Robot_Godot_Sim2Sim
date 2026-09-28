@@ -2,7 +2,7 @@
 
 使用 Bevy、Rapier 和 CPU ONNX 推理实现 MuJoCo → Bevy 的 MicroDuck Sim2Sim。当前目标是完整 Pollen/mjlab 本体、BAM 执行器、真实 60 Hz 物理与策略、九技能和 Sprint，以及重新设计的科学站。
 
-当前为开发中的工程：固定步与 Rapier 基础验证、原生策略边界、BAM 公式核对、完整机器人结构初始化和科学站 GPU 预览已经可运行。完整机器人控制、技能、场景交互与 1080p／60 FPS 尚未验收。
+当前为开发中的工程：正式业务库已有单世界 60 Hz 固定步生命周期驱动；九个旧 ONNX 已通过它在 v18AJ 科学站重新完成真实 60/60 推理、Rapier 积分与 GPU 视频截帧。这仍是简化 P-only 诊断，旧策略本来按 200 Hz 物理／50 Hz 推理训练，多个模型失稳；BAM 外载、源接触等价、技能、场景交互和正式游戏循环尚未验收。[九模型新视频与限制](docs/legacy_nine_onnx_aj_fixed_step_video.md)。
 
 - [开发交接入口](docs/handoff.md)
 - [完整实施计划](docs/implementation_plan.md)
@@ -34,4 +34,4 @@ cargo test -p common_minigame -p simulation_minigame -p robot_minigame
 
 机器人初始化 GPU 预览工具位于开发模块，需启用非默认 `rendering_preview` feature；其参数显式绑定模型、外观与源 qpos 文件的 SHA256。腿式与轮式四组实际 1080p 截图已完成，全原视觉顶点对照通过。当前两种零 UV 模型另按 MuJoCo 3.10 的角点显示法线规则渲染，三组真实模型累计 3,760,632 个角点与独立 C oracle 核对，八张固定机位 GPU 对照已检查；`raw_normals` 仅用于开发诊断。它只显示唯一 Rapier 世界的零积分初始化快照；入口和接线说明见 [渲染模块说明](crates/modules/rendering/README.md)。完整控制、运动与性能验收继续推进。
 
-科学站当前场景在四个功能区和宽敞环路的基础上，增加西侧岩脊、功能区贴地色标，以及与主舱相接的北缘侧翼楼。侧翼南门宽 1.30m、净高 2.10m，门槛比沙地高 4cm；六个固定视角的真实 GPU 画面已复核，中庭仍留作机器人活动。`robot_initialization_preview` 的 `--zero-step-only` 开发模式可在同一个 Rapier 世界中装入当前科学站 2,497 个静态碰撞体和腿式机器人，核对初始位姿与对象清单后退出，不开启 GPU 或积分；同输入的真实 GPU 首帧显示机器人与站体同场景。此预检中的 20 个可移动道具只作视觉对象；地形有两个保留的零面积源三角。岩脊与侧翼门口的小球接触仅作局部诊断，机器人通行、完整站体接触与目标物理仍未合格，证据边界见 [交接文档](docs/handoff.md)。
+当前 live 科学站为 v18AJ／`windpass_compound_v7`：西侧样本作业带、东侧服务廊、错位双塔和中央标定庭院形成整体空间布局。六个固定视角的真实 GPU 画面已复核；同世界零步预检装入 2,553 个站体静态碰撞体与腿式机器人，共 16 个 body／2,564 个 collider／14 个 joint，真实 GPU 首帧显示机器人与站体同场。20 个可移动道具碰撞体未导入；地形仍有两个保留的零面积源三角。机器人通行、完整站体接触与目标物理尚未合格。后续地编在 scratch 并行推进，当前视频绑定的 live 资产保持冻结；证据边界见 [整体地编报告](docs/station_layout_redesign.md)和[交接文档](docs/handoff.md)。
