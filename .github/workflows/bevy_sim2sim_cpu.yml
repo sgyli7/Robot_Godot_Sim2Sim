@@ -8,13 +8,16 @@ on:
   push:
     branches:
       - main
-      - "codex/**"
     paths:
       - "Bevy_Sim2Sim/**"
       - ".github/workflows/bevy_sim2sim_cpu.yml"
 
 permissions:
   contents: read
+
+concurrency:
+  group: bevy-sim2sim-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   rust:
