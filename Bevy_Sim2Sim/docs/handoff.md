@@ -8,8 +8,8 @@
 2. [当前实施计划](implementation_plan.md)：全部目标、版本、接口语义、预算与最终门禁。
 3. [历史研究](research.md)：此前 Godot200 Hz调查，仅供定位旧代码与失败经验。
 4. [运行说明](../README.md)：仅以实际验证后的命令和功能为准。
-5. [科学站整体地编方案](station_layout_redesign.md)：v17 两案灰盒与正式场景门槛；当前 live 仍是 v10B。
-6. [九个原始 ONNX 的 v10B 科学站复录](legacy_nine_onnx_live_scene_rerecord.md)：真实推理、积分、SHA 绑定视频和未通过项；v18AJ 晋升后该录像已过期，正在重新录制。[首次旧场景记录](legacy_nine_onnx_60hz_diagnostic.md)仅作历史对照。
+5. [科学站整体地编方案](station_layout_redesign.md)：当前 live 为正式晋升并验证的 v18AJ／`windpass_compound_v7`；后续地编仍在 scratch 推进。
+6. [九个原始 ONNX 的 v18AJ 科学站复录](legacy_nine_onnx_aj_v7_rerecord.md)：真实推理、积分、SHA 绑定视频和未通过项；[v10B 复录](legacy_nine_onnx_live_scene_rerecord.md)与[首次旧场景记录](legacy_nine_onnx_60hz_diagnostic.md)仅作历史对照。
 7. [原本体左脚接触对照](source_contact_platform_probe.md)、[受力对照](paired_force_comparison.md)、[同力矩对照](paired_actuation_comparison.md)、[质量矩阵因果探针](paired_mass_causal_probe.md)、[源限位矩阵](limit_law_investigation.md)、[目标自由动力学](paired_limit_free_dynamics.md)和[诊断软限位行](source_limit_row_probe.md)：当前 BAM 与目标 plant 的主要物理阻断项及有界进展。
 
 ## 当前授权与范围
@@ -56,7 +56,7 @@ Rapier `0.35.3` 的本地 vendor 增加默认关闭的只读观测功能和另�
 
 随后源/目标真实左脚接触采用同一原本体初态和静态小平台，均获得正冲量。无平台负控的根体位置误差最大仅 `1.91e-7 m`；有平台首步 MuJoCo/Rapier 法向冲量分别为 `0.0657523/0.0723061 N·s`，目标高 `9.97%`，两侧加权接触点 x 相隔 `28.20 mm`，根体三维位置最大分量差 `0.4305 mm`。各自同世界连续八步后根体差增至 `10.89 mm`。目标内部 PGS 从 1 增到 16 轮也仍有 `7.20%` 首步法向冲量差；首步 BAM 上一步外载的目标原生候选与源值逐路最大差 `0.0885342 N·m`，左踝符号相反。额外零步几何核对证实 13 组原始 mesh／geom 输入逐数组相同，目标主接触落在原凸包另一顶点，优先排查流形特征选择；法向正则化及摩擦仍待分离。该诊断不动生产求解器，也不消费封闭 `SourceCollisionWorld` 余下 2 次预算。原始 SHA、逐步数据和阻断结论见[原本体左脚接触对照](source_contact_platform_probe.md)；BAM 上一步外载继续不可用。
 
-九个原始 200/50 ONNX 已在当时 live 的 v10B 科学站重新做 60/60 P-only 零样本诊断：九个独立 Rapier 世界共完成 2,400 次真实积分、2,400 次原生 ORT 推理，并从实际连续姿态截取 1,209 张 1920×1080 GPU 帧，合辑 40.30 秒。根独立复核六项场景／shader／字体 SHA、九份运行报告计数、合辑 SHA 和帧数。多个策略可见动作后跌倒，站立、行走、坐起和踢球均未达到技能门槛。v18AJ 地编资产已晋升，故此录像按场景 SHA 立即过期，九段正在按新身份复录。旧收据见[v10B 复录](legacy_nine_onnx_live_scene_rerecord.md)，不能把 P-only 视频误读为 BAM、接触或九技能验收。
+九个原始 200/50 ONNX 已在正式 v18AJ 科学站完成 60/60 P-only 零样本复录：九个独立 Rapier 世界共完成 2,400 次真实积分、2,400 次原生 ORT 推理，并从实际连续姿态截取 1,209 张 1920×1080 GPU 帧，合辑 40.30 秒、SHA `92137ee0…`。根独立复核 live／冻结资产身份、九份运行报告计数、合辑 SHA，并用另一套视频解码入口确认 30 fps、40.30 秒和 1,209 帧；亲审九项五点总览及行走、轮足代表原帧。多个策略可见动作后跌倒，站立、行走、坐起和踢球均未达到技能门槛；翻滚及轮足下蹲也只展示了动作，不构成合格技能。当前录像与收据见[v18AJ 复录](legacy_nine_onnx_aj_v7_rerecord.md)，[v10B 复录](legacy_nine_onnx_live_scene_rerecord.md)已是历史场景记录。不能把 P-only 视频误读为 BAM、接触或九技能验收。
 
 用户授权渲染线充当地编，科学站 v4 已冻结为新的空间基线：主广场整理为面向主舱的院落，四个功能区各补四组设施，连续沙地取代色斑和机械网格，缓坡按全宽检查净空与支撑。六个真实 GPU 机位均成功输出并由根 GPT 亲审，四项共享几何检查和四种受控故障退出通过。v5 的六处导向文字经独立 typed RON 与允许变更集合复核；根和场景 Agent 均亲审六张真实 1080p 画面，接受入口导向和局部标题改善。观测区标题仍有灯具局部遮挡，小铭牌仍偏小。v6 利用已有设施表面增加五处功能图形，三块样本架盖板改为紫色；场景 Agent 独立审计原 811,452 个表面三角形、2,496 个 collider payload 不变（仅盖板 36 个三角形变更材质），22 项渲染库测试通过、2 项忽略。根冻结源码与资产，整项目离线构建、六个真实 1080p GPU 机位成功并亲审，接受局部功能辨识改善。v5→v6 总览仅 331 个像素变化，因此另做纯 shader 空间层次：11×9 m 活动核心外围的低对比环带／角标和连续远景沙色退晕。独立 v6 资产副本六机位 GPU 均通过，根亲审后把唯一 WGSL 改动并入 live；其余六份资产逐字节不变，live 总览与候选 PNG 精确同 SHA。布局身份仍为 `windpass_courtyard_v6`，视觉证据另绑定新 shader SHA `ce11569f…`。这是有限的铺地与远近色层改善，并未改变地平线实体轮廓。原地质资产的碰撞导出已恢复，不能沿用旧版碰撞资格；新场景相关下游评价与录像须重新生成。真实机器人通行、URI 画风、交互、运动抗锯齿和性能仍待验收。
 
@@ -64,7 +64,9 @@ v8 E3 地编候选现已晋升工作树：拒绝 D 版总览中叠在旧紫岩�
 
 在 E3 之后，场景线将旧科学站缺乏建筑布局的问题作为地编任务，否决遮住主舱和标牌的入口门廊，接受西侧与主舱屋面相接的侧翼楼 v10B。它新增 19 个显示与静态碰撞同索引的封闭 mesh、228 个非零面积三角；旧 2,498 条源 collider payload、811,540 个表面三角、地形和布局 RON 不变。侧翼南门净宽 1.30m、净高 2.10m，室内地板高于旧沙地 4cm；屋面与原主舱仅在旧 mesh 1483 处有意重叠，外表面高差 7.5cm。新 GLB／manifest／WGSL SHA 分别为 `f240c9e7…`／`5cf06e01…`／`382cac2b…`。根按旧／新哈希防漂移晋升三项资产，结构检查 328 项通过，渲染库 22 项通过、2 项忽略，正式六机位 GPU 原图与候选逐字节一致。正式同世界零步和真实机器人 GPU 首帧均 exit 0：2,497 个站体静态碰撞体，16 body、2,508 collider、14 joint，零物理积分；根亲审首帧。局部 Rapier 小球从沙地进入新地板，最大观测穿透约 0.44mm，但这不证明整机能够穿门、全局通路或完整接触。中庭和东侧空泊位仍需整体设计；全部验证边界和失败稿留在 `.scratch/visuals/v10_masterplan_candidate/revision_b/` 与 `.scratch/visuals/v10_root_live_validation/`。布局身份仍是 `windpass_courtyard_v6`，场景资产身份已变，相关下游评价和录像须重新生成。
 
-后续整体地编草稿均未进入正式资产：v11 东泊位雨棚遮住塔楼下半部且总览变化很小；v12 建筑重排造成断开的橙色铺地和过大的岩盒；v13 四棚在总览形成两块前景紫板、在泊位占据下半画面；v14 低矮操作台避开遮挡，但总览仍是散桌围着大空场；v15 连续东缘设备带像路障并挡 02 塔脚；v16 试图接主舱东檐，却只读作细遮阳棚，未改变院落结构。三机位真实 GPU 结果和逐稿停线原因保存在 `.scratch/visuals/v11_east_court_candidate/` 至 `v16_command_east_wing/` 对应目录。`v13_composition_reference/perimeter_concept.png` 仅作 AI 概念对照，不是游戏资产或物理证据。这些试验说明不能靠局部摆件、棚或矮墙解决原场地布局；下一轮须先规划旧建筑、通路和功能区的整体关系，再做三机位灰盒、六机位终审、同源显示／碰撞和通行验证。
+后续整体地编草稿均未进入正式资产：v11 东泊位雨棚遮住塔楼下半部且总览变化很小；v12 建筑重排造成断开的橙色铺地和过大的岩盒；v13 四棚在总览形成两块前景紫板、在泊位占据下半画面；v14 低矮操作台避开遮挡，但总览仍是散桌围着大空场；v15 连续东缘设备带像路障并挡 02 塔脚；v16 试图接主舱东檐，却只读作细遮阳棚，未改变院落结构。三机位真实 GPU 结果和逐稿停线原因保存在 `.scratch/visuals/v11_east_court_candidate/` 至 `v16_command_east_wing/` 对应目录。`v13_composition_reference/perimeter_concept.png` 仅作 AI 概念对照，不是游戏资产或物理证据。这些试验说明不能靠局部摆件、棚或矮墙解决原场地布局。
+
+此后 v18AJ 整体重排已正式晋升为 `windpass_compound_v7`：西侧样本作业带、东侧服务廊、错位双塔和中央标定庭院形成可辨整体结构。live GLB／manifest／layout／shader SHA 为 `69da91fa…`／`e0b0fe1a…`／`b166c951…`／`0c049e8b…`；六个正式 1920×1080 GPU 机位全通过，与根审接受的候选逐像素一致。真实同世界零步加载有 2553 个站体静态 collider、16 body／2564 collider／14 joint；局部球探针分别与短塔、高塔迁移脚架发生接触，v7 loader 渲染测试 25 通过、2 依原要求忽略。活动核心和支路的几何净空留有审计，但尚非完整机器人通行资格。正式证据见[场景重排报告](station_layout_redesign.md)和 `.scratch/visuals/v18_site_spine/candidate_aj/live_validation_summary.json`。地编继续在 scratch 做下一轮改进，不改本次视频绑定的 live 四资产。
 
 独立的 v17 总图审读和显示／碰撞语义映射已提出保留旧维修舱扩建（E1）、迁移旧维修舱重组装卸场（E2）两案。两案各用旧固定 overview／arrival／berth 拍出真实 GPU 草稿，均未通过视觉门槛：共同的西处理廊在入口像圆楼背后的暗盒；E1 新维修间呈孤楼并遮 02 塔脚；E2 迁后的旧舱变远变小，以背面朝向泊位，原址留孤立标记。没有把草稿迁移的 151 个旧凸体或任何新增实体碰撞晋升正式场景。下一阶段须连同楼体正面、泊位设施、山路入口和支路重做空间关系，详见 [整体地编方案与失败结论](station_layout_redesign.md)；本地原始图与差分留在 `.scratch/visuals/v17_compound_comparison/`。
 
