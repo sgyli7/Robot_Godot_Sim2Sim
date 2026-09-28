@@ -41,6 +41,8 @@ MuJoCo 的[单约束无约束极小值公式](https://mujoco.readthedocs.io/en/l
 
 从 `Bevy_Sim2Sim` 目录复核源侧全部 42 组，可用安装了 MuJoCo 3.10.0 的 Python 执行下列只读脚本；本机环境是 `/home/ethan/Projects/Sai_Lab/upstream/pollen-robotics-microduck_rl/.venv/bin/python`。脚本先校验输入 SHA，再输出每组求解前的行参数和 `mj_step` 的求解结果：
 
+同一矩阵也已落为仓库脚本 `crates/dev_tools/python/scripts/limit_law_matrix.py`。它对每组重新创建 `MjData`，核对唯一活动行的类型/DOF/Jacobian，记录原生 `efc_aref`、`efc_R`、`J M⁻¹ Jᵀ`、求解外力与步末 q/v；输出 JSON 明确标记目标限位/BAM 未验收。两种本体各 21 组、其中各 15 组步前有活动行。本机原始报告 `.scratch/paired_force_v1/leg_limit_matrix.json` 与 `roller_limit_matrix.json` 的 SHA256 分别为 `c30cfd248770f4eb761672616f6417ead877337624f590f8602459475b730a9e`、`48b23a63c220f9713f38a022a9254d920aad67fd2411ca87119f83fd970f027d`。
+
 ```python
 import hashlib
 import json
