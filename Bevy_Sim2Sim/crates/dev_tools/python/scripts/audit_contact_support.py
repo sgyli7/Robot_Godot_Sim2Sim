@@ -114,7 +114,7 @@ def main() -> None:
         "inputs_sha256": {str(path.relative_to(ROOT)): expected for path, expected in EXPECTED.items()},
         "script_sha256": sha(Path(__file__)),
         "mujoco_version": mujoco.__version__,
-        "source_target_collision_input_arrays_exact": True,
+        "source_target_audited_mesh_geom_arrays_exact": True,
         "source_target_driven_dof_frictionloss_exact_zero": True,
         "original_mesh_id": mesh,
         "original_mesh_vertex_count": int(model.mesh_vertnum[mesh]),

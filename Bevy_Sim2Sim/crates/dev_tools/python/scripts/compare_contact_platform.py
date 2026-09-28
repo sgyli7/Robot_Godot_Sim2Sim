@@ -23,6 +23,8 @@ EXPECTED_TARGET_MODEL_SHA = "e91d67ba25efe3b61b65e77c754a4278f24f37253a86acdf815
 EXPECTED_TARGET_ONE_SHA = "1520378ce7457f904434503de6ce50a3112257c86ee348d0caad56631a84d0c4"
 EXPECTED_TARGET_EIGHT_SHA = "76cdd0930e32644480f13cc98b145032ae6892854723e1064fb2d30f37104b37"
 EXPECTED_TARGET_FAR_SHA = "4a2f84e2a4e13e861a6ee8ed436bc9f36e6a5173b712ef27f817d51108d5a971"
+EXPECTED_SOURCE_FREE_SHA = "3c2510a53e0f6effe91000e4869a7e7a90085316b93dfd38b067156485d5e351"
+EXPECTED_SOURCE_FREE_MJB_SHA = "832e1f08a1e328d8498be565874691348b89bc13041ff0d9eebf3f06c6bdc47c"
 
 
 def sha(path: Path) -> str:
@@ -185,7 +187,7 @@ def main() -> None:
     source_eight = read(source_eight_path, EXPECTED_SOURCE_EIGHT_SHA)
     target_one = read(target_one_path, EXPECTED_TARGET_ONE_SHA)
     target_eight = read(target_eight_path, EXPECTED_TARGET_EIGHT_SHA)
-    source_free = read(source_free_path)
+    source_free = read(source_free_path, EXPECTED_SOURCE_FREE_SHA)
     target_free = read(target_free_path, EXPECTED_TARGET_FAR_SHA)
     target_definition = read(ROOT / ".scratch/source_limit_probe_v1/leg_enriched_with_hulls.json",
                              EXPECTED_TARGET_MODEL_SHA)
@@ -217,6 +219,9 @@ def main() -> None:
     assert target_one["platform"]["source_center"] == source_one["platform"]["center_m"]
     assert target_one["platform"]["source_half_extents"] == source_one["platform"]["half_size_m"]
     assert target_one["platform"]["sliding_friction"] == source_one["platform"]["friction"][0]
+    assert source_free["schema"] == "neutral_original_no_world_geom_source_free_v1"
+    assert source_free["mjb_sha256"] == EXPECTED_SOURCE_FREE_MJB_SHA
+    assert source_free["qpos_sha256"] == EXPECTED_NEUTRAL_QPOS_SHA
     assert source_free["ncon"] == 0 and target_free["qpos_sha256"] == EXPECTED_NEUTRAL_QPOS_SHA
     assert not any(pair["platform_pair"] for pair in target_free["contact_pairs"])
     assert max(map(abs, target_free["all_dof_contact_normal_impulse_nms"])) == 0.0

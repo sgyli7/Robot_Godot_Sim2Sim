@@ -50,7 +50,7 @@ fn triple(value: &Value, key: &str) -> Result<[f32; 3], String> {
 }
 
 fn run(args: &[String]) -> Result<Value, String> {
-    let steps: usize = if args.len() == 8 {
+    let steps: usize = if args.len() >= 8 {
         args[7].parse().map_err(|_| "invalid step count")?
     } else {
         1
