@@ -6,7 +6,7 @@
 
 use std::{env, fs, path::Path};
 
-use rapier3d::prelude::Multibody;
+use rapier3d::{na::DVector, prelude::Multibody};
 use robot_minigame::{basis::source_to_engine_vector, definition::RobotDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -24,7 +24,11 @@ fn read_checked(path: &str, expected_sha256: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
+fn run(
+    args: &[String],
+    plain_mass_diagnostic: bool,
+    head_roll_free_acceleration_diagnostic: bool,
+) -> Result<Value, String> {
     if !Multibody::sim2sim_observation_backend_supported() {
         return Err("native Rapier observation backend is unavailable".into());
     }
@@ -41,15 +45,38 @@ fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
     .map_err(|error| error.to_string())?;
     let qpos_bytes = read_checked(&args[2], &args[3])?;
     let qpos: Vec<f64> = serde_json::from_slice(&qpos_bytes).map_err(|error| error.to_string())?;
+    let head_roll_joint = definition
+        .model()
+        .names
+        .jnt
+        .iter()
+        .position(|name| name.as_deref() == Some("head_roll"))
+        .ok_or("source head_roll joint is missing")?;
+    let head_roll_qpos = *definition
+        .model()
+        .fields
+        .jnt_qposadr
+        .get(head_roll_joint)
+        .ok_or("source head_roll position address is missing")?;
+    let head_roll_source_dof = *definition
+        .model()
+        .fields
+        .jnt_dofadr
+        .get(head_roll_joint)
+        .ok_or("source head_roll velocity address is missing")?;
+    let head_roll_input_position = *qpos
+        .get(head_roll_qpos)
+        .ok_or("source head_roll input position is missing")?;
     let mut simulation = SimulationWorld::new();
     let assembly = build_structure(&mut simulation.world, &definition, &qpos)
         .map_err(|error| error.to_string())?;
-    let qvel_sha256 = if args.len() >= 7 {
+    let (qvel_sha256, head_roll_input_velocity) = if args.len() >= 7 {
         let bytes = read_checked(&args[4], &args[5])?;
         let qvel: Vec<f64> = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         if qvel.len() != definition.model().counts.nv || qvel.len() < 6 {
             return Err("qvel must have source nv entries".into());
         }
+        let head_roll_input_velocity = qvel[head_roll_source_dof];
         let qvel: Vec<f32> = qvel.into_iter().map(|value| value as f32).collect();
         if qvel.iter().any(|value| !value.is_finite()) {
             return Err("source qvel exceeds the float32 backend range".into());
@@ -80,9 +107,9 @@ fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
         world
             .bodies
             .propagate_modified_body_positions_to_colliders(&mut world.colliders);
-        Some(sha256(&bytes))
+        (Some(sha256(&bytes)), head_roll_input_velocity)
     } else {
-        None
+        (None, 0.0_f64)
     };
     let root_mapping = assembly
         .joint_mapping()
@@ -140,6 +167,26 @@ fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
     let after = assembly
         .actuator_joint_feedback(&simulation.world, &definition)
         .map_err(|error| error.to_string())?;
+    let head_roll_feedback = before
+        .iter()
+        .zip(&after)
+        .find(|(initial, _)| initial.source_joint == head_roll_joint)
+        .ok_or("head_roll actuator feedback is missing")?;
+    if head_roll_free_acceleration_diagnostic {
+        let (initial, _) = head_roll_feedback;
+        if initial.source_dof != head_roll_source_dof
+            || (f64::from(initial.position) - head_roll_input_position).abs() > 1.0e-6
+            || (f64::from(initial.velocity) - head_roll_input_velocity).abs() > 1.0e-6
+        {
+            return Err("head_roll initial q/v does not match the SHA-checked source input".into());
+        }
+        if snapshot.integration_count != 1
+            || simulation.world.integration_parameters.max_ccd_substeps != 1
+            || (simulation.world.integration_parameters.dt - 1.0 / 60.0).abs() > 1.0e-8
+        {
+            return Err("head_roll diagnostic requires exactly one 1/60 s integration".into());
+        }
+    }
     let mut rows = Vec::with_capacity(before.len());
     let mut common_epoch = None;
     let mut common_topology = None;
@@ -331,6 +378,75 @@ fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
             })
         })
         .collect();
+    let head_roll_free_acceleration = if head_roll_free_acceleration_diagnostic {
+        if rows.iter().any(|row| {
+            row["contact_normal_impulse_nms"].as_f64() != Some(0.0)
+                || row["contact_tangent_impulse_nms"].as_f64() != Some(0.0)
+        }) || active_contact_pairs
+            .iter()
+            .any(|pair| pair["normal_impulse_sum"].as_f64() != Some(0.0))
+        {
+            return Err("head_roll diagnostic requires zero active contact impulses".into());
+        }
+        let (initial, final_state) = head_roll_feedback;
+        let head_roll_mapping = assembly
+            .joint_mapping()
+            .iter()
+            .find(|mapping| mapping.source_joint == head_roll_joint)
+            .ok_or("head_roll native joint mapping disappeared")?;
+        let (multibody, _) = simulation
+            .world
+            .multibody_joints
+            .get(head_roll_mapping.handle)
+            .ok_or("head_roll native articulation disappeared")?;
+        let observation = multibody
+            .sim2sim_contact_complete_observation()
+            .ok_or("head_roll native observation disappeared")?;
+        if observation
+            .contact_normal_impulse
+            .iter()
+            .chain(&observation.contact_tangent_impulse)
+            .any(|impulse| *impulse != 0.0)
+        {
+            return Err("head_roll diagnostic requires zero articulation contact impulse".into());
+        }
+        let dof = initial.backend_dof;
+        if dof >= multibody.ndofs()
+            || multibody.inv_augmented_mass().l().nrows() != multibody.ndofs()
+        {
+            return Err("head_roll native mass matrix has an unexpected reduced DOF layout".into());
+        }
+        let mut unit = DVector::zeros(multibody.ndofs());
+        unit[dof] = 1.0;
+        let solved = multibody
+            .inv_augmented_mass()
+            .solve(&unit)
+            .ok_or("head_roll plain mass matrix is singular")?;
+        let inverse_inertia = solved[dof];
+        let acceleration = *multibody
+            .generalized_acceleration()
+            .get(dof)
+            .ok_or("head_roll native free acceleration is missing")?;
+        if !inverse_inertia.is_finite() || inverse_inertia <= 0.0 || !acceleration.is_finite() {
+            return Err("head_roll free dynamics has non-finite or non-positive inertia".into());
+        }
+        Some(json!({
+            "source_joint":head_roll_joint,
+            "source_dof":head_roll_source_dof,
+            "backend_dof":dof,
+            "initial_position_rad":initial.position,
+            "initial_velocity_rad_s":initial.velocity,
+            "post_position_rad":final_state.position,
+            "post_velocity_rad_s":final_state.velocity,
+            "upper_limit_row_jacobian_sign":-1,
+            "pre_constraint_free_generalized_acceleration_rad_s2":acceleration,
+            "pre_constraint_free_row_acceleration_rad_s2":-acceleration,
+            "plain_mass_effective_inverse_inertia_rad_s2_per_nm":inverse_inertia,
+            "read_after_one_completed_step":true,
+        }))
+    } else {
+        None
+    };
     let mut report = json!({
         "scope":"robot_only_rapier_one_step_raw_force_diagnostic",
         "model_file_sha256":sha256(&definition_bytes),
@@ -352,6 +468,9 @@ fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
     if let (Some(sha), Some(torques)) = (actuator_torque_file_sha256, source_applied_actuator_nm) {
         report["actuator_torque_file_sha256"] = json!(sha);
         report["source_applied_actuator_nm"] = json!(torques);
+    }
+    if let Some(head_roll_free_acceleration) = head_roll_free_acceleration {
+        report["head_roll_free_acceleration_diagnostic"] = head_roll_free_acceleration;
     }
     #[cfg(feature = "sim2sim_plain_mass_probe")]
     {
@@ -378,19 +497,33 @@ fn run(args: &[String], plain_mass_diagnostic: bool) -> Result<Value, String> {
 
 fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
-    let plain_mass_diagnostic = args
-        .first()
-        .is_some_and(|arg| arg == "--plain-mass-diagnostic");
-    if plain_mass_diagnostic {
+    let mut plain_mass_diagnostic = false;
+    let mut head_roll_free_acceleration_diagnostic = false;
+    while let Some(option) = args.first() {
+        match option.as_str() {
+            "--plain-mass-diagnostic" if !plain_mass_diagnostic => {
+                plain_mass_diagnostic = true;
+            }
+            "--head-roll-free-acceleration-diagnostic"
+                if !head_roll_free_acceleration_diagnostic =>
+            {
+                head_roll_free_acceleration_diagnostic = true;
+            }
+            _ => break,
+        }
         args.remove(0);
     }
     if args.len() != 5 && args.len() != 7 && args.len() != 9 {
         eprintln!(
-            "usage: paired_force_probe [--plain-mass-diagnostic] MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
+            "usage: paired_force_probe [--plain-mass-diagnostic] [--head-roll-free-acceleration-diagnostic] MODEL MODEL_SHA QPOS QPOS_SHA [QVEL QVEL_SHA [TORQUES TORQUES_SHA]] OUTPUT.json"
         );
         std::process::exit(2);
     }
-    let report = match run(&args, plain_mass_diagnostic) {
+    let report = match run(
+        &args,
+        plain_mass_diagnostic,
+        head_roll_free_acceleration_diagnostic,
+    ) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("paired force probe: {error}");

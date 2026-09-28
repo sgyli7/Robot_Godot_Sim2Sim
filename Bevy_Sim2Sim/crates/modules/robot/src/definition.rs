@@ -40,6 +40,11 @@ pub struct ModelNames {
     pub key: Vec<Option<String>>,
 }
 
+/// MuJoCo `mjNREF`: solver reference width of `jnt_solref`.
+const SOURCE_JNT_SOLREF_WIDTH: usize = 2;
+/// MuJoCo `mjNIMP`: solver impedance width of `jnt_solimp`.
+const SOURCE_JNT_SOLIMP_WIDTH: usize = 5;
+
 /// Preserve source doubles until the explicit backend boundary. Principal
 /// inertia axes are body_iquat, never the body frame's XYZ diagonal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,11 +64,27 @@ pub struct ModelFields {
     pub jnt_axis: Vec<[f64; 3]>,
     pub jnt_range: Vec<[f64; 2]>,
     pub jnt_limited: Vec<bool>,
+    /// Source joint-limit solver reference, one `mjNREF` row per joint.
+    /// Legacy frozen exports omit it. Stored values are not a qualified limit law.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jnt_solref: Option<Vec<[f64; SOURCE_JNT_SOLREF_WIDTH]>>,
+    /// Source joint-limit solver impedance, one `mjNIMP` row per joint.
+    /// Legacy frozen exports omit it. Stored values are not a qualified limit law.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jnt_solimp: Option<Vec<[f64; SOURCE_JNT_SOLIMP_WIDTH]>>,
+    /// Source joint-limit margin, one value per joint.
+    /// Legacy frozen exports omit it. Stored values are not a qualified limit law.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jnt_margin: Option<Vec<f64>>,
     pub dof_bodyid: Vec<usize>,
     pub dof_jntid: Vec<usize>,
     pub dof_armature: Vec<f64>,
     pub dof_damping: Vec<f64>,
     pub dof_frictionloss: Vec<f64>,
+    /// Source compilation-time diagonal inverse weight used by joint-limit
+    /// regularization. It is not the pose-dependent effective inverse mass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dof_invweight0: Option<Vec<f64>>,
     pub geom_type: Vec<u32>,
     pub geom_bodyid: Vec<usize>,
     pub geom_pos: Vec<[f64; 3]>,
@@ -319,6 +340,7 @@ fn validate(model: &CompiledModel) -> Result<[usize; ACTION_DIMENSION], RobotErr
             return Err(invalid("invalid joint limits"));
         }
     }
+    validate_source_joint_limit_parameters(f, c.njnt)?;
     for values in [&f.dof_armature, &f.dof_damping, &f.dof_frictionloss] {
         if values.iter().any(|x| !x.is_finite() || *x < 0.0) {
             return Err(invalid("negative or non-finite DOF parameters"));
@@ -401,6 +423,57 @@ fn validate(model: &CompiledModel) -> Result<[usize; ACTION_DIMENSION], RobotErr
     Ok(actuator_joints)
 }
 
+fn validate_source_joint_limit_parameters(
+    fields: &ModelFields,
+    njnt: usize,
+) -> Result<(), RobotError> {
+    let presence = [
+        fields.jnt_solref.is_some(),
+        fields.jnt_solimp.is_some(),
+        fields.jnt_margin.is_some(),
+        fields.dof_invweight0.is_some(),
+    ];
+    if presence.iter().any(|present| *present) && presence.iter().any(|present| !*present) {
+        return Err(invalid("source joint-limit parameter set is incomplete"));
+    }
+    if let Some(solref) = &fields.jnt_solref {
+        if solref.len() != njnt {
+            return Err(invalid("jnt_solref length must equal njnt"));
+        }
+        if solref.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(invalid("jnt_solref values must be finite"));
+        }
+    }
+    if let Some(solimp) = &fields.jnt_solimp {
+        if solimp.len() != njnt {
+            return Err(invalid("jnt_solimp length must equal njnt"));
+        }
+        if solimp.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(invalid("jnt_solimp values must be finite"));
+        }
+    }
+    if let Some(margin) = &fields.jnt_margin {
+        if margin.len() != njnt {
+            return Err(invalid("jnt_margin length must equal njnt"));
+        }
+        if margin.iter().any(|value| !value.is_finite()) {
+            return Err(invalid("jnt_margin values must be finite"));
+        }
+    }
+    if let Some(inverse_weight) = &fields.dof_invweight0 {
+        if inverse_weight.len() != fields.dof_bodyid.len() {
+            return Err(invalid("dof_invweight0 length must equal nv"));
+        }
+        if inverse_weight
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err(invalid("dof_invweight0 values must be positive and finite"));
+        }
+    }
+    Ok(())
+}
+
 fn vector(values: &[f64]) -> Result<(), RobotError> {
     if values
         .iter()
@@ -428,3 +501,7 @@ fn span<T>(values: &[T], start: usize, count: usize) -> Result<&[T], RobotError>
         .get(start..end)
         .ok_or_else(|| invalid("mesh span out of bounds"))
 }
+
+#[cfg(test)]
+#[path = "definition_tests.rs"]
+mod tests;

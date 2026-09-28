@@ -43,6 +43,10 @@ MuJoCo 的[单约束无约束极小值公式](https://mujoco.readthedocs.io/en/l
 
 同一矩阵也已落为仓库脚本 `crates/dev_tools/python/scripts/limit_law_matrix.py`。它对每组重新创建 `MjData`，核对唯一活动行的类型/DOF/Jacobian，记录原生 `efc_aref`、`efc_R`、`J M⁻¹ Jᵀ`、求解外力与步末 q/v；输出 JSON 明确标记目标限位/BAM 未验收。两种本体各 21 组、其中各 15 组步前有活动行。本机原始报告 `.scratch/paired_force_v1/leg_limit_matrix.json` 与 `roller_limit_matrix.json` 的 SHA256 分别为 `c30cfd248770f4eb761672616f6417ead877337624f590f8602459475b730a9e`、`48b23a63c220f9713f38a022a9254d920aad67fd2411ca87119f83fd970f027d`。
 
+独立的只读复算还从**编译模型和初态**重建了全部 42 组单行结果，而不把 `efc_R` 或 `efc_force` 当输入。此冻结模型的二次 `solimp` 过渡给出深度 `x=clamp(depth/0.001,0,1)`、`s(x)=2x²`（`x≤0.5`）或 `1−2(1−x)²`，以及阻抗 `d=0.9+0.05s(x)`。`refsafe` 将 `solref` 的时间常数从 `0.02` 提到 `2/60=1/30 s`；以 `d_width=0.95`，阻尼系数 `b=2/(d_width·τ)`、刚度系数 `k=d/(d_width²·τ²)`，故 `aref=−b·Jv−k·r`。正则项必须是 `R=(1−d)/d·dof_invweight0[head_roll]`，即用编译时的逆权重，不是当前状态的精确逆质量 `A=JM⁻¹Jᵀ`。自由加速度 `a₀=J M⁻¹(qfrc_passive+qfrc_actuator+qfrc_applied−qfrc_bias)`；此单关节行 `Jdot·v=0`。单边力为 `f=max(0,(aref−a₀)/(A+R))`，源关节约束力矩为 `−f`。
+
+源端每种本体的 21 案中，15 案有活动行，其中 10 案有正力、5 案单边投影为零；其余 6 案无行。重算的最大力误差腿式 `1.804e−16 N·m`、轮式 `1.249e−16 N·m`。误用实时 `A` 构造 `R` 则最大误差分别为 `4.306e−6` 与 `4.190e−6 N·m`。只读脚本、摘要与结果在 `.scratch/limit_formula_validation_v1/`，结果 SHA256 为 `4280a2d12e34bbac119c6aa28fa7a5b5cbb2d6218b04aecde7adc41d05432f80`。这仅证明冻结源端**单行**公式；Rapier 的约束前自由加速度、质量、实际限位行和步末状态仍须分别比对。
+
 ```python
 import hashlib
 import json
@@ -96,4 +100,4 @@ for family, (mjb_sha, qpos_sha) in inputs.items():
 
 该首项 oracle 已按上述方式在 scratch 定义中执行。两种本体都只将对应 `jnt_limited[head_roll]` 改为 false，冻结正式定义未更动。注入精确源力后，腿式步末位置/速度差为 `9.15e-9 rad` / `4.28e-7 rad/s`，轮式为 `1.74e-8 rad` / `5.35e-7 rad/s`；报告 SHA 和变体身份见 [同力矩单步对照](paired_actuation_comparison.md)。这把当前单点的主要不一致定位在限位法则；42 组矩阵和多约束情况仍未通过。
 
-实现上，当前 `crates/dev_tools/python/src/bevy_microduck_tools/model_export.py` 的 `FIELDS`、`crates/modules/robot/src/definition.rs` 的 `ModelFields` 都未包含 `jnt_solref`、`jnt_solimp`、`jnt_margin`。`robot_builder.rs` 仅将 `jnt_range` 变成 Rapier 硬限位。源相容实现应先补齐并校验这些编译字段及 `refsafe`/步长语义，而不是硬编码本页数值。Rapier 的 `GenericJoint.softness` 是整条关节的共同设置，也影响锁定轴，不能当成独立的 MuJoCo 限位旋钮。即使本页单行实验通过，接触/多限位耦合求解与 BAM `previous_solve_load` 仍需单独验收。
+编译导出器现已接入 `jnt_solref`、`jnt_solimp`、`jnt_margin` 和 `dof_invweight0`，Rust 定义将四者作为完整集合校验长度与有限值；旧冻结 JSON/RON 仍可加载，且重新序列化不凭空补字段。用两份源 `.mjb` 生成的 scratch 增强定义分别通过真实 `compiled_definition` 校验，但**正式冻结定义未重导出或晋升**，因此生产入口还不能凭它计算限位。`robot_builder.rs` 仍仅将 `jnt_range` 变成 Rapier 硬限位。源相容实现还要固定 `refsafe`/步长，比较目标端约束前自由加速度和质量，再验实际行的力与终态；不能硬编码本页数值。Rapier 的 `GenericJoint.softness` 是整条关节的共同设置，也影响锁定轴，不能当成独立的 MuJoCo 限位旋钮。即使单行实验通过，接触/多限位耦合求解与 BAM `previous_solve_load` 仍需单独验收。

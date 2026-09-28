@@ -11,8 +11,9 @@ from .source_adapter import JOINT_ORDER
 
 FIELDS = (
     "body_parentid", "body_pos", "body_quat", "body_mass", "body_inertia", "body_ipos", "body_iquat",
-    "jnt_type", "jnt_bodyid", "jnt_qposadr", "jnt_dofadr", "jnt_pos", "jnt_axis", "jnt_range", "jnt_limited", "jnt_stiffness",
-    "dof_bodyid", "dof_jntid", "dof_armature", "dof_damping", "dof_frictionloss", "dof_solref", "dof_solimp",
+    "jnt_type", "jnt_bodyid", "jnt_qposadr", "jnt_dofadr", "jnt_pos", "jnt_axis", "jnt_range", "jnt_limited",
+    "jnt_solref", "jnt_solimp", "jnt_margin", "jnt_stiffness",
+    "dof_bodyid", "dof_jntid", "dof_armature", "dof_damping", "dof_frictionloss", "dof_invweight0", "dof_solref", "dof_solimp",
     "geom_type", "geom_bodyid", "geom_pos", "geom_quat", "geom_size", "geom_dataid",
     "geom_contype", "geom_conaffinity", "geom_condim", "geom_friction", "geom_solref", "geom_solimp", "geom_priority",
     "mesh_vertadr", "mesh_vertnum", "mesh_vert", "mesh_faceadr", "mesh_facenum", "mesh_face",
