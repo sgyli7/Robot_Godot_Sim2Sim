@@ -1,0 +1,71 @@
+name: Bevy Sim2Sim CPU
+
+on:
+  pull_request:
+    paths:
+      - "Bevy_Sim2Sim/**"
+      - ".github/workflows/bevy_sim2sim_cpu.yml"
+  push:
+    branches:
+      - main
+      - "codex/**"
+    paths:
+      - "Bevy_Sim2Sim/**"
+      - ".github/workflows/bevy_sim2sim_cpu.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust format, tests, and structure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: Bevy_Sim2Sim
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install Linux build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libx11-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Run CPU workspace tests
+        run: cargo test --locked --workspace
+      - name: Check project structure
+        run: cargo run --locked -p dev_tools_minigame --bin check_structure -- .
+
+  python:
+    name: Installed Python wheel tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: Bevy_Sim2Sim/crates/dev_tools/python
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: "0.12.8"
+      - name: Build and install the package
+        run: |
+          uv build --wheel --sdist --out-dir dist
+          uv venv --python 3.12 .venv-ci
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "$wheel"
+          uv pip install --python .venv-ci/bin/python "$wheel" 'pytest==9.1.1'
+      - name: Test the installed package
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          Bevy_Sim2Sim/crates/dev_tools/python/.venv-ci/bin/python -m pytest -q \
+            Bevy_Sim2Sim/crates/dev_tools/python/tests
