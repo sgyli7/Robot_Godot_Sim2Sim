@@ -7,7 +7,7 @@
 use std::{env, fs, path::Path};
 
 use rapier3d::prelude::Multibody;
-use robot_minigame::definition::RobotDefinition;
+use robot_minigame::{basis::source_to_engine_vector, definition::RobotDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use simulation_minigame::{SimulationWorld, robot_builder::build_structure};
@@ -43,12 +43,12 @@ fn run(args: &[String]) -> Result<Value, String> {
     let qvel_sha256 = if args.len() == 7 {
         let bytes = read_checked(&args[4], &args[5])?;
         let qvel: Vec<f64> = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        if qvel.len() != definition.model().counts.nv
-            || qvel.len() < 6
-            || qvel.iter().any(|value| !value.is_finite())
-            || qvel[..6].iter().any(|value| *value != 0.0)
-        {
-            return Err("qvel must have source nv finite entries and a stationary root".into());
+        if qvel.len() != definition.model().counts.nv || qvel.len() < 6 {
+            return Err("qvel must have source nv entries".into());
+        }
+        let qvel: Vec<f32> = qvel.into_iter().map(|value| value as f32).collect();
+        if qvel.iter().any(|value| !value.is_finite()) {
+            return Err("source qvel exceeds the float32 backend range".into());
         }
         let world = &mut simulation.world;
         let first = assembly
@@ -59,12 +59,18 @@ fn run(args: &[String]) -> Result<Value, String> {
             .multibody_joints
             .get_mut(first.handle)
             .ok_or("source articulation disappeared")?;
+        let linear = source_to_engine_vector([qvel[0], qvel[1], qvel[2]]);
+        let angular = source_to_engine_vector([qvel[3], qvel[4], qvel[5]]);
+        for (index, velocity) in [
+            linear[0], linear[1], linear[2], angular[0], angular[1], angular[2],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            multibody.generalized_velocity_mut()[index] = velocity;
+        }
         for mapping in assembly.joint_mapping() {
-            let velocity = qvel[mapping.source_dof] as f32;
-            if !velocity.is_finite() {
-                return Err("source qvel exceeds the float32 backend range".into());
-            }
-            multibody.generalized_velocity_mut()[mapping.backend_dof] = velocity;
+            multibody.generalized_velocity_mut()[mapping.backend_dof] = qvel[mapping.source_dof];
         }
         multibody.update_rigid_bodies(&mut world.bodies, true);
         world
@@ -74,6 +80,17 @@ fn run(args: &[String]) -> Result<Value, String> {
     } else {
         None
     };
+    let root_mapping = assembly
+        .joint_mapping()
+        .first()
+        .ok_or("source articulation has no mapped joints")?;
+    let (root_multibody, _) = simulation
+        .world
+        .multibody_joints
+        .get(root_mapping.handle)
+        .ok_or("source articulation disappeared")?;
+    let initial_native_root_velocity: [f32; 6] =
+        std::array::from_fn(|index| root_multibody.generalized_velocity()[index]);
     let before = assembly
         .actuator_joint_feedback(&simulation.world, &definition)
         .map_err(|error| error.to_string())?;
@@ -208,6 +225,7 @@ fn run(args: &[String]) -> Result<Value, String> {
         "model_file_sha256":sha256(&definition_bytes),
         "qpos_file_sha256":sha256(&qpos_bytes),
         "qvel_file_sha256":qvel_sha256,
+        "initial_native_root_velocity":initial_native_root_velocity,
         "family":definition.model().family,
         "physics_integrations":snapshot.integration_count,
         "policy_inferences":0,

@@ -61,6 +61,20 @@ def main() -> None:
         raise ValueError("source state or driven channel dimension differs")
     if qvel is not None and len(qvel) != model.nv:
         raise ValueError("source velocity dimension differs")
+    source_root_velocity = qvel[:6] if qvel is not None else [0.0] * 6
+    expected_native_root_velocity = [
+        source_root_velocity[0], source_root_velocity[2], -source_root_velocity[1],
+        source_root_velocity[3], source_root_velocity[5], -source_root_velocity[4],
+    ]
+    actual_native_root_velocity = rapier["initial_native_root_velocity"]
+    if len(actual_native_root_velocity) != 6:
+        raise ValueError("native free-root velocity dimension differs")
+    max_root_velocity_error = max(
+        abs(float(actual) - expected)
+        for actual, expected in zip(actual_native_root_velocity, expected_native_root_velocity)
+    )
+    if max_root_velocity_error > 2e-6:
+        raise ValueError("native free-root velocity differs from source basis mapping")
     if not math.isclose(model.opt.timestep, rapier["actual_step_dt_seconds"], abs_tol=1e-9):
         raise ValueError("solver time steps differ")
     data = mujoco.MjData(model)
@@ -71,15 +85,17 @@ def main() -> None:
     before_contacts = int(data.ncon)
     before_bias = data.qfrc_bias.copy()
     before_constraint = data.qfrc_constraint.copy()
-    before_passive = data.qfrc_passive.copy()
-    before_actuator = data.qfrc_actuator.copy()
     before_qpos = data.qpos.copy()
     before_qvel = data.qvel.copy()
 
-    # MuJoCo's force arrays after mj_step belong to that step's solve; a new
-    # mj_forward below intentionally gives a separate post-state comparison.
+    # MuJoCo's force arrays immediately after mj_step belong to that step's
+    # solve. A new mj_forward below gives a separate post-state comparison.
     mujoco.mj_step(model, data)
     step_contacts = int(data.ncon)
+    solve_bias = data.qfrc_bias.copy()
+    solve_constraint = data.qfrc_constraint.copy()
+    solve_passive = data.qfrc_passive.copy()
+    solve_actuator = data.qfrc_actuator.copy()
     post_qpos = data.qpos.copy()
     post_qvel = data.qvel.copy()
     mujoco.mj_forward(model, data)
@@ -89,6 +105,7 @@ def main() -> None:
 
     rows = []
     force_errors = []
+    forward_to_solve_force_deltas = []
     initial_position_errors = []
     initial_velocity_errors = []
     position_errors = []
@@ -100,7 +117,8 @@ def main() -> None:
         source_qpos = int(model.jnt_qposadr[source_joint])
         if (native["source_joint"], native["source_dof"]) != (source_joint, source_dof):
             raise ValueError(f"driven source identity differs at channel {index}")
-        source_external = float(-before_bias[source_dof] + before_constraint[source_dof])
+        source_external = float(-solve_bias[source_dof] + solve_constraint[source_dof])
+        forward_external = float(-before_bias[source_dof] + before_constraint[source_dof])
         source_external_post = float(-post_bias[source_dof] + post_constraint[source_dof])
         native_external = float(native["candidate_residual_nm"])
         force_error = abs(native_external - source_external)
@@ -109,9 +127,10 @@ def main() -> None:
         position_error = abs(float(native["post_position"]) - float(post_qpos[source_qpos]))
         velocity_error = abs(float(native["post_velocity"]) - float(post_qvel[source_dof]))
         frictionloss = float(model.dof_frictionloss[source_dof])
-        passive = float(before_passive[source_dof])
+        passive = float(solve_passive[source_dof])
         all_frictionless &= frictionloss == 0.0 and passive == 0.0
         force_errors.append(force_error)
+        forward_to_solve_force_deltas.append(abs(source_external - forward_external))
         initial_position_errors.append(initial_position_error)
         initial_velocity_errors.append(initial_velocity_error)
         position_errors.append(position_error)
@@ -126,10 +145,10 @@ def main() -> None:
                 "rapier_initial_velocity": float(native["initial_velocity"]),
                 "initial_position_abs_error_rad": initial_position_error,
                 "initial_velocity_abs_error_rad_s": initial_velocity_error,
-                "mujoco_solve_qfrc_bias_nm": float(before_bias[source_dof]),
-                "mujoco_solve_qfrc_constraint_nm": float(before_constraint[source_dof]),
+                "mujoco_solve_qfrc_bias_nm": float(solve_bias[source_dof]),
+                "mujoco_solve_qfrc_constraint_nm": float(solve_constraint[source_dof]),
                 "mujoco_solve_qfrc_passive_nm": passive,
-                "mujoco_solve_qfrc_actuator_nm": float(before_actuator[source_dof]),
+                "mujoco_solve_qfrc_actuator_nm": float(solve_actuator[source_dof]),
                 "mujoco_dof_frictionloss_nm": frictionloss,
                 "mujoco_external_without_own_friction_nm": source_external,
                 "rapier_candidate_residual_nm": native_external,
@@ -161,8 +180,10 @@ def main() -> None:
         "source_driven_dofs_frictionless": all_frictionless,
         "max_force_abs_error_nm": max(force_errors),
         "rms_force_error_nm": math.sqrt(sum(error * error for error in force_errors) / len(force_errors)),
+        "max_initial_forward_to_step_solve_force_delta_nm": max(forward_to_solve_force_deltas),
         "max_initial_position_abs_error_rad": max(initial_position_errors),
         "max_initial_velocity_abs_error_rad_s": max(initial_velocity_errors),
+        "max_initial_root_velocity_abs_error": max_root_velocity_error,
         "max_post_position_abs_error_rad": max(position_errors),
         "max_post_velocity_abs_error_rad_s": max(velocity_errors),
         "rows": rows,
