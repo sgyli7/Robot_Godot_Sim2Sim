@@ -1,4 +1,3 @@
-
 use super::{
     CompiledModel, ModelCounts, ModelFields, ModelNames, RobotDefinition, SOURCE_JNT_SOLIMP_WIDTH,
     SOURCE_JNT_SOLREF_WIDTH, validate,
