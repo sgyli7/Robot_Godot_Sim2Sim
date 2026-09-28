@@ -10,6 +10,7 @@ use bevy::{
         Render, RenderApp, RenderSystems,
         render_resource::{CachedPipelineState, PipelineCache, PollType},
         renderer::RenderDevice,
+        view::screenshot::{Screenshot, ScreenshotCaptured},
     },
     shader::{Shader, ShaderCacheError},
 };
@@ -21,6 +22,7 @@ use rendering_minigame::{
 };
 use robot_minigame::body_pose::RobotPoseFrame;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use simulation_minigame::fixed_step_runtime::FrameOutcome;
 use std::{
     error::Error,
@@ -30,15 +32,35 @@ use std::{
     time::{Duration, Instant},
 };
 
+const LIVE_SCHEMA: &str = "station_robot_live_preview_v2";
+
 #[derive(Default)]
 struct GpuReadiness {
     ready: bool,
     error: Option<String>,
-    completed_render_passes: u64,
+    render_schedule_cleanup_count: u64,
 }
 
 #[derive(Resource, Clone)]
 struct SharedGpuReadiness(Arc<Mutex<GpuReadiness>>);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct FinalPngReceipt {
+    path: String,
+    sha256: String,
+    bytes: u64,
+    width: u32,
+    height: u32,
+    global_step: u64,
+}
+
+#[derive(Default)]
+struct ScreenshotState {
+    outcome: Option<Result<FinalPngReceipt, String>>,
+}
+
+#[derive(Resource, Clone)]
+struct SharedScreenshotState(Arc<Mutex<ScreenshotState>>);
 
 #[derive(Resource)]
 struct RequiredShaders {
@@ -80,7 +102,7 @@ fn check_gpu_pipelines(
         }
     }
     status.ready = enamel_ready && ink_ready && pending == 0 && status.error.is_none();
-    status.completed_render_passes += 1;
+    status.render_schedule_cleanup_count += 1;
     if status.error.is_some() && pending == 0 {
         if let Err(error) = device.poll(PollType::Wait {
             submission_index: None,
@@ -101,8 +123,11 @@ struct LiveRun {
     last_displayed_step: u64,
     pending_ticks: u128,
     awaiting_final_visual: bool,
-    final_pose_render_passes: Option<u64>,
-    observed_render_passes: u64,
+    final_pose_render_schedule_cleanup_count: Option<u64>,
+    observed_render_schedule_cleanup_count: u64,
+    final_png_path: Option<PathBuf>,
+    screenshot_started: Option<Instant>,
+    final_png_receipt: Option<FinalPngReceipt>,
     report_written: bool,
 }
 
@@ -117,7 +142,7 @@ impl LiveRun {
         let minimum_ticks = self.session.ticks();
         let counts_passed = self.session.finish_expected_steps(actual_steps);
         let report = self.session.report_mut();
-        report["schema"] = json!("station_robot_live_preview_v1");
+        report["schema"] = json!(LIVE_SCHEMA);
         report["scope"] =
             json!("dev_only_live_bevy_single_rapier_world_native_ort_p_only_diagnostic");
         report["minimum_ticks"] = json!(minimum_ticks);
@@ -131,12 +156,18 @@ impl LiveRun {
         report["props_physical"] = json!(false);
         report["live_visual_qualified"] = json!(false);
         report["performance_qualified"] = json!(false);
-        report["completed_render_passes"] = json!(self.observed_render_passes);
-        report["render_passes_after_final_publish"] = json!(
-            self.observed_render_passes
-                .saturating_sub(self.final_pose_render_passes.unwrap_or(0))
+        report["render_schedule_cleanup_count"] =
+            json!(self.observed_render_schedule_cleanup_count);
+        report["render_schedule_cleanups_after_final_publish"] = json!(
+            self.observed_render_schedule_cleanup_count
+                .saturating_sub(self.final_pose_render_schedule_cleanup_count.unwrap_or(0))
         );
-        let accepted = passed && counts_passed && actual_steps >= minimum_ticks as u64;
+        report["final_png_required"] = json!(self.final_png_path.is_some());
+        report["final_png"] = json!(self.final_png_receipt);
+        let accepted = passed
+            && counts_passed
+            && actual_steps >= minimum_ticks as u64
+            && (self.final_png_path.is_none() || self.final_png_receipt.is_some());
         report["passed"] = json!(accepted);
         report["error"] = match error {
             Some(reason) => json!(reason),
@@ -153,6 +184,30 @@ impl LiveRun {
         self.report_written = true;
         Ok(())
     }
+}
+
+fn validate_final_png(
+    requested_path: &Path,
+    receipt: &FinalPngReceipt,
+    expected_step: u64,
+) -> Result<(), String> {
+    if receipt.global_step != expected_step || receipt.width == 0 || receipt.height == 0 {
+        return Err("final screenshot does not describe the frozen visual frame".into());
+    }
+    let canonical = requested_path
+        .canonicalize()
+        .map_err(|error| format!("final screenshot path: {error}"))?;
+    if receipt.path != canonical.to_string_lossy() {
+        return Err("final screenshot receipt names another file".into());
+    }
+    let bytes = fs::read(&canonical).map_err(|error| format!("read final screenshot: {error}"))?;
+    if bytes.is_empty()
+        || bytes.len() as u64 != receipt.bytes
+        || format!("{:x}", Sha256::digest(&bytes)) != receipt.sha256
+    {
+        return Err("final screenshot bytes do not match their SHA256 receipt".into());
+    }
+    Ok(())
 }
 
 impl Drop for LiveRun {
@@ -288,19 +343,39 @@ fn advance_live(
     run.pending_ticks = outcome.pending_ticks;
     run.display_frames += 1;
     if run.session.global_step() >= run.session.ticks() as u64 {
+        if run.final_png_path.is_some() {
+            // Leave the completed physics frame frozen while framing its robot.
+            camera.view = StationView::Follow;
+            camera.target += Vec3::Y * 0.02;
+        }
         run.awaiting_final_visual = true;
-        run.final_pose_render_passes = Some(gpu.0.lock().unwrap().completed_render_passes);
+        run.final_pose_render_schedule_cleanup_count =
+            Some(gpu.0.lock().unwrap().render_schedule_cleanup_count);
     }
 }
 
 fn verify_final_visual(
+    mut commands: Commands,
     mut run: NonSendMut<LiveRun>,
     visual: Res<RobotVisualStatus>,
     gpu: Res<SharedGpuReadiness>,
+    screenshot: Res<SharedScreenshotState>,
     mut exit: MessageWriter<AppExit>,
     mut input: ResMut<RobotVisualInput>,
 ) {
     if !run.awaiting_final_visual || run.report_written {
+        return;
+    }
+    if run
+        .screenshot_started
+        .is_some_and(|started| started.elapsed() > Duration::from_secs(90))
+    {
+        fail(
+            &mut run,
+            &mut input,
+            &mut exit,
+            "final screenshot readback timed out".into(),
+        );
         return;
     }
     let gpu = gpu.0.lock().unwrap();
@@ -311,10 +386,13 @@ fn verify_final_visual(
     if !gpu.ready {
         return;
     }
-    run.observed_render_passes = gpu.completed_render_passes;
+    run.observed_render_schedule_cleanup_count = gpu.render_schedule_cleanup_count;
+    let required_cleanups = if run.final_png_path.is_some() { 2 } else { 1 };
     if run
-        .final_pose_render_passes
-        .is_none_or(|before| gpu.completed_render_passes <= before)
+        .final_pose_render_schedule_cleanup_count
+        .is_none_or(|before| {
+            gpu.render_schedule_cleanup_count < before.saturating_add(required_cleanups)
+        })
     {
         if run.started.elapsed() > Duration::from_secs(120) {
             drop(gpu);
@@ -322,7 +400,7 @@ fn verify_final_visual(
                 &mut run,
                 &mut input,
                 &mut exit,
-                "final pose was never followed by a GPU render pass".into(),
+                "final pose was never followed by a render-schedule Cleanup run".into(),
             );
         }
         return;
@@ -331,6 +409,68 @@ fn verify_final_visual(
     let expected = run.session.global_step();
     match visual.phase() {
         RobotVisualPhase::Ready { global_step, .. } if *global_step == expected => {
+            if let Some(path) = run.final_png_path.clone() {
+                if run.screenshot_started.is_none() {
+                    commands.spawn(Screenshot::primary_window()).observe(
+                        move |captured: On<ScreenshotCaptured>,
+                              state: Res<SharedScreenshotState>| {
+                            let width = captured.image.texture_descriptor.size.width;
+                            let height = captured.image.texture_descriptor.size.height;
+                            let result = (|| {
+                                if path.exists() {
+                                    return Err(format!(
+                                        "final screenshot output already exists: {}",
+                                        path.display()
+                                    ));
+                                }
+                                captured
+                                    .image
+                                    .clone()
+                                    .try_into_dynamic()
+                                    .map_err(|error| {
+                                        format!("final screenshot conversion: {error}")
+                                    })?
+                                    .to_rgb8()
+                                    .save(&path)
+                                    .map_err(|error| {
+                                        format!("save final screenshot {}: {error}", path.display())
+                                    })?;
+                                let bytes = fs::read(&path)
+                                    .map_err(|error| format!("read final screenshot: {error}"))?;
+                                let canonical = path
+                                    .canonicalize()
+                                    .map_err(|error| format!("final screenshot path: {error}"))?;
+                                Ok(FinalPngReceipt {
+                                    path: canonical.to_string_lossy().into_owned(),
+                                    sha256: format!("{:x}", Sha256::digest(&bytes)),
+                                    bytes: bytes.len() as u64,
+                                    width,
+                                    height,
+                                    global_step: expected,
+                                })
+                            })();
+                            state.0.lock().unwrap().outcome = Some(result);
+                        },
+                    );
+                    run.screenshot_started = Some(Instant::now());
+                    return;
+                }
+                let captured = screenshot.0.lock().unwrap().outcome.take();
+                match captured {
+                    None => return,
+                    Some(Err(error)) => {
+                        fail(&mut run, &mut input, &mut exit, error);
+                        return;
+                    }
+                    Some(Ok(receipt)) => {
+                        if let Err(error) = validate_final_png(&path, &receipt, expected) {
+                            fail(&mut run, &mut input, &mut exit, error);
+                            return;
+                        }
+                        run.final_png_receipt = Some(receipt);
+                    }
+                }
+            }
             let phase = visual.phase().clone();
             match run.report(true, None, &phase) {
                 Ok(()) if run.session.report()["passed"] == true => {
@@ -382,13 +522,23 @@ fn validate_live_exit(exit: AppExit, report: &Value) -> Result<(), String> {
             "live diagnostic window closed before successful completion; see report".into(),
         );
     }
+    if report["final_png_required"] == true {
+        let receipt: FinalPngReceipt = serde_json::from_value(report["final_png"].clone())
+            .map_err(|error| format!("final screenshot receipt is missing: {error}"))?;
+        let expected_step = report["actual_completed_ticks"]
+            .as_u64()
+            .ok_or("final screenshot receipt has no completed tick")?;
+        validate_final_png(Path::new(&receipt.path), &receipt, expected_step)?;
+    }
     Ok(())
 }
 
-fn run(args: &[String], output: PathBuf) -> Result<(), String> {
+fn run(args: &[String], output: PathBuf, final_png_path: Option<PathBuf>) -> Result<(), String> {
     let mut report = initial_report();
-    report["schema"] = json!("station_robot_live_preview_v1");
+    report["schema"] = json!(LIVE_SCHEMA);
     report["scope"] = json!("dev_only_live_bevy_single_rapier_world_native_ort_p_only_diagnostic");
+    report["final_png_required"] = json!(final_png_path.is_some());
+    report["final_png"] = Value::Null;
     let session = match prepare(&args[..9], &mut report) {
         Ok(session) => session,
         Err(error) => {
@@ -442,11 +592,15 @@ fn run(args: &[String], output: PathBuf) -> Result<(), String> {
         last_displayed_step: 0,
         pending_ticks: 0,
         awaiting_final_visual: false,
-        final_pose_render_passes: None,
-        observed_render_passes: 0,
+        final_pose_render_schedule_cleanup_count: None,
+        observed_render_schedule_cleanup_count: 0,
+        final_png_path,
+        screenshot_started: None,
+        final_png_receipt: None,
         report_written: false,
     };
     let readiness = SharedGpuReadiness(Arc::new(Mutex::new(GpuReadiness::default())));
+    let screenshot = SharedScreenshotState(Arc::new(Mutex::new(ScreenshotState::default())));
     let mut app = App::new();
     app.insert_resource(bevy::winit::WinitSettings::continuous())
         .insert_resource(scene)
@@ -454,6 +608,7 @@ fn run(args: &[String], output: PathBuf) -> Result<(), String> {
         .insert_resource(model)
         .insert_resource(input)
         .insert_resource(readiness.clone())
+        .insert_resource(screenshot)
         .insert_non_send(live)
         .add_plugins(
             DefaultPlugins
@@ -500,22 +655,47 @@ fn run(args: &[String], output: PathBuf) -> Result<(), String> {
     validate_live_exit(result, &completed_report)
 }
 
+fn parse_final_png_arg(args: &[String]) -> Result<Option<PathBuf>, String> {
+    let usage = "usage: station_robot_live_preview MODEL MODEL_SHA QPOS QPOS_SHA ASSETS ONNX POLICY_CONTRACT|--legacy-original NATIVE_ORT_LIB MIN_TICKS APPEARANCE APPEARANCE_SHA NEW_REPORT.json [--final-png NEW_IMAGE.png]";
+    match args.len() {
+        12 => Ok(None),
+        14 if args[12] == "--final-png" => {
+            let path = PathBuf::from(&args[13]);
+            if path.extension().and_then(|extension| extension.to_str()) != Some("png") {
+                return Err("final screenshot output must have a .png extension".into());
+            }
+            Ok(Some(path))
+        }
+        _ => Err(usage.into()),
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 12 {
-        return Err("usage: station_robot_live_preview MODEL MODEL_SHA QPOS QPOS_SHA ASSETS ONNX POLICY_CONTRACT|--legacy-original NATIVE_ORT_LIB MIN_TICKS APPEARANCE APPEARANCE_SHA NEW_REPORT.json".into());
-    }
+    let final_png_path = parse_final_png_arg(&args)?;
     let output = PathBuf::from(&args[11]);
     if output.exists() {
         return Err("live report output must be new".into());
     }
-    let result = run(&args, output.clone());
+    if let Some(path) = &final_png_path {
+        if path == &output || path.exists() {
+            return Err("final screenshot output must be new and distinct from the report".into());
+        }
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let result = run(&args, output.clone(), final_png_path.clone());
     if let Err(error) = &result {
         if !output.exists() {
             let mut report = initial_report();
-            report["schema"] = json!("station_robot_live_preview_v1");
+            report["schema"] = json!(LIVE_SCHEMA);
             report["scope"] =
                 json!("dev_only_live_bevy_single_rapier_world_native_ort_p_only_diagnostic");
+            report["final_png_required"] = json!(final_png_path.is_some());
             report["error"] = json!(error);
             fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
         }
@@ -618,6 +798,29 @@ mod tests {
         assert!(validate_live_exit(AppExit::Success, &json!({"passed": false})).is_err());
         assert!(validate_live_exit(AppExit::Success, &json!({})).is_err());
         assert!(validate_live_exit(AppExit::Success, &json!({"passed": true})).is_ok());
+        assert!(
+            validate_live_exit(
+                AppExit::Success,
+                &json!({"passed": true, "final_png_required": true})
+            )
+            .is_err()
+        );
         assert!(validate_live_exit(AppExit::error(), &json!({"passed": true})).is_err());
+    }
+
+    #[test]
+    fn final_screenshot_is_an_explicit_optional_png_argument() {
+        let mut arguments = vec!["input".to_owned(); 12];
+        assert!(parse_final_png_arg(&arguments).unwrap().is_none());
+        arguments.push("--final-png".into());
+        arguments.push("capture.png".into());
+        assert_eq!(
+            parse_final_png_arg(&arguments).unwrap(),
+            Some(PathBuf::from("capture.png"))
+        );
+        arguments[13] = "capture.jpg".into();
+        assert!(parse_final_png_arg(&arguments).is_err());
+        arguments[12] = "--not-final-png".into();
+        assert!(parse_final_png_arg(&arguments).is_err());
     }
 }

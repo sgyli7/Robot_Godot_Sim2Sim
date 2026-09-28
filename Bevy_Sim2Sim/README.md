@@ -2,7 +2,7 @@
 
 使用 Bevy、Rapier 和 CPU ONNX 推理实现 MuJoCo → Bevy 的 MicroDuck Sim2Sim。当前目标是完整 Pollen/mjlab 本体、BAM 执行器、真实 60 Hz 物理与策略、九技能和 Sprint，以及重新设计的科学站。
 
-当前为开发中的工程：正式业务库已有单世界 60 Hz 固定步生命周期驱动；九个旧 ONNX 已通过它在 v18AJ 科学站重新完成真实 60/60 推理、Rapier 积分与 GPU 视频截帧。开发工具的实时 Bevy 窗口也已显示由同一固定步运行时完成的机器人位姿，首个真实窗口探针的推理、积分、发布各 64 次，但调试构建积欠 416 Tick，尚未达到实时性能资格。这仍是简化 P-only 诊断，旧策略本来按 200 Hz 物理／50 Hz 推理训练，多个模型失稳；BAM 外载、源接触等价、技能、场景交互和正式游戏循环尚未验收。[九模型新视频与限制](docs/legacy_nine_onnx_aj_fixed_step_video.md)、[固定步与实时接线收据](docs/fixed_step_runtime_probe.md)。
+当前为开发中的工程：正式业务库已有单世界 60 Hz 固定步生命周期驱动；九个旧 ONNX 已通过它在 v18AJ 科学站重新完成真实 60/60 推理、Rapier 积分与 GPU 视频截帧。开发工具的实时 Bevy 窗口也已把同一固定步运行时完成的机器人位姿写入画面系统，并读回最终第 64 Tick 的真实 PNG；该窗口推理、积分、发布各 64 次。无截图发布构建持续跑到 600 Tick 时仍欠 3,899 Tick，尚未达到实时性能资格。这仍是简化 P-only 诊断，旧策略本来按 200 Hz 物理／50 Hz 推理训练，多个模型失稳；BAM 外载、源接触等价、技能、场景交互和正式游戏循环尚未验收。[九模型新视频与限制](docs/legacy_nine_onnx_aj_fixed_step_video.md)、[固定步与实时接线收据](docs/fixed_step_runtime_probe.md)。
 
 - [开发交接入口](docs/handoff.md)
 - [完整实施计划](docs/implementation_plan.md)
