@@ -1,6 +1,10 @@
-# v18AJ 九个原始 ONNX：FixedStepRuntime 重新截帧
+# v18AJ 九个原始 ONNX：FixedStepRuntime 失败诊断录像
 
-日期：2026-09-28。本次在已冻结的 v18AJ 科学站上，使用开发诊断入口通过 `FixedStepRuntime` 运行九个原始 ONNX 的真实 60 Hz Rapier 积分和 60 Hz 原生 ORT 推理，并从**新驱动报告**重新捕获九段 Bevy GPU 视频。旧的 [AJ 录像与报告](legacy_nine_onnx_aj_v7_rerecord.md)保留，本次媒体和收据位于独立 `.scratch/legacy_nine_native_probe/fixed_step_driver_video_v1/`。本批仍采用简化 P-only 力矩，不能当作 BAM、完整接触或技能验收。
+**行为判定：失败，不可作为 Bevy_Sim2Sim 交付视频。** 我之前仅核对计数、来源与九段中点画面，就把这段合辑放进进度成果，审查覆盖不足。现重新检查 `alpha_stand` 全程每 0.2 秒的真实 GPU 帧以及九段的起点、四分点、中点、四分之三点和终点：Idle 从约 0.8 秒出现大幅摆动，约 1.6 秒失去平衡、2 秒倒地，4 秒仍躺倒；行走、坐站、双踢和轮行也出现明显翻倒。`alpha_stand` 的原始根体姿态在第 0／45／120／240 个 60 Hz 物理 Tick 相对初态分别旋转约 0°／32°／72°／131°。这些是行为失败证据；2,400 次真实 ONNX 推理和积分只能证明接线工作，不能抵消失败。逐帧审查图保存在本地 `combined_review/alpha_stand_every_0p2s.png`，九段时间采样图为 `combined_review/nine_policy_time_samples.png`。
+
+[Idle 首轮隔离](idle_failure_isolation.md)已用同一原始 ONNX 在旧 MuJoCo 本体上验证：60/60 运行 4 秒仍直立，因此不能把这次崩溃简单归因于频率变化；首个分叉在物理积分，完整根因仍待同一冻结 BAM 本体的源／目标对照。
+
+日期：2026-09-28。本次在已冻结的 v18AJ 科学站上，使用开发诊断入口通过 `FixedStepRuntime` 运行九个原始 ONNX 的真实 60 Hz Rapier 积分和 60 Hz 原生 ORT 推理，并从**新驱动报告**重新捕获九段 Bevy GPU 视频。旧的 [AJ 录像与报告](legacy_nine_onnx_aj_v7_rerecord.md)保留，本次媒体和收据位于独立 `.scratch/legacy_nine_native_probe/fixed_step_driver_video_v1/`。本批仍采用简化 P-only 力矩；控制、接触、BAM、行为与技能资格均未通过。
 
 九份新源报告在 [固定步回归](fixed_step_runtime_probe.md)中各重复运行两次且字节一致，均带 `fixed_step_driver="FixedStepRuntime"`、60 Hz `final_clock`、零待处理 Tick，合计 **2,400 次真实积分和 2,400 次 ORT 推理**。新驱动报告相对于旧 AJ 报告只增加驱动与时钟收据；原有逐 Tick 观测、动作、力矩、接触计数和机器人姿态完全相同。本次 GPU 捕获重新读取九份新报告，独立生成 1,209 张 PNG 和九个 MP4，绝非重命名旧媒体。每段收据都把新物理报告 SHA、模型身份、取帧序号与姿态 SHA 绑定起来。
 

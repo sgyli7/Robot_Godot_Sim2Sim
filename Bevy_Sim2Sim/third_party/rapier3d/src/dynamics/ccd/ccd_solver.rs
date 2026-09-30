@@ -1,3 +1,4 @@
+// Local modification: fixed-target cache invalidation and regression tests.
 use crate::alloc_prelude::*;
 use crate::dynamics::{IntegrationParameters, IslandManager, RigidBodySet};
 use crate::geometry::{
@@ -31,6 +32,92 @@ pub struct CCDSolver {
     /// the scene-change flag — re-scanning every collider each step dominated CCD on large scenes.
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
     fixed_targets_cache: Option<FixedTargetsCache>,
+    #[cfg(test)]
+    fixed_targets_cache_builds: usize,
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use crate::prelude::*;
+
+    #[test]
+    fn torque_updates_reuse_the_fixed_geometry_cache() {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        world.insert(
+            RigidBodyBuilder::fixed().translation(Vector::new(1000.0, 0.0, 0.0)),
+            ColliderBuilder::cuboid(0.05, 5.0, 5.0),
+        );
+        let (body, _) = world.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(-3.0, 0.0, 0.0))
+                .linvel(Vector::new(200.0, 0.0, 0.0)),
+            ColliderBuilder::ball(0.1),
+        );
+        world.step();
+        assert_eq!(world.ccd_solver.fixed_targets_cache_builds, 1);
+        for (_, rb) in world.bodies.iter_mut() {
+            rb.reset_torques(true);
+        }
+        world.bodies[body].add_torque(Vector::Y, true);
+        world.step();
+        assert_eq!(
+            world.ccd_solver.fixed_targets_cache_builds, 1,
+            "actuation must not rescan unchanged fixed geometry"
+        );
+    }
+
+    #[test]
+    fn inactive_ccd_does_not_scan_fixed_geometry() {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        world.insert(
+            RigidBodyBuilder::fixed(),
+            ColliderBuilder::cuboid(0.05, 5.0, 5.0),
+        );
+        world.insert(
+            RigidBodyBuilder::dynamic().translation(Vector::new(-3.0, 0.0, 0.0)),
+            ColliderBuilder::ball(0.1),
+        );
+        world.step();
+        assert!(
+            world.ccd_solver.fixed_targets_cache.is_none(),
+            "a step with no CCD-active body must not build the fixed geometry cache"
+        );
+    }
+
+    #[test]
+    fn inactive_ccd_invalidates_a_changed_scene_before_future_sweeps() {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        let (wall, _) = world.insert(
+            RigidBodyBuilder::fixed(),
+            ColliderBuilder::cuboid(0.05, 5.0, 5.0),
+        );
+        let (body, _) = world.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(-3.0, 0.0, 0.0))
+                .linvel(Vector::new(200.0, 0.0, 0.0)),
+            ColliderBuilder::ball(0.1),
+        );
+        world.step();
+        assert!(world.bodies[body].translation().x < 0.0);
+        assert!(world.ccd_solver.fixed_targets_cache.is_some());
+        world.bodies[body].set_translation(Vector::new(-3.0, 0.0, 0.0), true);
+        world.bodies[body].set_linvel(Vector::ZERO, true);
+        world.bodies[wall].set_translation(Vector::new(10.0, 0.0, 0.0), true);
+        world.step();
+        assert!(
+            world.ccd_solver.fixed_targets_cache.is_none(),
+            "scene changes during an inactive step must invalidate old targets"
+        );
+        world.bodies[body].set_linvel(Vector::new(200.0, 0.0, 0.0), true);
+        world.step();
+        assert!(
+            world.bodies[body].translation().x > 0.0,
+            "the later sweep must not hit the wall's stale position"
+        );
+    }
 }
 
 /// The AABB loosening the cached fixed-target list was built with, paired with the list
@@ -38,6 +125,10 @@ pub struct CCDSolver {
 type FixedTargetsCache = (Real, Option<Vec<(ColliderHandle, Aabb)>>);
 
 impl CCDSolver {
+    /// Invalidate fixed targets immediately, including steps without active CCD.
+    pub(crate) fn invalidate_fixed_targets_cache(&mut self) {
+        self.fixed_targets_cache = None;
+    }
     /// Initializes a new CCD solver
     pub fn new() -> Self {
         Self::default()
@@ -203,6 +294,10 @@ impl CCDSolver {
                     .as_ref()
                     .is_some_and(|(p, _)| *p == prediction);
             if !cache_valid {
+                #[cfg(test)]
+                {
+                    self.fixed_targets_cache_builds += 1;
+                }
                 self.fixed_targets_cache = Some((
                     prediction,
                     collect_fixed_targets(bodies, colliders, prediction),

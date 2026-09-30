@@ -17,7 +17,7 @@ use bevy::{
 };
 use robot_minigame::{
     basis::{source_to_engine_rotation, source_to_engine_vector},
-    body_pose::RobotPoseFrame,
+    body_pose::{RobotBodyPose, RobotPoseFrame},
     definition::RobotDefinition,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -248,12 +248,9 @@ pub struct RobotVisualInput {
     rejected_rebind: Option<String>,
 }
 impl RobotVisualInput {
-    /// The preview checks its complete initial snapshot before opening a window.
+    /// Validate the complete current display input against the immutable model.
     /// Provenance still belongs to the external sole-world frame producer.
-    pub(crate) fn validate_for_model(
-        &self,
-        definition: &RobotDefinition,
-    ) -> Result<(), RobotVisualError> {
+    pub fn validate_for_model(&self, definition: &RobotDefinition) -> Result<(), RobotVisualError> {
         if self.binding.model_file_sha256 != definition.file_sha256()
             || self.binding.body_count != definition.model().counts.nbody
         {
@@ -674,16 +671,13 @@ fn apply_robot_poses(
     })();
     match candidate {
         Ok(Some(frame)) => {
-            for (body, mut transform, mut visibility) in &mut bodies {
+            for (body, transform, visibility) in &mut bodies {
                 let pose = frame
                     .poses
                     .iter()
                     .find(|p| p.source_body_id == body.source_body_id)
                     .unwrap();
-                transform.translation = Vec3::from_array(pose.translation);
-                transform.rotation = Quat::from_array(pose.rotation_xyzw);
-                transform.scale = Vec3::ONE;
-                *visibility = Visibility::Inherited;
+                apply_body_pose(transform, visibility, pose);
             }
             status.phase = RobotVisualPhase::Ready {
                 episode_id: frame.episode_id,
@@ -711,10 +705,73 @@ fn apply_robot_poses(
     }
 }
 
+/// Apply one pose after the caller has validated the complete display boundary.
+fn apply_body_pose(
+    mut transform: Mut<Transform>,
+    mut visibility: Mut<Visibility>,
+    pose: &RobotBodyPose,
+) {
+    transform.set_if_neq(Transform {
+        translation: Vec3::from_array(pose.translation),
+        rotation: Quat::from_array(pose.rotation_xyzw),
+        scale: Vec3::ONE,
+    });
+    visibility.set_if_neq(Visibility::Inherited);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use robot_minigame::body_pose::RobotBodyPose;
+
+    #[test]
+    fn repeated_body_pose_preserves_change_detection_and_can_restore_visibility() {
+        let mut world = World::new();
+        let entity = world.spawn((Transform::default(), Visibility::Hidden)).id();
+        let pose = &frame().poses[0];
+        let mut query = world.query::<(&mut Transform, &mut Visibility)>();
+        let (transform, visibility) = query.get_mut(&mut world, entity).unwrap();
+        apply_body_pose(transform, visibility, pose);
+        world.clear_trackers();
+        let (transform, visibility) = query.get_mut(&mut world, entity).unwrap();
+        apply_body_pose(transform, visibility, pose);
+        assert!(
+            !world
+                .entity(entity)
+                .get_ref::<Transform>()
+                .unwrap()
+                .is_changed()
+        );
+        assert!(
+            !world
+                .entity(entity)
+                .get_ref::<Visibility>()
+                .unwrap()
+                .is_changed()
+        );
+        *world.get_mut::<Visibility>(entity).unwrap() = Visibility::Hidden;
+        world.clear_trackers();
+        let (transform, visibility) = query.get_mut(&mut world, entity).unwrap();
+        apply_body_pose(transform, visibility, pose);
+        assert_eq!(
+            *world.get::<Visibility>(entity).unwrap(),
+            Visibility::Inherited
+        );
+        assert!(
+            !world
+                .entity(entity)
+                .get_ref::<Transform>()
+                .unwrap()
+                .is_changed()
+        );
+        assert!(
+            world
+                .entity(entity)
+                .get_ref::<Visibility>()
+                .unwrap()
+                .is_changed()
+        );
+    }
 
     #[test]
     fn robot_style_requires_finite_bounded_values() {

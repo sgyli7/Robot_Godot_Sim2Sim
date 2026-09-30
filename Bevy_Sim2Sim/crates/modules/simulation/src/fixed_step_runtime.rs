@@ -10,7 +10,8 @@ use common_minigame::events::{EventError, TickEvent, TickEventQueue};
 use thiserror::Error;
 
 use crate::{
-    BodyTorque, MAX_STEPS_PER_FRAME, PHYSICS_HZ, SimulationError, SimulationWorld, StepSnapshot,
+    BodyTorque, MAX_STEPS_PER_FRAME, PHYSICS_HZ, RapierCounterSample, SimulationError,
+    SimulationWorld, StepSnapshot,
 };
 
 /// Ticks completed in one display frame, plus the whole-tick debt still retained.
@@ -149,6 +150,16 @@ impl<E> FixedStepRuntime<E> {
         self.world.snapshot()
     }
 
+    /// Enable the backend's built-in stage timers for development profiling.
+    pub fn enable_rapier_counters(&mut self) {
+        self.world.enable_rapier_counters();
+    }
+
+    /// Read only the latest completed Rapier step's built-in counters.
+    pub fn rapier_counter_sample(&self) -> RapierCounterSample {
+        self.world.rapier_counter_sample()
+    }
+
     /// Read the shared clock, including retained debt.
     pub fn clock_snapshot(&self) -> ClockSnapshot {
         self.clock.snapshot()
@@ -193,16 +204,22 @@ impl<E> FixedStepRuntime<E> {
         self.halt(scene_kept_boundary)?;
 
         let before = controller.inference_count();
-        let inferred = controller
-            .infer_and_actuate(&self.world, boundary)
-            .map_err(FixedStepError::Controller);
+        let inferred = {
+            let _span = tracing::info_span!("sim2sim_infer_and_actuate").entered();
+            controller
+                .infer_and_actuate(&self.world, boundary)
+                .map_err(FixedStepError::Controller)
+        };
         let torques = self.halt(inferred)?;
         let after = controller.inference_count();
         if after.checked_sub(before) != Some(1) {
             return self.halt(Err(FixedStepError::InferenceCount { before, after }));
         }
 
-        let stepped = self.world.step_with_torques(&torques).map_err(Into::into);
+        let stepped = {
+            let _span = tracing::info_span!("sim2sim_rapier_step").entered();
+            self.world.step_with_torques(&torques).map_err(Into::into)
+        };
         let snapshot = self.halt(stepped)?;
         let committed = self.clock.commit_tick().map_err(Into::into);
         let clock_step = self.halt(committed)?;
@@ -214,9 +231,12 @@ impl<E> FixedStepRuntime<E> {
             };
         self.halt(agreed)?;
 
-        let published = controller
-            .publish(&snapshot)
-            .map_err(FixedStepError::Controller);
+        let published = {
+            let _span = tracing::info_span!("sim2sim_publish").entered();
+            controller
+                .publish(&snapshot)
+                .map_err(FixedStepError::Controller)
+        };
         self.halt(published)
     }
 }

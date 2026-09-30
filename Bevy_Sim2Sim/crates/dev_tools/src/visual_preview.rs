@@ -1,30 +1,36 @@
 //! Actual GPU preview, pipeline status and screenshot capture lifecycle.
 mod sequence;
 
-use crate::{
-    PreviewOptions, RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin,
-    RobotVisualStatus, RobotVisualSystems, StationCameraControl, StationScene, StationVisualPlugin,
-};
 use bevy::{
     app::AppExit,
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
-        render_resource::{CachedPipelineState, PipelineCache, PollType},
-        renderer::RenderDevice,
         view::screenshot::{Screenshot, ScreenshotCaptured},
     },
-    shader::{Shader, ShaderCacheError},
+};
+use rendering_minigame::{
+    RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin, RobotVisualStatus,
+    RobotVisualSystems, StationCameraControl, StationLabelBakeStatus, StationRenderHealth,
+    StationScene, StationVisualPlugin, install_station_render_health, validate_render_asset_root,
 };
 pub use sequence::{
     RobotPoseCaptureFrame, RobotPoseSequenceCaptureOptions, RobotPoseSequenceCaptureReceipt,
     RobotPoseSequenceCaptureResources, run_robot_pose_sequence_capture,
 };
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+/// Reproducible development preview and capture settings.
+#[derive(Clone, Debug, Default)]
+pub struct PreviewOptions {
+    pub capture_path: Option<PathBuf>,
+    pub frames: Option<u32>,
+    pub view: rendering_minigame::StationView,
+}
+
 #[derive(Resource, Clone)]
 struct PipelineStatus(Arc<Mutex<Status>>);
 #[derive(Default)]
@@ -38,11 +44,6 @@ struct Status {
     initialization_ready: bool,
 }
 #[derive(Resource)]
-struct ShaderHandles {
-    enamel: Handle<Shader>,
-    ink: Handle<Shader>,
-}
-#[derive(Resource)]
 struct PreviewRuntime {
     options: PreviewOptions,
     started: Instant,
@@ -50,7 +51,6 @@ struct PreviewRuntime {
     ready_frames: u32,
     capture_requested: bool,
     announced: bool,
-    labels_frozen: bool,
     first_error_frame: Option<u32>,
     kind: PreviewKind,
 }
@@ -83,7 +83,7 @@ pub fn run_robot_initialization_preview(
         .input
         .validate_for_model(resources.model.definition())
         .map_err(|e| format!("Robot initialization preview: {e}"))?;
-    let asset_root = required_render_assets(&resources.asset_root)?;
+    let asset_root = validate_render_asset_root(&resources.asset_root)?;
     run_preview_app(
         options,
         asset_root,
@@ -101,19 +101,6 @@ fn validate_preview_options(options: &PreviewOptions) -> Result<(), String> {
     }
 }
 
-fn required_render_assets(asset_root: &Path) -> Result<PathBuf, String> {
-    let asset_root = asset_root
-        .canonicalize()
-        .map_err(|e| format!("Asset root {}: {e}", asset_root.display()))?;
-    for shader in ["station_enamel.wgsl", "station_ink.wgsl"] {
-        let p = asset_root.join("game/shaders").join(shader);
-        std::fs::read_to_string(&p).map_err(|e| format!("Required shader {}: {e}", p.display()))?;
-    }
-    let font_path = asset_root.join("third_party/fonts/noto_sans_cjk_regular.otf");
-    std::fs::read(&font_path)
-        .map_err(|e| format!("Required station font {}: {e}", font_path.display()))?;
-    Ok(asset_root)
-}
 /// Launch the visual preview, with no robot or physics simulation.
 pub fn run_preview() -> Result<(), String> {
     run_preview_with_options(PreviewOptions::default())
@@ -121,22 +108,8 @@ pub fn run_preview() -> Result<(), String> {
 /// Render real frames and optionally capture them. Failed assets and shaders are errors.
 pub fn run_preview_with_options(options: PreviewOptions) -> Result<(), String> {
     validate_preview_options(&options)?;
-    let asset_root = match std::env::var_os("BEVY_SIM2SIM_ASSETS") {
-        Some(path) => PathBuf::from(path),
-        None => {
-            let next_to_binary = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|p| p.join("assets")));
-            if let Some(path) = next_to_binary.filter(|p| p.is_dir()) {
-                path
-            } else if PathBuf::from("assets").is_dir() {
-                PathBuf::from("assets")
-            } else {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets")
-            }
-        }
-    };
-    let asset_root = required_render_assets(&asset_root)?;
+    let asset_root = rendering_minigame::default_asset_root();
+    let asset_root = validate_render_asset_root(&asset_root)?;
     let scene = StationScene::load(&asset_root)?;
     let camera = StationCameraControl {
         view: options.view,
@@ -176,7 +149,6 @@ fn run_preview_app(
             ready_frames: 0,
             capture_requested: false,
             announced: false,
-            labels_frozen: false,
             first_error_frame: None,
             kind,
         })
@@ -218,19 +190,14 @@ fn run_preview_app(
     } else {
         app.add_systems(Update, preview_lifecycle);
     }
-    let asset_server = app.world().resource::<AssetServer>();
-    let shader_handles = ShaderHandles {
-        enamel: asset_server.load("game/shaders/station_enamel.wgsl"),
-        ink: asset_server.load("game/shaders/station_ink.wgsl"),
-    };
+    install_station_render_health(&mut app)?;
     let render_app = app
         .get_sub_app_mut(RenderApp)
         .ok_or("GPU render application unavailable")?;
     render_app.world_mut().insert_resource(status.clone());
-    render_app.world_mut().insert_resource(shader_handles);
     render_app.add_systems(
         Render,
-        report_pipeline_status.in_set(RenderSystems::Cleanup),
+        report_pipeline_status.in_set(RenderSystems::PostCleanup),
     );
     let exit = app.run();
     // App::run hands ownership to its runner and replaces app with App::empty.
@@ -276,57 +243,14 @@ fn validate_preview_exit(
     }
     Ok(())
 }
-fn report_pipeline_status(
-    cache: Res<PipelineCache>,
-    handles: Res<ShaderHandles>,
-    status: Res<PipelineStatus>,
-    device: Res<RenderDevice>,
-) {
+fn report_pipeline_status(health: Res<StationRenderHealth>, status: Res<PipelineStatus>) {
+    let health = health.snapshot();
     let mut state = status.0.lock().unwrap();
-    state.compiled = 0;
-    state.pending = 0;
-    let mut enamel_ready = false;
-    let mut ink_ready = false;
-    for pipeline in cache.pipelines() {
-        let required = match &pipeline.descriptor {
-            bevy::material::descriptor::PipelineDescriptor::RenderPipelineDescriptor(d) => d
-                .fragment
-                .as_ref()
-                .is_some_and(|f| f.shader == handles.enamel || f.shader == handles.ink),
-            bevy::material::descriptor::PipelineDescriptor::ComputePipelineDescriptor(_) => false,
-        };
-        let _ = required; // All queued pipelines, including text, must settle before capture.
-        match &pipeline.state {
-            CachedPipelineState::Ok(_) => {
-                state.compiled += 1;
-                if let bevy::material::descriptor::PipelineDescriptor::RenderPipelineDescriptor(d) =
-                    &pipeline.descriptor
-                {
-                    if let Some(f) = &d.fragment {
-                        enamel_ready |= f.shader == handles.enamel;
-                        ink_ready |= f.shader == handles.ink;
-                    }
-                }
-            }
-            CachedPipelineState::Err(
-                ShaderCacheError::ShaderNotLoaded(_)
-                | ShaderCacheError::ShaderImportNotYetAvailable,
-            ) => state.pending += 1,
-            CachedPipelineState::Err(e) => {
-                state.error = Some(format!("Station shader/pipeline failed: {e:?}"));
-            }
-            CachedPipelineState::Queued | CachedPipelineState::Creating(_) => state.pending += 1,
-        }
-    }
-    state.ready = enamel_ready && ink_ready && state.pending == 0 && state.error.is_none();
-    if state.error.is_some() && state.pending == 0 {
-        // Drain actual submitted GPU work before the failure exit destroys resources.
-        if let Err(e) = device.poll(PollType::Wait {
-            submission_index: None,
-            timeout: Some(Duration::from_secs(2)),
-        }) {
-            state.error = Some(format!("Failed to drain renderer after error: {e}"));
-        }
+    state.compiled = health.compiled;
+    state.pending = health.pending;
+    state.ready = health.ready && state.error.is_none();
+    if let Some(error) = health.error {
+        state.error.get_or_insert(error);
     }
 }
 fn preview_lifecycle(
@@ -334,11 +258,7 @@ fn preview_lifecycle(
     status: Res<PipelineStatus>,
     mut runtime: ResMut<PreviewRuntime>,
     mut exit: MessageWriter<AppExit>,
-    font: Option<Res<crate::signage::StationLabelFont>>,
-    fonts: Res<Assets<Font>>,
-    labels: Query<&bevy::text::TextLayoutInfo, With<Text2d>>,
-    scene: Res<StationScene>,
-    mut label_cameras: Query<&mut Camera, With<crate::signage::StationLabelCamera>>,
+    labels: Res<StationLabelBakeStatus>,
     robot_status: Option<Res<RobotVisualStatus>>,
 ) {
     runtime.frames += 1;
@@ -370,13 +290,7 @@ fn preview_lifecycle(
         }
         return;
     }
-    let text_ready = runtime.labels_frozen
-        || (labels.iter().count() == scene.0.labels.len()
-            && labels.iter().all(|text| !text.glyphs.is_empty()));
-    let ready = state.ready
-        && text_ready
-        && robot_ready
-        && font.as_ref().is_some_and(|f| fonts.contains(f.0.id()));
+    let ready = state.ready && robot_ready && labels.is_ready();
     if runtime.kind == PreviewKind::RobotInitialization {
         state.initialization_ready = ready && runtime.announced;
     }
@@ -386,13 +300,6 @@ fn preview_lifecycle(
         runtime.ready_frames += 1;
     } else {
         runtime.ready_frames = 0;
-    }
-    if runtime.ready_frames >= 10 && !runtime.labels_frozen {
-        for mut camera in &mut label_cameras {
-            camera.is_active = false;
-        }
-        runtime.labels_frozen = true;
-        info!("STATION_LABEL_TEXTURES_READY (font loaded; label camera passes frozen)");
     }
     if runtime.ready_frames >= 12 && !runtime.announced {
         info!(

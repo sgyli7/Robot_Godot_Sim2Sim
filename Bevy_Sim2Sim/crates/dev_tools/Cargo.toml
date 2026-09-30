@@ -12,6 +12,8 @@ sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_l
 sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]
 sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "simulation_minigame/sim2sim_source_limit_probe"]
 rendering_preview = ["dep:rendering_minigame", "dep:bevy"]
+live_physics_profile = ["rapier3d/profiler"]
+live_render_profile = ["rendering_preview", "dep:libc"]
 
 [dependencies]
 common_minigame.workspace = true
@@ -25,6 +27,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [[bin]]
 name = "robot_initialization_preview"

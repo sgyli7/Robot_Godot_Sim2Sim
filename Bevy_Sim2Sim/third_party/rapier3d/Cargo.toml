@@ -487,3 +487,6 @@ check-cfg = [
     'cfg(feature, values("dim2", "f64", "std", "alloc", "bytemuck"))',
     'cfg(target_arch, values("spirv"))',
 ]
+
+# Permit the vendored backend's own regression tests to run independently.
+[workspace]

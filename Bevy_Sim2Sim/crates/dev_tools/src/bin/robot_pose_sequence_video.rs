@@ -1,10 +1,12 @@
 //! Render recorded native poses from a completed diagnostic run; no pose authoring.
 
-use rendering_minigame::{
+use dev_tools_minigame::visual_preview::{
     RobotPoseSequenceCaptureOptions, RobotPoseSequenceCaptureReceipt,
-    RobotPoseSequenceCaptureResources, RobotRenderStyle, RobotVisualModel, StationCameraControl,
-    StationScene, StationView, robot_mesh::VerifiedRobotAppearance,
-    run_robot_pose_sequence_capture,
+    RobotPoseSequenceCaptureResources, run_robot_pose_sequence_capture,
+};
+use rendering_minigame::{
+    RobotRenderStyle, RobotVisualModel, StationCameraControl, StationScene, StationView,
+    robot_mesh::VerifiedRobotAppearance,
 };
 use robot_minigame::{body_pose::RobotPoseFrame, definition::RobotDefinition};
 use serde_json::{Value, json};

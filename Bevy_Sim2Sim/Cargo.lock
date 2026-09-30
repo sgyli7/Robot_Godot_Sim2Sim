@@ -1085,6 +1085,7 @@ dependencies = [
 name = "bevy_sim2sim"
 version = "0.1.0"
 dependencies = [
+ "bevy",
  "common_minigame",
  "dev_tools_minigame",
  "rendering_minigame",
@@ -1761,6 +1762,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "common_minigame",
+ "libc",
  "ort",
  "rapier3d",
  "rendering_minigame",
@@ -1770,6 +1772,7 @@ dependencies = [
  "sha2",
  "simulation_minigame",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -3687,6 +3690,7 @@ dependencies = [
  "simba",
  "static_assertions",
  "thiserror 2.0.21",
+ "web-time",
  "wide",
 ]
 
@@ -4066,6 +4070,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

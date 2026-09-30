@@ -1,7 +1,7 @@
 //! The pipeline's inner step loop: CCD substepping and motion clamping, plus
 //! end-of-step advancement of bodies, colliders and broad-phase AABBs.
 
-// Local modification: full-step diagnostic epoch/invalidation and completion gate only.
+// Local modification: diagnostic epoch/completion gates and fixed-scene CCD cache invalidation.
 use crate::alloc_prelude::*;
 
 use crate::dynamics::{
@@ -341,7 +341,22 @@ impl PhysicsPipeline {
         // (internal motion never touches fixed colliders nor these lists).
         let ccd_scene_changed = !modified_colliders.is_empty()
             || !removed_colliders.is_empty()
-            || !modified_bodies.is_empty();
+            || modified_bodies.iter().any(|handle| {
+                bodies.get(*handle).is_some_and(|body| {
+                    body.changes.intersects(
+                        RigidBodyChanges::POSITION
+                            | RigidBodyChanges::COLLIDERS
+                            | RigidBodyChanges::TYPE
+                            | RigidBodyChanges::ENABLED_OR_DISABLED,
+                    )
+                })
+            });
+        // Force/torque and wake-up changes cannot move fixed targets. Preserve
+        // their cache, but invalidate geometric edits even when this step has
+        // no fast body and therefore never calls solve_continuous.
+        if ccd_scene_changed {
+            ccd_solver.invalidate_fixed_targets_cache();
+        }
 
         // Join islands based on new joints.
         #[cfg(feature = "enhanced-determinism")]

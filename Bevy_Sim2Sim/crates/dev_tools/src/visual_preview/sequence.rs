@@ -3,13 +3,7 @@
 //! The renderer samples a contiguous episode and never derives a pose, steps
 //! physics, runs a policy, or duplicates one pose to fill a video timeline.
 
-use super::{
-    PipelineStatus, ShaderHandles, Status, report_pipeline_status, required_render_assets,
-};
-use crate::{
-    RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin, RobotVisualStatus,
-    RobotVisualSystems, StationCameraControl, StationScene, StationVisualPlugin,
-};
+use super::{PipelineStatus, Status, report_pipeline_status};
 use bevy::{
     app::AppExit,
     prelude::*,
@@ -17,6 +11,11 @@ use bevy::{
         Render, RenderApp, RenderSystems,
         view::screenshot::{Screenshot, ScreenshotCaptured},
     },
+};
+use rendering_minigame::{
+    RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin, RobotVisualStatus,
+    RobotVisualSystems, StationCameraControl, StationLabelBakeStatus, StationScene,
+    StationVisualPlugin, install_station_render_health, validate_render_asset_root,
 };
 use robot_minigame::body_pose::RobotPoseFrame;
 use serde::{Deserialize, Serialize};
@@ -72,7 +71,6 @@ struct SequenceRuntime {
     started: Instant,
     frames: u32,
     ready_frames: u32,
-    labels_frozen: bool,
     announced: bool,
     first_error_frame: Option<u32>,
     capture_started: Option<Instant>,
@@ -94,7 +92,7 @@ pub fn run_robot_pose_sequence_capture(
         poses_60hz,
     } = resources;
     let selected = select_source_indices(&model, &poses_60hz, options.output_fps)?;
-    let asset_root = required_render_assets(&asset_root)?;
+    let asset_root = validate_render_asset_root(&asset_root)?;
     let mut input = RobotVisualInput::new(model.definition(), poses_60hz[0].clone())
         .map_err(|e| format!("Robot sequence initial binding: {e}"))?;
     for pose in &poses_60hz {
@@ -161,7 +159,6 @@ pub fn run_robot_pose_sequence_capture(
             started: Instant::now(),
             frames: 0,
             ready_frames: 0,
-            labels_frozen: false,
             announced: false,
             first_error_frame: None,
             capture_started: None,
@@ -193,19 +190,14 @@ pub fn run_robot_pose_sequence_capture(
             sequence_lifecycle.after(RobotVisualSystems::ApplyPoses),
         );
 
-    let asset_server = app.world().resource::<AssetServer>();
-    let shader_handles = ShaderHandles {
-        enamel: asset_server.load("game/shaders/station_enamel.wgsl"),
-        ink: asset_server.load("game/shaders/station_ink.wgsl"),
-    };
+    install_station_render_health(&mut app)?;
     let render_app = app
         .get_sub_app_mut(RenderApp)
         .ok_or("GPU render application unavailable")?;
     render_app.world_mut().insert_resource(status.clone());
-    render_app.world_mut().insert_resource(shader_handles);
     render_app.add_systems(
         Render,
-        report_pipeline_status.in_set(RenderSystems::Cleanup),
+        report_pipeline_status.in_set(RenderSystems::PostCleanup),
     );
     let exit = app.run();
     let state = status.0.lock().map_err(|_| "Render status poisoned")?;
@@ -328,11 +320,7 @@ fn sequence_lifecycle(
     mut input: ResMut<RobotVisualInput>,
     mut camera_control: ResMut<StationCameraControl>,
     mut exit: MessageWriter<AppExit>,
-    font: Option<Res<crate::signage::StationLabelFont>>,
-    fonts: Res<Assets<Font>>,
-    labels: Query<&bevy::text::TextLayoutInfo, With<Text2d>>,
-    scene: Res<StationScene>,
-    mut label_cameras: Query<&mut Camera, With<crate::signage::StationLabelCamera>>,
+    labels: Res<StationLabelBakeStatus>,
     robot_status: Option<Res<RobotVisualStatus>>,
 ) {
     runtime.frames += 1;
@@ -378,26 +366,13 @@ fn sequence_lifecycle(
         }
         return;
     }
-    let text_ready = runtime.labels_frozen
-        || (labels.iter().count() == scene.0.labels.len()
-            && labels.iter().all(|text| !text.glyphs.is_empty()));
-    let ready = state.ready
-        && robot_ready
-        && text_ready
-        && font.as_ref().is_some_and(|f| fonts.contains(f.0.id()));
+    let ready = state.ready && robot_ready && labels.is_ready();
     let captured = state.captured;
     drop(state);
     if ready {
         runtime.ready_frames += 1;
     } else {
         runtime.ready_frames = 0;
-    }
-    if runtime.ready_frames >= 10 && !runtime.labels_frozen {
-        for mut camera in &mut label_cameras {
-            camera.is_active = false;
-        }
-        runtime.labels_frozen = true;
-        info!("STATION_LABEL_TEXTURES_READY (sequence capture)");
     }
     if runtime.ready_frames >= 12 && !runtime.announced {
         runtime.announced = true;

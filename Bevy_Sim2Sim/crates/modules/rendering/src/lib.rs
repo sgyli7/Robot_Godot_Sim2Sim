@@ -1,14 +1,19 @@
 //! Scientific station rendering with source-derived shared geometry.
 //!
-//! The standalone station preview contains no robot or physics world. The
-//! station plugin also supports the typed robot initialization preview. All
-//! physical body transforms come from the external unique simulation backend.
+//! Runtime visual plugins consume immutable scene and robot display inputs.
+//! All physical body transforms come from the unique simulation backend.
+//! Development window orchestration and capture live in dev_tools.
 pub mod geometry;
 mod material;
-mod preview;
+mod render_health;
+pub use render_health::{
+    StationRenderHealth, StationRenderSnapshot, install_station_render_health,
+    validate_render_asset_root,
+};
 pub mod robot_mesh;
 pub mod robot_visual;
 mod signage;
+pub use signage::StationLabelBakeStatus;
 mod site_graphics;
 
 use bevy::{
@@ -19,11 +24,6 @@ use bevy::{
 };
 use geometry::{StationGeometry, load_station_geometry};
 use material::{InkMaterial, StationEnamel, StationMaterial};
-pub use preview::{
-    RobotInitializationPreviewResources, RobotPoseCaptureFrame, RobotPoseSequenceCaptureOptions,
-    RobotPoseSequenceCaptureReceipt, RobotPoseSequenceCaptureResources, run_preview,
-    run_preview_with_options, run_robot_initialization_preview, run_robot_pose_sequence_capture,
-};
 pub use robot_visual::{
     RobotRenderStyle, RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin,
     RobotVisualStatus, RobotVisualSystems,
@@ -77,13 +77,23 @@ impl StationView {
         (c.eye, c.target, c.vertical_fov)
     }
 }
-/// Reproducible preview and capture settings.
-#[derive(Clone, Debug, Default)]
-pub struct PreviewOptions {
-    pub capture_path: Option<PathBuf>,
-    pub frames: Option<u32>,
-    pub view: StationView,
+/// Resolve deployed assets, with the local source tree as a development fallback.
+pub fn default_asset_root() -> PathBuf {
+    if let Some(path) = std::env::var_os("BEVY_SIM2SIM_ASSETS") {
+        return PathBuf::from(path);
+    }
+    let next_to_binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("assets")));
+    if let Some(path) = next_to_binary.filter(|p| p.is_dir()) {
+        path
+    } else if PathBuf::from("assets").is_dir() {
+        PathBuf::from("assets")
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets")
+    }
 }
+
 /// Shared source scene inserted by the application before adding the visual plugin.
 #[derive(Resource, Clone)]
 pub struct StationScene(pub Arc<StationGeometry>);
@@ -103,6 +113,8 @@ pub struct StationPropVisual {
 pub struct StationCameraControl {
     pub view: StationView,
     pub target: Vec3,
+    /// Freeze user orbit/shot input while a diagnostic screenshot is pending.
+    pub input_enabled: bool,
     /// Optional distance supplied by the simulation's Rapier scene query.
     pub unobstructed_distance: Option<f32>,
     pub yaw: f32,
@@ -114,6 +126,7 @@ impl Default for StationCameraControl {
         Self {
             view: StationView::Arrival,
             target: Vec3::new(0., 0.15, 6.8),
+            input_enabled: true,
             unobstructed_distance: None,
             yaw: 0.7,
             pitch: 0.35,
@@ -127,6 +140,7 @@ struct StationCamera;
 pub struct StationVisualPlugin;
 impl Plugin for StationVisualPlugin {
     fn build(&self, app: &mut App) {
+        signage::install_bake_lifecycle(app);
         app.init_resource::<StationCameraControl>()
             .add_plugins((
                 MaterialPlugin::<StationMaterial>::default(),
@@ -309,7 +323,7 @@ fn update_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
 ) {
-    if keys.just_pressed(KeyCode::Tab) {
+    if control.input_enabled && keys.just_pressed(KeyCode::Tab) {
         control.view = match control.view {
             StationView::Arrival => StationView::Overview,
             StationView::Overview => StationView::Towers,
@@ -321,11 +335,13 @@ fn update_camera(
         };
     }
     let (eye, target, fov) = if control.view == StationView::Follow {
-        if buttons.pressed(MouseButton::Right) {
+        if control.input_enabled && buttons.pressed(MouseButton::Right) {
             control.yaw -= motion.delta.x * 0.004;
             control.pitch = (control.pitch + motion.delta.y * 0.004).clamp(0.08, 1.25);
         }
-        control.distance = (control.distance - scroll.delta.y * 0.08).clamp(0.25, 4.);
+        if control.input_enabled {
+            control.distance = (control.distance - scroll.delta.y * 0.08).clamp(0.25, 4.);
+        }
         let d = control
             .unobstructed_distance
             .unwrap_or(control.distance)
@@ -345,10 +361,150 @@ fn update_camera(
         control.view.shot(&scene.0.layout)
     };
     for (mut transform, mut projection) in &mut camera {
-        *transform = Transform::from_translation(Vec3::from_array(eye))
-            .looking_at(Vec3::from_array(target), Vec3::Y);
-        if let Projection::Perspective(p) = &mut *projection {
-            p.fov = fov.to_radians();
+        // Reapplying a fixed shot must not invalidate transform and projection
+        // consumers when the actual camera state is unchanged.
+        transform.set_if_neq(
+            Transform::from_translation(Vec3::from_array(eye))
+                .looking_at(Vec3::from_array(target), Vec3::Y),
+        );
+        let next_fov = fov.to_radians();
+        if matches!(&*projection, Projection::Perspective(p) if p.fov != next_fov)
+            && let Projection::Perspective(p) = &mut *projection
+        {
+            p.fov = next_fov;
         }
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+    use bevy::ecs::system::SystemId;
+    use geometry::{StationLayout, StationReviewCamera};
+
+    fn camera_world() -> (World, Entity, SystemId) {
+        let layout = StationLayout {
+            identity: "camera_test".into(),
+            revision: 1,
+            plaza: [0.; 4],
+            loop_center_radii: [0.; 4],
+            loop_width: 0.,
+            berth: [0.; 4],
+            skills: [0.; 4],
+            safe_points: Vec::new(),
+            paths: Vec::new(),
+            cameras: vec![
+                StationReviewCamera {
+                    name: "overview".into(),
+                    eye: [3., 2., 4.],
+                    target: [0., 0., 0.],
+                    vertical_fov: 44.,
+                },
+                StationReviewCamera {
+                    name: "towers".into(),
+                    eye: [6., 5., 7.],
+                    target: [1., 0., 0.],
+                    vertical_fov: 52.,
+                },
+            ],
+            zones: Vec::new(),
+            ridge_waypoints: Vec::new(),
+            ridge_width: 0.,
+            ridge_grade_plane: [0.; 3],
+            fixtures: Vec::new(),
+            graphics: Vec::new(),
+        };
+        let scene = StationScene(Arc::new(StationGeometry {
+            model_sha256: String::new(),
+            manifest_sha256: String::new(),
+            source: "synthetic camera change detection".into(),
+            surfaces: Vec::new(),
+            colliders: Vec::new(),
+            props: Vec::new(),
+            labels: Vec::new(),
+            palette: Default::default(),
+            safe_points: Vec::new(),
+            layout,
+            layout_sha256: String::new(),
+        }));
+        let mut world = World::new();
+        world.insert_resource(scene);
+        world.insert_resource(StationCameraControl {
+            view: StationView::Overview,
+            ..default()
+        });
+        world.insert_resource(ButtonInput::<KeyCode>::default());
+        world.insert_resource(ButtonInput::<MouseButton>::default());
+        world.insert_resource(AccumulatedMouseMotion::default());
+        world.insert_resource(AccumulatedMouseScroll::default());
+        let camera = world
+            .spawn((StationCamera, Transform::default(), Projection::default()))
+            .id();
+        let system = world.register_system(update_camera);
+        (world, camera, system)
+    }
+
+    #[test]
+    fn repeated_station_shot_does_not_dirty_camera_components() {
+        let (mut world, camera, system) = camera_world();
+        world.run_system(system).unwrap();
+        let original = *world.get::<Transform>(camera).unwrap();
+        world.clear_trackers();
+        world.run_system(system).unwrap();
+        let entity = world.entity(camera);
+        assert_eq!(*entity.get::<Transform>().unwrap(), original);
+        assert!(!entity.get_ref::<Transform>().unwrap().is_changed());
+        assert!(!entity.get_ref::<Projection>().unwrap().is_changed());
+    }
+
+    #[test]
+    fn switching_and_following_still_update_actual_camera_state() {
+        let (mut world, camera, system) = camera_world();
+        world.run_system(system).unwrap();
+        world.clear_trackers();
+        world
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Tab);
+        world.run_system(system).unwrap();
+        assert_eq!(
+            world.resource::<StationCameraControl>().view,
+            StationView::Towers
+        );
+        assert_eq!(
+            world.get::<Transform>(camera).unwrap().translation,
+            Vec3::new(6., 5., 7.)
+        );
+        assert!(
+            world
+                .entity(camera)
+                .get_ref::<Projection>()
+                .unwrap()
+                .is_changed()
+        );
+        world.resource_mut::<ButtonInput<KeyCode>>().clear();
+        world.resource_mut::<StationCameraControl>().view = StationView::Follow;
+        world.run_system(system).unwrap();
+        let previous = *world.get::<Transform>(camera).unwrap();
+        world.clear_trackers();
+        world.resource_mut::<StationCameraControl>().target += Vec3::X;
+        world.run_system(system).unwrap();
+        assert_eq!(
+            world.get::<Transform>(camera).unwrap().translation,
+            previous.translation + Vec3::X
+        );
+        assert!(
+            world
+                .entity(camera)
+                .get_ref::<Transform>()
+                .unwrap()
+                .is_changed()
+        );
+        assert!(
+            !world
+                .entity(camera)
+                .get_ref::<Projection>()
+                .unwrap()
+                .is_changed()
+        );
     }
 }

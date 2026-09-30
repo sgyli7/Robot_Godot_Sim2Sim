@@ -100,6 +100,29 @@ pub struct StepSnapshot {
     pub bodies: Vec<BodySample>,
 }
 
+/// Rapier's own timers for one completed physics step, sampled only in a
+/// development profiling run. Values are nanoseconds. Zero may indicate an
+/// inactive or unused stage, or unavailable/disabled `profiler` counters.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct RapierCounterSample {
+    pub step_ns: u64,
+    pub broad_phase_ns: u64,
+    pub final_broad_phase_ns: u64,
+    pub narrow_phase_ns: u64,
+    pub islands_ns: u64,
+    pub constraints_ns: u64,
+    pub solver_ns: u64,
+    /// Legacy stage timer; this pipeline does not populate it. Use `ccd_toi_ns`.
+    pub ccd_ns: u64,
+    /// Actual TOI/motion-clamping timer used by this Rapier pipeline.
+    pub ccd_toi_ns: u64,
+    /// Native substep update timer, including mass-property maintenance.
+    pub update_ns: u64,
+    /// Native collision-detection timer across the pipeline's detection passes.
+    pub collision_detection_ns: u64,
+    pub user_changes_ns: u64,
+}
+
 /// A failed boundary is terminal for that verification candidate.
 #[derive(Debug, Error)]
 pub enum SimulationError {
@@ -137,6 +160,32 @@ impl Default for SimulationWorld {
 }
 
 impl SimulationWorld {
+    /// Opt in to Rapier's existing stage timers for development measurements.
+    pub fn enable_rapier_counters(&mut self) {
+        self.world.physics_pipeline.counters.enable();
+    }
+
+    /// Sample the timers Rapier reset and populated during its latest step.
+    pub fn rapier_counter_sample(&self) -> RapierCounterSample {
+        let counters = &self.world.physics_pipeline.counters;
+        let ns =
+            |duration: std::time::Duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        RapierCounterSample {
+            step_ns: ns(counters.step_time.time()),
+            broad_phase_ns: ns(counters.cd.broad_phase_time.time()),
+            final_broad_phase_ns: ns(counters.cd.final_broad_phase_time.time()),
+            narrow_phase_ns: ns(counters.cd.narrow_phase_time.time()),
+            islands_ns: ns(counters.stages.island_construction_time.time()),
+            constraints_ns: ns(counters.stages.island_constraints_collection_time.time()),
+            solver_ns: ns(counters.stages.solver_time.time()),
+            ccd_ns: ns(counters.stages.ccd_time.time()),
+            ccd_toi_ns: ns(counters.ccd.toi_computation_time.time()),
+            update_ns: ns(counters.stages.update_time.time()),
+            collision_detection_ns: ns(counters.stages.collision_detection_time.time()),
+            user_changes_ns: ns(counters.stages.user_changes.time()),
+        }
+    }
+
     /// Construct the world with one solver time step and no controller surrogate.
     pub fn new() -> Self {
         let mut world = PhysicsWorld::new();

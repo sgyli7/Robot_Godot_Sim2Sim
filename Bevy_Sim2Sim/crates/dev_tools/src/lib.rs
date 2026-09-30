@@ -1,8 +1,12 @@
 //! Optional development verification; never called by a release game by default.
 
 pub mod legacy_cpu_actor;
+#[cfg(feature = "live_render_profile")]
+pub mod render_profile;
 #[cfg(feature = "rendering_preview")]
 pub mod station_robot_diagnostic;
+#[cfg(feature = "rendering_preview")]
+pub mod visual_preview;
 
 use std::{path::Path, time::Duration};
 

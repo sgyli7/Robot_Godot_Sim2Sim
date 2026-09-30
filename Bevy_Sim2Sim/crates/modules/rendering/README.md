@@ -1,13 +1,13 @@
 # Science station rendering
 
 `StationVisualPlugin` renders a loaded `StationScene` and can be combined with
-`RobotVisualPlugin`. The old station-only standalone entry point
-`run_preview_with_options(PreviewOptions)` creates a real window, waits for GPU
+`RobotVisualPlugin`. The development entry point
+`dev_tools_minigame::visual_preview::run_preview_with_options(PreviewOptions)` creates a real window, waits for GPU
 pipelines and font glyphs, and optionally captures the window. The preview has
 no robot or physics simulation.
 
 ```text
-bevy_sim2sim --scene science_station_preview --robot none \
+cargo run --features dev_tools -- --scene science_station_preview --robot none \
   --view overview --frames 60 --capture /absolute/path/overview.png
 ```
 
@@ -101,7 +101,8 @@ Changing scene geometry invalidates downstream motion/physics/video evidence.
 
 ## Robot initialization geometry preview
 
-`run_robot_initialization_preview` accepts `RobotInitializationPreviewResources`
+The non-default `rendering_preview` feature of `dev_tools_minigame` provides
+`run_robot_initialization_preview`, which accepts `RobotInitializationPreviewResources`
 and `PreviewOptions`. The caller supplies an explicit asset root and already
 loaded `StationScene`, `RobotVisualModel`, `RobotVisualInput` and
 `StationCameraControl`. This entry does not look up robot paths, invent appearance
@@ -127,15 +128,15 @@ let model = rendering_minigame::RobotVisualModel::new(
     definition.clone(), appearance.clone(),
 )?;
 let input = rendering_minigame::RobotVisualInput::new(&definition, frame)?;
-rendering_minigame::run_robot_initialization_preview(
-    rendering_minigame::RobotInitializationPreviewResources {
+dev_tools_minigame::visual_preview::run_robot_initialization_preview(
+    dev_tools_minigame::visual_preview::RobotInitializationPreviewResources {
         asset_root,
         scene, // StationScene::load from this explicit asset root
         model,
         input,
         camera, // supplied target/view/yaw/pitch/distance are preserved
     },
-    rendering_minigame::PreviewOptions {
+    dev_tools_minigame::visual_preview::PreviewOptions {
         capture_path: Some(capture_path),
         frames: Some(60),
         ..Default::default()
@@ -173,7 +174,7 @@ and capture to a nonempty directory. A previous v2 late-WGSL experiment exited
 139; its original failure log is retained. The v3 results cover those recorded
 cases only.
 
-## Completed-pose sequence capture
+## Development completed-pose sequence capture
 
 `run_robot_pose_sequence_capture` opens the same station and verified robot
 visuals, then saves one actual GPU PNG for each sampled input pose. The caller
@@ -185,15 +186,15 @@ sequence whose sampled poses are all bit-identical. None of these checks proves
 the caller's physics provenance or the stability of its controller.
 
 ```rust,ignore
-let receipt = rendering_minigame::run_robot_pose_sequence_capture(
-    rendering_minigame::RobotPoseSequenceCaptureResources {
+let receipt = dev_tools_minigame::visual_preview::run_robot_pose_sequence_capture(
+    dev_tools_minigame::visual_preview::RobotPoseSequenceCaptureResources {
         asset_root,
         scene,
         model,
         camera,
         poses_60hz: completed_world_poses, // one real completed frame per 60 Hz tick
     },
-    rendering_minigame::RobotPoseSequenceCaptureOptions {
+    dev_tools_minigame::visual_preview::RobotPoseSequenceCaptureOptions {
         output_dir,
         output_fps: 30,
     },

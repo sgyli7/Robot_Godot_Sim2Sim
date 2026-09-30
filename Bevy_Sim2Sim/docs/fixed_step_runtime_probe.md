@@ -1,5 +1,7 @@
 # 60 Hz 固定步生命周期：真实 ONNX 诊断接线
 
+2026-09-29 更新：实时开发窗口 v3 已把每 Tick 推理与物理推进移至独立 60 Hz 工作线程，显示主线程只接收最新姿态；每 Tick 仍按连续编号核对。默认窗口呈现改为显式 FIFO，`SAI_LAB_LIVE_PROFILE=1` 可采样 Rapier 内建阶段计数器。下文所有已测性能数字、64 Tick 超跑和显示帧欠账均是**此前 v2 主线程追帧架构**的历史基线，不能当作 v3 的测量结果。v3 的 600 Tick／FPS／最终截图还待独占 GPU 复测，未获实时资格。
+
 更新日期：2026-09-28。`simulation_minigame::fixed_step_runtime::FixedStepRuntime` 持有唯一 `SimulationWorld`、`FixedStepClock(60 Hz, 每显示帧最多 8 步)` 与全局有序事件队列。每个到期边界依次排出事件、同步场景、检查同步阶段没有额外积分、验证恰好一次推理、提交力矩并只积分一次、提交时钟、核对物理／时钟计数、发布完成快照。任一生命周期错误使驱动永久停机，不重放已消费事件或部分物理步。暂停保留时间欠账；恢复后的输入时间从恢复时刻计算。
 
 业务库的真实 Rapier fixture 覆盖首 Tick 顺序、600 Tick 各 600 次推理计数／力矩更新／积分／发布、500 ms 掉帧后的 `8/8/8/6` 步追赶、暂停与同 Tick 事件顺序，以及同步阶段偷积分、推理少／多次、非法力矩、发布失败等停机路径。基础库测试为 16 通过、10 项要求封闭源端 fixture 的测试按原门禁忽略；开启只读物理观测特性时为 19 通过、10 忽略。工程结构检查 420 项通过。
@@ -16,7 +18,7 @@
 
 独立的**截图证据**使用原始 `alpha_stand` 与同一冻结 AJ 资产、最少 60 Tick：真实窗口完成 64 次推理、64 次积分和 64 次发布，`RobotVisualStatus::Ready`、最终发布位姿与读回 PNG 收据均绑定 `global_step=64`。1920×1080 PNG 的 SHA256 为 `b279ca8c45fbad2900a58ab6066c992350e729bc62d78f848f3724b46d2754b6`，路径 `.scratch/live_runtime_dev/alpha_stand_min60_capture_v2.png`；JSON 收据 SHA 为 `4ba706abf3e48275b1cf572cf403b76478ed7a01e42269dd9a518fe8f9856587`。截图的 Follow 镜头中机器人可见；故意令 PNG 保存失败的实跑以非零码退出，报告 `passed=false`、无 PNG 收据。截图后等待与 GPU 读回不用于衡量 60 Hz 吞吐；性能数字以上述**无截图**发布构建为准。此 PNG 只证明一个诊断时刻实际出图，`live_visual_qualified`、`performance_qualified`、BAM／接触／技能资格仍为 `false`。
 
-为定位窗口欠账，`dev_tools` 窗口另有**显式开启**的测量模式：设置 `SAI_LAB_LIVE_PROFILE=1`，可选 `SAI_LAB_LIVE_PROFILE_RESOLUTION=1920x1080|960x540` 和 `SAI_LAB_LIVE_PROFILE_PRESENT_MODE=auto_vsync|auto_no_vsync`；不开启时维持原 1920×1080 `AutoVsync` 行为，报告不新增 `live_profile`。测量报告记录请求配置、实际图形适配器名称／后端、显示帧起点间隔和 `FixedStepRuntime::advance_frame` 主线程 CPU 耗时的次数／总和／最大值。两组时间可能与 Bevy 的并行渲染重叠，不能相减后把余量称作 GPU 耗时；`AutoNoVsync` 是请求值，不冒称已核实实际 swapchain 模式。
+为定位窗口欠账，`dev_tools` 窗口另有**显式开启**的测量模式：设置 `SAI_LAB_LIVE_PROFILE=1`，可选 `SAI_LAB_LIVE_PROFILE_RESOLUTION=1920x1080|960x540` 和呈现模式环境变量；不开启时维持原 1920×1080 `AutoVsync` 行为，报告不新增 `live_profile`。测量报告记录请求配置、实际图形适配器名称／后端、显示帧起点间隔和 `FixedStepRuntime::advance_frame` 主线程 CPU 耗时的次数／总和／最大值。两组时间可能与 Bevy 的并行渲染重叠，不能相减后把余量称作 GPU 耗时；报告的 `requested_present_mode` 只记录请求，具体配置另用底层日志核对。
 
 同一发布二进制、`alpha_stand`、冻结 AJ 资产、最少 600 Tick、无截图的受控实跑如下；四种配置的**前 600 条推理／物理 trace 和 601 张位姿**均与上述发布版离线报告逐项相同，适配器均为 NVIDIA GB10／Vulkan。帧起点时间不含启动前等待与退出后的报告落盘；墙钟包含这些成本。
 
@@ -28,6 +30,6 @@
 | 1920×1080，AutoNoVsync 复跑 | 600／79 | 83 | 11.39 s | 8.87 s | 18.25 s |
 | 960×540，AutoNoVsync | 603／78 | 354 | 15.96 s | 13.25 s | 23.21 s |
 
-这些数据说明在本机此窗口里，请求 AutoNoVsync 明显减少帧间等待和时钟欠账，而分辨率减半没有稳定改善；尚不能区分交换链／呈现等待、渲染线程及系统负载的各自份额，也不代表 AutoNoVsync 已达到实时资格。全量报告在 `.scratch/live_runtime_dev/alpha_stand_release_profile_{1080_vsync,540_vsync,1080_novsync,1080_novsync_repeat,540_novsync}_min600.json`；相应 SHA256 依次为 `5412d556…`、`3391aecf…`、`5b423931…`、`50f57c09…`、`758afa96…`。下一步要分段测 Bevy 渲染／呈现与固定步内部的 ORT、Rapier、快照和发布，并在目标运行环境复核实际交换链模式。
+这些数据说明在本机此窗口里，请求 AutoNoVsync 明显减少帧间等待和时钟欠账，而分辨率减半没有稳定改善；尚不能区分交换链／呈现等待、渲染线程及系统负载的各自份额，也不代表 AutoNoVsync 已达到实时资格。独立短跑以 `RUST_LOG=wgpu_core::device::resource=debug` 读取实际提交给 wgpu 的 `SurfaceConfiguration`：本机 1920×1080 下 `AutoVsync → FifoRelaxed`，`AutoNoVsync → Immediate`，两次短跑均成功退出。该配置在 Bevy 选择受支持的 surface mode 后写入，进一步说明 A/B 确实切换了交换链模式；它不是 Vulkan 驱动完成呈现或 GPU 时长的证据。日志分别在 `.scratch/live_runtime_dev/present_{vsync,novsync}_debug.log`。五组完整报告在 `.scratch/live_runtime_dev/alpha_stand_release_profile_{1080_vsync,540_vsync,1080_novsync,1080_novsync_repeat,540_novsync}_min600.json`；相应 SHA256 依次为 `5412d556…`、`3391aecf…`、`5b423931…`、`50f57c09…`、`758afa96…`。下一步要分段测 Bevy 渲染／呈现与固定步内部的 ORT、Rapier、快照和发布。
 
 **资格边界：** 这些真实 ONNX 回放依旧是旧 200/50 策略在 60/60 的 P-only 诊断；它不包含合格 BAM 上一步外载、源接触等价、道具交互或技能成功。实时窗口探针仍在 `dev_tools`，20 个可移动道具碰撞体尚未导入；`src/main.rs` 当前只提供无机器人视觉预览，正式游戏还没有合格的机器人控制及场景交互。此项接线回归不能替代完整游戏、接触修正、十技能训练与 1080p／60 FPS 验收。

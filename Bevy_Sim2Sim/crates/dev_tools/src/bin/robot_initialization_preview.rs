@@ -4,6 +4,9 @@
 //! snapshot, and never integrates or admits policy control. Input qpos is an
 //! explicitly hash-bound source-coordinate array, not a visual animation.
 
+use dev_tools_minigame::visual_preview::{
+    PreviewOptions, RobotInitializationPreviewResources, run_robot_initialization_preview,
+};
 use rapier3d::{
     math::{Pose, Rotation},
     prelude::{
@@ -11,11 +14,10 @@ use rapier3d::{
     },
 };
 use rendering_minigame::{
-    PreviewOptions, RobotInitializationPreviewResources, RobotRenderStyle, RobotVisualInput,
-    RobotVisualModel, StationCameraControl, StationScene, StationView,
+    RobotRenderStyle, RobotVisualInput, RobotVisualModel, StationCameraControl, StationScene,
+    StationView,
     geometry::{StationCollider, StationCollisionShape},
     robot_mesh::{RobotNormalPolicy, VerifiedRobotAppearance},
-    run_robot_initialization_preview,
 };
 use robot_minigame::definition::RobotDefinition;
 use serde::Serialize;

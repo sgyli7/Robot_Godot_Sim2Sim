@@ -1,8 +1,16 @@
 //! Game startup and CLI assembly; optional verification remains in dev_tools.
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    path::PathBuf,
+    process::ExitCode,
+    time::{Duration, Instant},
+};
 
-use rendering_minigame::{PreviewOptions, StationView};
+use bevy::{app::AppExit, prelude::*};
+use rendering_minigame::{
+    StationCameraControl, StationLabelBakeStatus, StationRenderHealth, StationScene, StationView,
+    StationVisualPlugin, install_station_render_health, validate_render_asset_root,
+};
 
 #[derive(Default)]
 struct Arguments {
@@ -74,11 +82,105 @@ fn run() -> Result<(), String> {
     eprintln!(
         "Starting science-station visual preview; robot behavior and physics qualification are unavailable."
     );
-    rendering_minigame::run_preview_with_options(PreviewOptions {
-        capture_path: arguments.capture,
-        frames: arguments.frames,
-        view: arguments.view,
+    if arguments.capture.is_some() || arguments.frames.is_some() {
+        return capture_preview(arguments);
+    }
+    let asset_root = validate_render_asset_root(&rendering_minigame::default_asset_root())?;
+    let scene = StationScene::load(&asset_root)?;
+    let mut app = App::new();
+    app.insert_resource(bevy::winit::WinitSettings::continuous())
+        .insert_resource(scene)
+        .insert_resource(StationCameraControl {
+            view: arguments.view,
+            ..default()
+        })
+        .add_plugins(
+            DefaultPlugins
+                .set(AssetPlugin {
+                    file_path: asset_root.to_string_lossy().into_owned(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Bevy Science Station — visual preview (no robot)".into(),
+                        resolution: (1920, 1080).into(),
+                        present_mode: bevy::window::PresentMode::AutoNoVsync,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
+        .add_plugins(StationVisualPlugin);
+    let health = install_station_render_health(&mut app)?;
+    let labels = app.world().resource::<StationLabelBakeStatus>().clone();
+    app.insert_resource(WindowLifecycle {
+        started: Instant::now(),
+        frames: 0,
+        first_error_frame: None,
     })
+    .add_systems(Update, check_window_health);
+    let exit = app.run();
+    let status = health.snapshot();
+    if let Some(error) = status.error {
+        return Err(error);
+    }
+    if !status.ready || !labels.is_ready() {
+        return Err(
+            "Renderer exited before required station assets and pipelines were ready".into(),
+        );
+    }
+    match exit {
+        AppExit::Success => Ok(()),
+        AppExit::Error(code) => Err(format!("Station window exited with error {code}")),
+    }
+}
+
+#[derive(Resource)]
+struct WindowLifecycle {
+    started: Instant,
+    frames: u32,
+    first_error_frame: Option<u32>,
+}
+
+fn check_window_health(
+    health: Res<StationRenderHealth>,
+    labels: Res<StationLabelBakeStatus>,
+    mut lifecycle: ResMut<WindowLifecycle>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    lifecycle.frames += 1;
+    let status = health.snapshot();
+    if let Some(error) = status.error {
+        let frame = lifecycle.frames;
+        if lifecycle.first_error_frame.is_none() {
+            error!("{error}");
+        }
+        let first = *lifecycle.first_error_frame.get_or_insert(frame);
+        if (frame - first >= 8 && status.pending == 0) || frame - first >= 180 {
+            exit.write(AppExit::error());
+        }
+    } else if (!status.ready || !labels.is_ready())
+        && lifecycle.started.elapsed() > Duration::from_secs(60)
+    {
+        error!("Station assets and pipelines did not become ready within 60 seconds");
+        exit.write(AppExit::error());
+    }
+}
+
+#[cfg(feature = "dev_tools")]
+fn capture_preview(arguments: Arguments) -> Result<(), String> {
+    dev_tools_minigame::visual_preview::run_preview_with_options(
+        dev_tools_minigame::visual_preview::PreviewOptions {
+            capture_path: arguments.capture,
+            frames: arguments.frames,
+            view: arguments.view,
+        },
+    )
+}
+
+#[cfg(not(feature = "dev_tools"))]
+fn capture_preview(_arguments: Arguments) -> Result<(), String> {
+    Err("preview capture and frame limits require the non-default Cargo feature 'dev_tools'".into())
 }
 
 #[cfg(feature = "dev_tools")]
@@ -118,8 +220,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification report directory\n\
-                     --capture PATH  preview screenshot file\n\
-                     --frames N      exit preview after N displayed frames\n\
+                     --capture PATH  preview screenshot file (requires dev_tools)\n\
+                     --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
                 );
                 return Ok(None);

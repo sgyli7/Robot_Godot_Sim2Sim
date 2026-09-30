@@ -192,10 +192,18 @@ fn import_station(
     let fixed = world.world.bodies.insert(RigidBodyBuilder::fixed());
     let count = builders.len();
     for builder in builders {
+        // These station shapes are immutable. Materialize exactly Rapier's
+        // default-density mass properties during loading instead of deriving
+        // thousands of convex-hull inertias inside the first timed tick. Keep
+        // collider insertion and collision-index construction in their original
+        // order; no dynamics or collision step is performed here.
+        let mut collider = builder.build();
+        let mass_properties = collider.mass_properties();
+        collider.set_mass_properties(mass_properties);
         world
             .world
             .colliders
-            .insert_with_parent(builder, fixed, &mut world.world.bodies);
+            .insert_with_parent(collider, fixed, &mut world.world.bodies);
     }
     Ok(count)
 }
@@ -281,7 +289,10 @@ impl TickController<()> for DiagnosticController {
         let observation = self
             .policy
             .observation(&state, &command, &self.previous_action)?;
-        let action = self.policy.infer(&observation)?;
+        let action = {
+            let _span = tracing::info_span!("sim2sim_onnx_inference").entered();
+            self.policy.infer(&observation)?
+        };
         let raw_target = self.policy.targets(&action)?;
         let target = self
             .policy
@@ -372,6 +383,18 @@ impl DiagnosticSession {
 
     pub fn global_step(&self) -> u64 {
         self.runtime.clock_snapshot().global_step
+    }
+
+    pub fn pending_ticks(&self) -> u128 {
+        self.runtime.clock_snapshot().pending_ticks
+    }
+
+    pub fn enable_rapier_counters(&mut self) {
+        self.runtime.enable_rapier_counters();
+    }
+
+    pub fn rapier_counter_sample(&self) -> simulation_minigame::RapierCounterSample {
+        self.runtime.rapier_counter_sample()
     }
 
     pub fn advance_frame(&mut self, elapsed: Duration) -> Result<FrameOutcome, String> {
@@ -509,6 +532,7 @@ pub fn prepare(arguments: &[String], report: &mut Value) -> Result<DiagnosticSes
     let assembly = build_structure(&mut simulation.world, &definition, &qpos)
         .map_err(|error| error.to_string())?;
     report["station_static_colliders"] = json!(imported);
+    report["station_mass_properties_prepared"] = json!(imported);
     report["deferred_prop_colliders"] = json!(scene.0.colliders.len() - imported);
     report["initial_counts"] = json!(simulation.counts());
     report["initial_snapshot"] = json!(simulation.snapshot());
@@ -586,4 +610,58 @@ pub fn initial_report() -> Value {
         "policy_inference_count":0,
         "error":Value::Null,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn immutable_station_mass_preparation_preserves_native_properties_and_clock() {
+        let vertices: Vec<[f32; 3]> = [-1.0, 1.0]
+            .into_iter()
+            .flat_map(|x| {
+                [-1.0, 1.0]
+                    .into_iter()
+                    .flat_map(move |y| [-1.0, 1.0].into_iter().map(move |z| [x, y, z]))
+            })
+            .collect();
+        let source = StationCollider {
+            owner: "station".into(),
+            tag: "immutable mass preparation regression".into(),
+            shape: StationCollisionShape::Convex {
+                vertices: vertices.clone(),
+            },
+        };
+        let mut prepared = SimulationWorld::new();
+        assert_eq!(import_station(&mut prepared, &[source]).unwrap(), 1);
+        let mut original = SimulationWorld::new();
+        let fixed = original.world.bodies.insert(RigidBodyBuilder::fixed());
+        let points: Vec<Vector> = vertices.into_iter().map(Vector::from_array).collect();
+        original.world.colliders.insert_with_parent(
+            ColliderBuilder::convex_hull(&points).unwrap(),
+            fixed,
+            &mut original.world.bodies,
+        );
+        assert_eq!(
+            serde_json::to_value(prepared.snapshot()).unwrap(),
+            serde_json::to_value(original.snapshot()).unwrap()
+        );
+        let prepared_collider = prepared.world.colliders.iter().next().unwrap().1;
+        let original_collider = original.world.colliders.iter().next().unwrap().1;
+        assert_eq!(
+            prepared_collider.mass_properties(),
+            original_collider.mass_properties()
+        );
+        let prepared_step = prepared.step_with_torques(&[]).unwrap();
+        let original_step = original.step_with_torques(&[]).unwrap();
+        assert_eq!(
+            serde_json::to_value(prepared_step).unwrap(),
+            serde_json::to_value(original_step).unwrap()
+        );
+        assert_eq!(
+            prepared.world.bodies[fixed].mass_properties().local_mprops,
+            original.world.bodies[fixed].mass_properties().local_mprops
+        );
+    }
 }

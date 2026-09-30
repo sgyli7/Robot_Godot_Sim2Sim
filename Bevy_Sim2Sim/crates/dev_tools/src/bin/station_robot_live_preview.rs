@@ -5,10 +5,12 @@
 
 use bevy::{
     app::AppExit,
+    diagnostic::{DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
-        render_resource::{CachedPipelineState, PipelineCache, PollType},
+        diagnostic::{MeshAllocatorDiagnosticPlugin, RenderDiagnosticsPlugin},
+        render_resource::{CachedPipelineState, PipelineCache, PollType, WgpuFeatures},
         renderer::{RenderAdapterInfo, RenderDevice},
         view::screenshot::{Screenshot, ScreenshotCaptured},
     },
@@ -17,32 +19,59 @@ use bevy::{
 use dev_tools_minigame::station_robot_diagnostic::{DiagnosticSession, initial_report, prepare};
 use rendering_minigame::{
     RobotVisualInput, RobotVisualModel, RobotVisualPhase, RobotVisualPlugin, RobotVisualStatus,
-    RobotVisualSystems, StationCameraControl, StationScene, StationView, StationVisualPlugin,
-    robot_mesh::VerifiedRobotAppearance,
+    RobotVisualSystems, StationCameraControl, StationLabelBakeStatus, StationScene, StationView,
+    StationVisualPlugin, robot_mesh::VerifiedRobotAppearance,
 };
 use robot_minigame::body_pose::RobotPoseFrame;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use simulation_minigame::fixed_step_runtime::FrameOutcome;
+use simulation_minigame::{RapierCounterSample, fixed_step_runtime::FrameOutcome};
 use std::{
     env::{self, VarError},
     error::Error,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
-const LIVE_SCHEMA: &str = "station_robot_live_preview_v2";
+const LIVE_SCHEMA: &str = "station_robot_live_preview_v3";
 const PROFILE_ENV: &str = "SAI_LAB_LIVE_PROFILE";
 const PROFILE_RESOLUTION_ENV: &str = "SAI_LAB_LIVE_PROFILE_RESOLUTION";
 const PROFILE_PRESENT_MODE_ENV: &str = "SAI_LAB_LIVE_PROFILE_PRESENT_MODE";
+const PROFILE_ABLATION_ENV: &str = "SAI_LAB_LIVE_PROFILE_ABLATION";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RenderAblation {
+    #[default]
+    None,
+    SignageCameras,
+    Msaa,
+    Shadows,
+}
+
+impl RenderAblation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::SignageCameras => "signage_cameras",
+            Self::Msaa => "msaa",
+            Self::Shadows => "shadows",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LiveProfileConfig {
     width: u32,
     height: u32,
     present_mode: bevy::window::PresentMode,
+    ablation: RenderAblation,
 }
 
 impl LiveProfileConfig {
@@ -50,22 +79,28 @@ impl LiveProfileConfig {
         let present_mode = match self.present_mode {
             bevy::window::PresentMode::AutoVsync => "auto_vsync",
             bevy::window::PresentMode::AutoNoVsync => "auto_no_vsync",
-            _ => unreachable!("profile parser admits only the two requested modes"),
+            bevy::window::PresentMode::Fifo => "fifo",
+            bevy::window::PresentMode::Mailbox => "mailbox",
+            _ => unreachable!("profile parser admits only the supported requested modes"),
         };
         json!({
             "requested_resolution": [self.width, self.height],
             "requested_present_mode": present_mode,
+            "render_ablation": self.ablation.label(),
         })
     }
 }
 
-fn parse_live_profile_config(
+fn parse_live_profile_config_with_ablation(
     enabled: Option<&str>,
     resolution: Option<&str>,
     present_mode: Option<&str>,
+    ablation: Option<&str>,
 ) -> Result<Option<LiveProfileConfig>, String> {
     match enabled {
-        None if resolution.is_none() && present_mode.is_none() => return Ok(None),
+        None if resolution.is_none() && present_mode.is_none() && ablation.is_none() => {
+            return Ok(None);
+        }
         None => return Err(format!("{PROFILE_ENV}=1 is required for profile settings")),
         Some("1") => {}
         Some(_) => return Err(format!("{PROFILE_ENV} must be exactly 1")),
@@ -79,12 +114,25 @@ fn parse_live_profile_config(
             ));
         }
     };
-    let present_mode = match present_mode.unwrap_or("auto_vsync") {
+    let present_mode = match present_mode.unwrap_or("fifo") {
         "auto_vsync" => bevy::window::PresentMode::AutoVsync,
         "auto_no_vsync" => bevy::window::PresentMode::AutoNoVsync,
+        "fifo" => bevy::window::PresentMode::Fifo,
+        "mailbox" => bevy::window::PresentMode::Mailbox,
         _ => {
             return Err(format!(
-                "{PROFILE_PRESENT_MODE_ENV} must be auto_vsync or auto_no_vsync"
+                "{PROFILE_PRESENT_MODE_ENV} must be auto_vsync, auto_no_vsync, fifo, or mailbox"
+            ));
+        }
+    };
+    let ablation = match ablation.unwrap_or("none") {
+        "none" => RenderAblation::None,
+        "signage_cameras" => RenderAblation::SignageCameras,
+        "msaa" => RenderAblation::Msaa,
+        "shadows" => RenderAblation::Shadows,
+        _ => {
+            return Err(format!(
+                "{PROFILE_ABLATION_ENV} must be none, signage_cameras, msaa, or shadows"
             ));
         }
     };
@@ -92,7 +140,17 @@ fn parse_live_profile_config(
         width,
         height,
         present_mode,
+        ablation,
     }))
+}
+
+#[cfg(test)]
+fn parse_live_profile_config(
+    enabled: Option<&str>,
+    resolution: Option<&str>,
+    present_mode: Option<&str>,
+) -> Result<Option<LiveProfileConfig>, String> {
+    parse_live_profile_config_with_ablation(enabled, resolution, present_mode, None)
 }
 
 fn profile_env_value(name: &str) -> Result<Option<String>, String> {
@@ -107,11 +165,39 @@ fn live_profile_config_from_env() -> Result<Option<LiveProfileConfig>, String> {
     let enabled = profile_env_value(PROFILE_ENV)?;
     let resolution = profile_env_value(PROFILE_RESOLUTION_ENV)?;
     let present_mode = profile_env_value(PROFILE_PRESENT_MODE_ENV)?;
-    parse_live_profile_config(
+    let ablation = profile_env_value(PROFILE_ABLATION_ENV)?;
+    let main_budget = profile_env_value("SAI_LAB_LIVE_PROFILE_MAIN_BUDGET_MS")?;
+    if main_budget.is_some()
+        && (enabled.as_deref() != Some("1") || !cfg!(feature = "live_render_profile"))
+    {
+        return Err(
+            "main budget probe requires SAI_LAB_LIVE_PROFILE=1 and live_render_profile".into(),
+        );
+    }
+    parse_live_profile_config_with_ablation(
         enabled.as_deref(),
         resolution.as_deref(),
         present_mode.as_deref(),
+        ablation.as_deref(),
     )
+}
+
+fn disable_signage_cameras(mut cameras: Query<&mut Camera, With<Camera2d>>) {
+    for mut camera in &mut cameras {
+        camera.is_active = false;
+    }
+}
+
+fn disable_msaa(mut cameras: Query<&mut Msaa, With<Camera3d>>) {
+    for mut msaa in &mut cameras {
+        *msaa = Msaa::Off;
+    }
+}
+
+fn disable_shadows(mut lights: Query<&mut DirectionalLight>) {
+    for mut light in &mut lights {
+        light.shadow_maps_enabled = false;
+    }
 }
 
 #[derive(Default)]
@@ -138,13 +224,22 @@ struct LiveProfile {
     config: LiveProfileConfig,
     adapter: Option<GpuAdapterReceipt>,
     frame_start_to_start: TimingSummary,
-    advance_frame_cpu: TimingSummary,
+    advance_frame_wall: TimingSummary,
+    worker_deadline_lag: TimingSummary,
+    deadline_missed_ticks: u64,
+    rapier_counters_per_tick: Vec<RapierCounterSample>,
+    frame_samples: Vec<Value>,
+    worker_tick_samples: Vec<Value>,
+    #[cfg(feature = "live_render_profile")]
+    render_cpu_profile: Option<dev_tools_minigame::render_profile::RenderCpuProfile>,
 }
 
 #[derive(Clone, serde::Serialize)]
 struct GpuAdapterReceipt {
     name: String,
     backend: String,
+    timestamp_query_supported: bool,
+    pipeline_statistics_query_supported: bool,
 }
 
 impl LiveProfile {
@@ -153,7 +248,14 @@ impl LiveProfile {
             config,
             adapter: None,
             frame_start_to_start: TimingSummary::default(),
-            advance_frame_cpu: TimingSummary::default(),
+            advance_frame_wall: TimingSummary::default(),
+            worker_deadline_lag: TimingSummary::default(),
+            deadline_missed_ticks: 0,
+            rapier_counters_per_tick: Vec::new(),
+            frame_samples: Vec::new(),
+            worker_tick_samples: Vec::new(),
+            #[cfg(feature = "live_render_profile")]
+            render_cpu_profile: None,
         }
     }
 
@@ -161,7 +263,24 @@ impl LiveProfile {
         let mut report = self.config.requested_config();
         report["render_adapter"] = json!(self.adapter);
         report["frame_start_to_start"] = self.frame_start_to_start.report();
-        report["advance_frame_cpu"] = self.advance_frame_cpu.report();
+        report["advance_frame_cpu"] = self.advance_frame_wall.report();
+        report["worker_deadline_lag"] = self.worker_deadline_lag.report();
+        report["deadline_missed_ticks"] = json!(self.deadline_missed_ticks);
+        report["rapier_counters_per_tick"] = json!(self.rapier_counters_per_tick);
+        report["rapier_profiler_compiled"] = json!(cfg!(feature = "live_physics_profile"));
+        report["simulation_thread"] = json!("dedicated_60hz");
+        report["frame_samples"] = json!(self.frame_samples);
+        report["worker_tick_samples"] = json!(self.worker_tick_samples);
+        report["worker_advance_timing_semantics"] = json!(
+            "wall_time_including_descheduling; legacy_fields_advance_frame_cpu_and_advance_cpu_ns"
+        );
+        #[cfg(feature = "live_render_profile")]
+        if let Some(profile) = &self.render_cpu_profile {
+            report["render_thread_cpu"] = profile.report();
+        }
+        report["gpu_sample_semantics"] = json!(
+            "latest_completed_render_diagnostic_at_main_frame_start; pass_times_are_not_whole_frame_gpu_time"
+        );
         report
     }
 }
@@ -214,6 +333,10 @@ fn check_gpu_pipelines(
         status.adapter = Some(GpuAdapterReceipt {
             name: adapter.name.clone(),
             backend: format!("{:?}", adapter.backend),
+            timestamp_query_supported: device.features().contains(WgpuFeatures::TIMESTAMP_QUERY),
+            pipeline_statistics_query_supported: device
+                .features()
+                .contains(WgpuFeatures::PIPELINE_STATISTICS_QUERY),
         });
     }
     let mut enamel_ready = false;
@@ -255,7 +378,14 @@ fn check_gpu_pipelines(
 }
 
 struct LiveRun {
-    session: DiagnosticSession,
+    session: Arc<Mutex<DiagnosticSession>>,
+    minimum_ticks: u64,
+    worker: Option<PhysicsWorker>,
+    worker_finished: bool,
+    worker_wall_ns: Option<u64>,
+    worker_deadline_missed_ticks: u64,
+    worker_max_deadline_lag_ns: u64,
+    baked_label_camera_count: usize,
     output: PathBuf,
     profile: Option<LiveProfile>,
     started: Instant,
@@ -263,7 +393,6 @@ struct LiveRun {
     display_frames: u64,
     completed_publishes: u64,
     last_displayed_step: u64,
-    pending_ticks: u128,
     awaiting_final_visual: bool,
     final_pose_render_schedule_cleanup_count: Option<u64>,
     observed_render_schedule_cleanup_count: u64,
@@ -273,18 +402,156 @@ struct LiveRun {
     report_written: bool,
 }
 
+struct PhysicsWorker {
+    updates: Receiver<WorkerUpdate>,
+    cancel: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+enum WorkerUpdate {
+    Tick {
+        pose: Arc<RobotPoseFrame>,
+        advance_wall: Duration,
+        deadline_lag: Duration,
+        rapier_counters: Option<RapierCounterSample>,
+    },
+    Finished(Duration),
+    Failed(String),
+}
+
+/// One exact 60 Hz physics boundary per call. Rendering may skip poses, but
+/// the worker never skips, repeats, or coalesces an inference/physics tick.
+fn spawn_physics_worker(
+    session: Arc<Mutex<DiagnosticSession>>,
+    ticks: u64,
+    profile_rapier: bool,
+) -> PhysicsWorker {
+    let (sender, updates) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let handle = thread::Builder::new()
+        .name("sim2sim_physics_60hz".into())
+        .spawn(move || {
+            let epoch = Instant::now();
+            let mut last_nanos = 0_u64;
+            let mut session = session.lock().unwrap();
+            for tick in 1..=ticks {
+                if worker_cancel.load(Ordering::Acquire) {
+                    return;
+                }
+                let target_nanos = (tick * 1_000_000_000).div_ceil(60);
+                let scheduled_start = epoch + Duration::from_nanos(last_nanos);
+                if let Some(remaining) = scheduled_start.checked_duration_since(Instant::now()) {
+                    thread::sleep(remaining);
+                }
+                if worker_cancel.load(Ordering::Acquire) {
+                    return;
+                }
+                let started = Instant::now();
+                let _tick_span = tracing::info_span!("sim2sim_worker_tick", tick).entered();
+                let outcome =
+                    session.advance_frame(Duration::from_nanos(target_nanos - last_nanos));
+                let advance_wall = started.elapsed();
+                last_nanos = target_nanos;
+                let deadline = epoch + Duration::from_nanos(target_nanos);
+                let outcome = match outcome {
+                    Ok(outcome) if outcome.completed_steps == 1 && outcome.pending_ticks == 0 => {
+                        outcome
+                    }
+                    Ok(outcome) => {
+                        let _ = sender.send(WorkerUpdate::Failed(format!(
+                            "worker tick {tick} completed {} steps with {} pending",
+                            outcome.completed_steps, outcome.pending_ticks
+                        )));
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = sender
+                            .send(WorkerUpdate::Failed(format!("worker tick {tick}: {error}")));
+                        return;
+                    }
+                };
+                let poses = session.take_published_frames();
+                let pose = match display_pose_for_frame(
+                    &poses,
+                    outcome,
+                    tick - 1,
+                    session.global_step(),
+                ) {
+                    Ok(Some(pose)) => pose,
+                    Ok(None) => {
+                        let _ = sender.send(WorkerUpdate::Failed(format!(
+                            "worker tick {tick} published no robot pose"
+                        )));
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = sender
+                            .send(WorkerUpdate::Failed(format!("worker tick {tick}: {error}")));
+                        return;
+                    }
+                };
+                let deadline_lag = Instant::now().saturating_duration_since(deadline);
+                let rapier_counters = profile_rapier.then(|| session.rapier_counter_sample());
+                if sender
+                    .send(WorkerUpdate::Tick {
+                        pose,
+                        advance_wall,
+                        deadline_lag,
+                        rapier_counters,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = sender.send(WorkerUpdate::Finished(epoch.elapsed()));
+        })
+        .expect("could not create physics worker");
+    PhysicsWorker {
+        updates,
+        cancel,
+        handle,
+    }
+}
+
 impl LiveRun {
+    fn join_worker(&mut self) -> Result<(), String> {
+        if let Some(worker) = self.worker.take() {
+            worker.cancel.store(true, Ordering::Release);
+            worker
+                .handle
+                .join()
+                .map_err(|_| "physics worker panicked".to_string())?;
+        }
+        Ok(())
+    }
+
     fn report(
         &mut self,
         passed: bool,
         error: Option<&str>,
         visual: &RobotVisualPhase,
     ) -> Result<(), String> {
-        let actual_steps = self.session.global_step();
-        let minimum_ticks = self.session.ticks();
-        let counts_passed = self.session.finish_expected_steps(actual_steps);
+        let worker_join = self.join_worker();
+        let mut session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let actual_steps = session.global_step();
+        let minimum_ticks = self.minimum_ticks;
+        let pending_ticks = session.pending_ticks();
+        let counts_passed = session.finish_expected_steps(actual_steps);
+        let deadline_budget_ns = (minimum_ticks * 1_000_000_000).div_ceil(60);
+        let worker_60hz_deadline_met = worker_join.is_ok()
+            && self.worker_finished
+            && actual_steps == minimum_ticks
+            && self.worker_deadline_missed_ticks == 0
+            && self
+                .worker_wall_ns
+                .is_some_and(|wall_ns| wall_ns <= deadline_budget_ns);
         let profile_report = self.profile.as_ref().map(LiveProfile::report);
-        let report = self.session.report_mut();
+        let report = session.report_mut();
         report["schema"] = json!(LIVE_SCHEMA);
         report["scope"] =
             json!("dev_only_live_bevy_single_rapier_world_native_ort_p_only_diagnostic");
@@ -294,7 +561,14 @@ impl LiveRun {
         report["display_frames"] = json!(self.display_frames);
         report["completed_publishes"] = json!(self.completed_publishes);
         report["last_displayed_step"] = json!(self.last_displayed_step);
-        report["pending_ticks"] = json!(self.pending_ticks);
+        report["pending_ticks"] = json!(pending_ticks);
+        report["runtime_schedule"] = json!("dedicated_rational_60hz_worker");
+        report["worker_finished"] = json!(self.worker_finished);
+        report["worker_wall_ns"] = json!(self.worker_wall_ns);
+        report["worker_deadline_missed_ticks"] = json!(self.worker_deadline_missed_ticks);
+        report["worker_max_deadline_lag_ns"] = json!(self.worker_max_deadline_lag_ns);
+        report["station_label_cameras_baked"] = json!(self.baked_label_camera_count);
+        report["worker_60hz_deadline_met"] = json!(worker_60hz_deadline_met);
         report["robot_visual_status"] = json!(visual);
         report["props_physical"] = json!(false);
         report["live_visual_qualified"] = json!(false);
@@ -311,12 +585,22 @@ impl LiveRun {
         report["final_png_required"] = json!(self.final_png_path.is_some());
         report["final_png"] = json!(self.final_png_receipt);
         let accepted = passed
+            && worker_join.is_ok()
+            && self.worker_finished
+            && self.worker_wall_ns.is_some()
             && counts_passed
-            && actual_steps >= minimum_ticks as u64
+            && actual_steps == minimum_ticks
+            && self.completed_publishes == actual_steps
+            && self.last_displayed_step == actual_steps
+            && (!cfg!(feature = "live_physics_profile")
+                || self.profile.as_ref().is_none_or(|profile| {
+                    profile.rapier_counters_per_tick.len() as u64 == actual_steps
+                }))
             && (self.final_png_path.is_none() || self.final_png_receipt.is_some());
         report["passed"] = json!(accepted);
         report["error"] = match error {
             Some(reason) => json!(reason),
+            None if let Err(reason) = worker_join => json!(reason),
             None if !accepted => {
                 json!("live completion counts did not match the minimum tick bound")
             }
@@ -418,6 +702,8 @@ fn advance_live(
     mut camera: ResMut<StationCameraControl>,
     visual: Res<RobotVisualStatus>,
     gpu: Res<SharedGpuReadiness>,
+    diagnostics: Res<DiagnosticsStore>,
+    labels: Res<StationLabelBakeStatus>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if run.awaiting_final_visual || run.report_written {
@@ -433,7 +719,10 @@ fn advance_live(
         return;
     }
     // Renderer startup and GPU shader compilation do not accrue simulation debt.
-    if !gpu_state.ready || !matches!(visual.phase(), RobotVisualPhase::Ready { .. }) {
+    if !gpu_state.ready
+        || !labels.is_ready()
+        || !matches!(visual.phase(), RobotVisualPhase::Ready { .. })
+    {
         run.last_running_frame = None;
         if run.started.elapsed() > Duration::from_secs(120) {
             fail(
@@ -451,38 +740,109 @@ fn advance_live(
         }
     }
     drop(gpu_state);
+    run.baked_label_camera_count = labels.baked_camera_count().unwrap_or(0);
+    #[cfg(feature = "live_render_profile")]
+    if let Some(profile) = run
+        .profile
+        .as_ref()
+        .and_then(|p| p.render_cpu_profile.as_ref())
+    {
+        profile.mark_frame(run.display_frames);
+    }
     let now = Instant::now();
+    let _frame_span = tracing::info_span!(
+        "sim2sim_live_frame",
+        display_frame = run.display_frames,
+        last_displayed_step = run.last_displayed_step
+    )
+    .entered();
     let previous_start = run.last_running_frame.replace(now);
     let elapsed = previous_start.map_or(Duration::ZERO, |last| now.duration_since(last));
     if let (Some(_), Some(profile)) = (previous_start, run.profile.as_mut()) {
         profile.frame_start_to_start.record(elapsed);
     }
-    let advance_started = run.profile.as_ref().map(|_| Instant::now());
-    let advance_result = run.session.advance_frame(elapsed);
-    if let (Some(started), Some(profile)) = (advance_started, run.profile.as_mut()) {
-        profile.advance_frame_cpu.record(started.elapsed());
+    let display_frame = run.display_frames;
+    let last_displayed_step_at_start = run.last_displayed_step;
+    let start_since_run_ns =
+        u64::try_from(now.duration_since(run.started).as_nanos()).unwrap_or(u64::MAX);
+    if let Some(profile) = run.profile.as_mut() {
+        profile.frame_samples.push(json!({
+            "display_frame": display_frame,
+            "start_since_run_ns": start_since_run_ns,
+            "previous_interval_ns": previous_start.map(|_| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)),
+            "last_displayed_step_at_start": last_displayed_step_at_start,
+            "render_diagnostics": diagnostics.iter().filter(|d| d.path().as_str().starts_with("render/")).map(|d| json!({"path":d.path().as_str(),"latest":d.value()})).collect::<Vec<_>>(),
+        }));
     }
-    let outcome = match advance_result {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            fail(&mut run, &mut input, &mut exit, error);
-            return;
+    if run.worker.is_none() && !run.worker_finished {
+        run.worker = Some(spawn_physics_worker(
+            run.session.clone(),
+            run.minimum_ticks,
+            run.profile.is_some() && cfg!(feature = "live_physics_profile"),
+        ));
+    }
+    let mut latest_pose = None;
+    let mut failure = None;
+    loop {
+        let update = run.worker.as_ref().map(|worker| worker.updates.try_recv());
+        match update {
+            Some(Ok(WorkerUpdate::Tick {
+                pose,
+                advance_wall,
+                deadline_lag,
+                rapier_counters,
+            })) => {
+                if pose.global_step != run.completed_publishes + 1 {
+                    failure = Some("physics worker pose sequence is not contiguous".into());
+                    break;
+                }
+                if let Some(profile) = run.profile.as_mut() {
+                    profile.worker_tick_samples.push(json!({
+                        "global_step": pose.global_step,
+                        "advance_cpu_ns": u64::try_from(advance_wall.as_nanos()).unwrap_or(u64::MAX),
+                        "deadline_lag_ns": u64::try_from(deadline_lag.as_nanos()).unwrap_or(u64::MAX),
+                    }));
+                    profile.advance_frame_wall.record(advance_wall);
+                    profile.worker_deadline_lag.record(deadline_lag);
+                    if !deadline_lag.is_zero() {
+                        profile.deadline_missed_ticks += 1;
+                    }
+                    if let Some(counters) = rapier_counters {
+                        profile.rapier_counters_per_tick.push(counters);
+                    }
+                }
+                run.completed_publishes += 1;
+                let lag_ns = u64::try_from(deadline_lag.as_nanos()).unwrap_or(u64::MAX);
+                if lag_ns > 0 {
+                    run.worker_deadline_missed_ticks += 1;
+                    run.worker_max_deadline_lag_ns = run.worker_max_deadline_lag_ns.max(lag_ns);
+                }
+                latest_pose = Some(pose);
+            }
+            Some(Ok(WorkerUpdate::Finished(wall))) => {
+                run.worker_finished = true;
+                run.worker_wall_ns = Some(u64::try_from(wall.as_nanos()).unwrap_or(u64::MAX));
+                if run.completed_publishes != run.minimum_ticks {
+                    failure = Some("physics worker finished before all poses were received".into());
+                }
+                break;
+            }
+            Some(Ok(WorkerUpdate::Failed(error))) => {
+                failure = Some(error);
+                break;
+            }
+            Some(Err(TryRecvError::Disconnected)) => {
+                failure = Some("physics worker disconnected before completion".into());
+                break;
+            }
+            Some(Err(TryRecvError::Empty)) | None => break,
         }
-    };
-    let poses = run.session.take_published_frames();
-    let pose = match display_pose_for_frame(
-        &poses,
-        outcome,
-        run.last_displayed_step,
-        run.session.global_step(),
-    ) {
-        Ok(pose) => pose,
-        Err(error) => {
-            fail(&mut run, &mut input, &mut exit, error);
-            return;
-        }
-    };
-    if let Some(last) = pose {
+    }
+    if let Some(error) = failure {
+        fail(&mut run, &mut input, &mut exit, error);
+        return;
+    }
+    if let Some(last) = latest_pose {
         let Some(root) = last.poses.iter().find(|pose| pose.source_body_id == 1) else {
             fail(
                 &mut run,
@@ -496,14 +856,23 @@ fn advance_live(
         camera.target = Vec3::from_array(root.translation);
         run.last_displayed_step = last.global_step;
     }
-    run.completed_publishes += poses.len() as u64;
-    run.pending_ticks = outcome.pending_ticks;
     run.display_frames += 1;
-    if run.session.global_step() >= run.session.ticks() as u64 {
+    if run.worker_finished {
+        if let Err(error) = run.join_worker() {
+            fail(&mut run, &mut input, &mut exit, error);
+            return;
+        }
         if run.final_png_path.is_some() {
-            // Leave the completed physics frame frozen while framing its robot.
-            camera.view = StationView::Follow;
-            camera.target += Vec3::Y * 0.02;
+            // Preserve the benchmark camera while the completed pose is captured.
+            camera.input_enabled = false;
+        }
+        #[cfg(feature = "live_render_profile")]
+        if let Some(profile) = run
+            .profile
+            .as_ref()
+            .and_then(|p| p.render_cpu_profile.as_ref())
+        {
+            profile.stop();
         }
         run.awaiting_final_visual = true;
         run.final_pose_render_schedule_cleanup_count =
@@ -519,6 +888,7 @@ fn verify_final_visual(
     screenshot: Res<SharedScreenshotState>,
     mut exit: MessageWriter<AppExit>,
     mut input: ResMut<RobotVisualInput>,
+    diagnostics: Res<DiagnosticsStore>,
 ) {
     if !run.awaiting_final_visual || run.report_written {
         return;
@@ -563,7 +933,7 @@ fn verify_final_visual(
         return;
     }
     drop(gpu);
-    let expected = run.session.global_step();
+    let expected = run.session.lock().unwrap().global_step();
     match visual.phase() {
         RobotVisualPhase::Ready { global_step, .. } if *global_step == expected => {
             if let Some(path) = run.final_png_path.clone() {
@@ -629,8 +999,22 @@ fn verify_final_visual(
                 }
             }
             let phase = visual.phase().clone();
+            if run.profile.is_some() {
+                let mut rows: Vec<_> = diagnostics
+                    .iter()
+                    .map(|diagnostic| {
+                        json!({
+                            "path": diagnostic.path().as_str(),
+                            "latest": diagnostic.value(),
+                            "average": diagnostic.average(),
+                        })
+                    })
+                    .collect();
+                rows.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+                run.session.lock().unwrap().report_mut()["bevy_builtin_diagnostics"] = json!(rows);
+            }
             match run.report(true, None, &phase) {
-                Ok(()) if run.session.report()["passed"] == true => {
+                Ok(()) if run.session.lock().unwrap().report()["passed"] == true => {
                     println!("STATUS: success; live report={}", run.output.display());
                     exit.write(AppExit::Success);
                 }
@@ -704,7 +1088,7 @@ fn run(
     if let Some(config) = profile_config {
         report["live_profile"] = config.requested_config();
     }
-    let session = match prepare(&args[..9], &mut report) {
+    let mut session = match prepare(&args[..9], &mut report) {
         Ok(session) => session,
         Err(error) => {
             report["error"] = json!(error);
@@ -716,6 +1100,9 @@ fn run(
             return Err(error);
         }
     };
+    if profile_config.is_some() && cfg!(feature = "live_physics_profile") {
+        session.enable_rapier_counters();
+    }
     let definition = session.definition();
     let appearance_path = Path::new(&args[9]);
     let appearance = Arc::new(
@@ -733,6 +1120,7 @@ fn run(
     let model = RobotVisualModel::new(definition.clone(), appearance).map_err(|e| e.to_string())?;
     let input =
         RobotVisualInput::new(&definition, session.initial_pose()).map_err(|e| e.to_string())?;
+    let minimum_ticks = session.ticks() as u64;
     let scene: StationScene = session.scene();
     let asset_root = required_assets(Path::new(&args[4]))?;
     let initial_pose = session.initial_pose();
@@ -744,11 +1132,19 @@ fn run(
     let camera = StationCameraControl {
         view: StationView::Overview,
         target: Vec3::from_array(first_root.translation),
+        input_enabled: profile_config.is_none(),
         ..default()
     };
     let completion_report = output.clone();
     let live = LiveRun {
-        session,
+        session: Arc::new(Mutex::new(session)),
+        minimum_ticks,
+        worker: None,
+        worker_finished: false,
+        worker_wall_ns: None,
+        worker_deadline_missed_ticks: 0,
+        worker_max_deadline_lag_ns: 0,
+        baked_label_camera_count: 0,
         output,
         profile: profile_config.map(LiveProfile::new),
         started: Instant::now(),
@@ -756,7 +1152,6 @@ fn run(
         display_frames: 0,
         completed_publishes: 0,
         last_displayed_step: 0,
-        pending_ticks: 0,
         awaiting_final_visual: false,
         final_pose_render_schedule_cleanup_count: None,
         observed_render_schedule_cleanup_count: 0,
@@ -770,10 +1165,12 @@ fn run(
         ..default()
     })));
     let screenshot = SharedScreenshotState(Arc::new(Mutex::new(ScreenshotState::default())));
-    let (width, height, present_mode) = profile_config.map_or(
-        (1920, 1080, bevy::window::PresentMode::AutoVsync),
-        |config| (config.width, config.height, config.present_mode),
-    );
+    let (width, height, present_mode) = profile_config
+        .map_or((1920, 1080, bevy::window::PresentMode::Fifo), |config| {
+            (config.width, config.height, config.present_mode)
+        });
+    #[cfg(feature = "live_render_profile")]
+    let profile_epoch = live.started;
     let mut app = App::new();
     app.insert_resource(bevy::winit::WinitSettings::continuous())
         .insert_resource(scene)
@@ -806,6 +1203,28 @@ fn run(
             PostUpdate,
             verify_final_visual.after(RobotVisualSystems::ApplyPoses),
         );
+    if profile_config.is_some() {
+        app.add_plugins((
+            FrameTimeDiagnosticsPlugin::default(),
+            EntityCountDiagnosticsPlugin::default(),
+            RenderDiagnosticsPlugin,
+            MeshAllocatorDiagnosticPlugin,
+        ));
+    }
+    if let Some(config) = profile_config {
+        match config.ablation {
+            RenderAblation::None => {}
+            RenderAblation::SignageCameras => {
+                app.add_systems(PostStartup, disable_signage_cameras);
+            }
+            RenderAblation::Msaa => {
+                app.add_systems(PostStartup, disable_msaa);
+            }
+            RenderAblation::Shadows => {
+                app.add_systems(PostStartup, disable_shadows);
+            }
+        }
+    }
     let shaders = {
         let server = app.world().resource::<AssetServer>();
         RequiredShaders {
@@ -819,6 +1238,16 @@ fn run(
     render_app.world_mut().insert_resource(readiness);
     render_app.world_mut().insert_resource(shaders);
     render_app.add_systems(Render, check_gpu_pipelines.in_set(RenderSystems::Cleanup));
+    #[cfg(feature = "live_render_profile")]
+    if profile_config.is_some() {
+        let cpu_profile = dev_tools_minigame::render_profile::install(&mut app, profile_epoch)?;
+        app.world_mut()
+            .non_send_mut::<LiveRun>()
+            .profile
+            .as_mut()
+            .unwrap()
+            .render_cpu_profile = Some(cpu_profile);
+    }
     let result = app.run();
     let completed_report: Value = serde_json::from_slice(
         &fs::read(&completion_report)
@@ -887,8 +1316,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "live_physics_profile")]
     #[test]
-    fn profile_requires_explicit_enable_and_accepts_only_the_two_experiment_settings() {
+    fn rapier_native_counters_measure_a_real_step() {
+        let mut world = simulation_minigame::SimulationWorld::foundation();
+        world.enable_rapier_counters();
+        world.step_with_torques(&[]).unwrap();
+        let counters = world.rapier_counter_sample();
+        assert!(counters.step_ns > 0);
+        assert!(counters.broad_phase_ns > 0);
+    }
+
+    #[test]
+    fn profile_requires_explicit_enable_and_accepts_only_supported_settings() {
         assert!(
             parse_live_profile_config(None, None, None)
                 .unwrap()
@@ -907,11 +1347,8 @@ mod tests {
             .unwrap();
         assert_eq!(default.width, 1920);
         assert_eq!(default.height, 1080);
-        assert_eq!(default.present_mode, bevy::window::PresentMode::AutoVsync);
-        assert_eq!(
-            default.requested_config()["requested_present_mode"],
-            "auto_vsync"
-        );
+        assert_eq!(default.present_mode, bevy::window::PresentMode::Fifo);
+        assert_eq!(default.requested_config()["requested_present_mode"], "fifo");
 
         let alternate =
             parse_live_profile_config(Some("1"), Some("960x540"), Some("auto_no_vsync"))
@@ -930,6 +1367,39 @@ mod tests {
         assert_eq!(
             alternate.requested_config()["requested_present_mode"],
             "auto_no_vsync"
+        );
+
+        for (requested, expected) in [
+            ("fifo", bevy::window::PresentMode::Fifo),
+            ("mailbox", bevy::window::PresentMode::Mailbox),
+        ] {
+            let config = parse_live_profile_config(Some("1"), None, Some(requested))
+                .unwrap()
+                .unwrap();
+            assert_eq!(config.present_mode, expected);
+            assert_eq!(
+                config.requested_config()["requested_present_mode"],
+                requested
+            );
+        }
+        assert!(parse_live_profile_config(Some("1"), None, Some("Fifo")).is_err());
+        assert!(parse_live_profile_config(Some("1"), None, Some("mailbox ")).is_err());
+        assert_eq!(
+            parse_live_profile_config(Some("1"), None, Some("immediate")).unwrap_err(),
+            format!(
+                "{PROFILE_PRESENT_MODE_ENV} must be auto_vsync, auto_no_vsync, fifo, or mailbox"
+            )
+        );
+        assert!(parse_live_profile_config_with_ablation(None, None, None, Some("msaa")).is_err());
+        for requested in ["none", "signage_cameras", "msaa", "shadows"] {
+            let config =
+                parse_live_profile_config_with_ablation(Some("1"), None, None, Some(requested))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(config.requested_config()["render_ablation"], requested);
+        }
+        assert!(
+            parse_live_profile_config_with_ablation(Some("1"), None, None, Some("all")).is_err()
         );
     }
 
