@@ -70,6 +70,7 @@ impl StaticPolicyClient {
         let client = Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .timeout(timeout)
             .build()
             .map_err(|e| PolicyInferenceError::Transport(e.to_string()))?;

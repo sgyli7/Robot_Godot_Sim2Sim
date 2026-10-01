@@ -120,6 +120,7 @@ impl LocalQwenClient {
         let response = self
             .client
             .post(self.endpoint.clone())
+            .timeout(self.config.timeout)
             .json(&body)
             .send()
             .map_err(|error| DecisionError::Service(error.to_string()))?;

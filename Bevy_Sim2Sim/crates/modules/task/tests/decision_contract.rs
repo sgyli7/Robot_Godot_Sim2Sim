@@ -114,13 +114,26 @@ struct MockServer {
     handle: thread::JoinHandle<()>,
 }
 
+enum ResponseDelivery {
+    CompleteAfter(Duration),
+    SlowDrip {
+        piece_bytes: usize,
+        interval: Duration,
+    },
+}
+
 fn serve(status: &str, body: String, delay: Duration) -> MockServer {
+    serve_with_delivery(status, body, ResponseDelivery::CompleteAfter(delay))
+}
+
+fn serve_with_delivery(status: &str, body: String, delivery: ResponseDelivery) -> MockServer {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let status = status.to_owned();
     let (tx, request) = mpsc::channel();
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nodelay(true).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -151,12 +164,33 @@ fn serve(status: &str, body: String, delay: Duration) -> MockServer {
         }
         tx.send(serde_json::from_slice(&data[end..end + length]).unwrap())
             .unwrap();
-        thread::sleep(delay);
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        let headers = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
-        let _ = stream.write_all(response.as_bytes());
+        match delivery {
+            ResponseDelivery::CompleteAfter(delay) => {
+                thread::sleep(delay);
+                let _ = stream.write_all(format!("{headers}{body}").as_bytes());
+            }
+            ResponseDelivery::SlowDrip {
+                piece_bytes,
+                interval,
+            } => {
+                if stream.write_all(headers.as_bytes()).is_err() {
+                    return;
+                }
+                for (index, piece) in body.as_bytes().chunks(piece_bytes).enumerate() {
+                    if index > 0 {
+                        thread::sleep(interval);
+                    }
+                    // Total-deadline expiry may close the connection mid-body.
+                    if stream.write_all(piece).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
     });
     MockServer {
         url,
@@ -281,6 +315,35 @@ fn http_failures_and_timeouts_surface_without_retry() {
     );
     assert!(started.elapsed() < Duration::from_millis(120));
     mock.handle.join().unwrap();
+}
+
+#[test]
+fn slow_drip_response_cannot_extend_the_total_decision_deadline() {
+    // A valid completion delivered in about 21 pieces would succeed after
+    // >=475ms if the client renewed a 200ms timeout on every blocking Read.
+    let body = completion(&decision(SkillRequest::Observe), "stop");
+    let piece_bytes = body.len().div_ceil(21);
+    assert!(body.len().div_ceil(piece_bytes) >= 20);
+    let mock = serve_with_delivery(
+        "200 OK",
+        body,
+        ResponseDelivery::SlowDrip {
+            piece_bytes,
+            interval: Duration::from_millis(25),
+        },
+    );
+    let client = client(&mock.url, Duration::from_millis(200));
+    let input = input();
+    let started = Instant::now();
+    let result = client.decide(&input);
+    let elapsed = started.elapsed();
+    mock.request.recv_timeout(Duration::from_secs(1)).unwrap();
+    mock.handle.join().unwrap();
+    assert!(matches!(result, Err(DecisionError::Service(_))));
+    assert!(
+        elapsed < Duration::from_millis(450),
+        "slow body extended the total request deadline to {elapsed:?}"
+    );
 }
 
 #[test]
