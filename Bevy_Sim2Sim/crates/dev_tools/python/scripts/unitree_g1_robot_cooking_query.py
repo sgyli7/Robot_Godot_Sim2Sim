@@ -60,14 +60,26 @@ def query(args, receipt, output):
             owner = prim
             while owner and str(owner.GetPath()) not in bodies:
                 owner = owner.GetParent()
-            if not owner or not prim.IsA(UsdGeom.Mesh):
-                raise ValueError("Query requires an owned original collision mesh")
+            if not owner:
+                raise ValueError("Query requires an owned original collider")
+            relative = cache.GetLocalToWorldTransform(prim) * cache.GetLocalToWorldTransform(owner).GetInverse()
+            if not prim.IsA(UsdGeom.Mesh):
+                if prim.GetTypeName() not in ("Capsule", "Sphere", "Cube"):
+                    raise ValueError("Unexpected original analytic collision type")
+                receipt["collisions"].append({"body_name": owner.GetName(), "body_path": str(owner.GetPath()),
+                    "collision_path": str(prim.GetPath()), "source_type": str(prim.GetTypeName()),
+                    "mesh_to_body_matrix": [values(row) for row in relative],
+                    "analytic_attributes": {name: str(prim.GetAttribute(name).Get())
+                        for name in ("radius", "height", "axis", "size") if prim.GetAttribute(name)},
+                    "cooking_required": False, "hulls": []})
+                save(output, receipt)
+                continue
             approximation = str(UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get())
             if approximation != "convexHull":
                 raise ValueError("Original robot collision approximation changed")
-            relative = cache.GetLocalToWorldTransform(prim) * cache.GetLocalToWorldTransform(owner).GetInverse()
             item = {"body_name": owner.GetName(), "body_path": str(owner.GetPath()),
                     "collision_path": str(prim.GetPath()), "approximation": approximation,
+                    "source_type": "Mesh", "cooking_required": True,
                     "mesh_to_body_matrix": [values(row) for row in relative], "hulls": []}
             receipt["collisions"].append(item)
 
