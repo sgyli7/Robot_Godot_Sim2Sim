@@ -29,7 +29,7 @@ use task_minigame::{
 
 use crate::g1_decision_diagnostic::{FileIdentity, snapshot_from_capture};
 
-const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const PNG_BYTE_LIMIT: u64 = 16 * 1024 * 1024;
 const STAMP_BYTE_LIMIT: u64 = 2 * 1024 * 1024;
 const STAMP_KEYS: [&str; 13] = [

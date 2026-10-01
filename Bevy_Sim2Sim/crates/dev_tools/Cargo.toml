@@ -34,6 +34,11 @@ tracing.workspace = true
 libc = { version = "0.2", optional = true }
 
 [[bin]]
+name = "g1_visual_policy_probe"
+path = "src/bin/g1_visual_policy_probe.rs"
+required-features = ["rendering_preview"]
+
+[[bin]]
 name = "g1_visual_decision_probe"
 path = "src/bin/g1_visual_decision_probe.rs"
 required-features = ["rendering_preview"]

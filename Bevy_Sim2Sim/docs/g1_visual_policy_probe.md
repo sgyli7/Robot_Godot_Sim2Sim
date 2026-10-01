@@ -6,9 +6,10 @@ It validates the native 53-body/43-joint camera pairing using the shared
 `snapshot_from_capture` guard, maps measured joints by the frozen 43 names, and
 uses the decoded RGB pixels. It starts no service, renderer, physics or executor.
 
-The root agent registers the module and binary behind `rendering_preview`, then
-builds/tests using its coordinated warm Cargo target. This source-only delivery
-has not compiled, executed tests, contacted a service or loaded a model.
+The module and binary are registered behind `rendering_preview` and use the
+existing shared transport without changing its deadline bound.
+The three pure guards passed on the integration branch, and the actual binary
+built with `rendering_preview`. Local model HTTP execution is recorded separately.
 
 ```bash
 /absolute/path/to/g1_visual_policy_probe \
@@ -28,13 +29,11 @@ Profile mapping, model revision, reference instruction, 40/50-step horizon and
 20 ms action period remain attached to their original contract. The mobile
 profile uses the published `gn1_6` revision, never the old main checkpoint.
 
-The requested total HTTP timeout is 30 seconds. The existing transport disables
+The total HTTP timeout is 20 seconds. The existing transport disables
 proxying, redirects and retries and also places the total deadline on the
 request body. The probe calls `infer` exactly once after successful validation
-and client construction. **Integration prerequisite:** base `6fbf817` caps that
-client at 20 seconds; the root agent must extend the shared validated cap to
-30 seconds before the actual run. The probe saves `InvalidTimeout` and exits
-nonzero until then, rather than silently choosing a different deadline/client.
+and client construction. Model loading belongs to the service startup and is
+completed before the client request; it does not require a longer request bound.
 
 The receipt is reserved with `create_new` before flag, file or pairing validation;
 its parent must already exist. Existing evidence is never overwritten. Ordinary
