@@ -19,6 +19,7 @@ live_render_profile = ["rendering_preview", "dep:libc"]
 common_minigame.workspace = true
 robot_minigame.workspace = true
 simulation_minigame.workspace = true
+task_minigame.workspace = true
 rendering_minigame = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
 rapier3d.workspace = true
@@ -31,6 +32,11 @@ tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2", optional = true }
+
+[[bin]]
+name = "g1_visual_decision_probe"
+path = "src/bin/g1_visual_decision_probe.rs"
+required-features = ["rendering_preview"]
 
 [[bin]]
 name = "robot_initialization_preview"

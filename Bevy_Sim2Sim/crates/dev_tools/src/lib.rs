@@ -2,6 +2,8 @@
 
 #[cfg(feature = "rendering_preview")]
 pub mod g1_capture;
+#[cfg(feature = "rendering_preview")]
+pub mod g1_decision_diagnostic;
 pub mod g1_task_acceptance;
 pub mod legacy_cpu_actor;
 #[cfg(feature = "live_render_profile")]
