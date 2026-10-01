@@ -108,6 +108,16 @@ impl FixedStepClock {
         self.pending_quanta / NANOS_PER_SECOND
     }
 
+    /// Display interpolation between the preceding and latest completed poses.
+    /// During whole-tick debt, hold the latest pose instead of predicting physics.
+    pub fn interpolation_alpha(&self) -> f32 {
+        if self.pending_ticks() != 0 {
+            1.0
+        } else {
+            self.pending_quanta as f32 / NANOS_PER_SECOND as f32
+        }
+    }
+
     /// Snapshot includes debt rather than silently discarding clipped time.
     pub fn snapshot(&self) -> ClockSnapshot {
         ClockSnapshot {
@@ -126,8 +136,8 @@ impl FixedStepClock {
 mod tests {
     use super::*;
 
-    fn run_frames(fps: u64) -> Vec<u64> {
-        let mut clock = FixedStepClock::new(60, 8).unwrap();
+    fn run_frames(rate_hz: u32, fps: u64) -> Vec<u64> {
+        let mut clock = FixedStepClock::new(rate_hz, 8).unwrap();
         let mut ticks = Vec::new();
         let mut last_nanos = 0;
         for frame in 1..=fps * 10 {
@@ -145,43 +155,58 @@ mod tests {
 
     #[test]
     fn frame_rate_does_not_change_tick_sequence() {
-        let expected: Vec<_> = (0..600).collect();
-        for fps in [30, 60, 144] {
-            assert_eq!(run_frames(fps), expected);
+        for rate_hz in [50, 60] {
+            let expected: Vec<_> = (0..u64::from(rate_hz) * 10).collect();
+            for fps in [30, 60, 144] {
+                assert_eq!(run_frames(rate_hz, fps), expected);
+            }
         }
     }
 
     #[test]
     fn half_second_hitch_retains_all_thirty_ticks() {
-        let mut clock = FixedStepClock::new(60, 8).unwrap();
-        let mut budgets = Vec::new();
-        let mut elapsed = Duration::from_millis(500);
-        while clock.global_step() < 30 {
-            let budget = clock.begin_frame(elapsed);
-            elapsed = Duration::ZERO;
-            budgets.push(budget);
-            for _ in 0..budget {
-                clock.commit_tick().unwrap();
+        for rate_hz in [50, 60] {
+            let mut clock = FixedStepClock::new(rate_hz, 8).unwrap();
+            let expected_ticks = u64::from(rate_hz) / 2;
+            let mut budgets = Vec::new();
+            let mut elapsed = Duration::from_millis(500);
+            while clock.global_step() < expected_ticks {
+                let budget = clock.begin_frame(elapsed);
+                elapsed = Duration::ZERO;
+                budgets.push(budget);
+                for _ in 0..budget {
+                    clock.commit_tick().unwrap();
+                }
+                assert!(clock.commit_tick().is_err());
             }
-            assert!(clock.commit_tick().is_err());
+            let mut remaining = expected_ticks;
+            let expected: Vec<_> = (0..expected_ticks.div_ceil(8))
+                .map(|_| {
+                    let budget = remaining.min(8);
+                    remaining -= budget;
+                    budget as usize
+                })
+                .collect();
+            assert_eq!(budgets, expected);
+            assert_eq!(clock.pending_ticks(), 0);
         }
-        assert_eq!(budgets, [8, 8, 8, 6]);
-        assert_eq!(clock.pending_ticks(), 0);
     }
 
     #[test]
     fn pause_preserves_debt_and_fractional_time() {
-        let mut clock = FixedStepClock::new(60, 8).unwrap();
-        clock.begin_frame(Duration::from_millis(510));
-        clock.commit_tick().unwrap();
-        let before = clock.snapshot();
-        clock.set_paused(true);
-        assert_eq!(clock.begin_frame(Duration::from_secs(7)), 0);
-        assert_eq!(clock.commit_tick(), Err(ClockError::Paused));
-        assert_eq!(clock.snapshot().pending_seconds, before.pending_seconds);
-        clock.set_paused(false);
-        assert_eq!(clock.begin_frame(Duration::ZERO), 8);
-        clock.commit_tick().unwrap();
-        assert_eq!(clock.global_step(), 2);
+        for rate_hz in [50, 60] {
+            let mut clock = FixedStepClock::new(rate_hz, 8).unwrap();
+            clock.begin_frame(Duration::from_millis(510));
+            clock.commit_tick().unwrap();
+            let before = clock.snapshot();
+            clock.set_paused(true);
+            assert_eq!(clock.begin_frame(Duration::from_secs(7)), 0);
+            assert_eq!(clock.commit_tick(), Err(ClockError::Paused));
+            assert_eq!(clock.snapshot().pending_seconds, before.pending_seconds);
+            clock.set_paused(false);
+            assert_eq!(clock.begin_frame(Duration::ZERO), 8);
+            clock.commit_tick().unwrap();
+            assert_eq!(clock.global_step(), 2);
+        }
     }
 }
