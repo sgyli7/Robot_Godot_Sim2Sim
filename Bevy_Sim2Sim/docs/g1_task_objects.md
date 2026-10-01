@@ -110,6 +110,101 @@ For the real clock use
 Set `G1_AGILE_CONFIG`, `G1_AGILE_CONFIG_SHA256`, a new
 `G1_AGILE_WORKER_OUTPUT`, and `G1_CODE_COMMIT`.
 
-Original object textures are cached with byte receipts. Full background MDL and
-texture dependency closure, artifact-specific license mapping, task visual
-registration, and full source/native task rollouts remain unfinished.
+Original object textures and native visual registration are documented in
+`g1_task_visual.md`. Full background MDL and texture dependency closure,
+artifact-specific license mapping, and full source/native task rollouts remain
+unfinished.
+
+## Original T1 shelf migration
+
+The T1 task constructor can now add the original invisible shelf support in the
+same owner world. The source Arena revision is
+`8b4a3a47fc53de23e8205089d71109a2e2348acd`. A uniform source-world translation of
+`[0,0,0.795]` puts the original ground at native Z=0, robot root at
+`[0.25,0.08,0.795]`, and shelf center at `[0.62,0,0.745]`. Shelf size remains
+`[0.8,1.5,0.04]`, with the source 5 mm contact offset recorded. The source shelf
+has no authored physics material; native friction 0.5 is an explicit candidate
+choice. The 16 original hand/finger collision bodies receive dynamic friction
+5 with the max combine rule. Rapier's single friction coefficient does not
+represent the source static/dynamic pair 6/5 exactly.
+
+The original startup geometry overlaps the shelf by about 42 mm at
+`pelvis_contour_link` and 6 mm at each hip-pitch link. These are measured initial
+overlaps, rather than a reason to disable real collisions. The original-source
+layout exposes a native standing failure that the separated flat-floor test did
+not cover. The background owner stops on left ankle roll crossing the unchanged
+source limit at Tick 1099 (21.98 simulated seconds). There was no observed fall
+before that guard. All 1098 valid background frames and measurements exactly
+match the corresponding offline native replay.
+
+Bounded one-variable controls retain 50 Hz, one integration per Tick, four
+non-integrating PGS sweeps, original gains and model bytes:
+
+| Native shelf case | Result |
+|---|---|
+| Original contacts; repeated cold runs | Limit guard at Tick 1099 |
+| Only floor friction 1.0 instead of 0.5 | Limit guard at Tick 1175 |
+| Only contact recycling disabled | Limit guard at Tick 1125 |
+| Original cooked pelvis convex topology | Limit guard at Tick 1200 |
+| Original cooked topology for all 38 mesh colliders | Limit guard at Tick 1200 |
+| Robot/shelf pairs excluded, diagnostic only | Completed 1500 Ticks |
+
+Collision masking is not a production fix or task success. The copied cooking
+topology comes from a zero-integration 6.1 query; its runtime mismatch with T1
+6.0 remains explicit. Source evidence and complete failed trajectories are
+frozen at
+`/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_t1_shelf_diagnosis_001/manifest.json`.
+
+The matching T1 reference uses the original ARM64 image manifest
+`sha256:9bc527c60c1cdde532b05859b955e866e6115ac5bf2fe22eaa24daa6ea8783e6`
+for `6.0.0-dev2`, whose actual build is
+`6.0.0-rc.22+release.33481.407f3ea1.gl`, and Lab revision
+`e57379c634b42db5a0fe9f754341be6e2a7c7c43`. Dependencies are installed only in
+the isolated owned container. Its original Torch 2.10.0+cu128 GPU JIT fusion
+fails on GB10 with an NVRTC architecture error. The reduced reference harness
+disables only this process-local GPU fusion optimization, retaining the original
+operators. The original quaternion transform's 64-sample CPU/GPU comparison
+passed with maximum component error 2.384e-7. This checks that transform, not
+every computation in the complete policy pipeline.
+
+Both fresh source PhysX standing processes completed 1500 control Ticks and
+6000 physics steps at the original 200/50 Hz. No-shelf maximum root drift was
+0.100234 m; original-shelf maximum drift was 0.024930 m. The source shelf case's
+left ankle roll stayed in `[-0.016866,0.002709]` rad, inside its original limits.
+The source/native initial 43 joint angles and first cold inference's 43 targets
+are identical. Initial body position error across all 53 bodies is at most
+2.682e-7 m; mass error is at most 2.384e-7 kg, and COM positions match exactly.
+These comparisons narrow the failing candidate to migrated dynamics. They do
+not identify a particular solver mechanism by themselves.
+
+The original SDK reports static joint friction 0.03 on 35 joints and zero on
+the eight hip/knee joints; dynamic and viscous joint friction are zero. A
+source-only diagnostic setting all three SDK friction properties to zero still
+completed 1500 standing Ticks with the shelf (maximum drift 0.024919 m). That
+omission alone therefore does not reproduce the failure in the reference
+200 Hz setup. The original reference configuration and native production
+configuration remain unchanged.
+
+A separate native oracle diagnostic executes the byte-bound original 1500-Tick
+target sequence through real native motors and contacts, with zero policy
+inferences. It preserves the original native shelf layout and apple/plate.
+At source `bbe85238f35f5084e95370be73b4732698139395`, it stopped after 974
+motor updates and integrations: upright cosine 0.483894 crossed the unchanged
+fall guard, root height was 0.513734 m, and maximum horizontal drift was
+0.469336 m. The final state is explicitly invalid for runtime admission.
+Failure can occur without recurrent policy feedback. This experiment is not
+a production controller, and does not prove identical source/native scenes:
+the reduced reference omitted props while the native owner retained them.
+
+Matching source setup, startup failures, both original standing traces, SDK
+property comparisons, friction control, and failed native oracle replay are
+frozen separately at
+`/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_t1_source_physx_001/manifest.json`.
+
+The harness `unitree_g1_t1_source_shelf.py` is a reduced ground/robot/shelf
+standing comparison. It intentionally records `qualified=false` and
+`source_task_rollout_verified=false`. Original background, props, cameras and
+VLA are absent. Initialization can advance the source simulator; recorded
+physics-step counts start after reset. These source diagnostics do not change
+the native formal 50 Hz frequency or prove full T0, T1 grasp/release, or T2
+walking while carrying.
