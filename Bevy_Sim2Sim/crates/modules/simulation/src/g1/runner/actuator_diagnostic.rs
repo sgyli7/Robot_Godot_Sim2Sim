@@ -638,6 +638,7 @@ fn final_native_receipt(runner: &G1Runner, definition: &G1Definition, mapping: &
         })
         .collect();
     json!({"actual_counts":runner.progress_counts(),"configuration":runner.simulation.configuration(),
+        "root_unit_rotation_maintenance":tree.map(|(tree,_)|tree.root().joint().unit_rotation_maintenance()),
         "root_handle_still_live":root.is_some(),
         "raw_root_position_source":root.map(|body| engine_to_source_vector(body.translation().to_array())),
         "raw_root_rotation_xyzw":root.map(|body| body.rotation().to_array()),

@@ -29,6 +29,10 @@ pub struct MultibodyJoint {
     pub kinematic: bool,
     pub(crate) coords: SpatialVector,
     pub(crate) joint_rot: Rotation,
+    // Local opt-in: preserve unit rotation after free angular integration.
+    // Default false keeps existing articulations' integration byte-identical.
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    unit_rotation_maintenance: bool,
     /// Per-DoF spring stiffness (a passive joint spring integrated implicitly
     /// in the generalized dynamics). Zero on axes with no spring.
     pub(crate) spring_stiffness: SpatialVector,
@@ -50,11 +54,34 @@ impl MultibodyJoint {
             kinematic,
             coords: Default::default(),
             joint_rot: Rotation::IDENTITY,
+            unit_rotation_maintenance: false,
             spring_stiffness: Default::default(),
             spring_ref: Default::default(),
             #[cfg(feature = "sim2sim-source-limit-probe")]
             sim2sim_source_limit_probe: None,
         }
+    }
+
+    /// Opt in to unit-length maintenance of a three-angular-DoF joint.
+    ///
+    /// Only the quaternion representation is renormalized after the existing
+    /// angular integration. This adds no temporal substep and does not change
+    /// coordinates, velocities, forces, targets or limits. Disabled by default.
+    /// Returns false for joints without three free angular axes.
+    #[cfg(feature = "dim3")]
+    pub fn set_unit_rotation_maintenance(&mut self, enabled: bool) -> bool {
+        let angular_locks = self.data.locked_axes.bits() >> DIM;
+        if angular_locks.count_ones() != 0 {
+            return false;
+        }
+        self.unit_rotation_maintenance = enabled;
+        true
+    }
+
+    /// Whether this joint explicitly maintains its free angular rotation norm.
+    #[cfg(feature = "dim3")]
+    pub fn unit_rotation_maintenance(&self) -> bool {
+        self.unit_rotation_maintenance
     }
 
     /// Sets a passive joint spring on `axis` (an index into the 6-DoF spatial
@@ -92,7 +119,10 @@ impl MultibodyJoint {
             && solimp[4] == 2.0
             && dof_invweight0.is_finite()
             && dof_invweight0 > 0.0
-            && self.data.limit_axes.contains(crate::dynamics::JointAxis::AngX.into());
+            && self
+                .data
+                .limit_axes
+                .contains(crate::dynamics::JointAxis::AngX.into());
         if valid {
             self.sim2sim_source_limit_probe = Some(joint::SourceLimitProbe {
                 solref,
@@ -208,6 +238,9 @@ impl MultibodyJoint {
                 let angvel = Vector::from_slice(&vels[curr_free_dof..curr_free_dof + 3]);
                 let disp = Rotation::from_scaled_axis(angvel * dt);
                 self.joint_rot = disp * self.joint_rot;
+                if self.unit_rotation_maintenance {
+                    self.joint_rot = self.joint_rot.normalize();
+                }
                 self.coords[3] += angvel[0] * dt;
                 self.coords[4] += angvel[1] * dt;
                 self.coords[5] += angvel[2] * dt;

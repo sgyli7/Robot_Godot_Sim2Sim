@@ -351,6 +351,13 @@ pub fn build(
                 "G1 must have 6 free-root + 43 joint DOFs and 53 links",
             ));
         }
+        // G1 completed frames require unit rotations. Free-root multiplication
+        // accumulated enough f32 norm error to reject a finger at Tick 47.
+        // Maintain only the quaternion representation at its integration seam;
+        // coordinates, qdot, physical dt and the existing solve stages are kept.
+        if !tree.root_mut().joint.set_unit_rotation_maintenance(true) {
+            return Err(invalid("G1 root must retain three free angular axes"));
+        }
         tree.damping_mut().fill(0.);
         tree.armature_mut().fill(0.);
         tree.frictions_mut().fill(0.);
@@ -444,6 +451,56 @@ fn invalid(message: impl Into<String>) -> RobotError {
 mod tests {
     use super::*;
     use std::{env, path::Path};
+
+    #[test]
+    fn opted_in_free_joint_keeps_unit_rotation_through_repeated_integration() {
+        let mut joint = MultibodyJoint::new(GenericJoint::default(), false);
+        assert!(joint.set_unit_rotation_maintenance(true));
+        let velocity = [0.12, -0.03, 0.07, 0.04, -0.07, 0.02];
+        let mut max_norm_error = 0.0_f64;
+        for tick in 1..=1_000 {
+            joint.integrate(0.02, &velocity);
+            // The same body_to_parent/FK rotation seam used by real body frames.
+            let pose = joint.body_to_parent();
+            let q = pose.rotation.to_array();
+            let norm_error = (q.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() - 1.).abs();
+            max_norm_error = max_norm_error.max(norm_error);
+            assert!(
+                norm_error <= 2e-6,
+                "non-unit free-joint rotation at Tick {tick}: {norm_error}"
+            );
+        }
+        let pose = joint.body_to_parent();
+        let expected_rotation =
+            Rotation::from_scaled_axis(Vector::from_array([0.04, -0.07, 0.02]) * 20.0);
+        for axis in [Vector::X, Vector::Y, Vector::Z] {
+            assert!((pose.rotation * axis - expected_rotation * axis).length() < 3e-5);
+        }
+        assert!((pose.translation - Vector::new(2.4, -0.6, 1.4)).length() < 4e-5);
+        println!("G1_UNIT_ROTATION 1000_integrations max_squared_norm_error={max_norm_error}");
+    }
+
+    #[test]
+    fn rotation_maintenance_is_opt_in_and_preserves_legacy_integration_bits() {
+        let mut joint = MultibodyJoint::new(GenericJoint::default(), false);
+        assert!(!joint.unit_rotation_maintenance());
+        let velocity = [0., 0., 0., 0.04, -0.07, 0.02];
+        let mut legacy = Rotation::IDENTITY;
+        for _ in 0..150 {
+            legacy = Rotation::from_scaled_axis(Vector::new(0.04, -0.07, 0.02) * 0.02) * legacy;
+            joint.integrate(0.02, &velocity);
+            assert_eq!(
+                joint.joint_rot().to_array().map(f32::to_bits),
+                legacy.to_array().map(f32::to_bits)
+            );
+        }
+        let mut hinge = MultibodyJoint::new(
+            GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES).build(),
+            false,
+        );
+        assert!(!hinge.set_unit_rotation_maintenance(true));
+        assert!(!hinge.unit_rotation_maintenance());
+    }
 
     #[test]
     #[ignore = "requires G1_MODEL_DIR and G1_DEFINITION_SHA256"]
