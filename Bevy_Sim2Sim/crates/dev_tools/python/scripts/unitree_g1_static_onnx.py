@@ -43,6 +43,10 @@ class StaticAppleOnnx:
         provider = {"cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider"}[device]
         if provider not in ort.get_available_providers():
             raise RuntimeError(f"Required provider {provider} unavailable: {ort.get_available_providers()}")
+        if device == "cuda":
+            # Load this isolated environment's NVIDIA wheels, without changing the
+            # host loader configuration or falling back to system CUDA libraries.
+            ort.preload_dlls(directory="")
         self.provider = provider
         options = ort.SessionOptions()
         options.intra_op_num_threads = 8

@@ -184,7 +184,7 @@ def prepare(profile_name: str, args) -> dict:
         "schema": "unitree_g1_policy_files_v1", "profile": profile_name,
         **{k: v for k, v in profile.items() if k != "patterns"},
         "model_root": str(root.resolve()), "gated": info.gated,
-        "license_scope": "non_commercial_research",
+        "intended_use_scope": "non_commercial_research",
         "local_files_verified": False, "inference_verified": False,
         "source_rollout_verified": False, "bevy_rollout_verified": False,
         "files": [],
