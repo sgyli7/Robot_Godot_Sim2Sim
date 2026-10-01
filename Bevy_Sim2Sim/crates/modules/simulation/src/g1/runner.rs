@@ -1,4 +1,4 @@
-//! A single owner performs observation, real inference, explicit PD and one 50Hz
+//! A single owner performs observation, real inference, actuation and one 50Hz
 //! integration. Rendering receives immutable completed frames only.
 
 use super::assembly::{self, G1Assembly};
@@ -17,6 +17,16 @@ use robot_minigame::{
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Homie actuator discretization, recorded independently of policy identity.
+/// Existing configurations retain the original explicit-PD path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum G1ActuatorBackend {
+    #[default]
+    ExternalExplicitPd,
+    NativeForceBased,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct G1RunnerConfig {
@@ -27,6 +37,8 @@ pub struct G1RunnerConfig {
     pub ort_sha256: String,
     pub stand_model: PathBuf,
     pub walk_model: PathBuf,
+    #[serde(default)]
+    pub actuator_backend: G1ActuatorBackend,
     /// Source Z-up free pelvis pose. This is not the external USD scene root.
     pub root_pose: SourcePose,
     /// Explicit diagnostic materials; do not claim PhysX cooking/material parity.
@@ -36,11 +48,14 @@ pub struct G1RunnerConfig {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct G1Step {
+    pub actuator_backend: G1ActuatorBackend,
     pub frame: G1BodyFrame,
     /// Native state sampled at the same completed boundary as `frame`.
     pub measurement: G1Measurement,
     pub joint_positions: Vec<f32>,
     pub joint_velocities: Vec<f32>,
+    /// Applied external PD efforts. Native motor rows apply their own bounded
+    /// impulses, so this is 43 zeros there, never a fabricated motor waveform.
     pub applied_torques: Vec<f32>,
     pub inference: HomieResult,
     pub root_position_source: [f32; 3],
@@ -83,6 +98,7 @@ pub struct G1Runner {
     simulation: SimulationWorld,
     assembly: G1Assembly,
     policy: HomiePolicy,
+    actuator_backend: G1ActuatorBackend,
     halted: bool,
 }
 
@@ -126,11 +142,15 @@ impl G1Runner {
             &initial,
             config.robot_contact_friction,
         )?;
+        if config.actuator_backend == G1ActuatorBackend::NativeForceBased {
+            assembly.set_force_based_targets(&mut simulation.world, &initial)?;
+        }
         Ok(Self {
             episode_id: config.episode_id,
             simulation,
             assembly,
             policy,
+            actuator_backend: config.actuator_backend,
             halted: false,
         })
     }
@@ -216,8 +236,22 @@ impl G1Runner {
         let state = self.assembly.state(&self.simulation.world)?;
         let inference = self.policy.infer(&state, command)?;
         guard()?;
-        let applied = actuator::torques(&inference.targets, &state.positions, &state.velocities)?;
-        let torques = self.assembly.torques(&self.simulation.world, &applied)?;
+        let applied = match self.actuator_backend {
+            G1ActuatorBackend::ExternalExplicitPd => {
+                actuator::torques(&inference.targets, &state.positions, &state.velocities)?
+            }
+            G1ActuatorBackend::NativeForceBased => {
+                self.assembly
+                    .set_force_based_targets(&mut self.simulation.world, &inference.targets)?;
+                [0.; 43]
+            }
+        };
+        let torques = match self.actuator_backend {
+            G1ActuatorBackend::ExternalExplicitPd => {
+                self.assembly.torques(&self.simulation.world, &applied)?
+            }
+            G1ActuatorBackend::NativeForceBased => Vec::new(),
+        };
         let snapshot = self.simulation.step_with_torques(&torques).map_err(error)?;
         if snapshot.integration_count != inference.inference_count
             || snapshot.torque_update_count != inference.inference_count
@@ -227,6 +261,7 @@ impl G1Runner {
         let measurement = self.measurement()?;
         let root = &self.simulation.world.bodies[self.assembly.root_handle()];
         Ok(G1Step {
+            actuator_backend: self.actuator_backend,
             frame: self.completed_frame(&snapshot)?,
             joint_positions: measurement.joint_positions.clone(),
             joint_velocities: measurement.joint_velocities.clone(),
@@ -262,6 +297,11 @@ mod tests {
             ort_sha256: env::var("G1_ORT_SHA256").unwrap(),
             stand_model: models.join("stand.onnx"),
             walk_model: models.join("walk.onnx"),
+            actuator_backend: match env::var("G1_ACTUATOR_BACKEND").as_deref() {
+                Ok("native_force_based") => G1ActuatorBackend::NativeForceBased,
+                Ok("external_explicit_pd") | Err(_) => G1ActuatorBackend::ExternalExplicitPd,
+                Ok(other) => panic!("unknown G1_ACTUATOR_BACKEND: {other}"),
+            },
             root_pose: SourcePose {
                 position: [0., 0., 0.78],
                 rotation_wxyz: [1., 0., 0., 0.],
@@ -367,6 +407,19 @@ mod tests {
                     assert_eq!(step.step_configuration.max_ccd_substeps, 1);
                     assert_eq!(step.step_configuration.additional_solver_iterations_max, 0);
                     assert_eq!(step.integration_count, step.frame.source_tick);
+                    assert_eq!(step.integration_count, step.inference.inference_count);
+                    assert_eq!(step.integration_count, step.torque_update_count);
+                    if config.actuator_backend == G1ActuatorBackend::NativeForceBased {
+                        assert_eq!(step.applied_torques, vec![0.; 43]);
+                        assert!(
+                            runner
+                                .simulation
+                                .world
+                                .bodies
+                                .iter()
+                                .all(|(_, body)| body.user_torque().length() == 0.)
+                        );
+                    }
                     let fell =
                         step.root_position_source[2] < 0.35 || step.root_upright_cosine < 0.5;
                     rows.push(serde_json::json!({"phase":phase,"command":command,"step":step}));
@@ -381,7 +434,7 @@ mod tests {
                 }
             }
         }
-        let report = serde_json::json!({"qualification":"diagnostic_only", "code_commit":env::var("G1_CODE_COMMIT").unwrap(), "t0_completed":reason == "completed",
+        let report = serde_json::json!({"qualification":"diagnostic_only", "qualified":false, "code_commit":env::var("G1_CODE_COMMIT").unwrap(), "actuator_backend":config.actuator_backend,"t0_completed":reason == "completed",
             "usd_sha256":robot_minigame::g1::definition::USD_SHA256,"stand_sha256":robot_minigame::g1::policy::STAND_SHA256,"walk_sha256":robot_minigame::g1::policy::WALK_SHA256,"ort_sha256":config.ort_sha256, "root_pose":config.root_pose.position, "source_physics_hz":200,"source_control_hz":50,
             "target_physics_hz":50,"target_control_hz":50, "time_substeps":1,
             "limits":["four shape-less fixed sensor mass frames use explicit diagnostic origin/identity fallback",
@@ -529,7 +582,7 @@ mod tests {
             }
         }
         let passed = termination == "completed_150_stand_ticks" && first_limit_violation.is_none();
-        let report = serde_json::json!({"qualification":"stand_150_ticks", "passed":passed,
+        let report = serde_json::json!({"qualification":"stand_150_ticks", "passed":passed,"actuator_backend":config.actuator_backend,
             "code_commit":env::var("G1_CODE_COMMIT").unwrap(),"definition_sha256":config.definition_sha256,
             "usd_sha256":robot_minigame::g1::definition::USD_SHA256,
             "stand_sha256":robot_minigame::g1::policy::STAND_SHA256,"walk_sha256":robot_minigame::g1::policy::WALK_SHA256,

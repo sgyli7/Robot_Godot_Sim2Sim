@@ -166,6 +166,40 @@ impl G1Assembly {
         Ok(torques)
     }
 
+    /// Set the original Homie actuator gains and effort caps on native motor
+    /// rows. This is a discrete-backend candidate; no external PD is applied.
+    pub(super) fn set_force_based_targets(
+        &self,
+        world: &mut PhysicsWorld,
+        targets: &[f32],
+    ) -> Result<(), RobotError> {
+        if targets.len() != JOINT_COUNT || targets.iter().any(|value| !value.is_finite()) {
+            return Err(invalid("G1 motor targets must be 43 finite radians"));
+        }
+        for (index, mapping) in self.driven.iter().enumerate() {
+            let p = actuator::parameters(index)?;
+            let (tree, link_id) = world
+                .multibody_joints
+                .get_mut(mapping.handle)
+                .ok_or_else(|| invalid("stale native G1 motor handle"))?;
+            let link = tree
+                .link_mut(link_id)
+                .ok_or_else(|| invalid("missing G1 motor link"))?;
+            if link.assembly_id() != mapping.slot
+                || link.rigid_body_handle() != mapping.child
+                || link.joint().ndofs() != 1
+            {
+                return Err(invalid("G1 motor topology changed"));
+            }
+            link.joint
+                .data
+                .set_motor_model(JointAxis::AngX, MotorModel::ForceBased)
+                .set_motor_position(JointAxis::AngX, targets[index], p.stiffness, p.damping)
+                .set_motor_max_force(JointAxis::AngX, p.effort_limit);
+        }
+        Ok(())
+    }
+
     pub fn frame(&self, snapshot: &StepSnapshot) -> Result<G1BodyFrame, RobotError> {
         let mut bodies = Vec::with_capacity(53);
         for (body, handle) in self.bodies.iter().enumerate() {

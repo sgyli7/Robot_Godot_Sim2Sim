@@ -874,6 +874,7 @@ fn config_from_env() -> Result<G1RunnerConfig, String> {
         ort_sha256: required("G1_ORT_SHA256")?,
         stand_model: models.join("stand.onnx"),
         walk_model: models.join("walk.onnx"),
+        actuator_backend: G1ActuatorBackend::ExternalExplicitPd,
         root_pose: SourcePose {
             position: [0., 0., 0.78],
             rotation_wxyz: [1., 0., 0., 0.],
