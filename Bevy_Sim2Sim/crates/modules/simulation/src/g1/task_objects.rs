@@ -406,13 +406,25 @@ mod tests {
         let mut receipt = serde_json::json!({"qualified":false,"source_task_physics_parity_proven":false,
             "robot_present":false,"policy_inferences":0,"executor_actions":0,"source_commit":std::env::var("G1_CODE_COMMIT").ok(),"definition_sha256":sha});
         let result = (|| -> Result<(), RobotError> {
+            let pgs: usize = std::env::var("G1_TASK_OBJECTS_DIAGNOSTIC_PGS")
+                .unwrap_or_else(|_| "4".into())
+                .parse()
+                .map_err(|_| invalid("invalid diagnostic PGS count"))?;
+            let start = std::env::var("G1_TASK_OBJECTS_DIAGNOSTIC_START")
+                .unwrap_or_else(|_| "drop_0_3m".into());
+            if !matches!(pgs, 4 | 16) || !matches!(start.as_str(), "drop_0_3m" | "near_support_5mm")
+            {
+                return Err(invalid("unsupported bounded contact comparison"));
+            }
+            receipt["diagnostic_start"] = serde_json::json!(start);
+            receipt["diagnostic_pgs"] = serde_json::json!(pgs);
             let definition = TaskObjectsDefinition::load(Path::new(&path), &sha)?;
             let mut world =
                 SimulationWorld::with_game_frequency(50).map_err(|e| invalid(e.to_string()))?;
             world
                 .world
                 .integration_parameters
-                .num_internal_pgs_iterations = 4;
+                .num_internal_pgs_iterations = pgs;
             let floor = world
                 .world
                 .bodies
@@ -431,12 +443,26 @@ mod tests {
             let placements: Vec<_> = kinds
                 .into_iter()
                 .enumerate()
-                .map(|(i, kind)| TaskObjectPlacement {
-                    kind,
-                    root_pose: SourcePose {
-                        position: [i as f64 - 1.5, 0., 0.3],
-                        rotation_wxyz: [1., 0., 0., 0.],
-                    },
+                .map(|(i, kind)| {
+                    let initial_z = if start == "near_support_5mm" {
+                        -definition
+                            .object(kind)
+                            .convex_parts
+                            .iter()
+                            .flat_map(|part| part.points.iter())
+                            .map(|p| p[2])
+                            .fold(f64::INFINITY, f64::min)
+                            + 0.005
+                    } else {
+                        0.3
+                    };
+                    TaskObjectPlacement {
+                        kind,
+                        root_pose: SourcePose {
+                            position: [i as f64 - 1.5, 0., initial_z],
+                            rotation_wxyz: [1., 0., 0., 0.],
+                        },
+                    }
                 })
                 .collect();
             let scene =
