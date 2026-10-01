@@ -40,6 +40,21 @@ def run(args, receipt, output):
         try:
             import numpy as np
             import torch
+            import warp as wp
+
+            # The original cu128 image's GPU TorchScript fusion requests an
+            # unsupported GB10 NVRTC architecture. Keep the original operators
+            # and disable only that process-local GPU fusion optimization.
+            torch._C._jit_override_can_fuse_on_gpu(False)
+            receipt["torch_gpu_jit_fusion_enabled"] = torch._C._jit_can_fuse_on_gpu()
+            receipt["torch_runtime"] = {"version": torch.__version__, "path": torch.__file__,
+                "cuda": torch.version.cuda, "device_capability": list(torch.cuda.get_device_capability())}
+
+            def tensor(value):
+                return wp.to_torch(value) if isinstance(value, wp.array) else value
+
+            def first_numpy(value):
+                return tensor(value)[0].detach().cpu().numpy()
             from isaaclab import sim as sim_utils
             from isaaclab_arena.assets.object import Object
             from isaaclab_arena.assets.object_base import ObjectType
@@ -101,6 +116,7 @@ def run(args, receipt, output):
                 if cfg.sim.dt != 0.005 or cfg.decimation != 4:
                     raise ValueError("Original source must use 200 Hz physics / 50 Hz WBC")
                 cfg.episode_length_s = (args.ticks + 100) / 50
+                cfg.seed = args.seed
                 return cfg
             assets = [GroundPlane()]
             if args.shelf:
@@ -119,14 +135,14 @@ def run(args, receipt, output):
                 original_actuators={name: value.to_dict() for name, value in robot.cfg.actuators.items()},
                 ground_material=raw.cfg.sim.physics_material.to_dict(),
                 runtime_build=Path("/isaac-sim/VERSION").read_text().strip())
-            limits = robot.data.joint_pos_limits[0].detach().cpu().numpy()
+            limits = first_numpy(robot.data.joint_pos_limits)
             receipt["joint_limits"] = limits.tolist()
             env.reset(seed=args.seed)
             action = torch.zeros(env.action_space.shape, device=raw.device)
-            action[:, :robot.num_joints] = robot.data.default_joint_pos
+            action[:, :robot.num_joints] = tensor(robot.data.default_joint_pos)
             action[:, -4] = 0.75
             receipt["frozen_action"] = action[0].detach().cpu().tolist()
-            receipt["default_joint_positions"] = robot.data.default_joint_pos[0].detach().cpu().tolist()
+            receipt["default_joint_positions"] = first_numpy(robot.data.default_joint_pos).tolist()
             trace = args.output.with_suffix(".jsonl")
             with trace.open("x") as log:
                 for tick in range(args.ticks + 1):
@@ -134,9 +150,9 @@ def run(args, receipt, output):
                         _, _, terminated, truncated, _ = env.step(action)
                         if bool(terminated.any()) or bool(truncated.any()):
                             raise ValueError(f"Unexpected source episode reset at tick {tick}")
-                    fields = {key: getattr(robot.data, key)[0].detach().cpu().numpy() for key in
+                    fields = {key: first_numpy(getattr(robot.data, key)) for key in
                         ("root_link_pose_w", "root_link_vel_w", "joint_pos", "joint_vel", "projected_gravity_b",
-                         "computed_torque", "applied_torque")}
+                         "computed_torque", "applied_torque", "body_link_pose_w")}
                     if not all(np.isfinite(value).all() for value in fields.values()):
                         raise ValueError(f"Nonfinite source state at tick {tick}")
                     violations = np.flatnonzero((fields["joint_pos"] < limits[:,0] - .001) | (fields["joint_pos"] > limits[:,1] + .001))
