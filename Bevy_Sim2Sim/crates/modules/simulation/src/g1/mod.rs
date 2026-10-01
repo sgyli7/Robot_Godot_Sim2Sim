@@ -3,4 +3,5 @@ pub mod agile_runner;
 pub mod assembly;
 pub mod runner;
 pub mod task_objects;
+pub mod task_shelf;
 pub mod worker;

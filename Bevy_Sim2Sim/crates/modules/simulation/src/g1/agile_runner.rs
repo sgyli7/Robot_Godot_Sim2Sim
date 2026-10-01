@@ -83,6 +83,32 @@ impl AgileRunnerConfig {
         }
         // Retain the existing source/engine unit-quaternion guard; no repair.
         source_to_engine_rotation(self.root_pose.rotation_wxyz.map(|value| value as f32))?;
+        if let Some(shelf) = self
+            .task_objects
+            .as_ref()
+            .and_then(|o| o.source_t1_shelf.as_ref())
+        {
+            shelf.validate()?;
+            let expected = [
+                shelf.environment_translation_source[0] + 0.25,
+                shelf.environment_translation_source[1] + 0.08,
+                shelf.environment_translation_source[2],
+            ];
+            if self
+                .root_pose
+                .position
+                .iter()
+                .zip(expected)
+                .any(|(actual, expected)| (*actual - expected).abs() > 1e-8)
+                || self.root_pose.rotation_wxyz[1..]
+                    .iter()
+                    .any(|v| v.abs() > 1e-8)
+            {
+                return Err(error(
+                    "source shelf profile requires the original translated robot startup pose",
+                ));
+            }
+        }
         let mut defaults = [0.; JOINT_COUNT];
         defaults.copy_from_slice(&self.default_positions);
         Ok(defaults)
@@ -101,6 +127,7 @@ pub struct AgileStep {
     pub frame: G1BodyFrame,
     pub measurement: G1Measurement,
     pub task_objects: Option<TaskObjectFrame>,
+    pub source_t1_finger_material_bodies: Vec<usize>,
     pub inference: AgileResult,
     pub root_position_source: [f32; 3],
     pub root_velocity_source: [f32; 3],
@@ -123,6 +150,7 @@ pub struct AgileRunner {
     simulation: SimulationWorld,
     assembly: G1Assembly,
     task_objects: Option<TaskObjectScene>,
+    source_t1_finger_material_bodies: Vec<usize>,
     policy: AgilePolicy,
     parameters: [IdealPd; JOINT_COUNT],
     default_positions: [f32; JOINT_COUNT],
@@ -210,6 +238,15 @@ impl AgileRunner {
         assembly.state(&simulation.world)?;
         assembly.current_root_velocity(&simulation.world)?;
         validate_clock(simulation.configuration())?;
+        let source_t1_finger_material_bodies = if config
+            .task_objects
+            .as_ref()
+            .is_some_and(|o| o.source_t1_shelf.is_some())
+        {
+            assembly.apply_t1_source_finger_material(&mut simulation.world, &definition)?
+        } else {
+            Vec::new()
+        };
         let task_objects = config
             .task_objects
             .as_ref()
@@ -225,6 +262,7 @@ impl AgileRunner {
             simulation,
             assembly,
             task_objects,
+            source_t1_finger_material_bodies,
             policy,
             parameters,
             default_positions,
@@ -403,6 +441,7 @@ impl AgileRunner {
             frame,
             measurement: measurement.clone(),
             task_objects: self.task_object_frame()?,
+            source_t1_finger_material_bodies: self.source_t1_finger_material_bodies.clone(),
             inference,
             root_position_source: engine_to_source_vector(root.translation().to_array()),
             root_velocity_source: measurement.root_velocity_source,

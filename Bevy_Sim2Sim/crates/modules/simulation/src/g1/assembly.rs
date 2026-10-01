@@ -46,6 +46,51 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Original static-task hand material, applied only during owner startup.
+    /// Isaac references the USD default prim under /Robot, so its source root
+    /// name (which contains 'hand') is excluded from the original path markers.
+    pub(super) fn apply_t1_source_finger_material(
+        &self,
+        world: &mut PhysicsWorld,
+        definition: &G1Definition,
+    ) -> Result<Vec<usize>, RobotError> {
+        if self.definition_sha256 != definition.file_sha256() {
+            return Err(invalid("foreign definition for source finger materials"));
+        }
+        let mut selected = std::collections::BTreeSet::new();
+        for collision in &definition.model().collisions {
+            let relative = collision
+                .path
+                .strip_prefix("/g1_29dof_with_hand_rev_1_0/")
+                .ok_or_else(|| invalid("source default-prim collision path changed"))?
+                .to_lowercase();
+            if ["hand", "thumb", "index", "middle"]
+                .iter()
+                .any(|marker| relative.contains(marker))
+            {
+                selected.insert(collision.body);
+            }
+        }
+        if selected.len() != 16 {
+            return Err(invalid("source T1 hand collision body coverage changed"));
+        }
+        for index in &selected {
+            let handle = self.bodies[*index];
+            let colliders = world.bodies[handle].colliders().to_vec();
+            if colliders.len() != 1 {
+                return Err(invalid(
+                    "source finger material needs one owner compound collider per body",
+                ));
+            }
+            let collider = &mut world.colliders[colliders[0]];
+            // Source static=6/dynamic=5/max. Rapier has one coefficient;
+            // represent the dynamic coefficient, retain the static gap in evidence.
+            collider.set_friction(5.);
+            collider.set_friction_combine_rule(CoefficientCombineRule::Max);
+        }
+        Ok(selected.into_iter().collect())
+    }
+
     /// Read-only, generation-bound source-body order for the ignored diagnostic.
     #[cfg(feature = "sim2sim_motor_row_trace")]
     pub(super) fn body_trace_handles(&self) -> &[RigidBodyHandle] {

@@ -1805,6 +1805,10 @@ mod tests {
                             let consecutive = step.integration_count == last_tick + 1;
                             last_tick = step.integration_count;
                             if config.task_objects.is_some() {
+                                let has_shelf = config
+                                    .task_objects
+                                    .as_ref()
+                                    .is_some_and(|o| o.source_t1_shelf.is_some());
                                 let objects = snapshot
                                     .task_objects
                                     .as_ref()
@@ -1813,10 +1817,13 @@ mod tests {
                                     || objects.source_tick != last_tick
                                     || objects.contact_clustering
                                     || !objects.contact_recycling
-                                    || objects.world_counts.bodies != 56
-                                    || objects.world_counts.colliders != 55
+                                    || objects.world_counts.bodies != 56 + usize::from(has_shelf)
+                                    || objects.world_counts.colliders != 55 + usize::from(has_shelf)
                                     || objects.world_counts.multibody_joint_handles != 52
                                     || objects.objects.len() != 2
+                                    || objects.source_t1_shelf.is_some() != has_shelf
+                                    || (has_shelf
+                                        && step.source_t1_finger_material_bodies.len() != 16)
                                 {
                                     return Err(error(
                                         "task object/robot boundary, topology or contact configuration mismatch",
@@ -1825,6 +1832,7 @@ mod tests {
                                 let settled = objects.objects.iter().all(|o| {
                                     o.dynamic
                                         && o.active_contact_pairs > 0
+                                        && (!has_shelf || o.source_shelf_contact)
                                         && o.linear_velocity_source
                                             .iter()
                                             .map(|v| v * v)

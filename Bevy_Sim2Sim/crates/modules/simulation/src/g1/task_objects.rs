@@ -20,6 +20,7 @@ use robot_minigame::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::task_shelf::{T1SourceShelf, T1SourceShelfConfig, T1SourceShelfSample};
 use crate::SimulationWorld;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -207,6 +208,8 @@ pub struct TaskObjectSceneConfig {
     pub definition: PathBuf,
     pub definition_sha256: String,
     pub placements: Vec<TaskObjectPlacement>,
+    #[serde(default)]
+    pub source_t1_shelf: Option<T1SourceShelfConfig>,
 }
 
 impl TaskObjectSceneConfig {
@@ -225,7 +228,22 @@ impl TaskObjectSceneConfig {
             ));
         }
         let definition = TaskObjectsDefinition::load(&self.definition, &self.definition_sha256)?;
-        TaskObjectScene::insert_in_owner_world(world, &definition, &self.placements)
+        if let Some(shelf) = &self.source_t1_shelf {
+            if supported != [TaskObjectKind::Apple, TaskObjectKind::Plate] {
+                return Err(invalid(
+                    "original T1 shelf is incompatible with this task profile",
+                ));
+            }
+            shelf.validate()?;
+        }
+        let mut scene =
+            TaskObjectScene::insert_in_owner_world(world, &definition, &self.placements)?;
+        if let Some(config) = &self.source_t1_shelf {
+            let shelf = T1SourceShelf::insert(world, config)?;
+            scene.initial_robot_shelf_overlap = shelf.initial_robot_overlap(world)?;
+            scene.source_t1_shelf = Some(shelf);
+        }
+        Ok(scene)
     }
 }
 
@@ -240,6 +258,8 @@ struct Instance {
 pub struct TaskObjectScene {
     definition_sha256: String,
     instances: Vec<Instance>,
+    source_t1_shelf: Option<T1SourceShelf>,
+    initial_robot_shelf_overlap: Vec<serde_json::Value>,
 }
 
 #[derive(Clone, Copy)]
@@ -262,6 +282,7 @@ pub struct TaskObjectSample {
     pub convex_parts: usize,
     pub dynamic: bool,
     pub active_contact_pairs: usize,
+    pub source_shelf_contact: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -273,6 +294,8 @@ pub struct TaskObjectFrame {
     pub contact_clustering: bool,
     pub contact_recycling: bool,
     pub world_counts: crate::WorldCounts,
+    pub source_t1_shelf: Option<T1SourceShelfSample>,
+    pub initial_robot_shelf_overlap: Vec<serde_json::Value>,
     pub objects: Vec<TaskObjectSample>,
 }
 
@@ -385,6 +408,8 @@ impl TaskObjectScene {
         Ok(Self {
             definition_sha256: definition.file_sha256.clone(),
             instances,
+            source_t1_shelf: None,
+            initial_robot_shelf_overlap: Vec::new(),
         })
     }
 
@@ -433,6 +458,13 @@ impl TaskObjectScene {
                 convex_parts: instance.convex_parts,
                 dynamic: body.is_dynamic(),
                 active_contact_pairs,
+                source_shelf_contact: self.source_t1_shelf.as_ref().is_some_and(|shelf| {
+                    world
+                        .world
+                        .narrow_phase
+                        .contact_pair(instance.collider, shelf.collider)
+                        .is_some_and(|pair| pair.has_any_active_contact())
+                }),
             });
         }
         Ok(TaskObjectFrame {
@@ -443,6 +475,12 @@ impl TaskObjectScene {
             contact_clustering: world.world.integration_parameters.contact_clustering,
             contact_recycling: world.world.integration_parameters.contact_recycling,
             world_counts: world.counts(),
+            source_t1_shelf: self
+                .source_t1_shelf
+                .as_ref()
+                .map(|shelf| shelf.sample(world))
+                .transpose()?,
+            initial_robot_shelf_overlap: self.initial_robot_shelf_overlap.clone(),
             objects,
         })
     }
