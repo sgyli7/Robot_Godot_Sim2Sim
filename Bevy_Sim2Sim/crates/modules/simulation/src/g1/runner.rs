@@ -152,7 +152,12 @@ impl G1Runner {
             applied_torques: applied.to_vec(),
             inference,
             root_position_source: engine_to_source_vector(root.translation().to_array()),
-            root_velocity_source: engine_to_source_vector(root.linvel().to_array()),
+            root_velocity_source: engine_to_source_vector(
+                self.assembly
+                    .current_root_velocity(&self.simulation.world)?
+                    .linvel
+                    .to_array(),
+            ),
             root_upright_cosine: (*root.rotation() * Vector::Y).y,
             active_contact_pairs: snapshot.active_contact_pair_count,
             integration_count: snapshot.integration_count,
