@@ -708,6 +708,20 @@ mod tests {
             _ => return Err(error("unknown diagnostic shelf contact mode")),
         }
         report["diagnostic_shelf_robot_contacts"] = json!(shelf_robot_contacts);
+        let contact_recycling = env::var("G1_AGILE_DIAGNOSTIC_CONTACT_RECYCLING")
+            .unwrap_or_else(|_| "original_enabled".into());
+        match contact_recycling.as_str() {
+            "original_enabled" => {}
+            "diagnostic_disabled" if shelf.is_some() => {
+                runner
+                    .simulation
+                    .world
+                    .integration_parameters
+                    .contact_recycling = false;
+            }
+            _ => return Err(error("unknown or shelf-free contact recycling diagnostic")),
+        }
+        report["diagnostic_contact_recycling"] = json!(contact_recycling);
         report["diagnostic_contact_samples"] = json!([]);
         let definition = G1Definition::load(&config.definition, &config.definition_sha256)?;
         report["robot_collider_source_mapping"] = json!(runner
@@ -786,6 +800,9 @@ mod tests {
                                     "impulse_magnitude_ns":pair.total_impulse_magnitude(),
                                     "min_geometric_distance_m":pair.manifolds.iter()
                                         .flat_map(|m|m.points.iter()).map(|p|p.dist)
+                                        .fold(f32::INFINITY,f32::min),
+                                    "min_solver_distance_m":pair.manifolds.iter()
+                                        .flat_map(|m|m.data.solver_contacts.iter()).map(|p|p.dist)
                                         .fold(f32::INFINITY,f32::min)}));
                             }
                         }
