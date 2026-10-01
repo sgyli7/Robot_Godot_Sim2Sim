@@ -46,6 +46,12 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Read-only source-body mapping for bounded native contact diagnostics.
+    #[cfg(test)]
+    pub(super) fn diagnostic_body_handles(&self) -> &[RigidBodyHandle] {
+        &self.bodies
+    }
+
     /// Original static-task hand material, applied only during owner startup.
     /// Isaac references the USD default prim under /Robot, so its source root
     /// name (which contains 'hand') is excluded from the original path markers.

@@ -300,6 +300,12 @@ pub struct TaskObjectFrame {
 }
 
 impl TaskObjectScene {
+    /// The ignored diagnostic may isolate this one contact pair class at startup.
+    #[cfg(test)]
+    pub(super) fn diagnostic_shelf_collider(&self) -> Option<ColliderHandle> {
+        self.source_t1_shelf.as_ref().map(|shelf| shelf.collider)
+    }
+
     /// Owner-only startup. All shapes are prepared before adding any body, so a
     /// failed geometry/placement check cannot leave a partially assembled scene.
     pub fn insert_in_owner_world(

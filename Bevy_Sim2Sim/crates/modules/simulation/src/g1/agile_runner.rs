@@ -685,6 +685,43 @@ mod tests {
             }
         }
         let mut runner = AgileRunner::load(config)?;
+        report["initial_task_objects"] = json!(runner.task_object_frame()?);
+        let shelf = runner
+            .task_objects
+            .as_ref()
+            .and_then(TaskObjectScene::diagnostic_shelf_collider);
+        let shelf_robot_contacts = env::var("G1_AGILE_DIAGNOSTIC_SHELF_ROBOT_CONTACTS")
+            .unwrap_or_else(|_| "original_enabled".into());
+        match shelf_robot_contacts.as_str() {
+            "original_enabled" => {}
+            "diagnostic_disabled" => {
+                let handle =
+                    shelf.ok_or_else(|| error("shelf contact control needs source shelf"))?;
+                runner.simulation.world.colliders[handle].set_collision_groups(
+                    InteractionGroups::new(
+                        Group::GROUP_2,
+                        Group::ALL ^ Group::GROUP_1,
+                        InteractionTestMode::And,
+                    ),
+                );
+            }
+            _ => return Err(error("unknown diagnostic shelf contact mode")),
+        }
+        report["diagnostic_shelf_robot_contacts"] = json!(shelf_robot_contacts);
+        report["diagnostic_contact_samples"] = json!([]);
+        let definition = G1Definition::load(&config.definition, &config.definition_sha256)?;
+        report["robot_collider_source_mapping"] = json!(runner
+            .assembly
+            .diagnostic_body_handles()
+            .iter()
+            .enumerate()
+            .flat_map(|(body_index, handle)| {
+                let name = &definition.model().bodies[body_index].name;
+                runner.simulation.world.bodies[*handle].colliders().iter().map(move |collider| {
+                    json!({"collider":format!("{collider:?}"),"body_index":body_index,"body_name":name})
+                })
+            })
+            .collect::<Vec<_>>());
         // An explicit, bounded diagnostic changes only the number of constraint
         // sweeps before the existing integration. Rapier's num_solver_iterations
         // splits dt and stays at one. One pass is retained as the failing control.
@@ -730,6 +767,35 @@ mod tests {
         let mut outcome = Ok(());
         let mut max_drift = 0_f64;
         for tick in 1..=ticks {
+            if let Some(shelf) = shelf {
+                if tick <= 10 || tick % 25 == 0 {
+                    let mut pairs = Vec::new();
+                    for (body_index, handle) in
+                        runner.assembly.diagnostic_body_handles().iter().enumerate()
+                    {
+                        for collider in runner.simulation.world.bodies[*handle].colliders() {
+                            if let Some(pair) = runner
+                                .simulation
+                                .world
+                                .narrow_phase
+                                .contact_pair(*collider, shelf)
+                                .filter(|pair| pair.has_any_active_contact())
+                            {
+                                pairs.push(json!({"body_index":body_index,
+                                    "body_name":definition.model().bodies[body_index].name,
+                                    "impulse_magnitude_ns":pair.total_impulse_magnitude(),
+                                    "min_geometric_distance_m":pair.manifolds.iter()
+                                        .flat_map(|m|m.points.iter()).map(|p|p.dist)
+                                        .fold(f32::INFINITY,f32::min)}));
+                            }
+                        }
+                    }
+                    report["diagnostic_contact_samples"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"completed_tick":tick-1,"shelf_robot_pairs":pairs}));
+                }
+            }
             match runner.step(&command) {
                 Ok(step) => {
                     let root = runner.simulation.world.bodies[runner.assembly.root_handle()]
