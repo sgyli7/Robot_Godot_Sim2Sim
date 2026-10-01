@@ -64,6 +64,11 @@ def export(query):
         root = stage.GetDefaultPrim()
         root.GetAttribute("xformOp:scale").Set(Gf.Vec3f(*scale))
         cache = UsdGeom.XformCache()
+        bodies = [p for p in Usd.PrimRange(root) if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+        if len(bodies) != 1:
+            raise ValueError("Original object rigid-body coverage changed")
+        ccd_attr = bodies[0].GetAttribute("physxRigidBody:enableCCD")
+        ccd_enabled = bool(ccd_attr.Get()) if ccd_attr else False
         parts, materials = [], []
         meshes = {m["path"].removeprefix(f"/Objects/{name}"): m for m in item["collision_meshes"]}
         for prim in Usd.PrimRange(root):
@@ -97,6 +102,7 @@ def export(query):
         mass = item["mass_query"]
         x, y, z, w = mass["principal_axes_xyzw"]
         result.append({"kind": name, "usd_sha256": expected, "source_scale_override": list(scale),
+                       "source_ccd_enabled": ccd_enabled,
                        "mass_kg": mass["mass_kg"], "center_of_mass": mass["center_of_mass"],
                        "principal_inertia": mass["inertia"], "principal_axes_wxyz": [w,x,y,z],
                        "material": materials[0], "convex_parts": parts})
@@ -114,7 +120,7 @@ def main():
     if digest(args.query) != args.query_sha256:
         raise ValueError("Source query byte identity changed")
     query = json.loads(args.query.read_text())
-    result = {"schema": "native_g1_task_objects_v1", "units": "metres_kilograms_radians_z_up",
+    result = {"schema": "native_g1_task_objects_v2", "units": "metres_kilograms_radians_z_up",
               "source_query_sha256": args.query_sha256, "exporter_sha256": digest(Path(__file__)),
               "source_runtime_build": query["runtime_build"], "physics_parity_qualified": False,
               "objects": export(query)}

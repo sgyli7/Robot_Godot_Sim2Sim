@@ -71,6 +71,7 @@ struct Object {
     kind: TaskObjectKind,
     usd_sha256: String,
     source_scale_override: [f64; 3],
+    source_ccd_enabled: bool,
     mass_kg: f64,
     center_of_mass: [f64; 3],
     principal_inertia: [f64; 3],
@@ -120,7 +121,7 @@ impl TaskObjectsDefinition {
     }
 
     fn validate(document: &Document) -> Result<(), RobotError> {
-        if document.schema != "native_g1_task_objects_v1"
+        if document.schema != "native_g1_task_objects_v2"
             || document.units != "metres_kilograms_radians_z_up"
             || document.physics_parity_qualified
             || document.source_runtime_build.is_empty()
@@ -137,6 +138,7 @@ impl TaskObjectsDefinition {
             if !kinds.insert(object.kind)
                 || object.usd_sha256 != object.kind.source_sha256()
                 || object.source_scale_override != object.kind.source_scale()
+                || object.source_ccd_enabled != (object.kind == TaskObjectKind::Plate)
                 || !finite_f32(&[object.mass_kg])
                 || object.mass_kg <= 0.
                 || !finite_f32(&object.center_of_mass)
@@ -299,6 +301,7 @@ impl TaskObjectScene {
                     )?),
                 ))
                 .additional_mass_properties(mass)
+                .ccd_enabled(object.source_ccd_enabled)
                 .can_sleep(false)
                 .linear_damping(0.)
                 .angular_damping(0.)
