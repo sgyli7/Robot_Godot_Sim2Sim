@@ -252,7 +252,8 @@ mod tests {
                 }
             }
         }
-        let report = serde_json::json!({"qualification":"diagnostic_only", "source_physics_hz":200,"source_control_hz":50,
+        let report = serde_json::json!({"qualification":"diagnostic_only", "code_commit":env::var("G1_CODE_COMMIT").unwrap(), "t0_completed":reason == "completed",
+            "usd_sha256":robot_minigame::g1::definition::USD_SHA256,"stand_sha256":robot_minigame::g1::policy::STAND_SHA256,"walk_sha256":robot_minigame::g1::policy::WALK_SHA256,"ort_sha256":config.ort_sha256, "root_pose":config.root_pose.position, "source_physics_hz":200,"source_control_hz":50,
             "target_physics_hz":50,"target_control_hz":50, "time_substeps":1,
             "limits":["four shape-less fixed sensor mass frames use explicit diagnostic origin/identity fallback",
                 "PhysX friction coefficient is not a Rapier torque; joint friction disabled pending mapping",
@@ -271,6 +272,154 @@ mod tests {
         assert!(
             !rows.is_empty(),
             "no real physics boundary completed: {reason}"
+        );
+    }
+
+    /// Separate development-only source-frequency diagnostic. It never calls the
+    /// 50 Hz game runner or presents its 200 Hz ticks as game qualification.
+    #[test]
+    #[ignore = "same frozen G1 environment as T0; G1_T0_OUTPUT is a separate diagnostic report"]
+    fn real_homie_source_frequency_diagnostic() {
+        let config = config();
+        let mut runner = G1Runner::load(&config).unwrap();
+        runner.simulation.world.integration_parameters.dt = 1. / 200.;
+        let mut rows = Vec::new();
+        let mut termination = "completed_standing_6_seconds".to_string();
+        let mut physics_count = 0_u64;
+        let command = G1Command::default();
+        'control: for _ in 0..300 {
+            let state = runner.assembly.state(&runner.simulation.world).unwrap();
+            let inference = runner.policy.infer(&state, &command).unwrap();
+            // Source holds the target for four source physics steps and updates
+            // its explicit IdealPD from fresh q/dq at each 200Hz boundary.
+            for _ in 0..4 {
+                let state = runner.assembly.state(&runner.simulation.world).unwrap();
+                let tau =
+                    actuator::torques(&inference.targets, &state.positions, &state.velocities)
+                        .unwrap();
+                let pairs = runner
+                    .assembly
+                    .torques(&runner.simulation.world, &tau)
+                    .unwrap();
+                for (_, body) in runner.simulation.world.bodies.iter_mut() {
+                    body.reset_torques(true);
+                }
+                for pair in pairs {
+                    runner.simulation.world.bodies[pair.body]
+                        .add_torque(Vector::from_array(pair.world_torque), true);
+                }
+                runner.simulation.world.step();
+                physics_count += 1;
+                if !runner.simulation.world.quarantine().is_empty() {
+                    termination = "native_nonfinite_quarantine".into();
+                    break 'control;
+                }
+                let root = &runner.simulation.world.bodies[runner.assembly.root_handle()];
+                let position = engine_to_source_vector(root.translation().to_array());
+                let upright = (*root.rotation() * Vector::Y).y;
+                let state = match runner.assembly.state(&runner.simulation.world) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        termination = e.to_string();
+                        break 'control;
+                    }
+                };
+                rows.push(serde_json::json!({"physics_tick":physics_count,"physics_seconds":physics_count as f64 / 200.,
+                    "inference_count":inference.inference_count,"root_position_source":position,"upright_cosine":upright,
+                    "positions":state.positions.to_vec(),"velocities":state.velocities.to_vec(),"action":inference.action,"torques":tau.to_vec()}));
+                if position[2] < 0.35 || upright < 0.5 {
+                    termination = "fell".into();
+                    break 'control;
+                }
+            }
+        }
+        let report = serde_json::json!({"qualification":"source_frequency_diagnostic_only_not_game",
+            "code_commit":env::var("G1_CODE_COMMIT").unwrap(),"definition_sha256":config.definition_sha256,
+            "stand_sha256":robot_minigame::g1::policy::STAND_SHA256,"walk_sha256":robot_minigame::g1::policy::WALK_SHA256,
+            "physics_hz":200,"control_hz":50,"source_target_hold_ticks":4,"solver_iterations":1,"ccd_substeps":1,
+            "root_pose":config.root_pose.position,"termination":termination,"physics_count":physics_count,"rows":rows});
+        fs::write(
+            env::var("G1_T0_OUTPUT").unwrap(),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        println!("G1_SOURCE_200_50 termination={termination}; physical_ticks={physics_count}");
+        assert!(!rows.is_empty());
+    }
+
+    /// Qualification must go red on failed standing. This is deliberately a
+    /// separate entry from the trajectory capture test, which is not a skill gate.
+    #[test]
+    #[ignore = "requires frozen G1 env, G1_CODE_COMMIT and G1_T0_OUTPUT"]
+    fn real_homie_stand_qualification() {
+        let config = config();
+        let definition = G1Definition::load(&config.definition, &config.definition_sha256).unwrap();
+        let mut runner = G1Runner::load(&config).unwrap();
+        let command = G1Command::default();
+        let initial = runner.initial_frame().unwrap();
+        let mut rows = Vec::new();
+        let mut first_limit_violation = None;
+        let mut termination = "completed_150_stand_ticks".to_string();
+        for _ in 0..150 {
+            match runner.step(&command) {
+                Ok(step) => {
+                    assert_eq!(step.integration_count, step.frame.source_tick);
+                    assert_eq!(step.integration_count, step.inference.inference_count);
+                    assert_eq!(step.step_configuration.physics_hz, 50);
+                    assert_eq!(step.step_configuration.num_solver_iterations, 1);
+                    assert_eq!(step.step_configuration.max_ccd_substeps, 1);
+                    assert_eq!(step.step_configuration.additional_solver_iterations_max, 0);
+                    if first_limit_violation.is_none() {
+                        for (wbc, &joint_id) in definition.driven_joints().iter().enumerate() {
+                            let joint = &definition.model().joints[joint_id];
+                            let q = f64::from(step.joint_positions[wbc]);
+                            // Numerical allowance is declared, fixed and is not
+                            // adjusted between runs to manufacture a pass.
+                            if q < joint.limits[0] - 0.001 || q > joint.limits[1] + 0.001 {
+                                first_limit_violation = Some(
+                                    serde_json::json!({"tick":step.frame.source_tick,"joint":joint.name,"position":q,"limits":joint.limits,"tolerance_rad":0.001}),
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    let fell =
+                        step.root_position_source[2] < 0.35 || step.root_upright_cosine < 0.5;
+                    rows.push(step);
+                    // Keep observing after the first limit violation until the
+                    // fall trigger, so this same run reproduces the exact symptom.
+                    if fell {
+                        termination = "fell".into();
+                        break;
+                    }
+                }
+                Err(e) => {
+                    termination = e.to_string();
+                    break;
+                }
+            }
+        }
+        let passed = termination == "completed_150_stand_ticks" && first_limit_violation.is_none();
+        let report = serde_json::json!({"qualification":"stand_150_ticks", "passed":passed,
+            "code_commit":env::var("G1_CODE_COMMIT").unwrap(),"definition_sha256":config.definition_sha256,
+            "usd_sha256":robot_minigame::g1::definition::USD_SHA256,
+            "stand_sha256":robot_minigame::g1::policy::STAND_SHA256,"walk_sha256":robot_minigame::g1::policy::WALK_SHA256,
+            "ort_sha256":config.ort_sha256,"randomness":"none: deterministic CPU ORT threads=1, identical initial state",
+            "physics_hz":50,"control_hz":50,"root_pose":config.root_pose.position,"robot_friction":config.robot_contact_friction,
+            "floor_friction":config.floor_contact_friction,"command":command,"initial":initial,
+            "first_limit_violation":first_limit_violation,"termination":termination,"steps":rows});
+        fs::write(
+            env::var("G1_T0_OUTPUT").unwrap(),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "G1_STAND_QUAL passed={passed}; termination={termination}; completed_ticks={}; first_limit_violation={first_limit_violation:?}",
+            rows.len()
+        );
+        assert!(
+            passed,
+            "real G1 standing failed: {termination}; first_limit_violation={first_limit_violation:?}"
         );
     }
 }

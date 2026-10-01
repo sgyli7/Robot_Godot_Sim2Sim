@@ -380,3 +380,124 @@ fn axis_vector(axis: &str) -> Result<[f64; 3], RobotError> {
 fn invalid(message: impl Into<String>) -> RobotError {
     RobotError::Contract(message.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{env, path::Path};
+
+    #[test]
+    #[ignore = "requires G1_MODEL_DIR and G1_DEFINITION_SHA256"]
+    fn frozen_usd_mass_pose_freefall_and_torque_sign() {
+        let path = env::var("G1_MODEL_DIR").unwrap();
+        let definition = G1Definition::load(
+            &Path::new(&path).join("g1_physics.json"),
+            &env::var("G1_DEFINITION_SHA256").unwrap(),
+        )
+        .unwrap();
+        let mut sim = crate::SimulationWorld::with_game_frequency(50).unwrap();
+        let source_root = SourcePose {
+            position: [0., 0., 3.],
+            rotation_wxyz: [1., 0., 0., 0.],
+        };
+        let root = engine_pose(&source_root).unwrap();
+        let assembly = build(&mut sim.world, &definition, &source_root, &[0.; 43], 0.5).unwrap();
+        let mut max_pose_error = 0.0_f32;
+        let mut max_inertia_relative_error = 0.0_f32;
+        let mut max_rotation_basis_error = 0.0_f32;
+        for (i, source) in definition.model().bodies.iter().enumerate() {
+            let native = &sim.world.bodies[assembly.bodies[i]];
+            assert!(native.is_dynamic());
+            let expected_pose = root * engine_pose(&source.rest_pose).unwrap();
+            let position_error = (native.translation() - expected_pose.translation).length();
+            max_pose_error = max_pose_error.max(position_error);
+            assert!(
+                position_error < 1e-4,
+                "source rest position mismatch {}: {position_error}",
+                source.name
+            );
+            for axis in [Vector::X, Vector::Y, Vector::Z] {
+                // Quat::angle_between uses acos and overstates sub-ULP identity
+                // drift; compare rotated basis vectors after normalization.
+                let error = (native.rotation().normalize() * axis
+                    - expected_pose.rotation.normalize() * axis)
+                    .length();
+                max_rotation_basis_error = max_rotation_basis_error.max(error);
+                // The authored shoulder-roll local joint frames themselves
+                // differ ~2.08e-4 rad from USD prim rest rotations; physics uses
+                // joint frames, while visual zero rests retain this discrepancy.
+                assert!(
+                    error < 5e-4,
+                    "source rest rotation mismatch {}: {error}",
+                    source.name
+                );
+            }
+            let mass = &native.mass_properties().local_mprops;
+            assert!(
+                (mass.mass() / source.mass as f32 - 1.).abs() < 2e-6,
+                "source mass mismatch {}",
+                source.name
+            );
+            assert!((mass.local_com - engine_vector(source.center_of_mass)).length() < 1e-6);
+            let d = source.principal_inertia;
+            let expected = MassProperties::with_principal_inertia_frame(
+                engine_vector(source.center_of_mass),
+                source.mass as f32,
+                Vector::new(d[0] as f32, d[2] as f32, d[1] as f32),
+                engine_rotation(source.principal_axes_wxyz).unwrap(),
+            )
+            .reconstruct_inertia_matrix();
+            let actual = mass.reconstruct_inertia_matrix();
+            let scale = expected
+                .to_cols_array()
+                .iter()
+                .map(|x| x.abs())
+                .fold(0.0_f32, f32::max);
+            let difference = (actual - expected)
+                .to_cols_array()
+                .iter()
+                .map(|x| x.abs())
+                .fold(0.0_f32, f32::max)
+                / scale;
+            max_inertia_relative_error = max_inertia_relative_error.max(difference);
+            assert!(
+                difference < 2e-5,
+                "source inertia mismatch {}: {difference}",
+                source.name
+            );
+        }
+        let mut gravity_velocities = Vec::new();
+        for _ in 0..5 {
+            sim.step_with_torques(&[]).unwrap();
+            gravity_velocities.push(sim.world.bodies[assembly.root_handle()].linvel().y);
+        }
+        println!(
+            "G1_IMPORT mass_pose_checked max_pose_error={max_pose_error}; max_inertia_relative_error={max_inertia_relative_error}; max_rotation_basis_error={max_rotation_basis_error}; gravity_velocities={gravity_velocities:?}"
+        );
+        let state = assembly.state(&sim.world).unwrap();
+        let root = &sim.world.bodies[assembly.root_handle()];
+        assert!(
+            (root.linvel().y + 0.981).abs() < 1e-4,
+            "free root gravity velocity {:?}",
+            root.linvel()
+        );
+        assert!(state.velocities.iter().all(|dq| dq.abs() < 1e-3));
+        assert_eq!(sim.snapshot().active_contact_pair_count, 0);
+        sim.world.gravity = Vector::ZERO;
+        let mut torque = [0.; 43];
+        torque[3] = 1.;
+        let pairs = assembly.torques(&sim.world, &torque).unwrap();
+        let total = pairs
+            .iter()
+            .fold(Vector::ZERO, |v, t| v + Vector::from_array(t.world_torque));
+        assert!(total.length() < 1e-7);
+        sim.step_with_torques(&pairs).unwrap();
+        assert!(
+            assembly.state(&sim.world).unwrap().velocities[3] > 0.,
+            "positive knee torque must accelerate positive source coordinate"
+        );
+        println!(
+            "G1_IMPORT max_pose_error={max_pose_error}; max_inertia_relative_error={max_inertia_relative_error}; max_rotation_basis_error={max_rotation_basis_error}; freefall_50Hz=passed; positive_knee_torque=passed"
+        );
+    }
+}
