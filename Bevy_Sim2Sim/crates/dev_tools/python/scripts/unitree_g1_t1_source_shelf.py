@@ -175,6 +175,16 @@ def run(args, receipt, output):
                     "static_friction": material_api.GetStaticFrictionAttr().Get() if material_api else None,
                     "dynamic_friction": material_api.GetDynamicFrictionAttr().Get() if material_api else None})
             receipt["actual_source_collision_properties"] = collision_properties
+            def joint_properties():
+                return {key: first_numpy(getattr(robot.data, key)).tolist() for key in
+                    ("joint_armature", "joint_friction_coeff", "joint_dynamic_friction_coeff", "joint_viscous_friction_coeff")}
+            receipt["actual_source_joint_properties"] = joint_properties()
+            if args.diagnostic_zero_joint_friction:
+                zero = wp.zeros_like(robot.data.joint_friction_coeff)
+                robot.write_joint_friction_coefficient_to_sim_index(
+                    joint_friction_coeff=zero, joint_dynamic_friction_coeff=zero,
+                    joint_viscous_friction_coeff=zero, full_data=True)
+                receipt["diagnostic_joint_properties_after"] = joint_properties()
             action = torch.zeros(env.action_space.shape, device=raw.device)
             action[:, :robot.num_joints] = tensor(robot.data.default_joint_pos)
             action[:, -4] = 0.75
@@ -227,6 +237,8 @@ def main():
     parser.add_argument("--ticks",type=int,default=1500)
     parser.add_argument("--seed",type=int,default=42)
     parser.add_argument("--shelf",action="store_true")
+    parser.add_argument("--diagnostic-zero-joint-friction", action="store_true",
+        help="Source-only one-variable comparison with all SDK joint friction efforts set to zero")
     args = parser.parse_args()
     if not 1 <= args.ticks <= 1500:
         parser.error("Source comparison is bounded to 1..1500 control ticks")
@@ -234,6 +246,7 @@ def main():
         "source_standing_budget_passed":False,"arena_commit":ARENA_REV,"lab_commit":LAB_REV,
         "original_image_tag":"6.0.0-dev2","environment_translation_source":[0.,0.,.795],
         "shelf_enabled":args.shelf,"requested_control_ticks":args.ticks,"harness_sha256":digest(__file__),
+        "diagnostic_zero_joint_friction":args.diagnostic_zero_joint_friction,
         "scope":"reduced translated ground/robot/source_shelf only; no full background, props, cameras or VLA"}
     with args.output.open("x") as output:
         try:
