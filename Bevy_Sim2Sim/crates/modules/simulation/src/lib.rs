@@ -1,6 +1,7 @@
 //! One Rapier world and the fixed-step boundary shared by game and verification.
 
 pub mod fixed_step_runtime;
+pub mod g1;
 pub mod robot_builder;
 pub mod source_collision;
 
