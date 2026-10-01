@@ -710,4 +710,102 @@ mod tests {
         assert_eq!(sim.snapshot().integration_count, 5);
         assert_eq!(sim.snapshot().active_contact_pair_count, 0);
     }
+
+    #[test]
+    #[ignore = "one 50Hz pulse; requires frozen G1 definition, G1_IMPORT_OUTPUT and G1_CODE_COMMIT"]
+    fn completed_root_gyro_matches_current_native_velocity() {
+        use serde_json::json;
+        let definition = G1Definition::load(
+            &Path::new(&env::var("G1_MODEL_DIR").unwrap()).join("g1_physics.json"),
+            &env::var("G1_DEFINITION_SHA256").unwrap(),
+        )
+        .unwrap();
+        let mut sim = crate::SimulationWorld::with_game_frequency(50).unwrap();
+        // Interior coordinates avoid a limit/contact bias contaminating the
+        // independent rotation-increment check of a single completed boundary.
+        let positions = std::array::from_fn(|i| {
+            let limits = definition.model().joints[definition.driven_joints()[i]].limits;
+            (0.63 * limits[0] + 0.37 * limits[1]) as f32
+        });
+        let root_pose = SourcePose {
+            position: [0., 0., 3.],
+            rotation_wxyz: [
+                (std::f64::consts::PI / 12.).cos(),
+                0.,
+                0.,
+                (std::f64::consts::PI / 12.).sin(),
+            ],
+        };
+        let assembly = build(&mut sim.world, &definition, &root_pose, &positions, 0.5).unwrap();
+        let root_handle = assembly.root_handle();
+        let before = *sim.world.bodies[root_handle].position();
+        sim.step_with_torques(&[BodyTorque {
+            body: root_handle,
+            world_torque: [1., 0.2, 0.3],
+        }])
+        .unwrap();
+        let root = &sim.world.bodies[root_handle];
+        let (tree, _) = sim
+            .world
+            .multibody_joints
+            .get(assembly.driven[0].handle)
+            .unwrap();
+        let link = tree.root();
+        assert_eq!(link.rigid_body_handle(), root_handle);
+        assert_eq!(link.joint().ndofs(), 6);
+        let velocity = link.joint().jacobian_mul_coordinates(
+            &tree.generalized_velocity().as_slice()[link.assembly_id()..],
+        );
+        let expected_body =
+            engine_to_source_vector((root.rotation().inverse() * velocity.angvel).to_array());
+        let measured = assembly
+            .state(&sim.world)
+            .unwrap()
+            .root_angular_velocity_body;
+        let delta = (*root.rotation() * before.rotation.inverse()).normalize();
+        let [x, y, z, w] = delta.to_array();
+        let imaginary = Vector::new(x, y, z);
+        let angle = 2. * imaginary.length().atan2(w);
+        let finite_rotation_velocity = imaginary.normalize() * angle / 0.02;
+        let finite_origin_velocity = (root.translation() - before.translation) / 0.02;
+        let error = (Vector::from_array(measured) - Vector::from_array(expected_body)).length();
+        let rotation_fd_error = (finite_rotation_velocity - velocity.angvel).length();
+        let origin_fd_error = (finite_origin_velocity - velocity.linvel).length();
+        let report = json!({"experiment":"completed_root_gyro_single_pulse","code_commit":env::var("G1_CODE_COMMIT").unwrap(),
+            "definition_sha256":definition.file_sha256(),"integration_count":sim.snapshot().integration_count,"configuration":sim.configuration(),
+            "world_torque_engine":[1.,0.2,0.3],"cached_rigid_body_omega_engine":root.angvel().to_array(),
+            "current_native_omega_engine":velocity.angvel.to_array(),"finite_rotation_velocity_engine":finite_rotation_velocity.to_array(),
+            "g1_gyro_body_source":measured,"expected_gyro_body_source":expected_body,"gyro_error":error,
+            "finite_rotation_velocity_error":rotation_fd_error,"current_native_linear_engine":velocity.linvel.to_array(),
+            "finite_origin_velocity_engine":finite_origin_velocity.to_array(),"finite_origin_velocity_error":origin_fd_error,
+            "root_origin_position_engine":root.translation().to_array(),"root_com_position_engine":root.center_of_mass().to_array()});
+        std::fs::write(
+            env::var("G1_IMPORT_OUTPUT").unwrap(),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "G1_ROOT_GYRO cached={:?}; current={:?}; gyro_error={error}; rotation_fd_error={rotation_fd_error}; origin_fd_error={origin_fd_error}",
+            root.angvel(),
+            velocity.angvel
+        );
+        assert_eq!(sim.snapshot().integration_count, 1);
+        assert_eq!(sim.snapshot().active_contact_pair_count, 0);
+        assert!(
+            velocity.angvel.length() > 1e-3,
+            "pulse must generate observable angular velocity"
+        );
+        assert!(
+            rotation_fd_error < 1e-4,
+            "native omega does not match independent pose increment"
+        );
+        assert!(
+            origin_fd_error < 3e-5,
+            "native linear motion is not root-origin coordinate velocity"
+        );
+        assert!(
+            error < 1e-6,
+            "G1 sensor read is from a different native boundary"
+        );
+    }
 }
