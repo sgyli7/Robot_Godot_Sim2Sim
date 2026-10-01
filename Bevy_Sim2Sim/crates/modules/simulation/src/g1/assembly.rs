@@ -46,6 +46,42 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Current free-root motion from the completed generalized state. Rapier's
+    /// staged solver writes qdot after its last rigid-body velocity refresh, so
+    /// rb.angvel()/linvel() are one boundary old for this articulation.
+    ///
+    /// The free joint stores the root-frame-origin translation: its linear
+    /// coordinates are that origin's world velocity (verified against pose
+    /// increments), not a fabricated COM sensor. Angular velocity is common to
+    /// every point on the root body. No backend state or pose is changed here.
+    pub(super) fn current_root_velocity(
+        &self,
+        world: &PhysicsWorld,
+    ) -> Result<RigidBodyVelocity<f32>, RobotError> {
+        let first = self
+            .driven
+            .first()
+            .ok_or_else(|| invalid("missing G1 joint mapping"))?;
+        let (tree, _) = world
+            .multibody_joints
+            .get(first.handle)
+            .ok_or_else(|| invalid("stale G1 articulation"))?;
+        let root = tree.root();
+        if root.rigid_body_handle() != self.bodies[0]
+            || root.assembly_id() != 0
+            || root.joint().ndofs() != 6
+            || !root.joint().data.locked_axes.is_empty()
+        {
+            return Err(invalid("G1 root is not the original free six-DoF link"));
+        }
+        let current = tree.generalized_velocity();
+        let velocity = root.joint().jacobian_mul_coordinates(current.as_slice());
+        if !velocity.linvel.is_finite() || !velocity.angvel.is_finite() {
+            return Err(invalid("non-finite completed G1 root velocity"));
+        }
+        Ok(velocity)
+    }
+
     pub fn state(&self, world: &PhysicsWorld) -> Result<G1State, RobotError> {
         let mut positions = [0.; JOINT_COUNT];
         let mut velocities = [0.; JOINT_COUNT];
@@ -75,7 +111,7 @@ impl G1Assembly {
             velocities,
             root_rotation_wxyz: engine_to_source_rotation(root.rotation().to_array())?,
             root_angular_velocity_body: engine_to_source_vector(
-                (root.rotation().inverse() * root.angvel()).to_array(),
+                (root.rotation().inverse() * self.current_root_velocity(world)?.angvel).to_array(),
             ),
         };
         state.validate()?;
