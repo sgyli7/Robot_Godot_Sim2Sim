@@ -8,7 +8,7 @@ use bevy::{
         tab_navigation::{TabIndex, TabNavigationPlugin},
     },
     prelude::*,
-    text::{EditableText, TextCursorStyle},
+    text::{EditableText, EditableTextSystems, TextCursorStyle},
 };
 
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
@@ -74,8 +74,14 @@ impl Plugin for TaskUiPlugin {
             .init_resource::<TaskUiFocus>()
             .add_message::<TaskUiAction>()
             .add_systems(Startup, setup_ui)
-            .add_systems(Update, (user_actions, refresh_status))
-            .add_systems(PostUpdate, attach_to_window_camera);
+            .add_systems(Update, refresh_status)
+            .add_systems(
+                PostUpdate,
+                (
+                    user_actions.after(EditableTextSystems),
+                    attach_to_window_camera,
+                ),
+            );
     }
 }
 

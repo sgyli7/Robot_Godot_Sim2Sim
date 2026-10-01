@@ -1,7 +1,5 @@
-// Compile the new module independently while shared crate registration is
-// owned by the integrator. These tests need no GPU or window.
-#[path = "../src/g1_camera.rs"]
-mod g1_camera;
+//! Explicit GPU evidence check; pure camera contracts live in the module tests.
+use rendering_minigame::g1_camera;
 
 use std::{
     path::PathBuf,
