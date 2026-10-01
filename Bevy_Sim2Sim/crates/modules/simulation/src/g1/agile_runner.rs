@@ -552,6 +552,10 @@ fn error(value: impl std::fmt::Display) -> RobotError {
 }
 
 #[cfg(test)]
+#[path = "source_stand_replay.rs"]
+mod source_stand_replay;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use robot_minigame::basis::source_to_engine_vector;
