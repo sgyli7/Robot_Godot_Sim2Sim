@@ -500,4 +500,130 @@ mod tests {
             "G1_IMPORT max_pose_error={max_pose_error}; max_inertia_relative_error={max_inertia_relative_error}; max_rotation_basis_error={max_rotation_basis_error}; freefall_50Hz=passed; positive_knee_torque=passed"
         );
     }
+
+    #[test]
+    #[ignore = "requires frozen G1 definition plus G1_INERTIA_ORACLE, G1_INERTIA_ORACLE_SHA256, G1_IMPORT_OUTPUT and G1_CODE_COMMIT"]
+    fn independent_usd_tensor_and_axis_oracle_without_integration() {
+        use robot_minigame::g1::{contract::JOINT_NAMES, policy::bound_bytes};
+        use serde_json::{Value, json};
+        let definition = G1Definition::load(
+            &Path::new(&env::var("G1_MODEL_DIR").unwrap()).join("g1_physics.json"),
+            &env::var("G1_DEFINITION_SHA256").unwrap(),
+        )
+        .unwrap();
+        let bytes = bound_bytes(
+            Path::new(&env::var("G1_INERTIA_ORACLE").unwrap()),
+            &env::var("G1_INERTIA_ORACLE_SHA256").unwrap(),
+        )
+        .unwrap();
+        let oracle: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(oracle["usd_sha256"].as_str().unwrap(), USD_SHA256);
+        assert_eq!(oracle["bodies"].as_array().unwrap().len(), 53);
+        let case = &oracle["independent_joint_frame_case"];
+        let positions = std::array::from_fn(|i| {
+            case["joint_positions_by_name"][JOINT_NAMES[i]]
+                .as_f64()
+                .unwrap() as f32
+        });
+        let source_root = SourcePose {
+            position: [0., 0., 3.],
+            rotation_wxyz: [1., 0., 0., 0.],
+        };
+        let mut sim = crate::SimulationWorld::with_game_frequency(50).unwrap();
+        let assembly = build(&mut sim.world, &definition, &source_root, &positions, 0.5).unwrap();
+        let mut mass_rows = Vec::new();
+        let mut pose_rows = Vec::new();
+        let mut axis_rows = Vec::new();
+        let mut max_tensor = 0.0_f64;
+        let mut max_position = 0.0_f64;
+        let mut max_rotation = 0.0_f64;
+        let mut max_axis = 0.0_f64;
+        for i in 0..53 {
+            let expected = &oracle["bodies"][i];
+            assert_eq!(
+                expected["name"].as_str().unwrap(),
+                definition.model().bodies[i].name
+            );
+            let body = &sim.world.bodies[assembly.bodies[i]];
+            let actual = body
+                .mass_properties()
+                .local_mprops
+                .reconstruct_inertia_matrix()
+                .to_cols_array();
+            let mut tensor = [[0_f64; 3]; 3];
+            let mut norm = 0_f64;
+            let mut difference = 0_f64;
+            for r in 0..3 {
+                for c in 0..3 {
+                    let value = expected["engine_tensor_row_major"][r][c].as_f64().unwrap();
+                    tensor[r][c] = f64::from(actual[c * 3 + r]);
+                    norm = norm.max(value.abs());
+                    difference = difference.max((tensor[r][c] - value).abs());
+                }
+            }
+            let relative = difference / norm;
+            max_tensor = max_tensor.max(relative);
+            mass_rows.push(json!({"body":i,"name":definition.model().bodies[i].name,"native_tensor_row_major":tensor,"expected_tensor_row_major":expected["engine_tensor_row_major"],"relative_max_error":relative}));
+            let expected_pose = &case["bodies"][i];
+            let mut pe = 0_f64;
+            let mut re = 0_f64;
+            for k in 0..3 {
+                pe = pe.max(
+                    (f64::from(body.translation()[k])
+                        - expected_pose["position_engine"][k].as_f64().unwrap())
+                    .abs(),
+                );
+            }
+            for (c, axis) in [Vector::X, Vector::Y, Vector::Z].into_iter().enumerate() {
+                let actual = body.rotation().normalize() * axis;
+                for r in 0..3 {
+                    re = re.max(
+                        (f64::from(actual[r])
+                            - expected_pose["rotation_engine_row_major"][r][c]
+                                .as_f64()
+                                .unwrap())
+                        .abs(),
+                    );
+                }
+            }
+            max_position = max_position.max(pe);
+            max_rotation = max_rotation.max(re);
+            pose_rows.push(json!({"body":i,"position_max_error":pe,"rotation_basis_max_error":re}));
+        }
+        for (i, mapping) in assembly.driven.iter().enumerate() {
+            let expected = case["joint_axes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == JOINT_NAMES[i])
+                .unwrap();
+            let actual = *sim.world.bodies[mapping.parent].rotation() * mapping.parent_axis;
+            let mut error = 0_f64;
+            for k in 0..3 {
+                error = error.max(
+                    (f64::from(actual[k]) - expected["engine_world_axis"][k].as_f64().unwrap())
+                        .abs(),
+                );
+            }
+            max_axis = max_axis.max(error);
+            axis_rows.push(json!({"name":JOINT_NAMES[i],"native_engine_axis":actual.to_array(),"expected_engine_axis":expected["engine_world_axis"],"max_error":error}));
+        }
+        assert_eq!(sim.snapshot().integration_count, 0);
+        let passed =
+            max_tensor < 2e-5 && max_position < 2e-5 && max_rotation < 2e-5 && max_axis < 2e-5;
+        let report = json!({"check":"independent_usd_tensor_and_axis_oracle","passed":passed,"integration_count":0,
+            "code_commit":env::var("G1_CODE_COMMIT").unwrap(),"definition_sha256":definition.file_sha256(),
+            "oracle_sha256":env::var("G1_INERTIA_ORACLE_SHA256").unwrap(),"usd_sha256":USD_SHA256,
+            "formula":oracle["formula"],"max_tensor_relative_error":max_tensor,"max_position_error_m":max_position,
+            "max_rotation_basis_error":max_rotation,"max_axis_error":max_axis,"bodies":mass_rows,"poses":pose_rows,"joint_axes":axis_rows});
+        std::fs::write(
+            env::var("G1_IMPORT_OUTPUT").unwrap(),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "G1_INDEPENDENT_IMPORT passed={passed}; integrations=0; tensor_relative={max_tensor}; pose_m={max_position}; rotation_basis={max_rotation}; axis={max_axis}"
+        );
+        assert!(passed, "independent source tensor/axis oracle mismatch");
+    }
 }
