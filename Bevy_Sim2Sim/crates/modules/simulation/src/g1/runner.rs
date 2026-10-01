@@ -552,3 +552,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "sim2sim_motor_row_trace"))]
+#[path = "runner/actuator_diagnostic.rs"]
+mod actuator_diagnostic;
