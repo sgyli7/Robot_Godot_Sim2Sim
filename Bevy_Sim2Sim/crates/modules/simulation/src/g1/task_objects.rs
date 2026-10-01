@@ -211,6 +211,7 @@ pub struct TaskObjectScene {
 #[derive(Clone, Copy)]
 enum ConvexRepresentation {
     CopiedFaces,
+    #[cfg(test)]
     ReconstructedHull,
 }
 
@@ -279,6 +280,7 @@ impl TaskObjectScene {
                     ConvexRepresentation::CopiedFaces => {
                         SharedShape::convex_mesh(vertices, &part.triangles)
                     }
+                    #[cfg(test)]
                     ConvexRepresentation::ReconstructedHull => SharedShape::convex_hull(&vertices),
                 }
                 .ok_or_else(|| invalid("cannot construct original cooked convex topology"))?;
@@ -454,6 +456,8 @@ mod tests {
             receipt["diagnostic_start"] = serde_json::json!(start);
             receipt["diagnostic_pgs"] = serde_json::json!(pgs);
             receipt["diagnostic_representation"] = serde_json::json!(representation_name);
+            let contact_mode = std::env::var("G1_TASK_OBJECTS_DIAGNOSTIC_CONTACT_MODE")
+                .unwrap_or_else(|_| "default".into());
             let definition = TaskObjectsDefinition::load(Path::new(&path), &sha)?;
             let mut world =
                 SimulationWorld::with_game_frequency(50).map_err(|e| invalid(e.to_string()))?;
@@ -461,6 +465,18 @@ mod tests {
                 .world
                 .integration_parameters
                 .num_internal_pgs_iterations = pgs;
+            match contact_mode.as_str() {
+                "default" => {}
+                "fresh_manifolds" => world.world.integration_parameters.contact_recycling = false,
+                "unclustered" => world.world.integration_parameters.contact_clustering = false,
+                _ => return Err(invalid("unsupported bounded contact algorithm comparison")),
+            }
+            receipt["contact_algorithms"] = serde_json::json!({"mode":contact_mode,
+                "clustering":world.world.integration_parameters.contact_clustering,
+                "recycling":world.world.integration_parameters.contact_recycling,
+                "prediction_distance":world.world.integration_parameters.normalized_prediction_distance,
+                "allowed_linear_error":world.world.integration_parameters.normalized_allowed_linear_error,
+                "recycle_distance":world.world.integration_parameters.normalized_contact_recycle_distance});
             let floor = world
                 .world
                 .bodies
@@ -548,6 +564,23 @@ mod tests {
             receipt["final_configuration"] = serde_json::to_value(world.configuration()).unwrap();
             receipt["world_counts"] = serde_json::to_value(world.counts()).unwrap();
             receipt["integrations"] = serde_json::json!(world.snapshot().integration_count);
+            let plate = scene
+                .instances
+                .iter()
+                .find(|i| i.kind == TaskObjectKind::Plate)
+                .unwrap();
+            let contacts:Vec<_>=world.world.narrow_phase.contact_pairs_with(plate.collider).map(|pair| {
+                let summarize=|manifolds:&[ContactManifold]|manifolds.iter().map(|m|serde_json::json!({
+                    "normal_source":engine_to_source_vector(m.data.normal.to_array()),
+                    "points":m.points.len(),"min_geometric_distance":m.points.iter().map(|p|p.dist).fold(f32::INFINITY,f32::min),
+                    "solver_points":m.data.solver_contacts.len(),
+                    "min_solver_distance":m.data.solver_contacts.iter().map(|p|p.dist).fold(f32::INFINITY,f32::min)
+                })).collect::<Vec<_>>();
+                serde_json::json!({"manifolds":summarize(&pair.manifolds),"solver_clusters":summarize(&pair.solver_clusters)})
+            }).collect();
+            receipt["plate_last_native_solve_contacts"] = serde_json::json!(contacts);
+            receipt["contact_samples_are_from_last_solve_not_refreshed_end_pose"] =
+                serde_json::json!(true);
             let final_frame = scene.frame(&world)?;
             if final_frame.objects.iter().any(|o| {
                 o.active_contact_pairs == 0
