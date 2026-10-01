@@ -4,6 +4,8 @@
 //! All physical body transforms come from the unique simulation backend.
 //! Development window orchestration and capture live in dev_tools.
 pub mod geometry;
+pub mod g1_camera;
+pub mod g1_visual;
 mod material;
 mod render_health;
 pub use render_health::{

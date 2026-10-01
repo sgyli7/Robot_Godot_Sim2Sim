@@ -57,6 +57,7 @@ common_minigame.workspace = true
 robot_minigame.workspace = true
 simulation_minigame.workspace = true
 rendering_minigame.workspace = true
+task_minigame = { workspace = true, features = ["ui"] }
 dev_tools_minigame = { workspace = true, optional = true }
 
 [patch.crates-io]
