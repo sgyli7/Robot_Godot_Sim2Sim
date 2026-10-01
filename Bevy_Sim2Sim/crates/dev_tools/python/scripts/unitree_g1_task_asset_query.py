@@ -164,8 +164,13 @@ def query(args, receipt, output):
     finally:
         # Persist query results even if Kit shutdown exits the interpreter.
         receipt["closed_timeline_was_stopped"] = not omni.timeline.get_timeline_interface().is_playing()
+        receipt["shutdown_mode"] = "documented_SimulationApp_immediate_exit_after_flushed_receipt"
         save(output, receipt)
-        app.close()
+        # No replicator or running timeline exists in this process. The installed
+        # Kit build's graceful viewport teardown asserts on a busy task group.
+        # Use its documented immediate exit and preserve diagnostic failure status.
+        app.close(wait_for_replicator=False, skip_cleanup=True,
+                  exit_code=0 if receipt.get("all_asset_queries_succeeded") and "error" not in receipt else 1)
 
 
 def main():
