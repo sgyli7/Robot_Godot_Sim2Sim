@@ -206,6 +206,12 @@ pub struct TaskObjectScene {
     instances: Vec<Instance>,
 }
 
+#[derive(Clone, Copy)]
+enum ConvexRepresentation {
+    CopiedFaces,
+    ReconstructedHull,
+}
+
 /// A render/independent-acceptance sample, never a model observation field.
 #[derive(Clone, Debug, Serialize)]
 pub struct TaskObjectSample {
@@ -238,6 +244,20 @@ impl TaskObjectScene {
         definition: &TaskObjectsDefinition,
         placements: &[TaskObjectPlacement],
     ) -> Result<Self, RobotError> {
+        Self::insert_with_representation(
+            world,
+            definition,
+            placements,
+            ConvexRepresentation::CopiedFaces,
+        )
+    }
+
+    fn insert_with_representation(
+        world: &mut SimulationWorld,
+        definition: &TaskObjectsDefinition,
+        placements: &[TaskObjectPlacement],
+        representation: ConvexRepresentation,
+    ) -> Result<Self, RobotError> {
         if world.snapshot().integration_count != 0 || placements.is_empty() {
             return Err(invalid(
                 "task objects can only be inserted before integration",
@@ -252,9 +272,14 @@ impl TaskObjectScene {
             let object = definition.object(placement.kind);
             let mut parts = Vec::with_capacity(object.convex_parts.len());
             for part in &object.convex_parts {
-                let vertices = part.points.iter().copied().map(engine_vector).collect();
-                let convex = SharedShape::convex_mesh(vertices, &part.triangles)
-                    .ok_or_else(|| invalid("cannot construct original cooked convex topology"))?;
+                let vertices: Vec<_> = part.points.iter().copied().map(engine_vector).collect();
+                let convex = match representation {
+                    ConvexRepresentation::CopiedFaces => {
+                        SharedShape::convex_mesh(vertices, &part.triangles)
+                    }
+                    ConvexRepresentation::ReconstructedHull => SharedShape::convex_hull(&vertices),
+                }
+                .ok_or_else(|| invalid("cannot construct original cooked convex topology"))?;
                 parts.push((Pose::IDENTITY, convex));
             }
             let inertia = object.principal_inertia;
@@ -412,12 +437,20 @@ mod tests {
                 .map_err(|_| invalid("invalid diagnostic PGS count"))?;
             let start = std::env::var("G1_TASK_OBJECTS_DIAGNOSTIC_START")
                 .unwrap_or_else(|_| "drop_0_3m".into());
+            let representation_name = std::env::var("G1_TASK_OBJECTS_DIAGNOSTIC_REPRESENTATION")
+                .unwrap_or_else(|_| "copied_faces".into());
+            let representation = match representation_name.as_str() {
+                "copied_faces" => ConvexRepresentation::CopiedFaces,
+                "reconstructed_hull" => ConvexRepresentation::ReconstructedHull,
+                _ => return Err(invalid("unsupported convex feature representation")),
+            };
             if !matches!(pgs, 4 | 16) || !matches!(start.as_str(), "drop_0_3m" | "near_support_5mm")
             {
                 return Err(invalid("unsupported bounded contact comparison"));
             }
             receipt["diagnostic_start"] = serde_json::json!(start);
             receipt["diagnostic_pgs"] = serde_json::json!(pgs);
+            receipt["diagnostic_representation"] = serde_json::json!(representation_name);
             let definition = TaskObjectsDefinition::load(Path::new(&path), &sha)?;
             let mut world =
                 SimulationWorld::with_game_frequency(50).map_err(|e| invalid(e.to_string()))?;
@@ -465,8 +498,12 @@ mod tests {
                     }
                 })
                 .collect();
-            let scene =
-                TaskObjectScene::insert_in_owner_world(&mut world, &definition, &placements)?;
+            let scene = TaskObjectScene::insert_with_representation(
+                &mut world,
+                &definition,
+                &placements,
+                representation,
+            )?;
             receipt["initial"] = serde_json::to_value(scene.frame(&world)?).unwrap();
             let bin = scene
                 .instances
