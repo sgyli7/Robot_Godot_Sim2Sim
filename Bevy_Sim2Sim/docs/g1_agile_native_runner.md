@@ -37,7 +37,8 @@ relabeled as a fresh completed frame.
 The ignored stand diagnostic requires a frozen JSON matching
 `AgileRunnerConfig`, including static-task shoulder defaults: indices 16/17 are
 `0.25/0.5`, and 30/31 are `-0.25/-0.5`. It uses those explicit upper defaults,
-zero navigation and the source task's 0.75 m height command for at most 150 ticks.
+zero navigation and the source task's 0.75 m height command for 150 ticks by default.
+`G1_AGILE_DIAGNOSTIC_TICKS` permits an explicit finite budget from 1 to 1500.
 It stops on any runtime error, measured source position limits beyond 0.001 rad,
 pelvis height below 0.35 m, upright cosine below 0.5 or external torque leakage.
 
@@ -69,9 +70,16 @@ the limit is a late symptom, and has not been widened. Replaying all 119 actual
 inputs through the original upstream recurrent implementation gave a maximum
 target difference of 2.03e-6 rad, including retained quaternion rounding.
 
-The ignored diagnostic also accepts `G1_AGILE_DIAGNOSTIC_PGS_PASSES=4` for a
-single bounded comparison. It changes only Rapier's internal constraint sweeps
-before the same integration; the ordinary owner still selects one pass. Every
+The bounded four-pass comparison completed 150 ticks, with maximum drift
+0.059584 m, final pelvis height 0.754199 m and upright cosine 0.997673.
+Both initial states, all actuator parameters and the first real inference were
+identical to the one-pass failure. This supports insufficient constraint
+convergence as a contributor to the failure at fixed 20 ms; it does not yet
+prove source physics parity or long standing.
+
+This task owner now selects four Rapier internal constraint sweeps before the
+same integration. The shared world and Homie defaults are unchanged. The
+ignored diagnostic retains `G1_AGILE_DIAGNOSTIC_PGS_PASSES=1` as a control. Every
 receipt records the actual value. `num_solver_iterations`, which splits the
 timestep in this Rapier version, stays one, as do CCD substeps. This comparison
 does not change gains, armatures, defaults, frequency, limits or policy history.

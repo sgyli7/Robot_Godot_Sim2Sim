@@ -152,6 +152,13 @@ impl AgileRunner {
             default_positions,
         )?;
         let mut simulation = SimulationWorld::with_game_frequency(50).map_err(error)?;
+        // Resolve the coupled contact/motor constraints within this one 20 ms
+        // step. PGS sweeps do not integrate; num_solver_iterations stays one.
+        // This G1 task owner does not change the shared or Homie defaults.
+        simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = 4;
         let floor = simulation
             .world
             .bodies
@@ -589,11 +596,11 @@ mod tests {
         }
         let mut runner = AgileRunner::load(config)?;
         // An explicit, bounded diagnostic changes only the number of constraint
-        // sweeps before the existing integration. The ordinary owner stays at
-        // one pass. Rapier's num_solver_iterations splits dt and stays at one.
+        // sweeps before the existing integration. Rapier's num_solver_iterations
+        // splits dt and stays at one. One pass is retained as the failing control.
         let passes = env::var("G1_AGILE_DIAGNOSTIC_PGS_PASSES")
             .map(|value| value.parse::<usize>().map_err(error))
-            .unwrap_or(Ok(1))?;
+            .unwrap_or(Ok(4))?;
         if !matches!(passes, 1 | 4) {
             return Err(error("diagnostic PGS passes must be exactly 1 or 4"));
         }
@@ -604,6 +611,13 @@ mod tests {
             .num_internal_pgs_iterations = passes;
         validate_clock(runner.configuration())?;
         report["diagnostic_pgs_passes"] = json!(passes);
+        let ticks = env::var("G1_AGILE_DIAGNOSTIC_TICKS")
+            .map(|value| value.parse::<u64>().map_err(error))
+            .unwrap_or(Ok(150))?;
+        if !(1..=1500).contains(&ticks) {
+            return Err(error("diagnostic Tick budget must be in 1..=1500"));
+        }
+        report["requested_ticks"] = json!(ticks);
         report["initial_non_integrating_motor_installations"] = json!(1);
         report["actuator_parameters"] = json!(runner.actuator_parameters().to_vec());
         report["source_joint_limits"] = json!(runner.source_limits().to_vec());
@@ -625,7 +639,7 @@ mod tests {
         report["command"] = json!(command);
         let mut outcome = Ok(());
         let mut max_drift = 0_f64;
-        for tick in 1..=150_u64 {
+        for tick in 1..=ticks {
             match runner.step(&command) {
                 Ok(step) => {
                     let root = runner.simulation.world.bodies[runner.assembly.root_handle()]
@@ -739,7 +753,7 @@ mod tests {
             run_stand(&config, &mut report)
         })();
         let termination = match &result {
-            Ok(()) => "completed_150_ticks".to_owned(),
+            Ok(()) => format!("completed_{}_ticks", report["requested_ticks"]),
             Err(error) => error.to_string(),
         };
         report["termination"] = json!(termination);
