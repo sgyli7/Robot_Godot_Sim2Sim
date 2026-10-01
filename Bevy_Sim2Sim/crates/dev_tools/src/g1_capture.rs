@@ -30,14 +30,23 @@ use rendering_minigame::{
         CameraPoseSource, G1BodyObservationInput, G1CameraJointState, G1CameraNativeState,
         G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1ObservationPlugin,
     },
+    g1_task_visual::{
+        G1TaskVisualFrame, G1TaskVisualInput, G1TaskVisualModel, G1TaskVisualPlugin,
+        G1TaskVisualPose, G1TaskVisualStatus,
+    },
     g1_visual::{G1VisualModel, G1VisualPlugin, G1VisualStatus},
     install_station_render_health, validate_render_asset_root,
 };
-use robot_minigame::g1::contract::G1Command;
+use robot_minigame::g1::{agile::AgileCommand, contract::G1Command};
 use serde::{Deserialize, Serialize};
 use simulation_minigame::g1::{
+    agile_runner::AgileRunnerConfig,
     runner::{G1ActuatorBackend, G1RunnerConfig},
-    worker::{G1Worker, G1WorkerPhase, G1WorkerSnapshot, TimedG1Command},
+    task_objects::{TaskObjectFrame, TaskObjectKind, TaskObjectSceneConfig},
+    worker::{
+        AgileWorker, G1Worker, G1WorkerPhase, G1WorkerTiming, TimedAgileCommand, TimedG1Command,
+        WorkerSnapshot,
+    },
 };
 
 /// Explicit evidence settings. Zero ticks captures the native initialized world
@@ -52,9 +61,124 @@ pub struct G1CaptureOptions {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureConfiguration {
-    runner: G1RunnerConfig,
+    runner: CaptureRunnerConfig,
     visual_path: PathBuf,
     visual_sha256: String,
+    #[serde(default)]
+    task_visual_path: Option<PathBuf>,
+    #[serde(default)]
+    task_visual_sha256: Option<String>,
+}
+
+// Distinct complete startup schemas and typed workers; no action conversion.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CaptureRunnerConfig {
+    Mobile(G1RunnerConfig),
+    Static(AgileRunnerConfig),
+}
+
+impl CaptureRunnerConfig {
+    fn task_objects(&self) -> Option<&TaskObjectSceneConfig> {
+        match self {
+            Self::Mobile(c) => c.task_objects.as_ref(),
+            Self::Static(c) => c.task_objects.as_ref(),
+        }
+    }
+    fn episode(&self) -> u64 {
+        match self {
+            Self::Mobile(c) => c.episode_id,
+            Self::Static(c) => c.episode_id,
+        }
+    }
+    fn spawn(self) -> Result<CaptureWorker, String> {
+        match self {
+            Self::Mobile(c) => G1Worker::spawn(c)
+                .map(CaptureWorker::Mobile)
+                .map_err(|e| e.to_string()),
+            Self::Static(c) => {
+                c.validate().map_err(|e| e.to_string())?;
+                let mut upper = [0.; 28];
+                upper.copy_from_slice(&c.default_positions[15..]);
+                let command = AgileCommand {
+                    navigation: [0.; 3],
+                    pelvis_height: 0.75,
+                    upper_positions: upper,
+                };
+                AgileWorker::spawn(c)
+                    .map(|worker| CaptureWorker::Static { worker, command })
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
+enum CaptureWorker {
+    Mobile(G1Worker),
+    Static {
+        worker: AgileWorker,
+        command: AgileCommand,
+    },
+}
+
+struct CaptureSnapshot {
+    episode_id: u64,
+    phase: G1WorkerPhase,
+    reason: Option<String>,
+    frame: Option<Arc<robot_minigame::g1::definition::G1BodyFrame>>,
+    measurement: Option<Arc<simulation_minigame::g1::runner::G1Measurement>>,
+    task_objects: Option<Arc<TaskObjectFrame>>,
+    timing: G1WorkerTiming,
+}
+impl CaptureSnapshot {
+    fn from_worker<S>(s: &WorkerSnapshot<S>) -> Self {
+        Self {
+            episode_id: s.episode_id,
+            phase: s.phase.clone(),
+            reason: s.reason.clone(),
+            frame: s.frame.clone(),
+            measurement: s.measurement.clone(),
+            task_objects: s.task_objects.clone(),
+            timing: s.timing.clone(),
+        }
+    }
+}
+impl CaptureWorker {
+    fn take_latest(&self) -> Option<Arc<CaptureSnapshot>> {
+        match self {
+            Self::Mobile(w) => w
+                .take_latest()
+                .map(|s| Arc::new(CaptureSnapshot::from_worker(&s))),
+            Self::Static { worker, .. } => worker
+                .take_latest()
+                .map(|s| Arc::new(CaptureSnapshot::from_worker(&s))),
+        }
+    }
+    fn pause(&self) {
+        match self {
+            Self::Mobile(w) => w.pause(),
+            Self::Static { worker, .. } => worker.pause(),
+        }
+    }
+    fn submit_stand(&self, episode_id: u64, ticks: u32) -> Result<(), String> {
+        let valid_until_sim_ns = u64::from(ticks) * 20_000_000;
+        let valid_until_wall = Instant::now() + Duration::from_secs(8);
+        match self {
+            Self::Mobile(w) => w.submit(TimedG1Command {
+                episode_id,
+                valid_until_sim_ns,
+                valid_until_wall,
+                command: G1Command::default(),
+            }),
+            Self::Static { worker, command } => worker.submit(TimedAgileCommand {
+                episode_id,
+                valid_until_sim_ns,
+                valid_until_wall,
+                command: command.clone(),
+            }),
+        }
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// Read the caller's frozen configuration and run this diagnostic explicitly.
@@ -66,10 +190,17 @@ pub fn run_capture_from_file(
         &fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
     )
     .map_err(|error| format!("G1 diagnostic configuration: {error}"))?;
-    run_capture(
+    if config.task_visual_path.is_some() != config.task_visual_sha256.is_some() {
+        return Err("task visual path/hash must both be supplied".into());
+    }
+    run_capture_owner(
         config.runner,
         &config.visual_path,
         &config.visual_sha256,
+        config
+            .task_visual_path
+            .as_deref()
+            .zip(config.task_visual_sha256.as_deref()),
         options,
     )
 }
@@ -97,8 +228,13 @@ pub struct G1CaptureReceipt {
     pub robot_contact_friction: f32,
     pub definition_sha256: String,
     pub ort_sha256: String,
-    pub stand_sha256: &'static str,
-    pub walk_sha256: &'static str,
+    pub body_profile: &'static str,
+    pub stand_sha256: Option<&'static str>,
+    pub walk_sha256: Option<&'static str>,
+    pub agile_sha256: Option<&'static str>,
+    pub task_visual_sha256: Option<String>,
+    pub last_task_object_frame: Option<TaskObjectFrame>,
+    pub task_visual_status: Option<G1TaskVisualStatus>,
     pub visual_sha256: String,
     pub actuator_backend: G1ActuatorBackend,
     pub physics_hz: u32,
@@ -120,23 +256,62 @@ pub struct G1CaptureReceipt {
 }
 
 impl G1CaptureReceipt {
-    fn initial(ticks: u32, config: &G1RunnerConfig, visual_sha256: &str) -> Self {
+    fn initial(ticks: u32, config: &CaptureRunnerConfig, visual_sha256: &str) -> Self {
+        let (
+            episode_profile,
+            floor_friction,
+            robot_friction,
+            definition_sha256,
+            ort_sha256,
+            backend,
+            stand,
+            walk,
+            agile,
+        ) = match config {
+            CaptureRunnerConfig::Mobile(c) => (
+                "mobile_homie",
+                c.floor_contact_friction,
+                c.robot_contact_friction,
+                c.definition_sha256.clone(),
+                c.ort_sha256.clone(),
+                c.actuator_backend,
+                Some(robot_minigame::g1::policy::STAND_SHA256),
+                Some(robot_minigame::g1::policy::WALK_SHA256),
+                None,
+            ),
+            CaptureRunnerConfig::Static(c) => (
+                "static_agile",
+                c.floor_contact_friction,
+                c.robot_contact_friction,
+                c.definition_sha256.clone(),
+                c.ort_sha256.clone(),
+                G1ActuatorBackend::NativeForceBased,
+                None,
+                None,
+                Some(robot_minigame::g1::agile::MODEL_SHA256),
+            ),
+        };
         Self {
-            schema_version: 1,
+            schema_version: 2,
             scope: "native_g1_camera_pairing_diagnostic",
             capture_succeeded: false,
             task_qualified: false,
             environment: "source_near_simple_floor_not_science_station",
             floor_center_engine: [0., -0.25, 0.],
             floor_full_extents_m: [40., 0.5, 40.],
-            floor_contact_friction: config.floor_contact_friction,
-            robot_contact_friction: config.robot_contact_friction,
-            definition_sha256: config.definition_sha256.clone(),
-            ort_sha256: config.ort_sha256.clone(),
-            stand_sha256: robot_minigame::g1::policy::STAND_SHA256,
-            walk_sha256: robot_minigame::g1::policy::WALK_SHA256,
+            floor_contact_friction: floor_friction,
+            robot_contact_friction: robot_friction,
+            definition_sha256,
+            ort_sha256,
+            body_profile: episode_profile,
+            stand_sha256: stand,
+            walk_sha256: walk,
+            agile_sha256: agile,
+            task_visual_sha256: None,
+            last_task_object_frame: None,
+            task_visual_status: None,
             visual_sha256: visual_sha256.into(),
-            actuator_backend: config.actuator_backend,
+            actuator_backend: backend,
             physics_hz: 50,
             integrations_per_tick: 1,
             requested_ticks: ticks,
@@ -163,7 +338,8 @@ impl G1CaptureReceipt {
         }
     }
 
-    fn observe(&mut self, snapshot: &G1WorkerSnapshot) {
+    fn observe(&mut self, snapshot: &CaptureSnapshot) {
+        self.last_task_object_frame = snapshot.task_objects.as_deref().cloned();
         self.actual_integrations = snapshot.timing.total_integrations;
         self.actual_torque_updates = snapshot.timing.total_torque_updates;
         self.actual_model_attempts = snapshot.timing.total_inference_attempts;
@@ -184,12 +360,12 @@ struct CaptureOutcome(Arc<Mutex<G1CaptureReceipt>>);
 
 #[derive(Resource)]
 struct CaptureRuntime {
-    worker: G1Worker,
+    worker: CaptureWorker,
     options: G1CaptureOptions,
     episode_id: u64,
     started: Instant,
     render_frames: u32,
-    latest: Option<Arc<G1WorkerSnapshot>>,
+    latest: Option<Arc<CaptureSnapshot>>,
     command_submitted: bool,
     requested: bool,
     ego_saved: bool,
@@ -205,6 +381,22 @@ pub fn run_capture(
     visual_sha256: &str,
     options: G1CaptureOptions,
 ) -> Result<G1CaptureReceipt, String> {
+    run_capture_owner(
+        CaptureRunnerConfig::Mobile(config),
+        visual_path,
+        visual_sha256,
+        None,
+        options,
+    )
+}
+
+fn run_capture_owner(
+    config: CaptureRunnerConfig,
+    visual_path: &Path,
+    visual_sha256: &str,
+    task_visual: Option<(&Path, &str)>,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
     if options.ticks > 150
         || options.timeout.is_zero()
         || options.timeout > Duration::from_secs(180)
@@ -214,25 +406,37 @@ pub fn run_capture(
     let assets = validate_render_asset_root(&default_asset_root())?;
     let scene = StationScene::load(&assets)?;
     let model = G1VisualModel::load(visual_path, visual_sha256)?;
+    let task_model = match (config.task_objects(), task_visual) {
+        (Some(objects), Some((path, sha))) => Some(G1TaskVisualModel::load(
+            path,
+            sha,
+            &objects.definition_sha256,
+        )?),
+        (None, None) => None,
+        _ => return Err("task physics and task visuals must be configured together".into()),
+    };
     if let Some(parent) = options.output.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     fs::create_dir(&options.output)
         .map_err(|error| format!("capture output must be new: {error}"))?;
     let output = options.output.clone();
-    let episode_id = config.episode_id;
+    let episode_id = config.episode();
     let outcome = CaptureOutcome(Arc::new(Mutex::new(G1CaptureReceipt::initial(
         options.ticks,
         &config,
         visual_sha256,
     ))));
-    let worker = G1Worker::spawn(config).map_err(|error| error.to_string())?;
+    outcome.0.lock().unwrap().task_visual_sha256 =
+        task_model.as_ref().map(|m| m.file_sha256.clone());
+    let worker = config.spawn()?;
     let mut app = App::new();
     // Scene supplies the existing enamel configuration only. Its meshes, props,
     // fixtures and camera shots are not spawned in this floor diagnostic.
     app.insert_resource(scene)
         .insert_resource(model)
         .insert_resource(outcome.clone())
+        .init_resource::<G1TaskVisualInput>()
         .insert_resource(CaptureRuntime {
             worker,
             options,
@@ -269,6 +473,9 @@ pub fn run_capture(
         .add_plugins((G1VisualPlugin, G1CameraPlugin, G1ObservationPlugin))
         .add_systems(Startup, setup_floor_scene)
         .add_systems(Update, drive_capture);
+    if let Some(model) = task_model {
+        app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
+    }
     if episode_id > 0 {
         app.world()
             .resource::<G1CameraPort>()
@@ -334,7 +541,7 @@ fn setup_floor_scene(
     ));
 }
 
-fn observation(snapshot: &G1WorkerSnapshot) -> Result<Option<Arc<G1CameraNativeState>>, String> {
+fn observation(snapshot: &CaptureSnapshot) -> Result<Option<Arc<G1CameraNativeState>>, String> {
     let (Some(frame), Some(measurement)) = (&snapshot.frame, &snapshot.measurement) else {
         if snapshot.frame.is_some() || snapshot.measurement.is_some() {
             return Err("worker published a partial native frame/measurement pair".into());
@@ -368,6 +575,9 @@ fn drive_capture(
     outcome: Res<CaptureOutcome>,
     health: Res<StationRenderHealth>,
     visual: Res<G1VisualStatus>,
+    task_model: Option<Res<G1TaskVisualModel>>,
+    task_status: Option<Res<G1TaskVisualStatus>>,
+    mut task_input: ResMut<G1TaskVisualInput>,
     mut input: ResMut<G1BodyObservationInput>,
     port: Res<G1CameraPort>,
     mut exit: MessageWriter<AppExit>,
@@ -380,8 +590,51 @@ fn drive_capture(
         if let Some(error) = &visual.error {
             return Err(error.clone());
         }
+        if let Some(error) = task_status.as_ref().and_then(|s| s.error.as_ref()) {
+            return Err(error.clone());
+        }
         if let Some(snapshot) = runtime.worker.take_latest() {
             input.0 = observation(&snapshot)?;
+            task_input.0 = match (&task_model, &snapshot.task_objects) {
+                (Some(model), Some(frame)) => {
+                    let robot = snapshot
+                        .frame
+                        .as_ref()
+                        .ok_or("task object frame has no paired robot")?;
+                    if frame.episode_id != robot.episode_id
+                        || frame.source_tick != robot.source_tick
+                        || frame.sim_time != robot.sim_time
+                    {
+                        return Err("task object and robot capture boundaries disagree".into());
+                    }
+                    Some(G1TaskVisualFrame {
+                        physics_definition_sha256: frame.definition_sha256.clone(),
+                        episode_id: frame.episode_id,
+                        source_tick: frame.source_tick,
+                        sim_time: frame.sim_time,
+                        poses: frame
+                            .objects
+                            .iter()
+                            .map(|o| {
+                                let kind = match o.kind {
+                                    TaskObjectKind::Apple => "t1_apple",
+                                    TaskObjectKind::Plate => "t1_plate",
+                                    TaskObjectKind::BrownBox => "t2_box",
+                                    TaskObjectKind::BlueBin => "t2_bin",
+                                };
+                                Ok(G1TaskVisualPose {
+                                    object_index: model.object_index(kind)?,
+                                    translation_engine: o.translation_engine,
+                                    rotation_engine_xyzw: o.rotation_engine_xyzw,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, String>>()?,
+                    })
+                }
+                (None, None) | (Some(_), None) if snapshot.frame.is_none() => None,
+                (None, None) => None,
+                _ => return Err("task capture visual/physics pairing incomplete".into()),
+            };
             outcome.0.lock().unwrap().observe(&snapshot);
             runtime.latest = Some(snapshot);
         }
@@ -401,19 +654,23 @@ fn drive_capture(
             && health.snapshot().ready
             && input.0.is_some()
             && visual.source_tick == latest.frame.as_ref().map(|frame| frame.source_tick);
+        let render_ready = render_ready
+            && task_model.as_ref().is_none_or(|_| {
+                task_status.as_ref().is_some_and(|s| {
+                    s.source_tick == latest.frame.as_ref().map(|f| f.source_tick)
+                        && s.episode_id == Some(latest.episode_id)
+                        && s.visible_objects
+                            == latest.task_objects.as_ref().map_or(0, |f| f.objects.len())
+                        && s.visible_objects > 0
+                })
+            });
         if !render_ready {
             return Ok(());
         }
         if !runtime.command_submitted && runtime.options.ticks > 0 {
             runtime
                 .worker
-                .submit(TimedG1Command {
-                    episode_id: runtime.episode_id,
-                    valid_until_sim_ns: u64::from(runtime.options.ticks) * 20_000_000,
-                    valid_until_wall: Instant::now() + Duration::from_secs(8),
-                    command: G1Command::default(),
-                })
-                .map_err(|error| error.to_string())?;
+                .submit_stand(runtime.episode_id, runtime.options.ticks)?;
             runtime.command_submitted = true;
             return Ok(());
         }
@@ -449,6 +706,7 @@ fn drive_capture(
                 },
             );
             let mut receipt = outcome.0.lock().unwrap();
+            receipt.task_visual_status = task_status.as_deref().cloned();
             if latest.phase != G1WorkerPhase::Failed {
                 receipt.physics_outcome = if runtime.options.ticks == 0 {
                     "native_initialization_zero_integrations"
