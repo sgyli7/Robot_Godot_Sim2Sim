@@ -67,12 +67,15 @@ impl GooseControlContract {
     /// Reject the delivered high-rate contract rather than quietly retiming it.
     pub fn validate(&self) -> Result<(), RobotError> {
         let fail = |message: &str| RobotError::Contract(message.to_owned());
-        if self.robot != "Goose_V0.1"
-            || self.schema != "goose_50hz_candidate_si_v1"
-            || !matches!(
-                self.candidate.as_str(),
+        let identity_valid = matches!(
+            (self.schema.as_str(), self.candidate.as_str()),
+            (
+                "goose_50hz_candidate_si_v1",
                 "goose_460_full50_v1" | "goose_460_condensed50_v1"
-            )
+            ) | ("goose_50hz_experimental_si_v2", "goose_460_full50_be_v2")
+        );
+        if self.robot != "Goose_V0.1"
+            || !identity_valid
             || self.action_size != GOOSE_ACTION_DIMENSION
             || self.observation_size != GOOSE_OBSERVATION_DIMENSION
             || [self.physics_dt_s, self.torque_dt_s, self.policy_dt_s]
@@ -452,6 +455,17 @@ mod tests {
             phase_frequency_hz: 1.2,
             model_sha256: "a".repeat(64),
         }
+    }
+
+    #[test]
+    fn experimental_candidate_keeps_axis_contract_and_requires_its_schema_pair() {
+        let mut candidate = contract();
+        candidate.candidate = "goose_460_full50_be_v2".into();
+        assert!(candidate.validate().is_err());
+        candidate.schema = "goose_50hz_experimental_si_v2".into();
+        assert!(candidate.validate().is_ok());
+        candidate.candidate = "goose_460_full50_v1".into();
+        assert!(candidate.validate().is_err());
     }
     fn state() -> GooseNativeState {
         GooseNativeState {

@@ -23,6 +23,16 @@ pub struct GoosePlant {
     pub colliders: Vec<GooseCollider>,
     pub exclusions: Vec<[String; 2]>,
     pub jaw_loop: GooseJawLoop,
+    #[serde(default)]
+    pub numerical_experiment: Option<GooseNumericalExperiment>,
+}
+
+/// Explicit experimental numerical selection; never mixed into physical inertia.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GooseNumericalExperiment {
+    pub source_method: String,
+    pub predictive_scalar_stops: bool,
+    pub jaw_pin_basis: String,
 }
 
 /// Complete inertia is expressed at COM in the body frame, never just diagonal.
@@ -95,12 +105,15 @@ impl GoosePlant {
 
     /// Validate identity, physical tensors, the tree and the actual motor mapping.
     pub fn validate(&self) -> Result<(), RobotError> {
-        if self.schema != "goose_plant50_v1"
-            || self.physics_hz != 50
-            || !matches!(
-                self.candidate_id.as_str(),
+        let identity_valid = matches!(
+            (self.schema.as_str(), self.candidate_id.as_str()),
+            (
+                "goose_plant50_v1",
                 "goose_460_full50_v1" | "goose_460_condensed50_v1"
-            )
+            ) | ("goose_plant50_experimental_v2", "goose_460_full50_be_v2")
+        );
+        if !identity_valid
+            || self.physics_hz != 50
             || self
                 .joint_order
                 .iter()
@@ -110,6 +123,19 @@ impl GoosePlant {
             return Err(invalid(
                 "Goose mechanical candidate identity/50 Hz mismatch",
             ));
+        }
+        let experimental = self.candidate_id == "goose_460_full50_be_v2";
+        match (&self.numerical_experiment, experimental) {
+            (None, false) => {}
+            (Some(config), true)
+                if config.source_method == "goose_joint_backward_euler_predictive_v1"
+                    && config.predictive_scalar_stops
+                    && config.jaw_pin_basis == "coupler_axis" => {}
+            _ => {
+                return Err(invalid(
+                    "Goose numerical experiment must match its explicit candidate version",
+                ));
+            }
         }
         for hash in [
             &self.neutral_contract_sha256,
@@ -124,10 +150,10 @@ impl GoosePlant {
                 return Err(invalid("Goose mechanical identity needs lowercase SHA256"));
             }
         }
-        let expected_bodies = if self.candidate_id == "goose_460_full50_v1" {
-            33
-        } else {
+        let expected_bodies = if self.candidate_id == "goose_460_condensed50_v1" {
             21
+        } else {
+            33
         };
         if self.bodies.len() != expected_bodies || self.joints.len() + 1 != self.bodies.len() {
             return Err(invalid("Goose candidate body/coordinate counts mismatch"));

@@ -161,8 +161,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let state = assembly.state(&simulation)?;
             let pin_error = assembly.jaw_pin_error_m(&simulation);
             maximum_pin_error = maximum_pin_error.max(pin_error);
+            // Native manifolds were detected before this Tick's integration.
+            // Name the actual owners and signed distances without rebuilding
+            // collisions from the post-integration published poses.
+            let contact_pairs: Vec<_> = simulation.live_contact_pairs()
+                .filter(|pair| pair.has_any_active_contact())
+                .map(|pair| {
+                    let owner = |collider: ColliderHandle| {
+                        let body = simulation.world.colliders[collider].parent();
+                        assembly.body_handles.iter().find_map(|(name, handle)| {
+                            (Some(*handle) == body).then_some(name.clone())
+                        }).unwrap_or_else(|| "scene".into())
+                    };
+                    let minimum_distance = pair.manifolds.iter().flat_map(|manifold| manifold.points.iter())
+                        .map(|point| point.dist).reduce(f32::min);
+                    json!({"body1":owner(pair.collider1),"body2":owner(pair.collider2),
+                        "minimum_distance_m":minimum_distance,"manifold_count":pair.manifolds.len(),
+                        "solver_contact_count":pair.manifolds.iter().map(|m| m.data.solver_contacts.len()).sum::<usize>()})
+                }).collect();
             trace.push(json!({"reset":reset,"tick":tick,"snapshot":snapshot,"q_rad":state.joint_position_rad,
                 "qd_rad_s":state.joint_velocity_rad_s,"jaw_pin_error_m":pin_error,
+                "native_contact_pairs_pre_integration":contact_pairs,
                 "physics_wall_ms":physics_wall_ms}));
             if !pin_error.is_finite()
                 || state

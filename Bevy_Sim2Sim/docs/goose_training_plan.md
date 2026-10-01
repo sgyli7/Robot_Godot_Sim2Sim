@@ -34,6 +34,8 @@ MD 经验落实为：先核本体、实际驱动和观测时效，再调奖励�
 3. 凝聚版本保持总质量、COM、完整惯量、接触合力与力矩映射；静态、低频、冲击误差分别报告，不宣称高频瞬态等价。
 4. 两份均失败时记录 M0 未通过，禁止长训；继续围绕已定位的物理阻断推进，不以增加训练预算掩盖问题。
 
+物理诊断另有 `goose_460_full50_be_v2`：保留原 33 体及物理 K/C/A，在一次原生约束求解内使用 `M+hC+h²K` 的线性弹簧后向欧拉离散、双端预测限位和真实嘴销。它是显式版本化的 **CPU 实验**，非线性速度力仍显式计算，尚未替代本计划的源训练积分路线。整机接触、跨引擎、GPU 兼容和物理准入未通过前，不授予训练资格；原 v1 模型及失败收据保持冻结。
+
 Rapier 的 `num_solver_iterations=1`、每体 `additional_solver_iterations=0`、`max_ccd_substeps=1`。只能调整内部 PGS 收敛轮数（预定 4/8/16/32），不能增加实际积分子步。弹簧采用 ForceBased SI 单位，碰撞体不重复增加质量。
 
 嘴部采用实际四杆闭合约束，电机只驱动 `beak_input_rotor`，与 head_roll 产生相反反力，约束将力传给 jaw/coupler。禁止逐 Tick 写 qpos、FK 搬动物件或焊接附着辅助抓取。
@@ -152,5 +154,21 @@ Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/Project
 本检查点的默认 simulation／armature／预测限位检查共 27 项通过，10 项外部夹具检查未运行；启用源限位及原生行记录的 5 项检查通过，原生后端 multibody 范围的 21 项检查通过。[495 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_predictive_checkpoint.json)、格式及空白检查通过。实验源码、原生依赖、模型和轨迹按实际执行哈希冻结；未使用 GPU。
 
 下一检查点的首个问题：**原 33 体模型的线性脚垫弹簧，能否与阻尼和约束一起在一次 20 ms 积分中隐式求解？** 先在脚垫夹具固定 5/10/20/30 N、释放及行程末端程序，验证物理 `K/C` 与数值矩阵分离，再做新的整机实验候选和 20 次冷重置。新的数值离散方法须独立版本化，原 v1 模型和收据保留；没有源／目标同版本物理准入和 GPU 小批量证据前不开始 PPO。嘴部仅在接入整机或物体接触后出现新失败时回到局部诊断。
+
+### 脚垫与整机实验检查点
+
+上述线性脚垫问题已有真实收据：原 12 个脚垫各执行固定 5/10/20/30 N、30 N 释放、正反 40 N 端点和无外力初速度八种程序。源与目标各 **96/96 组通过、9,600 次 20 ms 积分**；[源端](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/pad_source_verified/receipt.json)、[目标端](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/pad_rapier_verified/receipt.json)、[逐组比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/pad_source_target_comparison/receipt.json)。最大压缩差 **3.877e−10 m**，远小于 0.05 mm 门槛。无初始化后的 qpos 写入、隐藏子步、Actor 或优化器更新。此处父脚固定、没有地面接触，不等同于整机足底接触、摩擦或冲击资格。
+
+源端的编译项为 `A_effective=A_physical+h*C+h²*K`、`C_effective=C+h*K`，真实质量、完整惯量、物理 K/C/A 单独记录；目标端直接使用物理参数，避免重复加入数值项。单个最近端点限位在 40 N 首步超载时曾穿过另一端 **0.205 mm**；[失败对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/pad_implicit_metric_pilot/receipt.json)保留。两条固定 tendon 原生单侧行共同表达原区间，保持 1.5 mm 行程，源端最大越界约 1.71e−10 m。
+
+新的 [33 体源端实验候选](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/goose_460_full50_be_v2/source_receipt.json)通过 20 次冷重置，共 2,000 Tick，以及惯量、逐轴和嘴部局部检查；实际物理加控制器 P95 **3.82 ms**。这只证明有限数值和时序：零动作仍会倒地，碰撞最大穿透约 **12.26 mm**，发生在倒地后的头壳与地面。[接触与物理能量诊断](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_be_v2_contact_energy/receipt.json)另存；能量计算扣除数值对角项，但未计接触柔顺储能，不据此授予全局耗散资格。
+
+[同版本目标端 20 次检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/goose_460_full50_be_v2/target_receipt.json) **未通过**：共 800 Tick，每次均达到原定 5 秒预算，物理 P95 **295.68 ms**，最大销点误差 **2.379 mm**。固定头夹具的销点精度不能继承到整机；源端采用零动作 PD，目标端是声明的 rotor 力矩程序，二者也不是整机轨迹对照。[物理导出核对](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/goose_460_full50_be_v2/plant_export_receipt.json)确认目标使用的身体、完整惯量、K/C/A、几何及排除项与父版本逐项一致。
+
+本检查点 Python 30 项、Goose 合同 5 项、simulation/armature/预测限位 27 项通过；10 项依赖外部冻结夹具的既有 simulation 检查未运行。[510 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_pad_candidate_checkpoint.json)、格式及空白检查通过。实际执行源码和原生依赖哈希冻结在备份目录；GPU 使用为零，M0/M1 未通过。
+
+补充 [目标端接触轨迹](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_be_v2_target_contacts/receipt.json)：前 12 Tick 的关节坐标、速度和销点距离与原收据逐项完全一致，只读记录不改变物理。首 Tick 的 31 个有 manifold 点的 body pair 中，19 个没有 solver contact，实际求解接触来自 12 个脚垫与地面。第 10 Tick 嘴销误差突增时也没有嘴部求解接触；不能把 manifold 数量直接当作发生碰撞的证据，后续需检查整机耦合求解及脚底载荷传播。
+
+下一周期以 **整机接触与任务碰撞代理** 为主线：先对齐同初态下的接触对、距离和约束，再建立保留空腔、脚底、嘴部及干涉关键面的代理，分别量化源／目标载荷、冲击、销点闭合和吞吐。原几何失败保留，不扩张排除项、不延长预算凑过关，不再重复已通过的固定头嘴部或脚垫微实验。之后才进行同世界重置、实际控制器和 GPU 小批量准入。
 
 其后依次验证任务碰撞代理和足底完整接触实现；新代理须保留空腔、脚嘴关键表面及原碰撞过滤，报告来源映射和几何误差。足底需补摩擦、脱离后落地、行程末端和源／目标曲线对照，再接入相同版本整机与 GPU 小批量。未通过这些门槛前不占用 DGX 做 PPO。

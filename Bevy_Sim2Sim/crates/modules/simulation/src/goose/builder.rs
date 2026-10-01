@@ -84,7 +84,7 @@ impl GooseAssembly {
                 "Goose needs the explicit single-step 50 Hz world profile",
             ));
         }
-        if plant.candidate_id != "goose_460_full50_v1" {
+        if plant.candidate_id == "goose_460_condensed50_v1" {
             return Err(invalid(
                 "Condensed Goose contact law is not implemented; rigid pads cannot stand in for it",
             ));
@@ -262,6 +262,17 @@ impl GooseAssembly {
             if multibody.link(link_id).unwrap().joint.ndofs() != 1 {
                 return Err(invalid("Goose joint is not one scalar coordinate"));
             }
+            if plant.numerical_experiment.is_some()
+                && !multibody
+                    .link_mut(link_id)
+                    .unwrap()
+                    .joint
+                    .set_predictive_limits_enabled(true)
+            {
+                return Err(invalid(
+                    "Goose experimental scalar predictive stop rejected",
+                ));
+            }
             multibody.damping_mut()[slot] = joint.damping as f32;
             multibody.armature_mut()[slot] = joint.armature as f32;
             multibody.frictions_mut()[slot] = joint.frictionloss as f32;
@@ -278,7 +289,26 @@ impl GooseAssembly {
         let jaw = body_handles[&plant.jaw_loop.jaw_body];
         let axis = engine_vector(plant.jaw_loop.rotation_axis_world)?;
         let pin = engine_vector(plant.jaw_loop.output_pin_world_m)? + lift;
-        let frame = Pose::from_parts(pin, Rotation::from_rotation_arc(Vector::Z, axis));
+        let pin_rotation = if plant.numerical_experiment.is_some() {
+            let coupler_hinge = plant
+                .joints
+                .iter()
+                .find(|joint| joint.child == plant.jaw_loop.coupler_body)
+                .ok_or_else(|| invalid("Goose coupler hinge absent"))?;
+            let coupler_origin = engine_vector(coupler_hinge.origin_world_m)? + lift;
+            let direction = pin - coupler_origin;
+            if direction.length_squared() <= 1e-12 {
+                return Err(invalid("Goose coupler pin basis is degenerate"));
+            }
+            let x = direction.normalize();
+            if x.dot(axis).abs() > 1e-5 {
+                return Err(invalid("Goose coupler pin basis is not planar"));
+            }
+            Rotation::from_mat3(&Matrix::from_cols(x, axis.cross(x), axis)).normalize()
+        } else {
+            Rotation::from_rotation_arc(Vector::Z, axis)
+        };
+        let frame = Pose::from_parts(pin, pin_rotation);
         let frame1 = poses[&plant.jaw_loop.coupler_body].inverse() * frame;
         let frame2 = poses[&plant.jaw_loop.jaw_body].inverse() * frame;
         let loop_joint = GenericJointBuilder::new(JointAxesMask::LIN_X | JointAxesMask::LIN_Y)

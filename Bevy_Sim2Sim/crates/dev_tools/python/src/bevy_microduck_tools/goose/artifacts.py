@@ -197,6 +197,14 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
     import mujoco
     contract_path = Path(bundle["contract_path"])
     contract = json.loads(contract_path.read_text())
+    experimental = contract.get("candidate") == "goose_460_full50_be_v2"
+    physical_joint_ledger = {}
+    if experimental:
+        if (contract.get("schema") != "goose_50hz_experimental_si_v2"
+                or contract.get("numerical_metric", {}).get("revision") != "goose_joint_backward_euler_predictive_v1"
+                or contract.get("training_release") is not False):
+            raise ValueError("Experimental physical export requires the explicit unqualified v2 contract")
+        physical_joint_ledger = {j["joint"]: j for j in contract["numerical_metric"]["joints"]}
     model = mujoco.MjModel.from_xml_path(bundle["model_path"])
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
@@ -225,6 +233,17 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
                   "range": model.jnt_range[jid].tolist(), "stiffness_n_m": float(model.jnt_stiffness[jid]),
                   "damping": float(model.dof_damping[did]), "armature": float(model.dof_armature[did]),
                   "frictionloss": float(model.dof_frictionloss[did]), "driven": name in active}
+        if experimental:
+            ledger = physical_joint_ledger[name]
+            if (did != ledger["dof"] or record["armature"] != ledger["compiled_armature"]
+                    or record["damping"] != ledger["compiled_damping"]
+                    or record["stiffness_n_m"] != ledger["physical_stiffness"]):
+                raise ValueError("Experimental numerical coefficients differ from frozen physical ledger")
+            # Source compilation uses A+h*C+h²*K and C+h*K. The target native
+            # solver already integrates the physical spring/damping implicitly.
+            # Exporting compiled coefficients would double their numerical effect.
+            record.update(armature=ledger["physical_armature"], damping=ledger["physical_damping"],
+                          range=ledger["physical_range"])
         if name in active:
             record["active_axis"] = active[name]
         if name in feedback:
@@ -290,6 +309,11 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
                                  "world_bounds_m": [world_lower.tolist(), world_upper.tolist()],
                                  "vertices_are_compiler_centered": True, "mesh_scale_baked_by_compiler": True,
                                  "exported_vs_compiled_frame_max_error": max_frame_error}}
+    if experimental:
+        plant.update(schema="goose_plant50_experimental_v2",
+                     numerical_experiment={"source_method": contract["numerical_metric"]["revision"],
+                                           "predictive_scalar_stops": True, "jaw_pin_basis": "coupler_axis"},
+                     source_numerical_metric=contract["numerical_metric"], qualified=False)
     write_json(destination, plant)
     return {"plant_path": str(destination), "plant_sha256": sha256(destination), "collider_count": len(colliders),
             "world_bounds_m": plant["geometry_export"]["world_bounds_m"]}

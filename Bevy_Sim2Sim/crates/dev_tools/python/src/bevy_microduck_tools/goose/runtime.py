@@ -24,6 +24,8 @@ class GooseSourceRuntime:
             raise ValueError("Unknown Goose skill")
         self.skill = skill
         self.contract = json.loads(contract_path.read_text())
+        if self.contract.get("numerical_metric") is not None and type(self) is GooseSourceRuntime:
+            raise ValueError("Numerical metric requires the explicit experimental runtime")
         if any(self.contract[k] != DT for k in ("physics_dt_s", "torque_dt_s", "policy_dt_s")):
             raise ValueError("Goose requires one .02s physics/torque/policy update")
         if self.contract.get("physics_steps_per_tick") != 1 or self.contract["joint_order"] != list(JOINT_ORDER):
@@ -145,7 +147,7 @@ class GooseSourceRuntime:
         self.last_tau = torque.copy()
         before = float(self.data.time)
         # No nstep argument and no inner physics/torque loop.
-        mujoco.mj_step(self.model, self.data)
+        self._integrate()
         self.physics_integrations += 1
         self.controller_updates += 1
         if abs(self.data.time - before - DT) > 1e-12:
@@ -174,3 +176,7 @@ class GooseSourceRuntime:
                                      "recovery_requested": upright < .65,
                                      "physics_integrations": self.physics_integrations,
                                      "controller_updates": self.controller_updates, "time_s": float(self.data.time)}
+
+    def _integrate(self):
+        """Default native implicit step; experimental subclasses must be explicit."""
+        mujoco.mj_step(self.model, self.data)
