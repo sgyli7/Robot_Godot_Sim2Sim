@@ -56,6 +56,8 @@ def run(args, receipt, output):
             def first_numpy(value):
                 return tensor(value)[0].detach().cpu().numpy()
             from isaaclab import sim as sim_utils
+            from isaaclab.utils.math import matrix_from_quat
+            from pxr import PhysxSchema, UsdPhysics, UsdShade
             from isaaclab_arena.assets.object import Object
             from isaaclab_arena.assets.object_base import ObjectType
             from isaaclab_arena.assets.object_library import GroundPlane
@@ -71,6 +73,20 @@ def run(args, receipt, output):
             )
             import isaaclab_arena_g1.g1_env.mdp.actions.g1_decoupled_wbc_joint_action as action_module
             import isaaclab_arena_g1.g1_whole_body_controller.wbc_policy.utils.g1 as model_module
+
+            generator = torch.Generator(device="cpu").manual_seed(args.seed)
+            quaternions = torch.randn((64, 4), generator=generator)
+            quaternions /= quaternions.norm(dim=-1, keepdim=True)
+            expected_matrices = matrix_from_quat(quaternions)
+            for _ in range(4):
+                gpu_matrices = matrix_from_quat(quaternions.cuda()).cpu()
+            error = float((gpu_matrices - expected_matrices).abs().max())
+            if error > 1e-6:
+                raise ValueError("Original CPU/GPU quaternion transform comparison failed")
+            receipt["original_quaternion_transform_comparison"] = {
+                "samples": 64, "gpu_calls": 4, "max_component_error": error,
+                "tolerance": 1e-6, "scope": "original matrix_from_quat only",
+            }
 
             # Redirect only original byte-verified storage locations. Original
             # policy construction, robot-model class, observations and gains remain.
@@ -138,6 +154,27 @@ def run(args, receipt, output):
             limits = first_numpy(robot.data.joint_pos_limits)
             receipt["joint_limits"] = limits.tolist()
             env.reset(seed=args.seed)
+            receipt["actual_source_body_properties"] = {
+                key: first_numpy(getattr(robot.data, key)).tolist()
+                for key in ("body_mass", "body_inertia", "body_com_pose_b")
+            }
+            collision_properties = []
+            for prim in raw.sim.stage.Traverse():
+                if not str(prim.GetPath()).startswith("/World/envs/env_0/Robot/"):
+                    continue
+                if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                    continue
+                material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial(materialPurpose="physics")
+                material_api = UsdPhysics.MaterialAPI(material.GetPrim()) if material else None
+                physx_collision = PhysxSchema.PhysxCollisionAPI(prim)
+                collision_properties.append({"path": str(prim.GetPath()),
+                    "enabled": UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get(),
+                    "contact_offset": physx_collision.GetContactOffsetAttr().Get(),
+                    "rest_offset": physx_collision.GetRestOffsetAttr().Get(),
+                    "material_path": str(material.GetPath()) if material else None,
+                    "static_friction": material_api.GetStaticFrictionAttr().Get() if material_api else None,
+                    "dynamic_friction": material_api.GetDynamicFrictionAttr().Get() if material_api else None})
+            receipt["actual_source_collision_properties"] = collision_properties
             action = torch.zeros(env.action_space.shape, device=raw.device)
             action[:, :robot.num_joints] = tensor(robot.data.default_joint_pos)
             action[:, -4] = 0.75
