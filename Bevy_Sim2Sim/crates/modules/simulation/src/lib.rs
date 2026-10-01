@@ -11,8 +11,8 @@ use rapier3d::prelude::*;
 use serde::Serialize;
 use thiserror::Error;
 
-/// The physical step remains one sixtieth of a second.
-pub const PHYSICS_HZ: u32 = 60;
+/// Default game frequency; an explicit historical tool may use 60 Hz.
+pub const PHYSICS_HZ: u32 = 50;
 /// Maximum overdue physics boundaries consumed by a display frame.
 pub const MAX_STEPS_PER_FRAME: u32 = 8;
 /// Rapier uses f32; episode time is separately derived from integer tick counts.
@@ -130,7 +130,7 @@ pub enum SimulationError {
     UnknownBody(RigidBodyHandle),
     #[error("external torque or its sum is non-finite")]
     NonFiniteTorque,
-    #[error("simulation settings violate the single-step 60 Hz contract")]
+    #[error("simulation settings violate the configured single-step game clock")]
     InvalidStepConfiguration,
     #[error("Rapier quarantined a non-finite body or collider")]
     QuarantinedState,
@@ -144,6 +144,7 @@ pub enum SimulationError {
 #[derive(Resource)]
 pub struct SimulationWorld {
     pub world: PhysicsWorld,
+    physics_hz: u32,
     entity_by_body: HashMap<RigidBodyHandle, Entity>,
     probe: Option<RigidBodyHandle>,
     global_step: u64,
@@ -194,6 +195,7 @@ impl SimulationWorld {
         world.integration_parameters.max_ccd_substeps = 1;
         Self {
             world,
+            physics_hz: PHYSICS_HZ,
             entity_by_body: HashMap::new(),
             probe: None,
             global_step: 0,
@@ -202,6 +204,18 @@ impl SimulationWorld {
             integration_count: 0,
             torque_update_count: 0,
         }
+    }
+
+    /// A game world admits only the two approved rates, with one integration.
+    /// Default gameplay is 50 Hz. Explicit 60 Hz is retained for historical tools.
+    pub fn with_game_frequency(physics_hz: u32) -> Result<Self, SimulationError> {
+        if !matches!(physics_hz, 50 | 60) {
+            return Err(SimulationError::InvalidStepConfiguration);
+        }
+        let mut world = Self::new();
+        world.physics_hz = physics_hz;
+        world.world.integration_parameters.dt = 1.0 / physics_hz as f32;
+        Ok(world)
     }
 
     /// Foundation fixture: one fixed floor and one sphere, no MicroDuck policy.
@@ -321,7 +335,7 @@ impl SimulationWorld {
         let p = &self.world.integration_parameters;
         StepConfiguration {
             dt: p.dt,
-            physics_hz: PHYSICS_HZ,
+            physics_hz: self.physics_hz,
             num_solver_iterations: p.num_solver_iterations,
             num_internal_pgs_iterations: p.num_internal_pgs_iterations,
             max_ccd_substeps: p.max_ccd_substeps,
@@ -337,7 +351,7 @@ impl SimulationWorld {
 
     fn validate_configuration(&self) -> Result<(), SimulationError> {
         let p = self.configuration();
-        if p.dt != PHYSICS_DT
+        if p.dt != 1.0 / self.physics_hz as f32
             || p.num_solver_iterations != 1
             || p.max_ccd_substeps != 1
             || p.additional_solver_iterations_max != 0
@@ -470,8 +484,8 @@ impl SimulationWorld {
             global_step: self.global_step,
             episode_id: self.episode_id,
             episode_step: self.episode_step,
-            global_seconds: self.global_step as f64 / f64::from(PHYSICS_HZ),
-            episode_seconds: self.episode_step as f64 / f64::from(PHYSICS_HZ),
+            global_seconds: self.global_step as f64 / f64::from(self.physics_hz),
+            episode_seconds: self.episode_step as f64 / f64::from(self.physics_hz),
             integration_count: self.integration_count,
             torque_update_count: self.torque_update_count,
             contact_pair_count,
