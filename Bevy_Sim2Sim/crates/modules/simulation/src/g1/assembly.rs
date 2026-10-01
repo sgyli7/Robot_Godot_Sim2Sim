@@ -626,4 +626,88 @@ mod tests {
         );
         assert!(passed, "independent source tensor/axis oracle mismatch");
     }
+
+    #[test]
+    #[ignore = "five real 50Hz freefall boundaries; requires G1_MODEL_DIR, G1_DEFINITION_SHA256, G1_IMPORT_OUTPUT, G1_CODE_COMMIT"]
+    fn five_tick_freefall_boundary_instrument() {
+        use serde_json::json;
+        let definition = G1Definition::load(
+            &Path::new(&env::var("G1_MODEL_DIR").unwrap()).join("g1_physics.json"),
+            &env::var("G1_DEFINITION_SHA256").unwrap(),
+        )
+        .unwrap();
+        let mut sim = crate::SimulationWorld::with_game_frequency(50).unwrap();
+        let root_pose = SourcePose {
+            position: [0., 0., 3.],
+            rotation_wxyz: [1., 0., 0., 0.],
+        };
+        let assembly = build(&mut sim.world, &definition, &root_pose, &[0.; 43], 0.5).unwrap();
+        let sample = |sim: &crate::SimulationWorld| {
+            let mut bodies = Vec::new();
+            let mut total_mass = 0_f64;
+            let mut weighted_position = [0_f64; 3];
+            let mut weighted_cached_com = [0_f64; 3];
+            let mut weighted_velocity = [0_f64; 3];
+            let active: Vec<_> = sim.world.islands.active_bodies().collect();
+            for (i, handle) in assembly.bodies.iter().enumerate() {
+                let body = &sim.world.bodies[*handle];
+                let mass = f64::from(body.mass());
+                let com = body.position() * body.local_center_of_mass();
+                total_mass += mass;
+                for k in 0..3 {
+                    weighted_position[k] += mass * f64::from(com[k]);
+                    weighted_cached_com[k] += mass * f64::from(body.center_of_mass()[k]);
+                    weighted_velocity[k] += mass * f64::from(body.linvel()[k]);
+                }
+                bodies.push(json!({"body":i,"mass":mass,"effective_mass":body.mass_properties().effective_mass().to_array(),
+                    "pose_com":com.to_array(),"cached_com":body.center_of_mass().to_array(),"linvel":body.linvel().to_array(),
+                    "angvel":body.angvel().to_array(),"user_force":body.user_force().to_array(),"user_torque":body.user_torque().to_array(),
+                    "gravity_scale":body.gravity_scale(),"enabled":body.is_enabled(),"sleeping":body.is_sleeping(),"in_active_island":active.contains(handle),
+                    // Frozen Rapier's public Debug contains its private force
+                    // cache and change flags. Capture it read-only, without a
+                    // vendor patch or pretending expected gravity is measured.
+                    "native_debug":format!("{body:?}")}));
+            }
+            let root = &sim.world.bodies[assembly.root_handle()];
+            let (tree, _) = sim
+                .world
+                .multibody_joints
+                .get(assembly.driven[0].handle)
+                .unwrap();
+            let snapshot = sim.snapshot();
+            json!({"tick":snapshot.episode_step,"integrations":snapshot.integration_count,"torque_updates":snapshot.torque_update_count,
+                "total_mass":total_mass,"whole_com_from_poses":weighted_position.map(|v|v/total_mass),
+                "whole_com_from_cache":weighted_cached_com.map(|v|v/total_mass),"whole_com_velocity":weighted_velocity.map(|v|v/total_mass),
+                "root_position_engine":root.translation().to_array(),"root_body_com_velocity":root.linvel().to_array(),
+                "root_origin_velocity":(root.linvel()+root.angvel().cross(root.translation()-root.center_of_mass())).to_array(),
+                "generalized_velocity":tree.generalized_velocity().as_slice(),"generalized_acceleration":tree.generalized_acceleration().as_slice(),
+                "active_body_count":active.len(),"active_contact_pairs":snapshot.active_contact_pair_count,"bodies":bodies})
+        };
+        let mut rows = vec![sample(&sim)];
+        for _ in 0..5 {
+            sim.step_with_torques(&[]).unwrap();
+            rows.push(sample(&sim));
+        }
+        let report = json!({"experiment":"five_tick_freefall_instrument_only","code_commit":env::var("G1_CODE_COMMIT").unwrap(),
+            "definition_sha256":definition.file_sha256(),"usd_sha256":USD_SHA256,"root_source_position":[0.,0.,3.],
+            "initial_q":([0.;43].as_slice()),"floor":false,"controller":false,"gravity_engine":sim.world.gravity.to_array(),
+            "configuration":sim.configuration(),"rows":rows});
+        std::fs::write(
+            env::var("G1_IMPORT_OUTPUT").unwrap(),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        for row in &rows {
+            println!(
+                "G1_FREEFALL tick={} root_vy={} whole_com_vy={} generalized_root_vy={} active={}",
+                row["tick"],
+                row["root_body_com_velocity"][1],
+                row["whole_com_velocity"][1],
+                row["generalized_velocity"][1],
+                row["active_body_count"]
+            );
+        }
+        assert_eq!(sim.snapshot().integration_count, 5);
+        assert_eq!(sim.snapshot().active_contact_pair_count, 0);
+    }
 }
