@@ -143,7 +143,8 @@ def run_source(args, receipt):
         raw = env.unwrapped
         robot = raw.scene["robot"]
         term = raw.action_manager.get_term("g1_action")
-        for name, session in [("stand.onnx", term.wbc_policy.policy_1.session), ("walk.onnx", term.wbc_policy.policy_2.session)]:
+        lower_policy = term.wbc_policy.lower_body_policy
+        for name, session in [("stand.onnx", lower_policy.policy_1.session), ("walk.onnx", lower_policy.policy_2.session)]:
             if digest(Path(session._model_path)) != FROZEN_ASSETS[name]:
                 raise ValueError(f"Source remotely resolved different WBC weight: {name}")
         if not math.isclose(raw.cfg.sim.dt, 0.005) or raw.cfg.decimation != 4:
@@ -214,7 +215,7 @@ def run_source(args, receipt):
             body_poses = tensor(robot.data.body_link_pose_w)[0].detach().cpu().numpy()
             body_velocities = tensor(robot.data.body_link_vel_w)[0].detach().cpu().numpy()
             targets = term.processed_actions[0].detach().cpu().numpy()
-            lower_action = np.asarray(term.wbc_policy.action)[0]
+            lower_action = np.asarray(lower_policy.action)[0]
             if not all(np.isfinite(value).all() for value in [body_poses, body_velocities, targets, lower_action]):
                 raise AssertionError(f"Nonfinite body/action state at tick {tick}")
             violations = np.flatnonzero((fields["joint_pos"] < limits[:, 0] - 0.001) | (fields["joint_pos"] > limits[:, 1] + 0.001))
