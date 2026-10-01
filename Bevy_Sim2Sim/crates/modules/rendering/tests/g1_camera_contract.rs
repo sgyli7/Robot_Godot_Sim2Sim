@@ -87,6 +87,7 @@ fn station_gpu_ego_rgb_and_full_resolution_main_view() {
             sim_time_ns: 0,
             source: CameraPoseSource::StationFixture,
             world_from_camera: pose,
+            native_state: None,
         })))
         .insert_resource(CaptureHarness {
             output,

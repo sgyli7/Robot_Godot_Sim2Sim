@@ -114,6 +114,14 @@ pub struct G1VisualPlugin;
 
 impl Plugin for G1VisualPlugin {
     fn build(&self, app: &mut App) {
+        // A source-task diagnostic may render the exact G1 with a matching
+        // simple physical floor, without loading unrelated station geometry.
+        if !app.is_plugin_added::<MaterialPlugin<StationMaterial>>() {
+            app.add_plugins(MaterialPlugin::<StationMaterial>::default());
+        }
+        if !app.is_plugin_added::<MaterialPlugin<InkMaterial>>() {
+            app.add_plugins(MaterialPlugin::<InkMaterial>::default());
+        }
         app.init_resource::<G1VisualInput>()
             .init_resource::<G1VisualStatus>()
             .add_systems(Startup, spawn_visuals)

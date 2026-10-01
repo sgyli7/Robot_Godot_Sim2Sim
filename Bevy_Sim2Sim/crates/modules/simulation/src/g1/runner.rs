@@ -14,10 +14,11 @@ use robot_minigame::{
         policy::{HomiePolicy, HomieResult},
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct G1RunnerConfig {
     pub episode_id: u64,
     pub definition: PathBuf,

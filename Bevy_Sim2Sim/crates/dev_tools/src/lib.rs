@@ -1,5 +1,7 @@
 //! Optional development verification; never called by a release game by default.
 
+#[cfg(feature = "rendering_preview")]
+pub mod g1_capture;
 pub mod g1_task_acceptance;
 pub mod legacy_cpu_actor;
 #[cfg(feature = "live_render_profile")]

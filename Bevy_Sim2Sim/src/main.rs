@@ -21,6 +21,8 @@ struct Arguments {
     output: Option<PathBuf>,
     capture: Option<PathBuf>,
     frames: Option<u32>,
+    g1_config: Option<PathBuf>,
+    g1_ticks: Option<u32>,
     view: StationView,
 }
 
@@ -38,6 +40,20 @@ fn run() -> Result<(), String> {
     let Some(arguments) = parse_arguments(std::env::args().skip(1))? else {
         return Ok(());
     };
+    if arguments.scene.as_deref() == Some("g1_camera_diagnostic") {
+        if arguments.robot.as_deref() != Some("g1")
+            || arguments.headless
+            || arguments.verify
+            || arguments.capture.is_some()
+            || arguments.frames.is_some()
+        {
+            return Err("g1_camera_diagnostic requires --robot g1, --g1-config and --output; headless/verify/preview capture flags do not apply".into());
+        }
+        return capture_g1_diagnostic(arguments);
+    }
+    if arguments.g1_config.is_some() || arguments.g1_ticks.is_some() {
+        return Err("G1 diagnostic options require --scene g1_camera_diagnostic".into());
+    }
     let robot = arguments.robot.as_deref().unwrap_or("none");
     if robot != "none" {
         return Err(format!(
@@ -135,6 +151,35 @@ fn run() -> Result<(), String> {
     }
 }
 
+#[cfg(feature = "dev_tools")]
+fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
+    let path = arguments.g1_config.ok_or("--g1-config is required")?;
+    let output = arguments
+        .output
+        .ok_or("--output must name a new directory")?;
+    let receipt = dev_tools_minigame::g1_capture::run_capture_from_file(
+        &path,
+        dev_tools_minigame::g1_capture::G1CaptureOptions {
+            output,
+            ticks: arguments.g1_ticks.unwrap_or(0),
+            timeout: Duration::from_secs(75),
+        },
+    )?;
+    println!(
+        "native_camera_diagnostic capture={}, integrations={}, model_calls={}, task_qualified={}",
+        receipt.capture_succeeded,
+        receipt.actual_integrations,
+        receipt.actual_model_attempts,
+        receipt.task_qualified,
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "dev_tools"))]
+fn capture_g1_diagnostic(_arguments: Arguments) -> Result<(), String> {
+    Err("G1 camera diagnostic requires the non-default Cargo feature 'dev_tools'".into())
+}
+
 #[derive(Resource)]
 struct WindowLifecycle {
     started: Instant,
@@ -215,11 +260,13 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation or science_station_preview\n\
-                     --robot NAME    none; real policy modes are not qualified yet\n\
+                     --scene NAME    foundation, science_station_preview or g1_camera_diagnostic\n\
+                     --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
-                     --output PATH   verification report directory\n\
+                     --output PATH   verification or G1 diagnostic directory\n\
+                     --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
+                     --g1-ticks N    diagnostic physical Tick budget, 0..150 (default 0)\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -240,6 +287,16 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                     return Err("--frames must be positive".into());
                 }
                 options.frames = Some(frames);
+            }
+            "--g1-config" => options.g1_config = Some(value()?.into()),
+            "--g1-ticks" => {
+                let ticks = value()?
+                    .parse::<u32>()
+                    .map_err(|_| "--g1-ticks requires an integer 0..150")?;
+                if ticks > 150 {
+                    return Err("--g1-ticks must be at most 150".into());
+                }
+                options.g1_ticks = Some(ticks);
             }
             "--view" => {
                 options.view = match value()?.as_str() {

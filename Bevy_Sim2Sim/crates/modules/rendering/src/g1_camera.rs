@@ -28,7 +28,7 @@ use bevy::{
     },
     transform::TransformSystems,
 };
-use robot_minigame::g1::definition::G1BodyFrame;
+use robot_minigame::g1::{contract::JOINT_COUNT, definition::G1BodyFrame};
 use serde::{Deserialize, Serialize};
 
 pub const EGO_WIDTH: u32 = 640;
@@ -67,6 +67,77 @@ pub enum CameraPoseSource {
     StationFixture,
 }
 
+/// Native measurements from the completed physics boundary, in Arena's 43-joint
+/// order. They are not inferred from the visible meshes or inverse kinematics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct G1CameraJointState {
+    pub positions: Vec<f32>,
+    pub velocities: Vec<f32>,
+    pub root_rotation_wxyz: [f32; 4],
+    pub root_angular_velocity_body: [f32; 3],
+    pub root_velocity_source: [f32; 3],
+}
+
+/// A single immutable native snapshot drives the meshes, camera and RGB receipt.
+/// Tick zero is read from the native initialized world and also requires real
+/// joint/root measurements; a render-only initialization cannot substitute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct G1CameraNativeState {
+    pub body_frame: G1BodyFrame,
+    pub measured_joints: G1CameraJointState,
+}
+
+impl G1CameraNativeState {
+    pub fn validate(&self) -> Result<(), String> {
+        self.body_frame
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let expected_time = self.body_frame.source_tick as f64 * 0.02;
+        if (self.body_frame.sim_time - expected_time).abs() > 0.000001 {
+            return Err("native camera snapshot is not on the 50 Hz grid".into());
+        }
+        let joints = &self.measured_joints;
+        if joints.positions.len() != JOINT_COUNT
+            || joints.velocities.len() != JOINT_COUNT
+            || !joints
+                .positions
+                .iter()
+                .chain(&joints.velocities)
+                .chain(&joints.root_rotation_wxyz)
+                .chain(&joints.root_angular_velocity_body)
+                .chain(&joints.root_velocity_source)
+                .all(|value| value.is_finite())
+        {
+            return Err("missing or invalid native camera joint measurements".into());
+        }
+        let root_rotation =
+            robot_minigame::basis::source_to_engine_rotation(joints.root_rotation_wxyz)
+                .map_err(|error| error.to_string())?;
+        let root = self
+            .body_frame
+            .bodies
+            .iter()
+            .find(|body| body.body == 0)
+            .ok_or("native root body is absent")?;
+        if !rotations_agree(
+            Quat::from_array(root_rotation),
+            Quat::from_array(root.rotation_xyzw),
+            0.0001,
+        ) {
+            return Err("native root sensor and displayed root disagree".into());
+        }
+        Ok(())
+    }
+}
+
+/// The runtime supplies the worker's actual completed snapshot here. Installing
+/// G1ObservationPlugin makes this the sole input for both robot meshes and ego
+/// camera. It does not create, modify or integrate a physical world.
+#[derive(Resource, Default)]
+pub struct G1BodyObservationInput(pub Option<Arc<G1CameraNativeState>>);
+
 /// Exact camera pose in Bevy world coordinates, with both interpolation sources
 /// if present. No object transform or target location is accepted here.
 #[derive(Debug, Clone)]
@@ -77,6 +148,8 @@ pub struct G1CameraSourceFrame {
     pub sim_time_ns: u64,
     pub source: CameraPoseSource,
     pub world_from_camera: Transform,
+    /// Frozen at scene extraction, not looked up when GPU mapping completes.
+    pub native_state: Option<Arc<G1CameraNativeState>>,
 }
 
 impl G1CameraSourceFrame {
@@ -94,8 +167,38 @@ impl G1CameraSourceFrame {
         {
             return Err("invalid camera pose or interpolation source ticks".into());
         }
+        if let Some(native) = &self.native_state {
+            native.validate()?;
+            let body = &native.body_frame;
+            if self.source != CameraPoseSource::PhysicsBody
+                || self.episode_id != body.episode_id
+                || self.source_ticks != [body.source_tick; 2]
+                || self.interpolation_alpha != 0.0
+                || self.sim_time_ns != (body.sim_time * 1_000_000_000.0).round() as u64
+            {
+                return Err("camera and native state belong to different boundaries".into());
+            }
+            let expected = arena_head_camera(body)?.world_from_camera;
+            if (transform.translation - expected.translation).length() > 0.00001
+                || !rotations_agree(transform.rotation, expected.rotation, 0.0001)
+            {
+                return Err("camera does not follow the native head pose".into());
+            }
+        }
         Ok(())
     }
+}
+
+// acos(dot(q,q)) magnifies f32 normalization roundoff near zero, and can reject
+// the very same quaternion. The sign-invariant chord is 2*sin(angle/4); compare
+// it directly while retaining the exact original angular tolerance.
+fn rotations_agree(a: Quat, b: Quat, maximum_angle: f32) -> bool {
+    let a = a.normalize().to_array().map(f64::from);
+    let b = b.normalize().to_array().map(f64::from);
+    let difference = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f64>();
+    let antipodal = a.iter().zip(b).map(|(x, y)| (x + y).powi(2)).sum::<f64>();
+    let bound = 2. * (f64::from(maximum_angle) * 0.25).sin();
+    difference.min(antipodal) <= bound * bound
 }
 
 /// Arena static release 8b4a3a47 and mobile 7d75c959 share this published
@@ -128,6 +231,7 @@ pub fn arena_head_camera(frame: &G1BodyFrame) -> Result<G1CameraSourceFrame, Str
         sim_time_ns: (frame.sim_time * 1_000_000_000.0).round() as u64,
         source: CameraPoseSource::PhysicsBody,
         world_from_camera: transform,
+        native_state: None,
     };
     source.validate()?;
     Ok(source)
@@ -154,6 +258,9 @@ pub struct G1CaptureStamp {
     pub readback_completed_at_unix_ms: u64,
     pub camera_translation: [f32; 3],
     pub camera_rotation_xyzw: [f32; 4],
+    /// Exact rendered body poses and, after integration, native measurements.
+    /// Station fixtures have no native state and cannot qualify this pairing.
+    pub native_state: Option<G1CameraNativeState>,
 }
 
 #[derive(Debug)]
@@ -213,6 +320,22 @@ impl G1CameraPort {
         self.0.lock().map_or(0, |slot| slot.episode_id)
     }
 
+    /// Read-only diagnostic state; no queue, capture or world is changed.
+    pub fn progress(&self) -> &'static str {
+        let Ok(slot) = self.0.lock() else {
+            return "poisoned";
+        };
+        if slot.completed.is_some() {
+            "completed"
+        } else if slot.active.is_some() {
+            "gpu_mapping"
+        } else if slot.requested {
+            "awaiting_render_extraction"
+        } else {
+            "idle"
+        }
+    }
+
     fn begin(&self, frame: &ExtractedFrame) -> Option<G1CaptureStamp> {
         let mut slot = self.0.lock().ok()?;
         if !slot.requested
@@ -220,6 +343,15 @@ impl G1CameraPort {
             || slot.completed.is_some()
             || slot.episode_id != frame.source.episode_id
         {
+            return None;
+        }
+        if frame.source.source == CameraPoseSource::PhysicsBody
+            && frame.source.native_state.is_none()
+        {
+            slot.requested = false;
+            slot.completed = Some(Err(
+                "physical camera capture requires its native measurements".into(),
+            ));
             return None;
         }
         slot.requested = false;
@@ -237,6 +369,7 @@ impl G1CameraPort {
             readback_completed_at_unix_ms: 0,
             camera_translation: frame.source.world_from_camera.translation.to_array(),
             camera_rotation_xyzw: frame.source.world_from_camera.rotation.to_array(),
+            native_state: frame.source.native_state.as_deref().cloned(),
         })
     }
 
@@ -268,7 +401,54 @@ pub struct G1EgoImage(pub Handle<Image>);
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum G1CameraSystems {
+    SyncObservation,
     UpdatePose,
+}
+
+/// Synchronize both display consumers from the same immutable native message.
+/// Use alongside G1CameraPlugin and G1VisualPlugin for a physical body capture;
+/// the fixture camera path deliberately does not install this plugin.
+pub struct G1ObservationPlugin;
+
+impl Plugin for G1ObservationPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<G1BodyObservationInput>().add_systems(
+            PostUpdate,
+            sync_body_observation
+                .in_set(G1CameraSystems::SyncObservation)
+                .before(G1CameraSystems::UpdatePose)
+                .before(crate::g1_visual::G1VisualSystems::SyncPose),
+        );
+    }
+}
+
+fn sync_body_observation(
+    input: Res<G1BodyObservationInput>,
+    mut camera: ResMut<G1CameraInput>,
+    mut visual: ResMut<crate::g1_visual::G1VisualInput>,
+    mut status: ResMut<crate::g1_visual::G1VisualStatus>,
+) {
+    if !input.is_changed() {
+        return;
+    }
+    camera.0 = None;
+    visual.0 = None;
+    let Some(native) = &input.0 else {
+        return;
+    };
+    let result = native.validate().and_then(|()| {
+        let mut source = arena_head_camera(&native.body_frame)?;
+        source.native_state = Some(native.clone());
+        source.validate()?;
+        Ok(source)
+    });
+    match result {
+        Ok(source) => {
+            camera.0 = Some(source);
+            visual.0 = Some(native.body_frame.clone());
+        }
+        Err(error) => status.error = Some(error),
+    }
 }
 
 /// Insert after DefaultPlugins. It creates a second target only; no main camera
@@ -371,6 +551,7 @@ fn extract_frame(
     image: Extract<Option<Res<G1EgoImage>>>,
     frame_count: Extract<Res<FrameCount>>,
     cameras: Extract<Query<(&RenderEntity, &Camera, &GlobalTransform), With<G1EgoCamera>>>,
+    visual: Extract<Option<Res<crate::g1_visual::G1VisualStatus>>>,
 ) {
     extracted.0 = None;
     let (Some(source), Some(image)) = (&input.0, image.as_ref()) else {
@@ -382,13 +563,19 @@ fn extract_frame(
     if !camera.is_active || source.validate().is_err() {
         return;
     }
+    if source.native_state.is_some()
+        && visual.as_ref().is_none_or(|status| {
+            status.error.is_some()
+                || status.mesh_count != 49
+                || status.episode_id != Some(source.episode_id)
+                || status.source_tick != Some(source.source_ticks[0])
+        })
+    {
+        return;
+    }
     let actual = global.compute_transform();
     if (actual.translation - source.world_from_camera.translation).length() > 0.00001
-        || actual
-            .rotation
-            .angle_between(source.world_from_camera.rotation)
-            .abs()
-            > 0.0001
+        || !rotations_agree(actual.rotation, source.world_from_camera.rotation, 0.0001)
     {
         return;
     }
@@ -507,8 +694,9 @@ mod tests {
                 source_ticks: [10, 10],
                 interpolation_alpha: 0.0,
                 sim_time_ns: 200_000_000,
-                source: CameraPoseSource::PhysicsBody,
+                source: CameraPoseSource::StationFixture,
                 world_from_camera: Transform::IDENTITY,
+                native_state: None,
             },
             render_frame: 42,
             captured_at_unix_ms: 1234,
@@ -572,6 +760,122 @@ mod tests {
         assert!(frame.validate().is_ok());
         frame.source_ticks = [10, 12];
         assert!(frame.validate().is_err());
+    }
+
+    fn native(episode_id: u64, tick: u64) -> Arc<G1CameraNativeState> {
+        use robot_minigame::g1::definition::{G1BodyPose, USD_SHA256};
+        Arc::new(G1CameraNativeState {
+            body_frame: G1BodyFrame {
+                usd_sha256: USD_SHA256.into(),
+                episode_id,
+                source_tick: tick,
+                sim_time: tick as f64 * 0.02,
+                bodies: (0..53)
+                    .map(|body| G1BodyPose {
+                        body,
+                        translation: [0., 0.78, 0.],
+                        rotation_xyzw: [0., 0., 0., 1.],
+                    })
+                    .collect(),
+            },
+            measured_joints: G1CameraJointState {
+                positions: vec![0.; JOINT_COUNT],
+                velocities: vec![0.; JOINT_COUNT],
+                root_rotation_wxyz: [1., 0., 0., 0.],
+                root_angular_velocity_body: [0.; 3],
+                root_velocity_source: [0.; 3],
+            },
+        })
+    }
+
+    #[test]
+    fn rgb_receipt_keeps_extracted_native_measurements_after_input_advances() {
+        let state = native(1, 10);
+        let mut extracted = frame(1);
+        extracted.source = arena_head_camera(&state.body_frame).unwrap();
+        extracted.source.native_state = Some(state);
+        extracted.source.validate().unwrap();
+        let port = G1CameraPort::default();
+        port.reset(1).unwrap();
+        port.request().unwrap();
+        let stamp = port.begin(&extracted).unwrap();
+        extracted.source.native_state = Some(native(1, 11));
+        port.finish(stamp, Ok(vec![0; (EGO_WIDTH * EGO_HEIGHT * 3) as usize]));
+        let captured = port.take().unwrap().unwrap();
+        let original = captured.stamp.native_state.unwrap();
+        assert_eq!(original.body_frame.source_tick, 10);
+        assert_eq!(original.measured_joints.positions.len(), 43);
+        assert_eq!(captured.stamp.source_ticks, [10, 10]);
+    }
+
+    #[test]
+    fn native_camera_rotation_accepts_roundoff_and_sign_but_rejects_real_movement() {
+        let state = native(1, 10);
+        let mut source = arena_head_camera(&state.body_frame).unwrap();
+        source.native_state = Some(state);
+        source.validate().unwrap();
+        source.world_from_camera.rotation = -source.world_from_camera.rotation;
+        source.validate().unwrap();
+        source.world_from_camera.rotation =
+            Quat::from_rotation_y(0.001) * source.world_from_camera.rotation;
+        assert!(source.validate().is_err());
+    }
+
+    #[test]
+    fn physical_capture_rejects_pose_only_and_mismatched_native_boundary() {
+        let state = native(1, 10);
+        let mut extracted = frame(1);
+        extracted.source = arena_head_camera(&state.body_frame).unwrap();
+        let port = G1CameraPort::default();
+        port.reset(1).unwrap();
+        port.request().unwrap();
+        assert!(port.begin(&extracted).is_none());
+        assert!(port.take().unwrap().is_err());
+        extracted.source.native_state = Some(native(1, 11));
+        assert!(extracted.source.validate().is_err());
+        extracted.source.native_state = Some(state);
+        extracted.source.world_from_camera.translation.x += 0.05;
+        assert!(extracted.source.validate().is_err());
+    }
+
+    #[test]
+    fn one_native_input_drives_both_mesh_and_head_camera_without_integration() {
+        let state = native(1, 0);
+        let mut app = App::new();
+        app.init_resource::<G1CameraInput>()
+            .init_resource::<crate::g1_visual::G1VisualInput>()
+            .init_resource::<crate::g1_visual::G1VisualStatus>()
+            .add_plugins(G1ObservationPlugin);
+        app.world_mut().resource_mut::<G1BodyObservationInput>().0 = Some(state);
+        app.update();
+        let camera = app.world().resource::<G1CameraInput>().0.as_ref().unwrap();
+        let visual = app
+            .world()
+            .resource::<crate::g1_visual::G1VisualInput>()
+            .0
+            .as_ref()
+            .unwrap();
+        assert_eq!(camera.source_ticks, [0, 0]);
+        assert_eq!(camera.episode_id, visual.episode_id);
+        assert_eq!(
+            camera
+                .native_state
+                .as_ref()
+                .unwrap()
+                .body_frame
+                .bodies
+                .len(),
+            53
+        );
+        app.world_mut().resource_mut::<G1BodyObservationInput>().0 = None;
+        app.update();
+        assert!(app.world().resource::<G1CameraInput>().0.is_none());
+        assert!(
+            app.world()
+                .resource::<crate::g1_visual::G1VisualInput>()
+                .0
+                .is_none()
+        );
     }
 
     #[test]
