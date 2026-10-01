@@ -1,0 +1,14 @@
+[package]
+name = "task_minigame"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+base64 = "=0.22.1"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "json"] }
