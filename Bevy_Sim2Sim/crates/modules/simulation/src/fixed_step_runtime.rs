@@ -10,8 +10,8 @@ use common_minigame::events::{EventError, TickEvent, TickEventQueue};
 use thiserror::Error;
 
 use crate::{
-    BodyTorque, MAX_STEPS_PER_FRAME, PHYSICS_HZ, RapierCounterSample, SimulationError,
-    SimulationWorld, StepSnapshot,
+    BodyTorque, MAX_STEPS_PER_FRAME, RapierCounterSample, SimulationError, SimulationWorld,
+    StepSnapshot,
 };
 
 /// Ticks completed in one display frame, plus the whole-tick debt still retained.
@@ -87,15 +87,17 @@ pub struct FixedStepRuntime<E> {
 impl<E> FixedStepRuntime<E> {
     /// Take a world that has not yet integrated or advanced.
     ///
-    /// Bodies and colliders may already be present. A nonzero `global_step`
-    /// or `integration_count` is rejected.
+    /// The shared clock uses that world's selected profile rate. Bodies and
+    /// colliders may already be present. A nonzero `global_step` or
+    /// `integration_count` is rejected.
     pub fn new(world: SimulationWorld) -> Result<Self, FixedStepError> {
         if world.global_step != 0 || world.integration_count != 0 {
             return Err(FixedStepError::WorldAlreadyAdvanced);
         }
+        let rate_hz = world.clock_profile().rate_hz();
         Ok(Self {
             world,
-            clock: FixedStepClock::new(PHYSICS_HZ, MAX_STEPS_PER_FRAME)?,
+            clock: FixedStepClock::new(rate_hz, MAX_STEPS_PER_FRAME)?,
             events: TickEventQueue::default(),
             halted: None,
         })
@@ -247,11 +249,18 @@ mod tests {
 
     use common_minigame::events::EventError;
 
-    /// Wall time for `ticks` at [`PHYSICS_HZ`], plus one nanosecond.
+    use crate::{PHYSICS_HZ, PhysicsClockProfile};
+
+    /// Wall time for `ticks` at `rate_hz`, plus one nanosecond.
     ///
     /// Integer division of the rate would otherwise drop the last tick.
+    fn duration_for_ticks_at(ticks: u64, rate_hz: u32) -> Duration {
+        Duration::from_nanos(ticks * 1_000_000_000 / u64::from(rate_hz) + 1)
+    }
+
+    /// Wall time for `ticks` at [`PHYSICS_HZ`], plus one nanosecond.
     fn duration_for_ticks(ticks: u64) -> Duration {
-        Duration::from_nanos(ticks * 1_000_000_000 / u64::from(PHYSICS_HZ) + 1)
+        duration_for_ticks_at(ticks, PHYSICS_HZ)
     }
 
     fn foundation_runtime() -> FixedStepRuntime<u64> {
@@ -460,6 +469,53 @@ mod tests {
             Ok(_) => panic!("advanced world was accepted"),
             Err(error) => assert!(matches!(error, FixedStepError::WorldAlreadyAdvanced)),
         }
+    }
+
+    #[test]
+    fn goose50_runtime_clock_matches_native_steps() {
+        let world = SimulationWorld::foundation_with_profile(PhysicsClockProfile::Goose50);
+        let before_y = world
+            .snapshot()
+            .bodies
+            .iter()
+            .find(|body| body.dynamic)
+            .unwrap()
+            .translation[1];
+        let mut runtime = FixedStepRuntime::new(world).unwrap();
+        assert_eq!(runtime.clock_snapshot().rate_hz, 50);
+        assert_eq!(runtime.clock_snapshot().global_step, 0);
+        let mut controller = CountingController::default();
+        let outcome = runtime
+            .advance_frame(duration_for_ticks_at(5, 50), &mut controller)
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FrameOutcome {
+                completed_steps: 5,
+                pending_ticks: 0,
+            }
+        );
+        assert_eq!(controller.inferences, 5);
+        assert_eq!(controller.publishes, 5);
+        let world = runtime.world_snapshot();
+        assert_eq!(world.integration_count, 5);
+        assert_eq!(world.torque_update_count, 5);
+        assert_eq!(world.global_step, 5);
+        assert_eq!(world.episode_step, 5);
+        assert_eq!(world.global_seconds, 5.0 / 50.0);
+        assert_eq!(world.episode_seconds, 5.0 / 50.0);
+        let clock = runtime.clock_snapshot();
+        assert_eq!(clock.rate_hz, 50);
+        assert_eq!(clock.global_step, 5);
+        assert_eq!(clock.simulation_seconds, world.global_seconds);
+        assert_eq!(clock.pending_ticks, 0);
+        let after_y = world
+            .bodies
+            .iter()
+            .find(|body| body.dynamic)
+            .unwrap()
+            .translation[1];
+        assert!(after_y < before_y);
     }
 
     #[test]

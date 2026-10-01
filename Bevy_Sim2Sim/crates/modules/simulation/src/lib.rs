@@ -1,6 +1,7 @@
 //! One Rapier world and the fixed-step boundary shared by game and verification.
 
 pub mod fixed_step_runtime;
+pub mod goose;
 pub mod robot_builder;
 pub mod source_collision;
 
@@ -11,12 +12,44 @@ use rapier3d::prelude::*;
 use serde::Serialize;
 use thiserror::Error;
 
-/// The physical step remains one sixtieth of a second.
+/// Default MicroDuck physical step rate. Other clocks use [`PhysicsClockProfile`].
 pub const PHYSICS_HZ: u32 = 60;
 /// Maximum overdue physics boundaries consumed by a display frame.
 pub const MAX_STEPS_PER_FRAME: u32 = 8;
+/// Default MicroDuck step length. Live steps use [`PhysicsClockProfile::dt`].
+///
 /// Rapier uses f32; episode time is separately derived from integer tick counts.
 pub const PHYSICS_DT: f32 = 1.0 / PHYSICS_HZ as f32;
+
+/// Native integration clock selected for one [`SimulationWorld`].
+///
+/// One `step_with_torques` call is one native step of [`Self::dt`]. Selecting
+/// [`Self::Goose50`] does not qualify Goose contact, actuation, or training physics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum PhysicsClockProfile {
+    /// Default MicroDuck clock: one native integration of [`PHYSICS_DT`].
+    MicroDuck60,
+    /// Goose clock: one native integration of 20 ms.
+    Goose50,
+}
+
+impl PhysicsClockProfile {
+    // Goose native steps per second; one step is 20 ms.
+    const GOOSE_HZ: u32 = 50;
+
+    /// Selected steps per second.
+    pub const fn rate_hz(self) -> u32 {
+        match self {
+            Self::MicroDuck60 => PHYSICS_HZ,
+            Self::Goose50 => Self::GOOSE_HZ,
+        }
+    }
+
+    /// Native integration length, in seconds: `1 / rate_hz`.
+    pub const fn dt(self) -> f32 {
+        1.0 / self.rate_hz() as f32
+    }
+}
 
 /// A queued contribution to a body's world-space external torque.
 #[derive(Clone, Copy, Debug)]
@@ -58,9 +91,14 @@ pub struct WorldCounts {
 /// Evidence of settings that otherwise hide solver time subdivision.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct StepConfiguration {
+    /// Profile selected at world construction.
+    pub profile: PhysicsClockProfile,
+    /// Live native integration length.
     pub dt: f32,
+    /// Selected profile rate in hertz, not a rate inferred from a mutated `dt`.
     pub physics_hz: u32,
     pub num_solver_iterations: usize,
+    /// Solver convergence passes inside one native step. Rapier does not subdivide `dt` by this count.
     pub num_internal_pgs_iterations: usize,
     pub max_ccd_substeps: usize,
     pub additional_solver_iterations_max: usize,
@@ -130,7 +168,7 @@ pub enum SimulationError {
     UnknownBody(RigidBodyHandle),
     #[error("external torque or its sum is non-finite")]
     NonFiniteTorque,
-    #[error("simulation settings violate the single-step 60 Hz contract")]
+    #[error("simulation settings violate the selected single-step clock contract")]
     InvalidStepConfiguration,
     #[error("Rapier quarantined a non-finite body or collider")]
     QuarantinedState,
@@ -144,6 +182,7 @@ pub enum SimulationError {
 #[derive(Resource)]
 pub struct SimulationWorld {
     pub world: PhysicsWorld,
+    clock_profile: PhysicsClockProfile,
     entity_by_body: HashMap<RigidBodyHandle, Entity>,
     probe: Option<RigidBodyHandle>,
     global_step: u64,
@@ -186,14 +225,24 @@ impl SimulationWorld {
         }
     }
 
-    /// Construct the world with one solver time step and no controller surrogate.
+    /// Construct the world on the default MicroDuck 60 Hz clock.
     pub fn new() -> Self {
+        Self::new_with_profile(PhysicsClockProfile::MicroDuck60)
+    }
+
+    /// Construct the world on an explicit clock. Native `dt` is `1 / rate_hz`.
+    ///
+    /// Both profiles set one solver iteration and one CCD substep. Rapier
+    /// subdivides physical time when those counts, or any body's extra solver
+    /// iterations, rise above this single-step guard.
+    pub fn new_with_profile(profile: PhysicsClockProfile) -> Self {
         let mut world = PhysicsWorld::new();
-        world.integration_parameters.dt = PHYSICS_DT;
+        world.integration_parameters.dt = profile.dt();
         world.integration_parameters.num_solver_iterations = 1;
         world.integration_parameters.max_ccd_substeps = 1;
         Self {
             world,
+            clock_profile: profile,
             entity_by_body: HashMap::new(),
             probe: None,
             global_step: 0,
@@ -204,9 +253,19 @@ impl SimulationWorld {
         }
     }
 
+    /// Clock chosen at construction. Later edits to integration parameters do not change it.
+    pub fn clock_profile(&self) -> PhysicsClockProfile {
+        self.clock_profile
+    }
+
     /// Foundation fixture: one fixed floor and one sphere, no MicroDuck policy.
     pub fn foundation() -> Self {
-        let mut simulation = Self::new();
+        Self::foundation_with_profile(PhysicsClockProfile::MicroDuck60)
+    }
+
+    /// Same fixture bodies as [`Self::foundation`], on an explicit clock profile.
+    pub(crate) fn foundation_with_profile(profile: PhysicsClockProfile) -> Self {
+        let mut simulation = Self::new_with_profile(profile);
         let floor = simulation.world.bodies.insert(
             RigidBodyBuilder::fixed()
                 .translation(Vector::new(0.0, -0.25, 0.0))
@@ -317,11 +376,16 @@ impl SimulationWorld {
     }
 
     /// Read actual solver settings, including per-body extra time substeps.
+    ///
+    /// `physics_hz` is the selected profile rate. `dt` and the PGS count are the
+    /// live integration parameters.
     pub fn configuration(&self) -> StepConfiguration {
         let p = &self.world.integration_parameters;
+        let profile = self.clock_profile;
         StepConfiguration {
+            profile,
             dt: p.dt,
-            physics_hz: PHYSICS_HZ,
+            physics_hz: profile.rate_hz(),
             num_solver_iterations: p.num_solver_iterations,
             num_internal_pgs_iterations: p.num_internal_pgs_iterations,
             max_ccd_substeps: p.max_ccd_substeps,
@@ -337,7 +401,8 @@ impl SimulationWorld {
 
     fn validate_configuration(&self) -> Result<(), SimulationError> {
         let p = self.configuration();
-        if p.dt != PHYSICS_DT
+        if p.dt != self.clock_profile.dt()
+            || p.physics_hz != self.clock_profile.rate_hz()
             || p.num_solver_iterations != 1
             || p.max_ccd_substeps != 1
             || p.additional_solver_iterations_max != 0
@@ -466,12 +531,13 @@ impl SimulationWorld {
             })
             .collect();
         bodies.sort_by_key(|body| body.handle);
+        let rate_hz = f64::from(self.clock_profile.rate_hz());
         StepSnapshot {
             global_step: self.global_step,
             episode_id: self.episode_id,
             episode_step: self.episode_step,
-            global_seconds: self.global_step as f64 / f64::from(PHYSICS_HZ),
-            episode_seconds: self.episode_step as f64 / f64::from(PHYSICS_HZ),
+            global_seconds: self.global_step as f64 / rate_hz,
+            episode_seconds: self.episode_step as f64 / rate_hz,
             integration_count: self.integration_count,
             torque_update_count: self.torque_update_count,
             contact_pair_count,
@@ -588,6 +654,111 @@ mod tests {
             Err(SimulationError::InvalidStepConfiguration)
         ));
         assert_eq!(world.snapshot().integration_count, 0);
+    }
+
+    #[test]
+    fn default_microduck60_and_explicit_goose50_keep_one_native_step() {
+        let fresh = SimulationWorld::new();
+        assert_eq!(fresh.clock_profile(), PhysicsClockProfile::MicroDuck60);
+        let fresh_cfg = fresh.configuration();
+        assert_eq!(fresh_cfg.profile, PhysicsClockProfile::MicroDuck60);
+        assert_eq!(fresh_cfg.physics_hz, PHYSICS_HZ);
+        assert_eq!(fresh_cfg.dt, PHYSICS_DT);
+        assert_eq!(fresh_cfg.dt, PhysicsClockProfile::MicroDuck60.dt());
+        assert_eq!(fresh_cfg.num_solver_iterations, 1);
+        assert_eq!(fresh_cfg.max_ccd_substeps, 1);
+        assert_eq!(fresh_cfg.additional_solver_iterations_max, 0);
+
+        let mut micro = SimulationWorld::foundation();
+        let micro_pgs = micro.configuration().num_internal_pgs_iterations;
+        assert_eq!(micro.clock_profile(), PhysicsClockProfile::MicroDuck60);
+        let micro_step = micro.step_with_torques(&[]).unwrap();
+        assert_eq!(micro_step.integration_count, 1);
+        assert_eq!(micro_step.global_step, 1);
+        assert_eq!(micro_step.global_seconds, 1.0 / f64::from(PHYSICS_HZ));
+        assert_eq!(micro_step.episode_seconds, 1.0 / f64::from(PHYSICS_HZ));
+        assert_eq!(micro.configuration().dt, PHYSICS_DT);
+        assert_eq!(micro.configuration().num_solver_iterations, 1);
+        assert_eq!(micro.configuration().num_internal_pgs_iterations, micro_pgs);
+
+        let mut goose = SimulationWorld::foundation_with_profile(PhysicsClockProfile::Goose50);
+        let goose_cfg = goose.configuration();
+        assert_eq!(goose.clock_profile(), PhysicsClockProfile::Goose50);
+        assert_eq!(goose_cfg.profile, PhysicsClockProfile::Goose50);
+        assert_eq!(goose_cfg.physics_hz, PhysicsClockProfile::Goose50.rate_hz());
+        assert_eq!(goose_cfg.physics_hz, 50);
+        assert_eq!(goose_cfg.dt, PhysicsClockProfile::Goose50.dt());
+        assert_eq!(goose_cfg.dt, 1.0 / 50.0);
+        assert!((goose_cfg.dt - 0.02).abs() < 1.0e-6);
+        assert_eq!(goose_cfg.num_solver_iterations, 1);
+        assert_eq!(goose_cfg.max_ccd_substeps, 1);
+        assert_eq!(goose_cfg.additional_solver_iterations_max, 0);
+        let visible_pgs = goose
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations;
+        assert_eq!(goose_cfg.num_internal_pgs_iterations, visible_pgs);
+        goose
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = 16;
+        let before_y = goose.world.bodies[goose.probe_handle().unwrap()]
+            .translation()
+            .y;
+        for _ in 0..50 {
+            goose.step_with_torques(&[]).unwrap();
+        }
+        let snap = goose.snapshot();
+        assert_eq!(snap.integration_count, 50);
+        assert_eq!(snap.torque_update_count, 50);
+        assert_eq!(snap.global_step, 50);
+        assert_eq!(snap.episode_step, 50);
+        assert_eq!(snap.global_seconds, 1.0);
+        assert_eq!(snap.episode_seconds, 1.0);
+        assert_eq!(goose.configuration().num_internal_pgs_iterations, 16);
+        assert_eq!(goose.configuration().num_solver_iterations, 1);
+        assert_eq!(goose.configuration().dt, PhysicsClockProfile::Goose50.dt());
+        assert_eq!(goose.configuration().physics_hz, 50);
+        assert!(
+            goose.world.bodies[goose.probe_handle().unwrap()]
+                .translation()
+                .y
+                < before_y
+        );
+    }
+
+    #[test]
+    fn mutated_dt_solver_count_and_per_body_extra_reject_integration() {
+        fn expect_reject(world: &mut SimulationWorld) {
+            assert!(matches!(
+                world.step_with_torques(&[]),
+                Err(SimulationError::InvalidStepConfiguration)
+            ));
+            assert_eq!(world.snapshot().integration_count, 0);
+            assert_eq!(world.snapshot().global_step, 0);
+            assert_eq!(world.snapshot().global_seconds, 0.0);
+        }
+
+        let mut goose = SimulationWorld::foundation_with_profile(PhysicsClockProfile::Goose50);
+        goose.world.integration_parameters.dt = PHYSICS_DT;
+        assert_eq!(goose.configuration().physics_hz, 50);
+        assert_ne!(goose.configuration().dt, goose.clock_profile().dt());
+        expect_reject(&mut goose);
+
+        let mut goose = SimulationWorld::foundation_with_profile(PhysicsClockProfile::Goose50);
+        goose.world.integration_parameters.num_solver_iterations = 4;
+        expect_reject(&mut goose);
+
+        let mut goose = SimulationWorld::foundation_with_profile(PhysicsClockProfile::Goose50);
+        let body = goose.probe_handle().unwrap();
+        goose.world.bodies[body].set_additional_solver_iterations(1);
+        assert_eq!(goose.configuration().additional_solver_iterations_max, 1);
+        expect_reject(&mut goose);
+
+        let mut micro = SimulationWorld::foundation();
+        micro.world.integration_parameters.dt = PhysicsClockProfile::Goose50.dt();
+        assert_eq!(micro.configuration().physics_hz, PHYSICS_HZ);
+        expect_reject(&mut micro);
     }
 
     #[test]
