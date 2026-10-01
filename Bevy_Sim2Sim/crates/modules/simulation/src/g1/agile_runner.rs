@@ -26,6 +26,7 @@ use super::{
 use crate::{SimulationWorld, StepConfiguration, WorldCounts};
 
 const TICK_NS: u64 = 20_000_000;
+const SOURCE_LIMIT_TOLERANCE_RAD: f64 = 0.001;
 
 /// This first T1 runtime has exactly one explicit candidate backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -332,6 +333,7 @@ impl AgileRunner {
         guard()?;
         validate_clock(self.simulation.configuration())?;
         let state = self.state()?;
+        self.check_source_positions(&state.positions)?;
         let inference = self.policy.infer(&state, command)?;
         self.last_inference = Some((self.simulation.integration_count, inference.clone()));
         guard()?;
@@ -358,6 +360,7 @@ impl AgileRunner {
         }
         let frame = self.frame()?;
         let measurement = self.measurement()?;
+        self.check_source_positions(&measurement.joint_positions)?;
         if frame.source_tick != snapshot.integration_count
             || measurement.source_tick != frame.source_tick
         {
@@ -386,6 +389,21 @@ impl AgileRunner {
             self.halted.set(true);
         }
         result
+    }
+
+    fn check_source_positions(&self, positions: &[f32]) -> Result<(), RobotError> {
+        for (position, limit) in positions.iter().zip(&self.source_limits) {
+            let q = f64::from(*position);
+            if q < limit.radians[0] - SOURCE_LIMIT_TOLERANCE_RAD
+                || q > limit.radians[1] + SOURCE_LIMIT_TOLERANCE_RAD
+            {
+                return Err(error(format!(
+                    "AGILE measured source limit exceeded at Tick {}: {}={q}, limits={:?}, tolerance={SOURCE_LIMIT_TOLERANCE_RAD}",
+                    self.simulation.integration_count, limit.name, limit.radians,
+                )));
+            }
+        }
+        Ok(())
     }
 }
 

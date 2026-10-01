@@ -5,11 +5,14 @@
 //! A cancelled in-flight inference requires reset because its history may have
 //! advanced. Pausing is not a qualified physical standing stop.
 
-use super::runner::{G1Measurement, G1ProgressCounts, G1Runner, G1RunnerConfig, G1Step};
+use super::{
+    agile_runner::{AgileRunner, AgileRunnerConfig, AgileStep},
+    runner::{G1Measurement, G1ProgressCounts, G1Runner, G1RunnerConfig, G1Step},
+};
 use common_minigame::clock::FixedStepClock;
 use robot_minigame::{
     RobotError,
-    g1::{contract::G1Command, definition::G1BodyFrame},
+    g1::{agile::AgileCommand, contract::G1Command, definition::G1BodyFrame},
 };
 use std::{
     sync::{
@@ -20,18 +23,28 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Mobile Homie and static AGILE share timing, never policy/command contents.
+pub type G1Worker = PhysicsWorker<G1Command, G1Step>;
+pub type AgileWorker = PhysicsWorker<AgileCommand, AgileStep>;
+pub type TimedG1Command = TimedCommand<G1Command>;
+pub type TimedAgileCommand = TimedCommand<AgileCommand>;
+pub type G1WorkerSnapshot = WorkerSnapshot<G1Step>;
+pub type AgileWorkerSnapshot = WorkerSnapshot<AgileStep>;
+#[cfg(test)]
+type Shared = WorkerShared<G1Command, G1Step>;
+
 const PERIOD_NS: u64 = 20_000_000;
 const MAX_PENDING_TICKS: u128 = 5;
 
 #[derive(Clone, Debug)]
-pub struct TimedG1Command {
+pub struct TimedCommand<C> {
     pub episode_id: u64,
     /// Exclusive command interval end, on the 20 ms simulation grid. The entire
     /// next integration interval must fit before or at this endpoint.
     pub valid_until_sim_ns: u64,
     /// Checked again after inference, immediately before applying its result.
     pub valid_until_wall: Instant,
-    pub command: G1Command,
+    pub command: C,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,7 +121,7 @@ impl G1WorkerTiming {
 }
 
 #[derive(Clone, Debug)]
-pub struct G1WorkerSnapshot {
+pub struct WorkerSnapshot<S> {
     pub generation: u64,
     pub episode_id: u64,
     /// The pause barrier and command that produced a Running snapshot. Ordinary
@@ -119,38 +132,42 @@ pub struct G1WorkerSnapshot {
     pub reason: Option<String>,
     pub frame: Option<Arc<G1BodyFrame>>,
     pub measurement: Option<Arc<G1Measurement>>,
-    pub step: Option<Arc<G1Step>>,
+    pub step: Option<Arc<S>>,
     pub timing: G1WorkerTiming,
 }
 
 #[derive(Clone)]
-struct SubmittedCommand {
+struct SubmittedCommand<C> {
     revision: u64,
     generation: u64,
     pause_revision: u64,
-    timed: TimedG1Command,
+    timed: TimedCommand<C>,
 }
 
-#[derive(Default)]
-struct CommandSlot {
-    latest: Option<SubmittedCommand>,
+struct CommandSlot<C> {
+    latest: Option<SubmittedCommand<C>>,
+}
+impl<C> Default for CommandSlot<C> {
+    fn default() -> Self {
+        Self { latest: None }
+    }
 }
 
-struct Shared {
+struct WorkerShared<C, S> {
     initial_episode: u64,
     shutdown: AtomicBool,
     pause_revision: AtomicU64,
     reset_count: AtomicU64,
     command_revision: AtomicU64,
-    command: Mutex<CommandSlot>,
-    output: Mutex<Option<Arc<G1WorkerSnapshot>>>,
+    command: Mutex<CommandSlot<C>>,
+    output: Mutex<Option<Arc<WorkerSnapshot<S>>>>,
     /// Owner termination must remain observable even if the display mutex was
     /// held at shutdown. This one-write latch never blocks the physics owner.
-    stopped: OnceLock<Arc<G1WorkerSnapshot>>,
+    stopped: OnceLock<Arc<WorkerSnapshot<S>>>,
     stopped_consumed: AtomicBool,
 }
 
-impl Shared {
+impl<C: BoundaryCommand, S> WorkerShared<C, S> {
     fn new(initial_episode: u64) -> Self {
         Self {
             initial_episode,
@@ -189,7 +206,7 @@ impl Shared {
         Ok(())
     }
 
-    fn submit(&self, command: TimedG1Command, now: Instant) -> Result<(), RobotError> {
+    fn submit(&self, command: TimedCommand<C>, now: Instant) -> Result<(), RobotError> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(error("G1 worker is already stopping"));
         }
@@ -227,12 +244,12 @@ impl Shared {
 }
 
 /// The handle cannot access the Rapier world or ONNX session.
-pub struct G1Worker {
-    shared: Arc<Shared>,
+pub struct PhysicsWorker<Cmd, Step> {
+    shared: Arc<WorkerShared<Cmd, Step>>,
     thread: Option<JoinHandle<()>>,
 }
 
-impl G1Worker {
+impl PhysicsWorker<G1Command, G1Step> {
     /// Load the real world and sessions on their owner, initially paused.
     pub fn spawn(config: G1RunnerConfig) -> Result<Self, RobotError> {
         let episode = config.episode_id;
@@ -247,14 +264,36 @@ impl G1Worker {
             SystemClock,
         )
     }
+}
 
+impl PhysicsWorker<AgileCommand, AgileStep> {
+    /// T1 has its own recurrent policy, defaults, actuator parameters and command.
+    pub fn spawn(config: AgileRunnerConfig) -> Result<Self, RobotError> {
+        let episode = config.episode_id;
+        Self::spawn_owner(
+            episode,
+            move |episode_id| {
+                AgileRunner::load(&AgileRunnerConfig {
+                    episode_id,
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+}
+
+// Concrete public aliases are the supported contracts. The private traits only
+// let these native owners share scheduling; they never convert action semantics.
+#[allow(private_bounds)]
+impl<Cmd: BoundaryCommand, Step: BoundaryStep> PhysicsWorker<Cmd, Step> {
     fn spawn_owner<R, F, C>(episode: u64, load: F, clock: C) -> Result<Self, RobotError>
     where
-        R: BoundaryRunner + 'static,
+        R: BoundaryRunner<Command = Cmd, Step = Step> + 'static,
         F: FnMut(u64) -> Result<R, RobotError> + Send + 'static,
         C: OwnerClock + 'static,
     {
-        let shared = Arc::new(Shared::new(episode));
+        let shared = Arc::new(WorkerShared::new(episode));
         let owner = shared.clone();
         let thread = thread::Builder::new()
             .name("g1-physics-50hz".into())
@@ -267,7 +306,7 @@ impl G1Worker {
     }
 
     /// Replace one pending command. This never directly resumes the owner.
-    pub fn submit(&self, command: TimedG1Command) -> Result<(), RobotError> {
+    pub fn submit(&self, command: TimedCommand<Cmd>) -> Result<(), RobotError> {
         self.shared.submit(command, Instant::now())
     }
 
@@ -282,7 +321,7 @@ impl G1Worker {
         self.shared.reset()
     }
 
-    pub fn take_latest(&self) -> Option<Arc<G1WorkerSnapshot>> {
+    pub fn take_latest(&self) -> Option<Arc<WorkerSnapshot<Step>>> {
         let generation = self.shared.reset_count.load(Ordering::Acquire);
         if let Some(stopped) = self.shared.stopped.get() {
             return (stopped.generation == generation
@@ -313,7 +352,7 @@ impl G1Worker {
     }
 }
 
-impl Drop for G1Worker {
+impl<Cmd, Step> Drop for PhysicsWorker<Cmd, Step> {
     fn drop(&mut self) {
         self.shared.shutdown.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
@@ -325,17 +364,21 @@ impl Drop for G1Worker {
 /// The production implementation always returns real frames/steps. The private
 /// test implementation returns None, so transport tests never fabricate physics.
 trait BoundaryRunner: Send {
+    type Command: BoundaryCommand;
+    type Step: BoundaryStep;
     fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError>;
     fn initial_measurement(&self) -> Result<Option<G1Measurement>, RobotError>;
     fn step(
         &mut self,
-        command: &G1Command,
+        command: &Self::Command,
         guard: &mut dyn FnMut() -> Result<(), RobotError>,
-    ) -> Result<Option<G1Step>, RobotError>;
+    ) -> Result<Option<Self::Step>, RobotError>;
     fn progress_counts(&self) -> G1ProgressCounts;
 }
 
 impl BoundaryRunner for G1Runner {
+    type Command = G1Command;
+    type Step = G1Step;
     fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
         G1Runner::initial_frame(self).map(Some)
     }
@@ -357,6 +400,64 @@ impl BoundaryRunner for G1Runner {
     }
 }
 
+impl BoundaryRunner for AgileRunner {
+    type Command = AgileCommand;
+    type Step = AgileStep;
+    fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
+        AgileRunner::initial_frame(self).map(Some)
+    }
+    fn initial_measurement(&self) -> Result<Option<G1Measurement>, RobotError> {
+        self.measurement().map(Some)
+    }
+    fn step(
+        &mut self,
+        command: &AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<Option<AgileStep>, RobotError> {
+        self.step_with_guard(command, guard).map(Some)
+    }
+    fn progress_counts(&self) -> G1ProgressCounts {
+        AgileRunner::progress_counts(self)
+    }
+}
+
+trait BoundaryCommand: Clone + Send + 'static {
+    fn validate(&self) -> Result<(), RobotError>;
+}
+impl BoundaryCommand for G1Command {
+    fn validate(&self) -> Result<(), RobotError> {
+        G1Command::validate(self)
+    }
+}
+impl BoundaryCommand for AgileCommand {
+    fn validate(&self) -> Result<(), RobotError> {
+        AgileCommand::validate(self)
+    }
+}
+trait BoundaryStep: Clone + Send + Sync + 'static {
+    fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32);
+}
+impl BoundaryStep for G1Step {
+    fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
+        (
+            &self.frame,
+            &self.measurement,
+            self.root_position_source[2],
+            self.root_upright_cosine,
+        )
+    }
+}
+impl BoundaryStep for AgileStep {
+    fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
+        (
+            &self.frame,
+            &self.measurement,
+            self.root_position_source[2],
+            self.root_upright_cosine,
+        )
+    }
+}
+
 trait OwnerClock: Send {
     fn now(&self) -> Instant;
     fn wait(&self, duration: Duration);
@@ -373,7 +474,7 @@ impl OwnerClock for SystemClock {
 }
 
 /// Nonblocking publication; the caller retains the latest snapshot for retries.
-fn publish(shared: &Shared, snapshot: &mut G1WorkerSnapshot) -> bool {
+fn publish<Cmd, S: Clone>(shared: &WorkerShared<Cmd, S>, snapshot: &mut WorkerSnapshot<S>) -> bool {
     if !snapshot_is_current(shared, snapshot) {
         return false;
     }
@@ -390,7 +491,9 @@ fn publish(shared: &Shared, snapshot: &mut G1WorkerSnapshot) -> bool {
     true
 }
 
-fn try_output(shared: &Shared) -> Option<MutexGuard<'_, Option<Arc<G1WorkerSnapshot>>>> {
+fn try_output<Cmd, S>(
+    shared: &WorkerShared<Cmd, S>,
+) -> Option<MutexGuard<'_, Option<Arc<WorkerSnapshot<S>>>>> {
     match shared.output.try_lock() {
         Ok(output) => Some(output),
         Err(TryLockError::WouldBlock) => None,
@@ -401,7 +504,10 @@ fn try_output(shared: &Shared) -> Option<MutexGuard<'_, Option<Arc<G1WorkerSnaps
     }
 }
 
-fn snapshot_is_current(shared: &Shared, snapshot: &G1WorkerSnapshot) -> bool {
+fn snapshot_is_current<Cmd, S>(
+    shared: &WorkerShared<Cmd, S>,
+    snapshot: &WorkerSnapshot<S>,
+) -> bool {
     snapshot.generation == shared.reset_count.load(Ordering::Acquire)
         && (snapshot.phase != G1WorkerPhase::Running
             || snapshot.pause_revision == shared.pause_revision.load(Ordering::Acquire))
@@ -416,9 +522,9 @@ enum Cancellation {
     SimulationExpired,
 }
 
-fn check_command(
-    shared: &Shared,
-    command: &SubmittedCommand,
+fn check_command<Cmd, S>(
+    shared: &WorkerShared<Cmd, S>,
+    command: &SubmittedCommand<Cmd>,
     generation: u64,
     episode: u64,
     sim_ns: u64,
@@ -440,9 +546,9 @@ fn check_command(
     Ok(())
 }
 
-fn check_command_identity(
-    shared: &Shared,
-    command: &SubmittedCommand,
+fn check_command_identity<Cmd, S>(
+    shared: &WorkerShared<Cmd, S>,
+    command: &SubmittedCommand<Cmd>,
     generation: u64,
     episode: u64,
 ) -> Result<(), Cancellation> {
@@ -461,14 +567,14 @@ fn check_command_identity(
     Ok(())
 }
 
-fn select_command(
-    shared: &Shared,
+fn select_command<Cmd: Clone, S>(
+    shared: &WorkerShared<Cmd, S>,
     after_revision: u64,
     generation: u64,
     episode: u64,
     sim_ns: u64,
     now: Instant,
-) -> Result<Option<SubmittedCommand>, RobotError> {
+) -> Result<Option<SubmittedCommand<Cmd>>, RobotError> {
     let slot = match shared.command.try_lock() {
         Ok(slot) => slot,
         Err(TryLockError::WouldBlock) => return Ok(None),
@@ -484,9 +590,9 @@ fn select_command(
         .cloned())
 }
 
-fn fail<C: OwnerClock>(
-    shared: &Shared,
-    snapshot: &mut G1WorkerSnapshot,
+fn fail<Cmd, S: Clone, C: OwnerClock>(
+    shared: &WorkerShared<Cmd, S>,
+    snapshot: &mut WorkerSnapshot<S>,
     reason: String,
     clock: &C,
 ) {
@@ -503,13 +609,17 @@ fn fail<C: OwnerClock>(
     }
 }
 
-fn run_owner<R, F, C>(initial_episode: u64, shared: Arc<Shared>, mut load: F, wall: C)
-where
+fn run_owner<R, F, C>(
+    initial_episode: u64,
+    shared: Arc<WorkerShared<R::Command, R::Step>>,
+    mut load: F,
+    wall: C,
+) where
     R: BoundaryRunner,
     F: FnMut(u64) -> Result<R, RobotError>,
     C: OwnerClock,
 {
-    let mut snapshot = G1WorkerSnapshot {
+    let mut snapshot = WorkerSnapshot {
         generation: 0,
         episode_id: initial_episode,
         pause_revision: 0,
@@ -726,10 +836,10 @@ where
                         // still prevents any old-episode publication below.
                         snapshot.command_revision = command.revision;
                         if let Some(step) = step {
-                            let fell = step.root_position_source[2] < 0.35
-                                || step.root_upright_cosine < 0.5;
-                            snapshot.frame = Some(Arc::new(step.frame.clone()));
-                            snapshot.measurement = Some(Arc::new(step.measurement.clone()));
+                            let (frame, measurement, height, upright) = step.parts();
+                            let fell = height < 0.35 || upright < 0.5;
+                            snapshot.frame = Some(Arc::new(frame.clone()));
+                            snapshot.measurement = Some(Arc::new(measurement.clone()));
                             snapshot.step = Some(Arc::new(step));
                             if fell {
                                 fail(
@@ -884,6 +994,8 @@ mod tests {
     }
 
     impl BoundaryRunner for TestRunner {
+        type Command = G1Command;
+        type Step = G1Step;
         fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
             Ok(None)
         }
@@ -1540,5 +1652,197 @@ mod tests {
         harness.resume_current();
         harness.poll(Duration::from_millis(20));
         assert_eq!(harness.latest().phase, G1WorkerPhase::Failed);
+    }
+
+    #[test]
+    fn agile_submission_retains_its_profile_and_cannot_revive_old_episode() {
+        let shared = WorkerShared::<AgileCommand, AgileStep>::new(19);
+        let now = Instant::now();
+        let command = AgileCommand {
+            navigation: [0.12, -0.02, 0.08],
+            pelvis_height: 0.75,
+            upper_positions: std::array::from_fn(|i| i as f32 * 0.01),
+        };
+        shared
+            .submit(
+                TimedAgileCommand {
+                    episode_id: 19,
+                    valid_until_sim_ns: 100 * PERIOD_NS,
+                    valid_until_wall: now + Duration::from_secs(4),
+                    command: command.clone(),
+                },
+                now,
+            )
+            .unwrap();
+        let submitted = shared.command.lock().unwrap().latest.clone().unwrap();
+        assert_eq!(submitted.timed.command.navigation, command.navigation);
+        assert_eq!(
+            submitted.timed.command.upper_positions,
+            command.upper_positions
+        );
+        assert_eq!(submitted.timed.command.pelvis_height, command.pelvis_height);
+        shared.reset().unwrap();
+        assert!(shared.submit(submitted.timed, now).is_err());
+        assert!(select_command(&shared, 0, 1, 20, 0, now).unwrap().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires frozen G1_AGILE_CONFIG and new G1_AGILE_WORKER_OUTPUT; real 30s clock and native model"]
+    fn real_agile_owner_standing_clock_diagnostic() {
+        use robot_minigame::g1::policy::bound_bytes;
+        use serde_json::json;
+        use std::{env, fs::OpenOptions, io::Write, path::PathBuf};
+        let path = PathBuf::from(env::var("G1_AGILE_CONFIG").unwrap());
+        let bytes = bound_bytes(&path, &env::var("G1_AGILE_CONFIG_SHA256").unwrap()).unwrap();
+        let config: AgileRunnerConfig = serde_json::from_slice(&bytes).unwrap();
+        let output = PathBuf::from(env::var("G1_AGILE_WORKER_OUTPUT").unwrap());
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .unwrap();
+        let mut report = json!({
+            "scope":"actual_agile_native_owner30second_standing_clock_only", "qualified":false,
+            "source_commit":env::var("G1_CODE_COMMIT").unwrap(),
+            "config_sha256":env::var("G1_AGILE_CONFIG_SHA256").unwrap(),
+            "requested_ticks":1500, "native_physics_hz":50, "control_hz":50,
+            "integrations_per_tick":1,"command_profile":"static_agile", "snapshots":[],
+            "task_qualified":false, "source_task_rollout_verified":false,
+        });
+        fn failure_snapshot(snapshot: &AgileWorkerSnapshot) -> serde_json::Value {
+            json!({
+                "generation":snapshot.generation,"episode":snapshot.episode_id,
+                "reason":snapshot.reason,
+                "actual_integrations":snapshot.timing.episode_integrations,
+                "actual_inference_attempts":snapshot.timing.episode_inference_attempts,
+                "actual_successful_inferences":snapshot.timing.episode_successful_inferences,
+                "actual_torque_updates":snapshot.timing.episode_torque_updates,
+                "pending_ticks":snapshot.timing.pending_ticks,
+                "last_validated_frame":snapshot.frame.as_deref(),
+                "last_validated_measurement":snapshot.measurement.as_deref(),
+                "last_validated_step":snapshot.step.as_deref(),
+            })
+        }
+        let started = Instant::now();
+        let result = (|| -> Result<(), RobotError> {
+            let worker = AgileWorker::spawn(config.clone())?;
+            let deadline = started + Duration::from_secs(55);
+            let mut ready = None;
+            while Instant::now() < deadline {
+                if let Some(snapshot) = worker.take_latest() {
+                    if snapshot.phase == G1WorkerPhase::Failed {
+                        report["failed_snapshot"] = failure_snapshot(&snapshot);
+                        return Err(error(format!("load failed: {:?}", snapshot.reason)));
+                    }
+                    if snapshot.phase == G1WorkerPhase::Paused {
+                        ready = Some(snapshot);
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            let ready = ready.ok_or_else(|| error("owner load timeout"))?;
+            let initial = ready
+                .frame
+                .as_ref()
+                .ok_or_else(|| error("missing real initial frame"))?;
+            report["initial_frame"] = json!(initial.as_ref());
+            let mut upper = [0.; 28];
+            upper.copy_from_slice(&config.default_positions[15..]);
+            worker.submit(TimedAgileCommand {
+                episode_id: config.episode_id,
+                valid_until_sim_ns: 1500 * PERIOD_NS,
+                valid_until_wall: deadline,
+                command: AgileCommand {
+                    navigation: [0.; 3],
+                    pelvis_height: 0.75,
+                    upper_positions: upper,
+                },
+            })?;
+            let mut last_tick = 0;
+            let mut last = None;
+            let mut max_drift = 0_f64;
+            while Instant::now() < deadline {
+                if let Some(snapshot) = worker.take_latest() {
+                    if snapshot.phase == G1WorkerPhase::Failed {
+                        report["failed_snapshot"] = failure_snapshot(&snapshot);
+                        return Err(error(format!("owner failed: {:?}", snapshot.reason)));
+                    }
+                    if let Some(step) = &snapshot.step {
+                        if step.integration_count > last_tick {
+                            last_tick = step.integration_count;
+                            let dx = f64::from(
+                                step.frame.bodies[0].translation[0]
+                                    - initial.bodies[0].translation[0],
+                            );
+                            let dz = f64::from(
+                                step.frame.bodies[0].translation[2]
+                                    - initial.bodies[0].translation[2],
+                            );
+                            max_drift = max_drift.max(dx.hypot(dz));
+                            report["snapshots"].as_array_mut().unwrap().push(json!({
+                                "tick":last_tick,"frame":step.frame,"measurement":step.measurement,
+                                "configuration":step.step_configuration,"inference_count":step.inference.inference_count,
+                                "motor_update_count":step.motor_update_count,"upright":step.root_upright_cosine,
+                                "root_position_source":step.root_position_source,
+                                "boundary_duration_ms":snapshot.timing.last_boundary_duration_ms,
+                            }));
+                        }
+                    }
+                    let finished = snapshot.timing.episode_integrations == 1500
+                        && snapshot.phase == G1WorkerPhase::Paused;
+                    last = Some(snapshot);
+                    if finished {
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            let last = last.ok_or_else(|| error("no native owner snapshots"))?;
+            let t = &last.timing;
+            report["final_timing"] = json!({
+                "total_integrations":t.total_integrations,"total_inference_attempts":t.total_inference_attempts,
+                "total_successful_inferences":t.total_successful_inferences,"total_torque_updates":t.total_torque_updates,
+                "active_sim_seconds":t.active_sim_seconds,"active_wall_seconds":t.active_wall_seconds,
+                "sim_wall_ratio":t.active_sim_seconds/t.active_wall_seconds,
+                "control_deadlines_missed":t.control_deadlines_missed,"pending_ticks":t.pending_ticks,
+                "display_updates_dropped":t.display_updates_dropped,"episode_halted":t.episode_halted,
+            });
+            report["observed_max_horizontal_drift_m"] = json!(max_drift);
+            report["completed_frame_snapshots_observed"] =
+                json!(report["snapshots"].as_array().unwrap().len());
+            report["last_phase"] = json!(format!("{:?}", last.phase));
+            worker.shutdown()?;
+            if t.total_integrations != 1500
+                || t.total_inference_attempts != 1500
+                || t.total_successful_inferences != 1500
+                || t.total_torque_updates != 1500
+                || last.phase != G1WorkerPhase::Paused
+                || t.pending_ticks != 0
+                || t.episode_halted
+            {
+                return Err(error("native owner boundary/count/clock budget failed"));
+            }
+            let ratio = t.active_sim_seconds / t.active_wall_seconds;
+            if !(0.98..=1.02).contains(&ratio) {
+                return Err(error("native owner is outside real1x ratio .98..1.02"));
+            }
+            Ok(())
+        })();
+        report["owner_closed"] = json!(true);
+        report["wall_seconds_including_load"] = json!(started.elapsed().as_secs_f64());
+        report["clock_probe_succeeded"] = json!(result.is_ok());
+        if let Err(error) = &result {
+            report["error"] = json!(error.to_string());
+        }
+        serde_json::to_writer_pretty(&mut file, &report).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.sync_all().unwrap();
+        println!(
+            "AGILE_OWNER_CLOCK success={}; snapshots={}; qualified=false",
+            result.is_ok(),
+            report["completed_frame_snapshots_observed"]
+        );
+        assert!(result.is_ok(), "native owner diagnostic failed: {result:?}");
     }
 }
