@@ -16,8 +16,9 @@ use task_minigame::{
     types::{ObservationStamp, RobotSelfState, SkillAvailability, TaskProfile},
 };
 
-/// Run only after the shared local service is ready. Both fixtures must originate
-/// from the same Bevy observation; the output explicitly records fixture replay.
+/// Run after the shared service is ready. Full observation fixtures must come
+/// from the same Bevy frame. A station-only image probe requires explicit opt-in
+/// and labels its unused proprioception as synthetic.
 #[test]
 #[ignore = "requires SAI_QWEN_CAPTURE_PNG and SAI_QWEN_ROBOT_STATE_JSON from Bevy, plus the local service"]
 fn local_qwen_bevy_image_to_structured_decision() {
@@ -25,17 +26,36 @@ fn local_qwen_bevy_image_to_structured_decision() {
         std::env::var_os("SAI_QWEN_CAPTURE_PNG")
             .expect("set SAI_QWEN_CAPTURE_PNG to the actual Bevy camera capture"),
     );
-    let state_path = PathBuf::from(
-        std::env::var_os("SAI_QWEN_ROBOT_STATE_JSON")
-            .expect("set SAI_QWEN_ROBOT_STATE_JSON to corresponding Bevy robot proprioception"),
-    );
-    let robot: RobotSelfState = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let state_path = std::env::var_os("SAI_QWEN_ROBOT_STATE_JSON").map(PathBuf::from);
+    let image_only = std::env::var("SAI_QWEN_IMAGE_ONLY_PROBE").as_deref() == Ok("1");
+    let (robot, proprioception_source) = if let Some(path) = &state_path {
+        (
+            serde_json::from_slice::<RobotSelfState>(&fs::read(path).unwrap()).unwrap(),
+            "corresponding_bevy_snapshot",
+        )
+    } else {
+        assert!(
+            image_only,
+            "supply corresponding robot state or explicitly set SAI_QWEN_IMAGE_ONLY_PROBE=1 for a station-only image probe"
+        );
+        (
+            RobotSelfState {
+                joint_positions: vec![0.0; 35],
+                joint_velocities: vec![0.0; 35],
+                base_velocity_mps: [0.0; 3],
+                projected_gravity: [0.0, 0.0, -1.0],
+            },
+            "synthetic_unused_placeholder_no_robot_state_claim",
+        )
+    };
     let camera =
         CameraRgb::from_png("bevy_capture_fixture", fs::read(&image_path).unwrap()).unwrap();
     let mut session = DecisionSession::new(1, TaskGoal {
         instruction: std::env::var("SAI_QWEN_GOAL").unwrap_or_else(|_| "Observe the current scene and identify visible task objects or placement markers. No execution is qualified in this perception check.".into()),
         profile: TaskProfile::StaticApple,
-        public_scene_description: String::new(),
+        public_scene_description: if state_path.is_none() {
+            "This is an image-only station fixture check. The supplied robot proprioception is an unused synthetic placeholder, not a measured robot state. Do not infer robot capability from it. Only observe or stop.".into()
+        } else { String::new() },
     }, SkillAvailability::default(), DecisionLimits::default()).unwrap();
     let start_unix_ms = unix_ms();
     let input = session
@@ -72,6 +92,7 @@ fn local_qwen_bevy_image_to_structured_decision() {
         "task_success_claim":false,
         "capture_path":image_path,
         "proprioception_path":state_path,
+        "proprioception_source":proprioception_source,
         "service_elapsed_ms":elapsed_ms,
         "decision":decision,
     });
