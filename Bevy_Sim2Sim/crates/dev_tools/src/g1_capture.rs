@@ -36,7 +36,7 @@ use rendering_minigame::{
 use robot_minigame::g1::contract::G1Command;
 use serde::{Deserialize, Serialize};
 use simulation_minigame::g1::{
-    runner::G1RunnerConfig,
+    runner::{G1ActuatorBackend, G1RunnerConfig},
     worker::{G1Worker, G1WorkerPhase, G1WorkerSnapshot, TimedG1Command},
 };
 
@@ -100,6 +100,7 @@ pub struct G1CaptureReceipt {
     pub stand_sha256: &'static str,
     pub walk_sha256: &'static str,
     pub visual_sha256: String,
+    pub actuator_backend: G1ActuatorBackend,
     pub physics_hz: u32,
     pub integrations_per_tick: u32,
     pub requested_ticks: u32,
@@ -135,6 +136,7 @@ impl G1CaptureReceipt {
             stand_sha256: robot_minigame::g1::policy::STAND_SHA256,
             walk_sha256: robot_minigame::g1::policy::WALK_SHA256,
             visual_sha256: visual_sha256.into(),
+            actuator_backend: config.actuator_backend,
             physics_hz: 50,
             integrations_per_tick: 1,
             requested_ticks: ticks,
