@@ -49,6 +49,18 @@ pub struct G1Step {
     pub step_configuration: StepConfiguration,
 }
 
+/// Readable even after a failed boundary; no rendered-frame counts are inferred.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct G1ProgressCounts {
+    pub integration_count: u64,
+    pub torque_update_count: u64,
+    /// Actual ORT session calls, including failed calls.
+    pub inference_attempt_count: u64,
+    /// Outputs validated and accepted into the policy history.
+    pub successful_inference_count: u64,
+    pub halted: bool,
+}
+
 pub struct G1Runner {
     episode_id: u64,
     simulation: SimulationWorld,
@@ -119,22 +131,50 @@ impl G1Runner {
         self.simulation.counts()
     }
 
+    pub fn progress_counts(&self) -> G1ProgressCounts {
+        G1ProgressCounts {
+            integration_count: self.simulation.integration_count,
+            torque_update_count: self.simulation.torque_update_count,
+            inference_attempt_count: self.policy.inference_attempt_count(),
+            successful_inference_count: self.policy.inference_count(),
+            halted: self.halted,
+        }
+    }
+
     /// All errors halt this candidate; a caller cannot skip a failed inference
     /// and continue integrating with a stale target or a synthetic observation.
     pub fn step(&mut self, command: &G1Command) -> Result<G1Step, RobotError> {
+        self.step_with_guard(command, || Ok(()))
+    }
+
+    /// Check the caller's deadline/cancellation guard before inference and again
+    /// after successful inference, before PD or integration. A rejected guard is
+    /// propagated unchanged and permanently halts this candidate: its policy
+    /// history may already have advanced, so it must be rebuilt, never resumed.
+    pub fn step_with_guard(
+        &mut self,
+        command: &G1Command,
+        mut guard: impl FnMut() -> Result<(), RobotError>,
+    ) -> Result<G1Step, RobotError> {
         if self.halted {
             return Err(error("G1 runner halted after a failed boundary"));
         }
-        let result = self.step_inner(command);
+        let result = self.step_inner(command, &mut guard);
         if result.is_err() {
             self.halted = true;
         }
         result
     }
 
-    fn step_inner(&mut self, command: &G1Command) -> Result<G1Step, RobotError> {
+    fn step_inner(
+        &mut self,
+        command: &G1Command,
+        guard: &mut impl FnMut() -> Result<(), RobotError>,
+    ) -> Result<G1Step, RobotError> {
+        guard()?;
         let state = self.assembly.state(&self.simulation.world)?;
         let inference = self.policy.infer(&state, command)?;
+        guard()?;
         let applied = actuator::torques(&inference.targets, &state.positions, &state.velocities)?;
         let torques = self.assembly.torques(&self.simulation.world, &applied)?;
         let snapshot = self.simulation.step_with_torques(&torques).map_err(error)?;
@@ -192,6 +232,40 @@ mod tests {
             robot_contact_friction: 0.5,
             floor_contact_friction: 1.,
         }
+    }
+
+    #[test]
+    #[ignore = "requires frozen G1_MODEL_DIR, G1_DEFINITION_SHA256, G1_ORT, G1_ORT_SHA256; one real inference, no integration"]
+    fn real_homie_guard_rejects_after_inference_without_integration() {
+        let mut runner = G1Runner::load(&config()).unwrap();
+        let initial = serde_json::to_value(runner.initial_frame().unwrap()).unwrap();
+        let mut guard_calls = 0;
+        let result = runner.step_with_guard(&G1Command::default(), || {
+            guard_calls += 1;
+            if guard_calls == 1 {
+                Ok(())
+            } else {
+                Err(error("test deadline expired after real inference"))
+            }
+        });
+        assert!(
+            matches!(result, Err(RobotError::Contract(message)) if message == "test deadline expired after real inference")
+        );
+        assert_eq!(guard_calls, 2);
+        let rejected = G1ProgressCounts {
+            integration_count: 0,
+            torque_update_count: 0,
+            inference_attempt_count: 1,
+            successful_inference_count: 1,
+            halted: true,
+        };
+        assert_eq!(runner.progress_counts(), rejected);
+        assert_eq!(
+            serde_json::to_value(runner.initial_frame().unwrap()).unwrap(),
+            initial
+        );
+        assert!(runner.step(&G1Command::default()).is_err());
+        assert_eq!(runner.progress_counts(), rejected);
     }
 
     #[test]
