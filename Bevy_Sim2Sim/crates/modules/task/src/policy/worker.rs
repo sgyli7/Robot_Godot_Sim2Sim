@@ -1,4 +1,7 @@
-use super::{PolicyActionChunk, PolicyInferenceError, PolicyInferenceRequest, StaticPolicyClient};
+use super::{
+    MobilePolicyClient, PolicyActionChunk, PolicyInferenceError, PolicyInferenceRequest,
+    StaticPolicyClient,
+};
 use crate::types::{ObservationStamp, TaskProfile};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -38,6 +41,11 @@ pub struct PolicyWorker {
 
 impl PolicyWorker {
     pub fn spawn(client: StaticPolicyClient, episode_id: u64) -> std::io::Result<Self> {
+        Self::spawn_with(episode_id, move |request| client.infer(request))
+    }
+
+    /// Use the mobile gn1_6 client without changing the static client contract.
+    pub fn spawn_mobile(client: MobilePolicyClient, episode_id: u64) -> std::io::Result<Self> {
         Self::spawn_with(episode_id, move |request| client.infer(request))
     }
 

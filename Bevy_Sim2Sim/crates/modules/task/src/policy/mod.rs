@@ -6,12 +6,14 @@
 
 mod action;
 mod client;
+mod mobile_client;
 mod observation;
 mod queue;
 mod worker;
 
 pub use action::*;
 pub use client::*;
+pub use mobile_client::*;
 pub use observation::*;
 pub use queue::*;
 pub use worker::*;

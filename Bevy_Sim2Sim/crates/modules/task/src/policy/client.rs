@@ -32,12 +32,16 @@ pub enum PolicyInferenceError {
     ReplyContract(PolicyActionError),
 }
 
-/// The loopback adapter does not qualify the underlying policy or robot.
-/// Responses must still pass PolicyActionQueue and physical qualification.
-pub struct StaticPolicyClient {
+/// Shared bounded HTTP mechanics; each public client fixes its own profile and wire schema.
+pub(super) struct PolicyHttpTransport {
     client: Client,
     endpoint: reqwest::Url,
     timeout: Duration,
+}
+
+/// Fixed static-export adapter; it cannot send requests to the mobile profile.
+pub struct StaticPolicyClient {
+    transport: PolicyHttpTransport,
 }
 
 #[derive(Serialize)]
@@ -52,31 +56,8 @@ struct StaticWireRequest<'a> {
 
 impl StaticPolicyClient {
     pub fn new(endpoint: &str, timeout: Duration) -> Result<Self, PolicyInferenceError> {
-        let endpoint =
-            reqwest::Url::parse(endpoint).map_err(|_| PolicyInferenceError::InvalidEndpoint)?;
-        if endpoint.scheme() != "http"
-            || endpoint.host_str() != Some("127.0.0.1")
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.path() != "/infer"
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(PolicyInferenceError::InvalidEndpoint);
-        }
-        if timeout.is_zero() || timeout > Duration::from_secs(20) {
-            return Err(PolicyInferenceError::InvalidTimeout);
-        }
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(timeout)
-            .build()
-            .map_err(|e| PolicyInferenceError::Transport(e.to_string()))?;
         Ok(Self {
-            client,
-            endpoint,
-            timeout,
+            transport: PolicyHttpTransport::new(endpoint, timeout)?,
         })
     }
 
@@ -99,13 +80,53 @@ impl StaticPolicyClient {
             camera_rgb_b64: STANDARD.encode(&request.observation.camera_rgb),
             state_groups,
         };
+        self.transport.infer_wire(&wire, request)
+    }
+}
+
+impl PolicyHttpTransport {
+    pub(super) fn new(endpoint: &str, timeout: Duration) -> Result<Self, PolicyInferenceError> {
+        let endpoint =
+            reqwest::Url::parse(endpoint).map_err(|_| PolicyInferenceError::InvalidEndpoint)?;
+        if endpoint.scheme() != "http"
+            || endpoint.host_str() != Some("127.0.0.1")
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.path() != "/infer"
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(PolicyInferenceError::InvalidEndpoint);
+        }
+        if timeout.is_zero() || timeout > Duration::from_secs(20) {
+            return Err(PolicyInferenceError::InvalidTimeout);
+        }
+        let client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .timeout(timeout)
+            .build()
+            .map_err(|e| PolicyInferenceError::Transport(e.to_string()))?;
+        Ok(Self {
+            client,
+            endpoint,
+            timeout,
+        })
+    }
+
+    pub(super) fn infer_wire(
+        &self,
+        wire: &impl Serialize,
+        request: &PolicyInferenceRequest,
+    ) -> Result<PolicyActionChunk, PolicyInferenceError> {
         let response = self
             .client
             .post(self.endpoint.clone())
             // The blocking builder timeout applies again on each Read. Set the
             // request timeout too so the async body retains one total deadline.
             .timeout(self.timeout)
-            .json(&wire)
+            .json(wire)
             .send()
             .map_err(|e| PolicyInferenceError::Transport(e.to_string()))?;
         if !response.status().is_success() {
