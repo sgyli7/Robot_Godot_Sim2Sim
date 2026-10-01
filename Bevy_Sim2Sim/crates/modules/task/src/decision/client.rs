@@ -93,6 +93,7 @@ impl LocalQwenClient {
         let mut builder = Client::builder()
             .no_proxy()
             .redirect(Policy::none())
+            .retry(reqwest::retry::never())
             .timeout(config.timeout)
             .connect_timeout(config.timeout.min(Duration::from_secs(2)));
         if localhost {
