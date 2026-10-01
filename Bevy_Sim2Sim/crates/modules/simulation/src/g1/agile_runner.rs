@@ -435,12 +435,12 @@ fn validate_clock(config: StepConfiguration) -> Result<(), RobotError> {
     if config.physics_hz != 50
         || config.dt != 0.02
         || config.num_solver_iterations != 1
-        || config.num_internal_pgs_iterations != 1
+        || !matches!(config.num_internal_pgs_iterations, 1 | 4)
         || config.max_ccd_substeps != 1
         || config.additional_solver_iterations_max != 0
     {
         return Err(error(
-            "AGILE requires the unchanged 50 Hz single-integration solver configuration",
+            "AGILE requires 50 Hz, one time step, and 1 or 4 non-integrating PGS passes",
         ));
     }
     Ok(())
@@ -554,6 +554,20 @@ mod tests {
             additional_solver_iterations_max: 0,
         };
         assert!(validate_clock(clock).is_ok());
+        assert!(
+            validate_clock(StepConfiguration {
+                num_internal_pgs_iterations: 4,
+                ..clock
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_clock(StepConfiguration {
+                num_internal_pgs_iterations: 0,
+                ..clock
+            })
+            .is_err()
+        );
         assert!(validate_clock(StepConfiguration { dt: 0.005, ..clock }).is_err());
         assert!(
             validate_clock(StepConfiguration {
@@ -574,6 +588,22 @@ mod tests {
             }
         }
         let mut runner = AgileRunner::load(config)?;
+        // An explicit, bounded diagnostic changes only the number of constraint
+        // sweeps before the existing integration. The ordinary owner stays at
+        // one pass. Rapier's num_solver_iterations splits dt and stays at one.
+        let passes = env::var("G1_AGILE_DIAGNOSTIC_PGS_PASSES")
+            .map(|value| value.parse::<usize>().map_err(error))
+            .unwrap_or(Ok(1))?;
+        if !matches!(passes, 1 | 4) {
+            return Err(error("diagnostic PGS passes must be exactly 1 or 4"));
+        }
+        runner
+            .simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = passes;
+        validate_clock(runner.configuration())?;
+        report["diagnostic_pgs_passes"] = json!(passes);
         report["initial_non_integrating_motor_installations"] = json!(1);
         report["actuator_parameters"] = json!(runner.actuator_parameters().to_vec());
         report["source_joint_limits"] = json!(runner.source_limits().to_vec());

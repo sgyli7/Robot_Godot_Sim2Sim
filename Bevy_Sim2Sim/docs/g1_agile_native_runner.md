@@ -61,7 +61,21 @@ all completed steps, actual inference/motor/integration counts and failures.
 Failure evidence is saved before the test returns nonzero. The shared USD/body
 export identity and the T1 AGILE policy revision are recorded separately.
 
-This delivery only supplies source and guard-test source. It has not compiled,
-loaded models or run physics. Even a completed 150-tick budget remains
+The owner compiled and its three pure guards passed. The first actual run at
+`2381619` stopped after 119 integrations (2.38 s): left ankle roll reached
+0.307715 rad against its 0.261800 rad upper limit. Horizontal drift was 0.742738 m
+and pelvis height had fallen to 0.444884 m. This is a failed standing candidate;
+the limit is a late symptom, and has not been widened. Replaying all 119 actual
+inputs through the original upstream recurrent implementation gave a maximum
+target difference of 2.03e-6 rad, including retained quaternion rounding.
+
+The ignored diagnostic also accepts `G1_AGILE_DIAGNOSTIC_PGS_PASSES=4` for a
+single bounded comparison. It changes only Rapier's internal constraint sweeps
+before the same integration; the ordinary owner still selects one pass. Every
+receipt records the actual value. `num_solver_iterations`, which splits the
+timestep in this Rapier version, stays one, as do CCD substeps. This comparison
+does not change gains, armatures, defaults, frequency, limits or policy history.
+
+Even a completed 150-tick budget remains
 `qualified=false`: standing duration, physical migration, materials, real-time
 pacing, grasping and visual task success require separate actual evidence.
