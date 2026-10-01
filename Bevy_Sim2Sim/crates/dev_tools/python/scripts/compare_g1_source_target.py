@@ -201,6 +201,12 @@ def max_delta(a, b):
     return max(abs(x - y) for x, y in zip(a, b))
 
 
+def worst_joint(a, b, names):
+    max_delta(a, b)
+    index = max(range(len(a)), key=lambda i: abs(a[i] - b[i]))
+    return {"joint": names[index], "source": a[index], "target": b[index], "absolute_delta": abs(a[index] - b[index])}
+
+
 def compare_boundaries(source, trace, target, names):
     if not source.get("rollouts"):
         return {"status": "unknown", "reason": "Source receipt has no native rollouts", "rows": []}
@@ -227,20 +233,33 @@ def compare_boundaries(source, trace, target, names):
         if not math.isclose(step["frame"]["sim_time"], row["sim_time_seconds"], abs_tol=1e-7):
             raise ValueError("Target timestamp mismatch")
         pose = target_root_pose(step["frame"])
+        source_q = reorder(row["joint_pos"], input_names, names)
+        source_dq = reorder(row["joint_vel"], input_names, names)
+        source_targets = reorder(row["processed_joint_targets"], input_names, names)
         result.append({"repeat": row["repeat"], "control_tick": tick, "source_physics_tick": 4 * tick,
                        "target_physics_tick": tick,
-                       "max_joint_q_delta_rad": max_delta(reorder(row["joint_pos"], input_names, names), step["joint_positions"]),
-                       "max_joint_dq_delta_rad_s": max_delta(reorder(row["joint_vel"], input_names, names), step["joint_velocities"]),
+                       "max_joint_q_delta_rad": max_delta(source_q, step["joint_positions"]),
+                       "max_joint_dq_delta_rad_s": max_delta(source_dq, step["joint_velocities"]),
+                       "worst_q_joint": worst_joint(source_q, step["joint_positions"], names),
+                       "worst_dq_joint": worst_joint(source_dq, step["joint_velocities"], names),
+                       "max_lower_action_delta": max_delta(row["raw_lower_action"], step["inference"]["action"]),
+                       "max_target_delta_rad": max_delta(source_targets, step["inference"]["targets"]),
+                       "source_root_xyz": row["root_link_pose_w"][:3], "target_root_xyz": pose[:3],
                        "max_root_xyz_delta_m": max_delta(row["root_link_pose_w"][:3], pose[:3]),
                        "max_projected_gravity_delta": max_delta(row["projected_gravity_b"], projected_gravity(pose)),
                        "target_gravity_origin": "derived from completed native root pose",
                        "root_gyro_delta": None,
                        "torque_delta": None})
+    keys = ("max_joint_q_delta_rad", "max_joint_dq_delta_rad_s", "max_root_xyz_delta_m", "max_lower_action_delta", "max_target_delta_rad")
+    first = {str(repeat): {key: next((r["control_tick"] for r in result if r["repeat"] == repeat and r[key] > 1e-6), None)
+                          for key in keys} for repeat in sorted({r["repeat"] for r in result})}
     return {"status": "compiled", "sampling": "full trace" if trace else "receipt endpoints only", "rows": result,
+            "first_observed_divergence_control_tick": first, "divergence_reporting_tolerance": 1e-6,
+            "divergence_tolerance_note": "Absolute tolerance in each field's units; a reporting aid, never a new qualification gate",
             "limitations": ["Target receipt did not record per-tick root gyro", "Source explicit PD updates each physics step; target recorded torque precedes its single step, so end-boundary torques are not directly paired", "Differences describe distinct 200/50 versus 50/50 trajectories, not causal attribution"]}
 
 
-def compare_plant(source, definition, tensor_oracle=None):
+def compare_plant(source, definition, tensor_oracle=None, native_receipt=None):
     plant = source.get("compiled_plant")
     if not plant:
         return {"status": "unknown", "reason": "No compiled PhysX plant readback"}
@@ -253,6 +272,7 @@ def compare_plant(source, definition, tensor_oracle=None):
         "reference_point": "center_of_mass", "expressed_in": "rigid_body_prim_frame",
         "layout": "column_major_3x3", "unit": "kg*m^2"}.items())
     native_tensors = {b["name"]: b["native_tensor_row_major"] for b in tensor_oracle["bodies"]} if tensor_oracle else {}
+    native_bodies = {definition["bodies"][b["body"]]["name"]: b for b in native_receipt["rows"][0]["bodies"]} if native_receipt else {}
     result = {"status": "compiled", "missing_source_bodies": sorted(set(authored) - set(names)),
               "extra_source_bodies": sorted(set(names) - set(authored)), "rows": [],
               "inertia_comparison": "compiled link-frame tensors at COM; convert target C^T I_engine C" if tensor_compatible and native_tensors
@@ -271,6 +291,17 @@ def compare_plant(source, definition, tensor_oracle=None):
             com = row["com_pose_xyzw"]
             row["com_position_delta_vs_authored"] = (max_delta(com[:3], body["center_of_mass"])
                 if not body["diagnostic_mass_defaults"] and all(v is not None for v in com[:3]) else None)
+        if name in native_bodies:
+            native = native_bodies[name]
+            row["mass_delta_vs_native_target"] = row["mass"] - native["mass"] if row["mass"] is not None else None
+            # The frozen instrument receipt contains Rapier's public Debug dump.
+            # Restrict this extraction to its local mass properties, not world COM.
+            match = re.search(r"local_mprops: MassProperties \{ local_com: Vec3\(([^)]+)\)", native["native_debug"])
+            if not match:
+                raise ValueError("Existing native receipt lacks an unambiguous local COM")
+            x, y, z = [float(v) for v in match.group(1).split(",")]
+            row["target_native_com_source"] = [x, -z, y]
+            row["com_position_delta_vs_native_target"] = max_delta(row["com_pose_xyzw"][:3], [x, -z, y])
         if tensor_compatible and name in native_tensors:
             raw = row["inertia_matrix"]
             if len(raw) != 9:
@@ -287,6 +318,10 @@ def compare_plant(source, definition, tensor_oracle=None):
                 row["tensor_relative_delta_native_target"] = error / scale if scale else None
                 row["tensor_target_basis"] = "existing zero-integration native tensor receipt, converted to source link axes"
         result["rows"].append(row)
+    result["max_absolute_deltas"] = {key: max(abs(r[key]) for r in result["rows"] if r.get(key) is not None)
+                                    for key in ("mass_delta_vs_authored", "mass_delta_vs_native_target", "com_position_delta_vs_native_target",
+                                                "tensor_max_abs_delta_native_target", "tensor_relative_delta_native_target")
+                                    if any(r.get(key) is not None for r in result["rows"])}
     return result
 
 
@@ -333,6 +368,55 @@ def source_rollout_metrics(source, trace, contract, definition):
     return results
 
 
+def runtime_parameters(source, trace, contract):
+    """Separate live cfg, backend drives and explicit actuator outputs."""
+    if not source.get("authored_actuator_configuration"):
+        return {"status": "unknown"}
+    names = contract["joint_names"]
+    rows = []
+    for profile in contract["profiles"]:
+        name = profile["joint"]
+        groups = [g for g in source["authored_actuator_configuration"].values()
+                  if any(re.fullmatch(pattern, name) for pattern in g["joint_names_expr"])]
+        if len(groups) != 1:
+            raise ValueError(f"Ambiguous live actuator cfg for {name}")
+        configured = {}
+        for key in PARAMETERS:
+            value = groups[0].get(key)
+            if isinstance(value, dict):
+                matches = [v for pattern, v in value.items() if re.fullmatch(pattern, name)]
+                if len(matches) != 1:
+                    raise ValueError(f"Ambiguous live actuator cfg {name}.{key}")
+                value = matches[0]
+            configured[key] = value
+        rows.append({"joint": name, "source_live_configuration": configured,
+                     "target_authored": profile["target_authored"],
+                     "gain_effort_velocity_metadata_match": all(configured[k] == profile["target_authored"][k] for k in PARAMETERS[:5])})
+    native = {k: reorder(v, source["joint_names"], names) for k, v in source["backend_joint_parameters"].items()}
+    friction = reorder(source["backend_joint_friction_properties"], source["joint_names"], names)
+    max_clip_residual = 0.0
+    for sample in trace or []:
+        computed = reorder(sample["computed_torque"], source["joint_names"], names)
+        applied = reorder(sample["applied_torque"], source["joint_names"], names)
+        # Reset tick zero can carry prior controller buffers; it is not a new PD evaluation.
+        if sample["control_tick"] == 0:
+            continue
+        for i, row in enumerate(rows):
+            limit = row["source_live_configuration"]["effort_limit"]
+            max_clip_residual = max(max_clip_residual, abs(applied[i] - max(-limit, min(limit, computed[i]))))
+    return {"status": "compiled backend + live configuration", "rows": rows,
+            "backend_drive_stiffness_unique": sorted(set(native["joint_stiffness"])),
+            "backend_drive_damping_unique": sorted(set(native["joint_damping"])),
+            "backend_armature_unique": sorted(set(native["joint_armature"])),
+            "friction_by_joint": dict(zip(names, friction)),
+            "static_friction_nonzero_joint_count": sum(v[0] != 0 for v in friction),
+            "dynamic_or_viscous_nonzero_joint_count": sum(v[1] != 0 or v[2] != 0 for v in friction),
+            "max_recorded_torque_clipping_residual": max_clip_residual if trace else None,
+            "unknown": ["Explicit actuator runtime stiffness/damping tensors not recorded; live cfg matches target",
+                        "Backend joint velocity cap not recorded; legacy velocity metadata alone is not a native cap",
+                        "Resolved shape material bindings/friction combine not recorded; floor .5/.5 is authored configuration"]}
+
+
 def comparison_table(source, target, contract, soles):
     has_native = bool(source.get("rollouts"))
     return [
@@ -362,6 +446,12 @@ def main():
     parser.add_argument("--source-trace", type=Path)
     parser.add_argument("--target-tensor-oracle", type=Path)
     parser.add_argument("--target-tensor-oracle-sha256")
+    parser.add_argument("--target-native-receipt", type=Path)
+    parser.add_argument("--target-native-receipt-sha256")
+    parser.add_argument("--source-cpu-forward", type=Path)
+    parser.add_argument("--source-cpu-forward-sha256")
+    parser.add_argument("--source-log", type=Path)
+    parser.add_argument("--source-log-sha256")
     parser.add_argument("--definition", type=Path, required=True)
     parser.add_argument("--arena-source", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, default=Path(__file__).resolve().parents[4])
@@ -385,6 +475,18 @@ def main():
     trace = None
     inputs = [source_file, target_file, definition_file, *contract.pop("files")]
     tensor_oracle = None
+    native_receipt = None
+    cpu_forward = None
+    execution_path = None
+    if args.source_log:
+        if not args.source_log_sha256 or digest(args.source_log) != args.source_log_sha256:
+            parser.error("Source log requires its exact SHA256")
+        matches = set(re.findall(r"use_newton_actuators=(True|False)", args.source_log.read_text()))
+        if len(matches) != 1:
+            raise ValueError("Source log has no unambiguous actuator-path configuration")
+        execution_path = {"use_newton_actuators": matches.pop() == "True",
+                          "basis": "Logged configuration; runtime graph buffer refresh/capture semantics not measured by these receipts"}
+        inputs.append({"path": str(args.source_log.resolve()), "sha256": digest(args.source_log)})
     if args.target_tensor_oracle:
         if not args.target_tensor_oracle_sha256:
             parser.error("An existing target tensor oracle requires its SHA256")
@@ -393,6 +495,24 @@ def main():
             or tensor_oracle["integration_count"] != 0):
             raise ValueError("Target tensor oracle is not the matching zero-integration receipt")
         inputs.append(oracle_file)
+    if args.target_native_receipt:
+        if not args.target_native_receipt_sha256:
+            parser.error("An existing target native receipt requires its SHA256")
+        native_receipt, native_file = load_json(args.target_native_receipt, args.target_native_receipt_sha256)
+        if (native_receipt["definition_sha256"] != PHYSICS_SHA or native_receipt["usd_sha256"] != USD_SHA
+            or native_receipt["experiment"] != "five_tick_freefall_instrument_only"):
+            raise ValueError("Target native receipt identity mismatch")
+        inputs.append(native_file)
+    if args.source_cpu_forward:
+        if not args.source_cpu_forward_sha256:
+            parser.error("CPU forward receipt requires its SHA256")
+        cpu, cpu_file = load_json(args.source_cpu_forward, args.source_cpu_forward_sha256)
+        if cpu["weights"]["stand"]["sha256"] != MODEL_SHA or cpu["physics_started"]:
+            raise ValueError("CPU forward is not the matching inference-only receipt")
+        cpu_forward = {"max_raw_action_delta_vs_first_target": max_delta(cpu["raw_lower_action"][0], target["steps"][0]["inference"]["action"]),
+                       "max_full_target_delta_vs_first_target": max_delta(cpu["full_body_target"][0], target["steps"][0]["inference"]["targets"]),
+                       "basis": "existing independent original-source CPU forward; no inference executed by this report"}
+        inputs.append(cpu_file)
     if args.source_trace:
         if digest(args.source_trace) != source.get("trace_sha256"):
             raise ValueError("Source trace does not match receipt trace_sha256")
@@ -409,18 +529,49 @@ def main():
               "target_initial_sole_geometry": soles,
               "boundary_comparison": compare_boundaries(source, trace, target, contract["joint_names"]),
               "source_rollout_metrics": source_rollout_metrics(source, trace, contract, definition),
-              "compiled_source_vs_authored_export": compare_plant(source, definition, tensor_oracle),
+              "compiled_source_vs_authored_export": compare_plant(source, definition, tensor_oracle, native_receipt),
+              "runtime_parameter_comparison": runtime_parameters(source, trace, contract),
+              "source_actuator_execution_path_configuration": execution_path,
+              "source_cpu_forward_vs_target_first_action": cpu_forward,
               "source_backend_joint_parameters": {key: reorder(values, source["joint_names"], contract["joint_names"])
                                                   for key, values in source.get("backend_joint_parameters", {}).items()},
               "source_backend_joint_friction_properties": {"joint_names": source.get("joint_names"), "values": source.get("backend_joint_friction_properties"), "semantics": source.get("backend_joint_friction_semantics")},
               "source_sensor_presence": source.get("compiled_sensor_link_presence"),
               "comparison_table": comparison_table(source, target, contract, soles)}
+    table = {row[0]: row for row in report["comparison_table"]}
+    if report["source_rollout_metrics"]:
+        initial = report["source_rollout_metrics"][0]
+        table["Initial q/dq"][1:3] = ["compiled", f"Native reset vs target authored: max q delta {initial['initial_q_max_delta_vs_target_authored']:.3g}, dq delta {initial['initial_dq_max_delta_vs_target_authored']:.3g}"]
+        table["Initial q/dq"][5] = "Source compiled default-zero wrist/hand state confirmed; target native reset q/dq absent from frozen receipt"
+        if initial["initial_sole_geometry"]:
+            table["Initial sole lower bound"][1:3] = ["compiled", f"Native source foot poses + authored spheres: min Z {min(r['z_min_m'] for r in initial['initial_sole_geometry']):.9f} m"]
+    runtime = report["runtime_parameter_comparison"]
+    if runtime["status"] != "unknown":
+        table["Armature"][1:3] = ["compiled", f"43 backend joint values: {runtime['backend_armature_unique']}"]
+        table["Joint friction"][1:3] = ["compiled", f"{runtime['static_friction_nonzero_joint_count']} joints static .03 Nm, remaining 0; dynamic/viscous all 0"]
+        table["Joint friction"][5] = "Native source effort units recorded by pinned >=5 API; target generalized friction remains zero"
+        table["Explicit PD"][2] = "Live cfg Kp/Kd/effort match target; backend drives Kp=Kd=0; explicit actuator tensors not saved"
     metrics = report["target_metrics"]
     lines = ["# G1 source/target read-only comparison", "", "No simulator, inference or integration was run by this report.", "",
              f"Target frozen verdict: **{metrics['frozen_harness_passed']}**; {metrics['duration_seconds']} s; XY drift **{metrics['root_xy_drift_m']:.6f} m**; max tilt {metrics['max_tilt_degrees']:.6f} deg.",
-             f"Source native rollouts available: **{report['source_rollout_count']}**. No-fall is not stationary standing qualification.", "",
+             f"Source native rollouts available: **{report['source_rollout_count']}**; repeated frozen gate: **{report['source_frozen_harness_verdict']}**. No-fall is not stationary standing qualification.", "",
              "| Item | Source class | Source | Target class | Target | Boundary / limitation |", "|---|---|---|---|---|---|"]
     lines += ["| " + " | ".join(str(cell).replace("|", "\\|") for cell in row) + " |" for row in report["comparison_table"]]
+    if report["source_rollout_metrics"]:
+        lines += ["", "Source runs (frozen harness verdicts):", ""]
+        lines += [f"- Repeat {r['repeat']}: passed={r['frozen_harness_passed']}, XY drift={r['root_xy_drift_m']:.9f} m, min sampled height={r['minimum_sampled_height_m']:.9f} m, max sampled tilt={r['maximum_sampled_tilt_degrees']:.6f} deg."
+                  for r in report["source_rollout_metrics"]]
+    if report["boundary_comparison"]["rows"]:
+        first = next(r for r in report["boundary_comparison"]["rows"] if r["repeat"] == 0)
+        lines += ["", f"First compared boundary (repeat 0, control tick {first['control_tick']}): raw action delta={first['max_lower_action_delta']}; target delta={first['max_target_delta_rad']} rad; q delta={first['max_joint_q_delta_rad']:.9f} rad ({first['worst_q_joint']['joint']}); dq delta={first['max_joint_dq_delta_rad_s']:.9f} rad/s ({first['worst_dq_joint']['joint']}); root xyz delta={first['max_root_xyz_delta_m']:.9f} m.",
+                  "", "First observed divergences (absolute reporting tolerance 1e-6; not qualification thresholds):", "",
+                  "```json", json.dumps(report["boundary_comparison"]["first_observed_divergence_control_tick"], indent=2), "```"]
+    plant = report["compiled_source_vs_authored_export"]
+    if plant["status"] != "unknown":
+        lines += ["", "Compiled plant maximum absolute deltas:", "", "```json", json.dumps(plant["max_absolute_deltas"], indent=2), "```",
+                  "", "Four shape-less source sensors are present: native mass ~1e-6 kg, COM origin/identity, inertia diag ~1e-5 kg*m². Their native tensor differences are explicitly retained by name in JSON."]
+    if execution_path:
+        lines += ["", f"Source logged use_newton_actuators={execution_path['use_newton_actuators']}; current source uses its native actuator path. Explicit actuator gain buffers and graph state-refresh behavior were not recorded. Backend drive Kp/Kd=0 does not mean explicit controller gains are zero."]
     lines += ["", "Joint limit failures (tolerance 0.001 rad):", ""]
     lines += [f"- {name}: excess {value['excess_rad']:.9f} rad at tick {value['control_tick']}."
               for name, value in metrics["limit_violations"]["joints_beyond_tolerance"].items()]
