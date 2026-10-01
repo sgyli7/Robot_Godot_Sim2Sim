@@ -5,9 +5,13 @@
 //! behavior; this module never manufactures a successful task result.
 
 mod action;
+mod client;
 mod observation;
 mod queue;
+mod worker;
 
 pub use action::*;
+pub use client::*;
 pub use observation::*;
 pub use queue::*;
+pub use worker::*;
