@@ -240,6 +240,12 @@ class HttpFixtureTests(unittest.TestCase):
                 reply = connection.getresponse()
                 self.assertEqual(reply.status, expected)
                 reply.read()
+            # Reading the reply can precede the handler's finally/slot release.
+            # Close both explicit handler gates before the next sequential probe.
+            for _ in range(2):
+                self.assertTrue(self.server.handler_slots.acquire(timeout=2))
+            for _ in range(2):
+                self.server.handler_slots.release()
         self.assertEqual(self.policy.calls, 0)
 
 
