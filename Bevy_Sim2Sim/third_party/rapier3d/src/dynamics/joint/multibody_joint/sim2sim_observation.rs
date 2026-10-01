@@ -74,6 +74,8 @@ pub struct LimitRowTraceSample {
     pub joint_local_dof: usize,
     /// Row's DOF index within the multibody articulation.
     pub backend_dof: usize,
+    /// Signed unit Jacobian entry; predictive lower stops use -1.
+    pub jacobian_sign: Real,
     /// Generalized coordinate at this checkpoint.
     pub coordinate: Real,
     /// Generalized solver velocity at this checkpoint.
@@ -86,6 +88,28 @@ pub struct LimitRowTraceSample {
     pub impulse: Real,
     /// Nonnegative upper-limit or nonpositive lower-limit impulse bounds.
     pub impulse_bounds: [Real; 2],
+}
+
+/// One original impulse-joint row acting on a multibody's second-side block.
+/// For a same-owner loop this block is the actual relative Jacobian J2-J1.
+/// Only fixed/empty first blocks are supported by this diagnostic.
+#[cfg(feature = "sim2sim-limit-row-trace")]
+#[derive(Clone, Debug)]
+pub struct NativeJointRowTraceSample {
+    /// Existing staged barrier, without an added solve or integration.
+    pub phase: LimitRowTracePhase,
+    /// Existing temporal substep ordinal.
+    pub substep_id: usize,
+    /// Original solver row index.
+    pub row_index: usize,
+    /// Original impulse-joint graph index.
+    pub joint_index: usize,
+    /// Original impulse-joint DOF index, before any numerical row transform.
+    pub joint_local_dof: usize,
+    /// Raw accumulated native lambda at this barrier.
+    pub impulse: Real,
+    /// Generalized impulse -J2^T*lambda on this owned second-side block.
+    pub generalized_impulse_side2: Vec<Real>,
 }
 
 /// Partial measurements from one completed full pipeline step.
@@ -120,6 +144,9 @@ pub struct MultibodyObservation {
     /// Stage-specific internal limit rows, only when the separate trace feature is enabled.
     #[cfg(feature = "sim2sim-limit-row-trace")]
     pub limit_row_timing: Vec<LimitRowTraceSample>,
+    /// Original impulse-joint rows at the same diagnostic barriers.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub joint_row_timing: Vec<NativeJointRowTraceSample>,
     /// Number of recorded native dry-friction row sides.
     pub own_dry_friction_row_side_count: usize,
     /// Whether the existing implicit-Coriolis energy guard was evaluated.
@@ -244,6 +271,38 @@ impl MultibodyJointSet {
         substep_id: usize,
     ) {
         for (row_index, constraint) in constraints.iter().enumerate() {
+            if let WritebackId::Dof(joint_local_dof) = constraint.writeback_id
+                && constraint.joint_id != usize::MAX
+                && !constraint.is_rigid_body2
+                && constraint.ndofs1 == 0
+                && constraint.solver_vel1 == u32::MAX
+                && let Some(root) = roots.iter().find(|root| {
+                    let multibody = &self.multibodies[root.multibody.0];
+                    multibody.solver_id == constraint.solver_vel2
+                        && multibody.ndofs() == constraint.ndofs2
+                })
+                && let Some(row) = constraint
+                    .j_id2
+                    .checked_add(constraint.ndofs2)
+                    .and_then(|end| jacobians.get(constraint.j_id2..end))
+            {
+                let sample = NativeJointRowTraceSample {
+                    phase,
+                    substep_id,
+                    row_index,
+                    joint_index: constraint.joint_id,
+                    joint_local_dof,
+                    impulse: constraint.impulse,
+                    generalized_impulse_side2: row
+                        .iter()
+                        .map(|j| -j * constraint.impulse)
+                        .collect(),
+                };
+                self.multibodies[root.multibody.0]
+                    .sim2sim_observation
+                    .joint_row_timing
+                    .push(sample);
+            }
             let WritebackId::Limit(joint_local_dof) = constraint.writeback_id else {
                 continue;
             };
@@ -269,13 +328,15 @@ impl MultibodyJointSet {
             else {
                 continue;
             };
-            let Some(backend_dof) = row.iter().position(|value| *value == 1.0) else {
+            let Some(backend_dof) = row.iter().position(|value| value.abs() == 1.0) else {
                 continue;
             };
             // Native internal limit rows contain exactly one unit Jacobian entry.
-            if row.iter().enumerate().any(|(index, value)| {
-                index != backend_dof && *value != 0.0
-            }) {
+            if row
+                .iter()
+                .enumerate()
+                .any(|(index, value)| index != backend_dof && *value != 0.0)
+            {
                 continue;
             }
             let multibody = &self.multibodies[root.multibody.0];
@@ -294,8 +355,8 @@ impl MultibodyJointSet {
                 continue;
             };
             let coordinate = link.joint().coords()[axis];
-            let Some(&generalized_velocity) = solver_velocities
-                .get(constraint.solver_vel2 as usize + backend_dof)
+            let Some(&generalized_velocity) =
+                solver_velocities.get(constraint.solver_vel2 as usize + backend_dof)
             else {
                 continue;
             };
@@ -305,6 +366,7 @@ impl MultibodyJointSet {
                 row_index,
                 joint_local_dof,
                 backend_dof,
+                jacobian_sign: row[backend_dof],
                 coordinate,
                 generalized_velocity,
                 rhs: constraint.rhs,

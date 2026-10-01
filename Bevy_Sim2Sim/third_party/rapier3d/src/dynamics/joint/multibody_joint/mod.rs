@@ -5,10 +5,12 @@
 mod sim2sim_observation;
 #[cfg(all(feature = "alloc", feature = "sim2sim-observation"))]
 pub use sim2sim_observation::MultibodyObservation;
-#[cfg(all(feature = "alloc", feature = "sim2sim-limit-row-trace"))]
-pub use sim2sim_observation::{LimitRowTracePhase, LimitRowTraceSample};
 #[cfg(all(feature = "alloc", feature = "sim2sim-observation"))]
-pub(crate) use sim2sim_observation::{ContactObservationManifest, ContactConstraintIdentity, ContactSideOwner};
+pub(crate) use sim2sim_observation::{
+    ContactConstraintIdentity, ContactObservationManifest, ContactSideOwner,
+};
+#[cfg(all(feature = "alloc", feature = "sim2sim-limit-row-trace"))]
+pub use sim2sim_observation::{LimitRowTracePhase, LimitRowTraceSample, NativeJointRowTraceSample};
 
 #[cfg(feature = "alloc")]
 pub use self::multibody::{Multibody, MultibodyDofCoupling};
@@ -21,12 +23,14 @@ pub use self::multibody_joint_handle::{MultibodyIndex, MultibodyJointHandle};
 pub use self::multibody_joint_set::{MultibodyJointSet, MultibodyLinkId};
 #[cfg(feature = "alloc")]
 pub use self::multibody_link::MultibodyLink;
+#[cfg(all(feature = "alloc", feature = "sim2sim-source-limit-probe"))]
+pub(crate) use self::unit_multibody_joint::{
+    SourceLimitProbe, unit_joint_source_limit_probe_constraint,
+};
 #[cfg(feature = "alloc")]
 pub use self::unit_multibody_joint::{
     unit_joint_friction_constraint, unit_joint_limit_constraint, unit_joint_motor_constraint,
 };
-#[cfg(all(feature = "alloc", feature = "sim2sim-source-limit-probe"))]
-pub(crate) use self::unit_multibody_joint::{SourceLimitProbe, unit_joint_source_limit_probe_constraint};
 
 #[cfg(feature = "alloc")]
 mod multibody;

@@ -19,3 +19,28 @@ The runtime pipeline preserves the upstream fixed-target cache across force, tor
 `src/dynamics/ccd/ccd_solver.rs` adds an internal invalidation method and test-only build counter; `src/pipeline/physics_pipeline/substep.rs` classifies scene changes and invalidates before the CCD branch. Regression tests cover torque-only reuse, inactive-CCD collection avoidance, and geometry invalidation before a later sweep. These runtime changes apply independently of the observation features.
 
 The empty local `[workspace]` in `Cargo.toml` permits the vendored backend's regression tests to run independently from the parent workspace. It does not change its dependency or feature defaults.
+
+## Explicit predictive multibody stops
+
+`MultibodyJoint::set_predictive_limits_enabled` defaults off on every joint.
+When explicitly selected, each limited scalar coordinate emits two native
+unilateral rows enforcing `min <= q + dt*v <= max` at the original bounds.
+They use the existing augmented mass, drive, damping, solver and one integration;
+no coordinate overwrite, extra time step or stop-position margin is introduced.
+Relative CFM `1e-7` (absolute floor `1e-12`) regularizes redundant rigid stops.
+The rows keep their velocity-cap reference in the final stabilization pass.
+The existing single-row path is retained when this option is off. The source-limit
+diagnostic and predictive mode reject simultaneous selection on one joint.
+
+The bounded Goose development probe selects this mode with `--limit-mode predictive`.
+No production robot assembly enables it yet. Primitive regressions in the
+simulation crate check unchanged default crossing, one-step stopping, unchanged
+interior motion, reachable endpoints, and unforced kinetic-energy dissipation.
+
+With the existing default-disabled `sim2sim-limit-row-trace` feature, the same
+three staged barriers also copy original impulse-joint rows with a multibody
+second block and an empty/fixed first block. For same-owner loops the copied
+block is the native relative Jacobian. Raw lambda and signed generalized
+impulse are observed before position integration and after relaxation.
+Internal limit trace now recognizes both signed unit Jacobians, including
+predictive lower-stop rows. This instrumentation only reads solver state.

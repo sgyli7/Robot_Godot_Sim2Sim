@@ -1,4 +1,5 @@
 #![allow(missing_docs)] // For downcast.
+// Local modification: explicitly selected predictive hard-stop rows.
 
 use crate::dynamics::integration_parameters::SpringCoefficients;
 use crate::dynamics::joint::MultibodyLink;
@@ -121,6 +122,21 @@ pub fn unit_joint_limit_constraint(
     insert_at: &mut usize,
     softness: SpringCoefficients<Real>,
 ) {
+    if link.joint.predictive_limits_enabled() {
+        unit_joint_predictive_limit_constraints(
+            params,
+            multibody,
+            link,
+            limits,
+            curr_pos,
+            dof_id,
+            j_id,
+            jacobians,
+            constraints,
+            insert_at,
+        );
+        return;
+    }
     let ndofs = multibody.ndofs();
     let min_enabled = curr_pos < limits[0];
     let max_enabled = limits[1] < curr_pos;
@@ -172,6 +188,61 @@ pub fn unit_joint_limit_constraint(
     *insert_at += 1;
 
     *j_id += 2 * ndofs;
+}
+
+/// Two native one-sided rows constrain this step's integrated coordinate.
+/// Upper: v <= (max-q)/dt. Lower: -v <= (q-min)/dt.
+/// Their positive impulses oppose the corresponding outward velocity.
+/// The tiny relative CFM regularizes numerical redundant stops, not a new
+/// physical spring. Both rows remain in the final stabilization pass so a
+/// velocity permitted to reach a stop is not spuriously cancelled or boosted.
+#[allow(clippy::too_many_arguments)]
+fn unit_joint_predictive_limit_constraints(
+    params: &IntegrationParameters,
+    multibody: &Multibody,
+    link: &MultibodyLink,
+    limits: [Real; 2],
+    curr_pos: Real,
+    dof_id: usize,
+    j_id: &mut usize,
+    jacobians: &mut DVector,
+    constraints: &mut [GenericJointConstraint],
+    insert_at: &mut usize,
+) {
+    let ndofs = multibody.ndofs();
+    for (direction, gap) in [(1.0, limits[1] - curr_pos), (-1.0, curr_pos - limits[0])] {
+        jacobians.rows_mut(*j_id, ndofs * 2).fill(0.0);
+        let dof_j_id = *j_id + dof_id + link.assembly_id;
+        jacobians[dof_j_id] = direction;
+        jacobians[dof_j_id + ndofs] = direction;
+        multibody
+            .inv_augmented_mass()
+            .solve_mut(&mut jacobians.rows_mut(*j_id + ndofs, ndofs));
+        let lhs = direction * jacobians[dof_j_id + ndofs];
+        let cfm_gain = (1e-7 * lhs).max(1e-12);
+        let rhs = -gap / params.dt;
+        constraints[*insert_at] = GenericJointConstraint {
+            is_rigid_body1: false,
+            solver_vel1: u32::MAX,
+            ndofs1: 0,
+            j_id1: 0,
+            is_rigid_body2: false,
+            solver_vel2: multibody.solver_id,
+            ndofs2: ndofs,
+            j_id2: *j_id,
+            joint_id: usize::MAX,
+            impulse: 0.0,
+            impulse_bounds: [0.0, Real::MAX],
+            inv_lhs: crate::utils::inv(lhs + cfm_gain),
+            rhs,
+            rhs_wo_bias: rhs,
+            cfm_coeff: 0.0,
+            cfm_gain,
+            writeback_id: WritebackId::Limit(dof_id),
+        };
+        *insert_at += 1;
+        *j_id += 2 * ndofs;
+    }
 }
 
 /// Generates the dry-friction (MuJoCo `frictionloss`) velocity constraint for

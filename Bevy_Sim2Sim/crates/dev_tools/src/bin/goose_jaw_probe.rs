@@ -49,6 +49,7 @@ impl JawFixture {
         initial: f32,
         pgs: usize,
         pin_basis: &str,
+        predictive_limits: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut simulation = SimulationWorld::new_with_profile(PhysicsClockProfile::Goose50);
         let world = &mut simulation.world;
@@ -164,11 +165,11 @@ impl JawFixture {
             // These are the physical source armatures, never M+h*C augmentation.
             multibody.armature_mut()[slot] = joint.armature as f32;
             multibody.frictions_mut()[slot] = joint.frictionloss as f32;
-            multibody
-                .link_mut(link_id)
-                .unwrap()
-                .joint
-                .apply_displacement(&[displacement]);
+            let native_joint = &mut multibody.link_mut(link_id).unwrap().joint;
+            if !native_joint.set_predictive_limits_enabled(predictive_limits) {
+                return Err("conflicting native limit experiment".into());
+            }
+            native_joint.apply_displacement(&[displacement]);
         }
         // Initial conditions only. All subsequent poses come from native integration.
         multibody.forward_kinematics(&world.bodies, true);
@@ -252,6 +253,70 @@ impl JawFixture {
             "coupler_jaw_error_rad":q[2]+q[0],"output_pin_distance_m":(jaw_pin-coupler_pin).length(),
             "jaw_output_pin_world_m":to_source(jaw_pin),"coupler_output_pin_world_m":to_source(coupler_pin),
             "limit_violation_rad":violation})
+    }
+
+    #[cfg(feature = "sim2sim_limit_row_trace")]
+    fn integration_stage_rows(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        use rapier3d::dynamics::LimitRowTracePhase;
+        let (multibody, _) = self
+            .simulation
+            .world
+            .multibody_joints
+            .get(self.joints[0])
+            .unwrap();
+        let observation = multibody
+            .sim2sim_observation()
+            .ok_or("native row observation is not valid")?;
+        let pin_rows: Vec<_> = observation
+            .joint_row_timing
+            .iter()
+            .filter(|sample| sample.phase == LimitRowTracePhase::AfterBiasedSolve)
+            .collect();
+        if pin_rows.len() != 2
+            || pin_rows.iter().any(|s| {
+                s.substep_id != 0
+                    || s.joint_index != pin_rows[0].joint_index
+                    || s.joint_local_dof > 1
+                    || s.generalized_impulse_side2.len() != 3
+                    || !s.impulse.is_finite()
+            })
+        {
+            return Err("integration-stage pin row coverage mismatch".into());
+        }
+        let mut impulses = [0.0_f32; 2];
+        let mut generalized = serde_json::Map::new();
+        for row in &pin_rows {
+            impulses[row.joint_local_dof] = row.impulse;
+        }
+        for (name, handle) in JOINT_NAMES.iter().zip(&self.joints) {
+            let (_, link_id) = self.simulation.world.multibody_joints.get(*handle).unwrap();
+            let slot = multibody.link(link_id).unwrap().assembly_id();
+            generalized.insert(
+                (*name).into(),
+                json!(
+                    pin_rows
+                        .iter()
+                        .map(|r| r.generalized_impulse_side2[slot])
+                        .sum::<f32>()
+                ),
+            );
+        }
+        let limits: Vec<_> = observation
+            .limit_row_timing
+            .iter()
+            .filter(|s| s.phase == LimitRowTracePhase::AfterBiasedSolve)
+            .map(|s| {
+                json!({
+                "row_index":s.row_index,"substep_id":s.substep_id,"backend_dof":s.backend_dof,
+                "coordinate":s.coordinate,"solver_velocity":s.generalized_velocity,
+                "jacobian_sign":s.jacobian_sign,"rhs":s.rhs,"impulse":s.impulse,
+                "generalized_impulse_nm_s":-s.jacobian_sign*s.impulse})
+            })
+            .collect();
+        Ok(
+            json!({"phase":"after_biased_solve_before_position_integration","epoch":observation.epoch,
+            "pin_impulses_n_s":impulses,"pin_generalized_impulse_nm_s":generalized,"limit_rows":limits}),
+        )
     }
 
     fn case(
@@ -365,6 +430,18 @@ impl JawFixture {
                     })
                     .collect::<serde_json::Map<_, _>>()
             );
+            #[cfg(feature = "sim2sim_limit_row_trace")]
+            {
+                let native_rows = self.integration_stage_rows()?;
+                let values: [f32; 2] =
+                    serde_json::from_value(native_rows["pin_impulses_n_s"].clone())?;
+                let integration_force_on_jaw = -(pin_frame.rotation
+                    * Vector::new(values[0], values[1], 0.0))
+                    / self.simulation.configuration().dt;
+                row["integration_stage_pin_force_on_jaw_world_n"] =
+                    json!(to_source(integration_force_on_jaw));
+                row["integration_stage_native_rows"] = native_rows;
+            }
             rows.push(row);
         }
         let maximum = |name: &str| {
@@ -433,6 +510,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !["source_axes", "coupler_axis"].contains(&pin_basis) {
         return Err("pin basis must be source_axes or coupler_axis".into());
     }
+    let limit_mode = option("--limit-mode")
+        .map(String::as_str)
+        .unwrap_or("original");
+    if !["original", "predictive"].contains(&limit_mode) {
+        return Err("limit mode must be original or predictive".into());
+    }
     if ![4, 8, 16, 32].contains(&pgs) || !(1..=100).contains(&ticks) {
         return Err("bounded probe requires PGS4/8/16/32, ticks1..100".into());
     }
@@ -460,6 +543,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody.rs",
         "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody_joint.rs",
         "third_party/rapier3d/src/dynamics/joint/multibody_joint/unit_multibody_joint.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/sim2sim_observation.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/mod.rs",
         "third_party/rapier3d/src/dynamics/solver/joint_constraint/generic_joint_constraint.rs",
         "third_party/rapier3d/src/dynamics/solver/joint_constraint/generic_joint_constraint_builder.rs",
     ] {
@@ -482,7 +567,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         (0.275, -4.4, 0.0, "jaw_grip_load_point"),
     ]);
     for (initial, torque, load, site) in schedule {
-        let mut fixture = JawFixture::build(&plant, grip, initial, pgs, pin_basis)?;
+        let mut fixture = JawFixture::build(
+            &plant,
+            grip,
+            initial,
+            pgs,
+            pin_basis,
+            limit_mode == "predictive",
+        )?;
         ledger = fixture.physical_ledger.clone();
         configuration = serde_json::to_value(fixture.simulation.configuration())?;
         let row = fixture.case(torque, load, site, ticks)?;
@@ -500,6 +592,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "contacts_enabled":false,"qpos_writes_after_initialization":0,"inference_count":0,"optimizer_updates":0,
         "fresh_world_per_case":true,"native_tree_hinges":3,"native_planar_pin_rows":2,"native_colliders":0,
         "pin_basis":pin_basis,
+        "limit_mode":limit_mode,"predictive_limit_rows_per_axis":if limit_mode=="predictive" {2} else {0},
+        "integration_stage_pin_rows_recorded":cfg!(feature="sim2sim_limit_row_trace"),
+        "predictive_limit_definition":"native inequalities on q+dt*v at unchanged physical bounds; CFM=max(1e-12,1e-7*row_inverse_mass)",
         "reaction_time_phase":"final native impulse after stabilization divided by live dt; world basis and lever from preintegration poses; reported pose postintegration; position-advance impulse not separately captured",
         "load_definition":"resistance opposite positive opening at actual output pin or contract grip mapped into moving jaw frame",
         "frozen_local_thresholds":{"angle_relation_rad":ANGLE_TOLERANCE_RAD,"output_pin_distance_m":PIN_TOLERANCE_M,"limit_violation_rad":LIMIT_TOLERANCE_RAD},

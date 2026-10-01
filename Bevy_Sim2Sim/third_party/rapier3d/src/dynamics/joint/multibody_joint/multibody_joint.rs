@@ -1,3 +1,4 @@
+// Local modification: per-joint opt-in predictive limits; default behavior is unchanged.
 use crate::dynamics::solver::GenericJointConstraint;
 use crate::dynamics::{
     FixedJointBuilder, GenericJoint, IntegrationParameters, Multibody, MultibodyLink,
@@ -36,6 +37,9 @@ pub struct MultibodyJoint {
     /// (same convention as [`Self::coords`]). Only meaningful where
     /// `spring_stiffness` is non-zero.
     pub(crate) spring_ref: SpatialVector,
+    /// Explicit opt-in to two unilateral velocity bounds at the actual stops.
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    predictive_limits: bool,
     /// Explicitly selected, single-axis source-limit experiment.
     #[cfg(feature = "sim2sim-source-limit-probe")]
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
@@ -52,6 +56,7 @@ impl MultibodyJoint {
             joint_rot: Rotation::IDENTITY,
             spring_stiffness: Default::default(),
             spring_ref: Default::default(),
+            predictive_limits: false,
             #[cfg(feature = "sim2sim-source-limit-probe")]
             sim2sim_source_limit_probe: None,
         }
@@ -71,6 +76,39 @@ impl MultibodyJoint {
         (self.spring_stiffness[axis], self.spring_ref[axis])
     }
 
+    /// Select native rows enforcing `min <= q + dt*v <= max` on a scalar hinge or slide.
+    /// This does not move either stop, overwrite state, or subdivide time.
+    /// Returns false for unsupported/kinematic joints, invalid finite stops,
+    /// or a conflicting source-limit diagnostic.
+    pub fn set_predictive_limits_enabled(&mut self, enabled: bool) -> bool {
+        if enabled {
+            let free_limits = self.data.limit_axes.bits() & !self.data.locked_axes.bits();
+            if self.kinematic
+                || self.ndofs() != 1
+                || free_limits == 0
+                || (0..SPATIAL_DIM).any(|axis| {
+                    free_limits & (1 << axis) != 0
+                        && (!self.data.limits[axis].min.is_finite()
+                            || !self.data.limits[axis].max.is_finite()
+                            || self.data.limits[axis].min >= self.data.limits[axis].max)
+                })
+            {
+                return false;
+            }
+        }
+        #[cfg(feature = "sim2sim-source-limit-probe")]
+        if enabled && self.sim2sim_source_limit_probe.is_some() {
+            return false;
+        }
+        self.predictive_limits = enabled;
+        true
+    }
+
+    /// Whether this joint explicitly selected the predictive native rows.
+    pub fn predictive_limits_enabled(&self) -> bool {
+        self.predictive_limits
+    }
+
     /// Select the MuJoCo-style AngX limit-row experiment on this joint only.
     #[cfg(feature = "sim2sim-source-limit-probe")]
     pub fn sim2sim_set_source_limit_probe(
@@ -80,7 +118,8 @@ impl MultibodyJoint {
         margin: Real,
         dof_invweight0: Real,
     ) -> bool {
-        let valid = solref.iter().chain(solimp.iter()).all(|v| v.is_finite())
+        let valid = !self.predictive_limits
+            && solref.iter().chain(solimp.iter()).all(|v| v.is_finite())
             && margin == 0.0
             && solref[0] > 0.0
             && solref[1] > 0.0
@@ -92,7 +131,10 @@ impl MultibodyJoint {
             && solimp[4] == 2.0
             && dof_invweight0.is_finite()
             && dof_invweight0 > 0.0
-            && self.data.limit_axes.contains(crate::dynamics::JointAxis::AngX.into());
+            && self
+                .data
+                .limit_axes
+                .contains(crate::dynamics::JointAxis::AngX.into());
         if valid {
             self.sim2sim_source_limit_probe = Some(joint::SourceLimitProbe {
                 solref,
@@ -333,7 +375,7 @@ impl MultibodyJoint {
         for i in 0..SPATIAL_DIM {
             if (locked_bits & (1 << i)) == 0 {
                 if (limit_bits & (1 << i)) != 0 {
-                    num_constraints += 1;
+                    num_constraints += if self.predictive_limits { 2 } else { 1 };
                 }
                 if (motor_bits & (1 << i)) != 0 {
                     num_constraints += 1;

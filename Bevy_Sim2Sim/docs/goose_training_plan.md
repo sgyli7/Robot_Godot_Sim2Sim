@@ -123,6 +123,8 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 | 嘴部隔离诊断 | 12 个初始角的销距误差≤1.15e−16 m；固定头、无重力／接触时动态销距最大 3.69 mm，抵抗载荷时最大 8.17 mm | 几何映射正确；原软约束在 20 ms 下是独立阻断 |
 | 嘴部离散约束对照 | 将关节阻尼与原生销／限位约束放到相同离散矩阵中求解；10 组固定头部案例、1000 次 20 ms 积分全部通过局部门槛；覆盖 20 N 载荷和 ±4.4 Nm 输入，销距最大 0.000143 mm、角关系最大 1.253e−5 rad、限位最大 1.311e−7 rad | 找到局部有效方案；尚无整机、碰撞物体、Rapier 或 GPU 资格 |
 | Rapier 同嘴夹具对照 | 保留四杆几何、质量、完整惯量、物理 armature／阻尼／摩擦，分别完成相同十组程序各 1000 次积分；默认平面基最大销距 28.026 mm，沿连杆的等价平面基降至 0.000120 mm，角关系最大 5.621e−6 rad；PGS 4 已保持闭合，PGS 8/16/32 未消除限位问题 | 定位平面约束行收敛问题；新平面基全部通过闭合分项，但仅 2/10 组完整局部通过，限位最大越界 0.153929 rad；未修改整机装配或授予 M0 资格 |
+| Rapier 预测限位 | 沿连杆平面基、PGS 4，显式启用原生双侧预测限位；十组程序、1000 次 20 ms 积分全部通过局部检查，最大销距 0.000120 mm、角关系 5.081e−6 rad、限位越界 1.863e−8 rad；两个物理端点均可到达 | 单关节显式选择，默认关闭；整机尚未启用，不继承 M0 资格 |
+| 嘴部耗散与反力 | 源端五个初始角×四个初始速度，共 2000 次无驱动积分，无异常物理动能增长；目标端已记录积分前销／限位行，开启记录前后 5000 项轨迹字段完全一致；十组共享初态首步销反力最大差 1.217e−4 Nm、角度最大差 1.181e−4 rad | 固定头、无物体接触；反力为差异报告，未设置事后验收阈值，也不要求长轨迹逐位一致 |
 | 地面可达性 | 2401 个静态蹲弯组合中 53 个夹持点在地面以上 5–50 mm，100/200/300 g 点载荷静力筛查通过 | 只是 FK、静力和几何支撑筛查；未验证碰撞、夹紧、真实起身或物体运输 |
 | 观测时效 | 已证实 `mj_step` 后派生姿态仍为积分前状态；新运行时仅刷新运动学和 COM，关闭数值异常自动重置；17 项 Python 回归通过 | 65／82 布局不变，后续收据显式记录运行时 v2 和力／姿态的时间边界 |
 
@@ -141,10 +143,14 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_verified_basis/comparison.json)、[沿连杆平面基完整轨迹](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_verified_basis/coupler_axis.json)、[PGS 收敛对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_coupler_basis/matrix.json)。最终执行源码及实际编译的 `third_party/rapier3d` 已一起冻结在 `attempts/jaw_rapier_verified_basis_code/`；收据核对源码、二进制和依赖哈希。早期辅助文件记录的是 registry 源码哈希，不能当作实际编译依赖证明；[依赖来源说明](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_verified_basis/native_dependency_provenance.json)明确实际路径。
 
-开发工具位于 `crates/dev_tools/src/bin/goose_jaw_probe.rs`，用 `--pin-basis source_axes|coupler_axis` 显式选对照；默认保留原平面基。运行时只导出已有的完整物理惯量转换，不改变整机销约束或默认模拟行为。工具每 Tick 清理旧力队列，经统一步进接口提交输入转子力矩和载荷力臂，核对一次力矩更新、一次 20 ms 积分。当前记录的销冲量是最终稳定化后的原生值，不能替代积分阶段完整反力审计。
+开发工具位于 `crates/dev_tools/src/bin/goose_jaw_probe.rs`，用 `--pin-basis source_axes|coupler_axis` 和 `--limit-mode original|predictive` 显式选对照；默认保留原平面基及原限位。整机装配暂未启用这两项实验选择。工具每 Tick 清理旧力队列，经统一步进接口提交输入转子力矩和载荷力臂，核对一次力矩更新、一次 20 ms 积分。启用 `sim2sim_limit_row_trace` 后记录积分前的原始销冲量及签名广义冲量；最终稳定化后的值仍单独保留，不混用时间边界。
 
 本检查点的 21 项 simulation 单元及 2 项 armature／完整惯量检查通过，10 项依赖外部冻结夹具的既有检查未运行；[492 项工程结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_rapier_jaw_checkpoint.json)、Rust 格式和 Git 空白检查通过。所有实验输出仍在备份目录，未占用 GPU。
 
-下一检查点的首个问题：**保留完整 0–0.55 rad 行程，在单次 20 ms 积分中用原生预测限位阻止越界，而不是在下一 Tick 才拉回？** 固定使用已验证的连杆平面基，比较原限位与显式选择的预测限位，保持同十组程序和局部门槛。补齐积分阶段反力核对和源端无外力耗散检查；源／目标局部对照合格后才创建新的整机候选。
+本轮证据：[原限位／预测限位同代码对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_predictive_stop/comparison.json)、[最终目标端局部收据及积分前反力](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_frozen_checkpoint/receipt.json)、[源端被动耗散](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_source_passive_energy/receipt.json)、[同初态首步反力比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_source_target_reaction/receipt.json)、[只读记录不改变轨迹](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_integration_reaction/trace_physics_regression.json)。源端动能扣除了数值矩阵中的 `dt*C`，保留真实 armature；20 组最大单步增量 1.278e−15 J，处于预先固定的数值容差内。
+
+本检查点的默认 simulation／armature／预测限位检查共 27 项通过，10 项外部夹具检查未运行；启用源限位及原生行记录的 5 项检查通过，原生后端 multibody 范围的 21 项检查通过。[495 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_predictive_checkpoint.json)、格式及空白检查通过。实验源码、原生依赖、模型和轨迹按实际执行哈希冻结；未使用 GPU。
+
+下一检查点的首个问题：**原 33 体模型的线性脚垫弹簧，能否与阻尼和约束一起在一次 20 ms 积分中隐式求解？** 先在脚垫夹具固定 5/10/20/30 N、释放及行程末端程序，验证物理 `K/C` 与数值矩阵分离，再做新的整机实验候选和 20 次冷重置。新的数值离散方法须独立版本化，原 v1 模型和收据保留；没有源／目标同版本物理准入和 GPU 小批量证据前不开始 PPO。嘴部仅在接入整机或物体接触后出现新失败时回到局部诊断。
 
 其后依次验证任务碰撞代理和足底完整接触实现；新代理须保留空腔、脚嘴关键表面及原碰撞过滤，报告来源映射和几何误差。足底需补摩擦、脱离后落地、行程末端和源／目标曲线对照，再接入相同版本整机与 GPU 小批量。未通过这些门槛前不占用 DGX 做 PPO。
