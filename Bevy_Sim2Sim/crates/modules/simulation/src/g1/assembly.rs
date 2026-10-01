@@ -173,11 +173,23 @@ impl G1Assembly {
         world: &mut PhysicsWorld,
         targets: &[f32],
     ) -> Result<(), RobotError> {
+        self.set_force_based_targets_with_parameters(world, targets, &homie_parameters()?)
+    }
+
+    /// Native motor rows use the caller's frozen task actuator parameters.
+    /// Shared body topology does not select a controller or its gains.
+    pub(super) fn set_force_based_targets_with_parameters(
+        &self,
+        world: &mut PhysicsWorld,
+        targets: &[f32],
+        parameters: &[actuator::IdealPd; JOINT_COUNT],
+    ) -> Result<(), RobotError> {
         if targets.len() != JOINT_COUNT || targets.iter().any(|value| !value.is_finite()) {
             return Err(invalid("G1 motor targets must be 43 finite radians"));
         }
+        validate_actuator_parameters(parameters)?;
         for (index, mapping) in self.driven.iter().enumerate() {
-            let p = actuator::parameters(index)?;
+            let p = parameters[index];
             let (tree, link_id) = world
                 .multibody_joints
                 .get_mut(mapping.handle)
@@ -237,6 +249,28 @@ pub fn build(
     initial_positions: &[f32; JOINT_COUNT],
     contact_friction: f32,
 ) -> Result<G1Assembly, RobotError> {
+    build_with_actuator_parameters(
+        world,
+        definition,
+        root,
+        initial_positions,
+        contact_friction,
+        &homie_parameters()?,
+    )
+}
+
+/// Construct the identical USD articulation with explicit source task armatures.
+/// Initial coordinates are installed once; runtime motors use the same frozen
+/// parameter array. This function never substitutes Homie gains for AGILE.
+pub fn build_with_actuator_parameters(
+    world: &mut PhysicsWorld,
+    definition: &G1Definition,
+    root: &SourcePose,
+    initial_positions: &[f32; JOINT_COUNT],
+    contact_friction: f32,
+    parameters: &[actuator::IdealPd; JOINT_COUNT],
+) -> Result<G1Assembly, RobotError> {
+    validate_actuator_parameters(parameters)?;
     if !contact_friction.is_finite()
         || contact_friction < 0.
         || initial_positions.iter().any(|q| !q.is_finite())
@@ -415,7 +449,7 @@ pub fn build(
             if link.joint().ndofs() != 1 || slot < 6 || slot >= 49 {
                 return Err(invalid("G1 hinge slot mismatch"));
             }
-            tree.armature_mut()[slot] = actuator::parameters(wbc)?.armature;
+            tree.armature_mut()[slot] = parameters[wbc].armature;
             displacement[slot] = initial_positions[wbc];
             driven.push(DrivenJoint {
                 handle: joints[id].unwrap(),
@@ -455,6 +489,35 @@ pub fn build(
     result
 }
 
+fn homie_parameters() -> Result<[actuator::IdealPd; JOINT_COUNT], RobotError> {
+    let mut parameters = [actuator::parameters(0)?; JOINT_COUNT];
+    for (index, parameter) in parameters.iter_mut().enumerate() {
+        *parameter = actuator::parameters(index)?;
+    }
+    Ok(parameters)
+}
+
+fn validate_actuator_parameters(
+    parameters: &[actuator::IdealPd; JOINT_COUNT],
+) -> Result<(), RobotError> {
+    for (index, p) in parameters.iter().enumerate() {
+        if ![p.stiffness, p.damping, p.armature]
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.)
+            || ![p.effort_limit, p.velocity_limit]
+                .iter()
+                .all(|v| v.is_finite() && *v > 0.)
+            || p.physx_friction_coefficient
+                .is_some_and(|v| !v.is_finite() || v < 0.)
+        {
+            return Err(invalid(format!(
+                "invalid source actuator parameters at joint {index}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn engine_vector(v: [f64; 3]) -> Vector {
     Vector::from_array(source_to_engine_vector(v.map(|x| x as f32)))
 }
@@ -485,6 +548,87 @@ fn invalid(message: impl Into<String>) -> RobotError {
 mod tests {
     use super::*;
     use std::{env, path::Path};
+
+    #[test]
+    fn task_actuator_parameters_reject_invalid_values() {
+        let original = homie_parameters().unwrap();
+        validate_actuator_parameters(&original).unwrap();
+        for value in [f32::NAN, f32::INFINITY, -1.] {
+            let mut changed = original;
+            changed[12].armature = value;
+            assert!(validate_actuator_parameters(&changed).is_err());
+        }
+        let mut changed = original;
+        changed[22].effort_limit = 0.;
+        assert!(validate_actuator_parameters(&changed).is_err());
+        changed = original;
+        changed[22].physx_friction_coefficient = Some(f32::NAN);
+        assert!(validate_actuator_parameters(&changed).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires frozen G1_MODEL_DIR and G1_DEFINITION_SHA256; no model calls or integrations"]
+    fn source_profiles_preserve_geometry_and_select_actuators() {
+        let definition = G1Definition::load(
+            &Path::new(&env::var("G1_MODEL_DIR").unwrap()).join("g1_physics.json"),
+            &env::var("G1_DEFINITION_SHA256").unwrap(),
+        )
+        .unwrap();
+        let root = SourcePose {
+            position: [0., 0., 0.78],
+            rotation_wxyz: [1., 0., 0., 0.],
+        };
+        let homie = homie_parameters().unwrap();
+        let mut agile = homie;
+        for (index, p) in agile.iter_mut().enumerate() {
+            *p = robot_minigame::g1::agile::parameters(index).unwrap();
+        }
+        let mut legacy = crate::SimulationWorld::with_game_frequency(50).unwrap();
+        let legacy_body = build(&mut legacy.world, &definition, &root, &[0.; 43], 0.5).unwrap();
+        let legacy_frame =
+            serde_json::to_value(legacy_body.frame(&legacy.snapshot()).unwrap()).unwrap();
+        for parameters in [&homie, &agile] {
+            let mut sim = crate::SimulationWorld::with_game_frequency(50).unwrap();
+            let body = build_with_actuator_parameters(
+                &mut sim.world,
+                &definition,
+                &root,
+                &[0.; 43],
+                0.5,
+                parameters,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(body.frame(&sim.snapshot()).unwrap()).unwrap(),
+                legacy_frame
+            );
+            body.set_force_based_targets_with_parameters(&mut sim.world, &[0.; 43], parameters)
+                .unwrap();
+            for (index, mapping) in body.driven.iter().enumerate() {
+                let (tree, link) = sim.world.multibody_joints.get(mapping.handle).unwrap();
+                assert_eq!(
+                    tree.armature()[mapping.slot].to_bits(),
+                    parameters[index].armature.to_bits()
+                );
+                let motor = &tree.link(link).unwrap().joint().data.motors[JointAxis::AngX as usize];
+                assert_eq!(
+                    motor.stiffness.to_bits(),
+                    parameters[index].stiffness.to_bits()
+                );
+                assert_eq!(motor.damping.to_bits(), parameters[index].damping.to_bits());
+                assert_eq!(
+                    motor.max_force.to_bits(),
+                    parameters[index].effort_limit.to_bits()
+                );
+                assert_eq!(motor.model, MotorModel::ForceBased);
+            }
+            assert_eq!(sim.integration_count, 0);
+            assert_eq!(sim.torque_update_count, 0);
+        }
+        assert_ne!(homie[0].armature.to_bits(), agile[0].armature.to_bits());
+        assert_ne!(homie[12].stiffness.to_bits(), agile[12].stiffness.to_bits());
+        assert_eq!(homie[15].stiffness.to_bits(), agile[15].stiffness.to_bits());
+    }
 
     #[test]
     fn opted_in_free_joint_keeps_unit_rotation_through_repeated_integration() {

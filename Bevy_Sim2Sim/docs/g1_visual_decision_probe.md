@@ -72,8 +72,18 @@ actions and zero physics integrations remain explicit. Warmup and numerical
 guard fixtures do not qualify standing, grasping, task success or a running game
 loop.
 
-The source includes guards for unchanged camera identity, mismatched native
-state, interpolation, camera-pose forgery, expiration before/after HTTP, false
-capabilities, wrong episode and output replacement. They need compilation and
-execution in the integration tree; this source-only delivery makes no claim
-that those tests or the real service invocation have already run.
+The six guards for unchanged identity, mismatched native state, interpolation,
+camera-pose forgery, expiration before/after HTTP, false capabilities, wrong
+episode and output replacement passed in the integration tree at `6fbf817`.
+At that source revision a new native Tick-zero capture reached the real local
+Qwen service through the Rust worker: one returned request, 15.235 seconds HTTP,
+18.109 seconds original image age at admission, and a valid `observe` decision.
+The unchanged image subsequently expired; the actual probe refused it before
+submission (zero client calls) and produced a safe-stop request. The model owner
+was then stopped. None of these results executes a physical skill.
+
+Frozen logs, receipts, source/binary hashes and original captures are in
+`/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_bevy_qwen_rust_001/manifest.json`.
+This is a paused initial-state observation seam. Evolving task scenes, model
+coexistence, task execution, latency percentiles and formal success rates remain
+unverified.

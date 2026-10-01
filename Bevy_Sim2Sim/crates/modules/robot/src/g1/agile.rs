@@ -41,8 +41,9 @@ pub const ACTION_SCALE: [f32; ACTION_SIZE] = [
 pub const ACTION_OFFSET: [f32; ACTION_SIZE] =
     [-0.1, -0.1, 0., 0., 0., 0., 0.3, 0.3, -0.2, -0.2, 0., 0.];
 
-/// Sensors use AGILE's source convention. COM-frame angular velocity and
-/// projected gravity are explicit rather than silently borrowed from Homie.
+/// Sensors use AGILE's source convention. COM identifies the angular-velocity
+/// origin; Isaac Lab expresses it using the root actor/link orientation, not
+/// the principal inertia axes. Projected gravity uses that same link frame.
 #[derive(Clone, Debug)]
 pub struct AgileState {
     pub positions: [f32; JOINT_COUNT],
