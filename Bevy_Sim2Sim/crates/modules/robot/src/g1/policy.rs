@@ -205,3 +205,92 @@ fn tensor(value: &ValueType, width: usize) -> Result<(), RobotError> {
 fn error(value: impl std::fmt::Display) -> RobotError {
     RobotError::Policy(value.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Executes genuine pinned ONNX files against an independent upstream Python
+    /// oracle. Explicit paths keep external model weights out of unit-test fixtures.
+    #[test]
+    #[ignore = "requires G1_ORACLE, G1_ORACLE_SHA256, G1_MODEL_DIR, G1_ORT, G1_ORT_SHA256"]
+    fn upstream_observation_and_real_onnx_parity() {
+        let variable = |name| std::env::var(name).expect(name);
+        let source = bound_bytes(
+            Path::new(&variable("G1_ORACLE")),
+            &variable("G1_ORACLE_SHA256"),
+        )
+        .unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(&source).unwrap();
+        assert_eq!(
+            receipt["arena_commit"],
+            "7d75c95934c51a0318c957a8831e862ca43c53b5"
+        );
+        let dir = std::path::PathBuf::from(variable("G1_MODEL_DIR"));
+        let mut policy = HomiePolicy::load(
+            Path::new(&variable("G1_ORT")),
+            &variable("G1_ORT_SHA256"),
+            &dir.join("stand.onnx"),
+            &dir.join("walk.onnx"),
+        )
+        .unwrap();
+        let mut history = HomieHistory::default();
+        let mut max_obs = 0_f32;
+        let mut max_action = 0_f32;
+        let mut max_target = 0_f32;
+        let mut count = 0;
+        for frame in receipt["frames"].as_array().unwrap() {
+            let vector = |name: &str| {
+                frame[name]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x.as_f64().unwrap() as f32)
+                    .collect::<Vec<_>>()
+            };
+            let state = G1State {
+                positions: vector("positions").try_into().unwrap(),
+                velocities: vector("velocities").try_into().unwrap(),
+                root_rotation_wxyz: vector("root_rotation_wxyz").try_into().unwrap(),
+                root_angular_velocity_body: vector("root_angular_velocity_body")
+                    .try_into()
+                    .unwrap(),
+            };
+            let command = G1Command {
+                navigation: vector("navigation").try_into().unwrap(),
+                pelvis_height: frame["pelvis_height"].as_f64().unwrap() as f32,
+                torso_rpy: vector("torso_rpy").try_into().unwrap(),
+                upper_positions: [0.; UPPER_COUNT],
+            };
+            for (&actual, expected) in history
+                .observe(&state, &command)
+                .unwrap()
+                .iter()
+                .zip(vector("observation"))
+            {
+                max_obs = max_obs.max((actual - expected).abs());
+            }
+            let result = policy.infer(&state, &command).unwrap();
+            assert_eq!(result.policy, frame["policy"].as_str().unwrap());
+            for (&actual, expected) in result.action.iter().zip(vector("action")) {
+                max_action = max_action.max((actual - expected).abs());
+            }
+            for (&actual, expected) in result
+                .targets
+                .iter()
+                .take(LOWER_COUNT)
+                .zip(vector("lower_targets"))
+            {
+                max_target = max_target.max((actual - expected).abs());
+            }
+            history.accept_action(result.action, &command).unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 10);
+        assert_eq!(policy.inference_count(), count);
+        println!(
+            "HOMIE_ORACLE frames={count} max_obs={max_obs:e} max_action={max_action:e} max_target={max_target:e}"
+        );
+        assert!(max_obs < 1e-5 && max_action < 1e-5 && max_target < 1e-5);
+    }
+}
