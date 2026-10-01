@@ -38,6 +38,16 @@ def command(plan: dict, index: int) -> list[str]:
 
 
 def prepare(args) -> None:
+    # A venv executable can be a symlink. Resolving it selects the base Python,
+    # which loses this environment's site-packages even though the bytes match.
+    interpreter = args.python.expanduser().absolute()
+    probe = subprocess.check_output(
+        [str(interpreter), "-c", "import sys,json,importlib.metadata as m; "
+         "print(json.dumps({'prefix':sys.prefix,'executable':sys.executable,"
+         "'versions':{n:m.version(n) for n in ['isaacsim','torch','warp-lang','onnxruntime']}}))"],
+        text=True,
+    )
+    runtime = json.loads(probe)
     # Refuse reuse: previous traces must never be overwritten by a new attempt.
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -49,7 +59,7 @@ def prepare(args) -> None:
     plan = {
         "kind": "homie_fresh_process_standing_plan", "schema_version": 1,
         "gpu_started": False, "source_stand_verified": False,
-        "python": str(args.python.resolve()), "harness": str(frozen),
+        "python": str(interpreter), "python_runtime": runtime, "harness": str(frozen),
         "harness_sha256": digest(frozen), "original_harness": str(source),
         "arena_source": str(args.arena_source.resolve()),
         "lab_source": str(args.lab_source.resolve()),
