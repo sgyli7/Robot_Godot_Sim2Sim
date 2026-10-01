@@ -57,7 +57,7 @@ fn run(report: &mut Value) -> Result<(), RobotError> {
         || input["source_control_hz"] != 50
         || input["shelf_enabled"] != true
         || input["source_standing_budget_passed"] != true
-        || input["joint_names"] != json!(JOINT_NAMES)
+        || input["joint_names"] != json!(JOINT_NAMES.as_slice())
     {
         return Err(error("unmatched original source standing sequence"));
     }
@@ -71,9 +71,8 @@ fn run(report: &mut Value) -> Result<(), RobotError> {
     }
     let config_path = env::var("G1_AGILE_CONFIG").map_err(error)?;
     let config_sha = env::var("G1_AGILE_CONFIG_SHA256").map_err(error)?;
-    let config: AgileRunnerConfig =
-        serde_json::from_slice(&bound_bytes(Path::new(&config_path), &config_sha)?)
-            .map_err(error)?;
+    let config_bytes = bound_bytes(Path::new(&config_path), &config_sha)?;
+    let config: AgileRunnerConfig = serde_json::from_slice(&config_bytes).map_err(error)?;
     let initial_root: [f64; 3] =
         serde_json::from_value(input["initial_root_position_source"].clone()).map_err(error)?;
     let initial_q: Vec<f32> =
@@ -96,7 +95,7 @@ fn run(report: &mut Value) -> Result<(), RobotError> {
     report["source_sequence_identity"] = json!({"trace_sha256":input["source_trace_sha256"],
         "receipt_sha256":input["source_receipt_sha256"],"source_head":input["source_head"]});
     report["config_sha256"] = json!(config_sha);
-    report["original_config"] = json!(config);
+    report["original_config"] = serde_json::from_slice(&config_bytes).map_err(error)?;
     let mut runner = AgileRunner::load(&config)?;
     validate_clock(runner.configuration())?;
     report["initial_frame"] = json!(runner.initial_frame()?);
