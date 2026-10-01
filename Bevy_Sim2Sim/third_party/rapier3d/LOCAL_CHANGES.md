@@ -44,3 +44,11 @@ block is the native relative Jacobian. Raw lambda and signed generalized
 impulse are observed before position integration and after relaxation.
 Internal limit trace now recognizes both signed unit Jacobians, including
 predictive lower-stop rows. This instrumentation only reads solver state.
+
+The same feature also copies the existing original and inverse-mass-weighted
+second-side Jacobian, solver velocity, RHS, CFM gain and reciprocal row inertia
+at those barriers. A feature-gated getter exposes the existing constraint mass
+matrix in native reduced-coordinate order. Neither path adds a factorization,
+solve, velocity write, position write or temporal step. These operands diagnose
+whole-body loop residuals; a small inverse-mass residual alone does not qualify
+loop convergence or physical behavior.

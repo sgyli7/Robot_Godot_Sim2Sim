@@ -110,6 +110,18 @@ pub struct NativeJointRowTraceSample {
     pub impulse: Real,
     /// Generalized impulse -J2^T*lambda on this owned second-side block.
     pub generalized_impulse_side2: Vec<Real>,
+    /// Original second-side Jacobian at this barrier.
+    pub jacobian_side2: Vec<Real>,
+    /// Native inverse-mass response to that original Jacobian.
+    pub weighted_jacobian_side2: Vec<Real>,
+    /// Original solver velocities, before position integration at the biased barrier.
+    pub solver_velocity_side2: Vec<Real>,
+    /// Original RHS at this barrier, including any remaining position bias.
+    pub rhs: Real,
+    /// Native constraint force mixing coefficient in the impulse update.
+    pub cfm_gain: Real,
+    /// Native reciprocal row inertia, including constraint force mixing.
+    pub inverse_row_inertia: Real,
 }
 
 /// Partial measurements from one completed full pipeline step.
@@ -297,6 +309,24 @@ impl MultibodyJointSet {
                         .iter()
                         .map(|j| -j * constraint.impulse)
                         .collect(),
+                    jacobian_side2: row.to_vec(),
+                    weighted_jacobian_side2: jacobians
+                        .get(
+                            constraint.j_id2 + constraint.ndofs2
+                                ..constraint.j_id2 + 2 * constraint.ndofs2,
+                        )
+                        .unwrap_or(&[])
+                        .to_vec(),
+                    solver_velocity_side2: solver_velocities
+                        .get(
+                            constraint.solver_vel2 as usize
+                                ..constraint.solver_vel2 as usize + constraint.ndofs2,
+                        )
+                        .unwrap_or(&[])
+                        .to_vec(),
+                    rhs: constraint.rhs,
+                    cfm_gain: constraint.cfm_gain,
+                    inverse_row_inertia: constraint.inv_lhs,
                 };
                 self.multibodies[root.multibody.0]
                     .sim2sim_observation

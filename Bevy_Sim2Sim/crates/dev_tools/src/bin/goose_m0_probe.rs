@@ -45,6 +45,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("20")
         .parse()?;
     let pgs: usize = option("--pgs").map(String::as_str).unwrap_or("4").parse()?;
+    let scene = option("--scene").map(String::as_str).unwrap_or("floor");
+    if !["floor", "free_fall", "zero_gravity"].contains(&scene) {
+        return Err("diagnostic scene must be floor, free_fall or zero_gravity".into());
+    }
+    let stop_scope = option("--stop-scope").map(String::as_str).unwrap_or("all");
+    if !["all", "jaw_only"].contains(&stop_scope) {
+        return Err("diagnostic stop scope must be all or jaw_only".into());
+    }
     if ticks == 0 || ticks > 100 || resets == 0 || resets > 20 || ![4, 8, 16, 32].contains(&pgs) {
         return Err("bounded M0 requires ticks1..100, cold-resets1..20, PGS4/8/16/32".into());
     }
@@ -59,6 +67,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "crates/modules/simulation/src/lib.rs",
         "crates/modules/simulation/src/fixed_step_runtime.rs",
         "crates/dev_tools/src/bin/goose_m0_probe.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody_joint.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/unit_multibody_joint.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/sim2sim_observation.rs",
+        "third_party/rapier3d/src/dynamics/solver/joint_constraint/generic_joint_constraint.rs",
+        "third_party/rapier3d/src/dynamics/solver/joint_constraint/generic_joint_constraint_builder.rs",
+        "third_party/rapier3d/src/dynamics/solver/staged_island_solver/solve.rs",
+        "third_party/rapier3d/src/dynamics/solver/staged_island_solver/worker.rs",
         "Cargo.lock",
     ];
     let code_hashes: serde_json::Map<String, Value> = code_paths
@@ -82,6 +98,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     "executable":executable,"executable_sha256":executable_sha256,
     "debug_assertions":cfg!(debug_assertions),"target_arch":std::env::consts::ARCH,
     "actuation_mode":"native prescribed effort: beak input rotor0.24Nm, other motors0; no learned actor",
+    "diagnostic_scene":scene,"floor_enabled":scene=="floor","gravity_enabled":scene!="zero_gravity",
+    "diagnostic_predictive_stop_scope":stop_scope,"numerical_contract_override":stop_scope!="all",
     "cold_reset_initial_root_lift_m":0.002,
     "checks":{
         "mass_com_full_inertia":{"status":"not_checked"},"cold_resets_single_integrations":{"status":"not_checked"},
@@ -102,6 +120,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .world
             .integration_parameters
             .num_internal_pgs_iterations = pgs;
+        if scene == "zero_gravity" {
+            simulation.world.gravity = Vector::ZERO;
+        }
         let assembly = match GooseAssembly::build(&mut simulation, &plant) {
             Ok(assembly) => assembly,
             Err(error) => {
@@ -109,6 +130,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         };
+        if stop_scope == "jaw_only" {
+            let root = simulation
+                .world
+                .multibody_joints
+                .rigid_body_link(assembly.body_handles["torso"])
+                .ok_or("Goose diagnostic root absent")?;
+            let multibody = simulation
+                .world
+                .multibody_joints
+                .get_multibody_mut(root.multibody)
+                .ok_or("Goose diagnostic multibody absent")?;
+            let links: Vec<_> = multibody
+                .links()
+                .filter(|link| {
+                    !["beak_hinge", "beak_input_rotor", "beak_coupler_link"]
+                        .iter()
+                        .any(|name| assembly.body_handles[*name] == link.rigid_body_handle())
+                })
+                .map(|link| link.link_id())
+                .collect();
+            for link in links {
+                if !multibody
+                    .link_mut(link)
+                    .unwrap()
+                    .joint
+                    .set_predictive_limits_enabled(false)
+                {
+                    return Err("Goose original nonjaw diagnostic limit rejected".into());
+                }
+            }
+        }
         if reset == 0 {
             receipt["configuration"] = serde_json::to_value(simulation.configuration())?;
             receipt["body_measurements"] = serde_json::to_value(&assembly.body_measurements)?;
@@ -123,23 +175,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             receipt["checks"]["mass_com_full_inertia"] = json!({"status":"passed",
                 "scope":"native per-body mass, COM, reconstructed full tensor at initialization; no dynamic equivalence"});
         }
-        let floor = simulation.world.bodies.insert(
-            RigidBodyBuilder::fixed()
-                .translation(Vector::new(0.0, -0.1, 0.0))
-                .additional_solver_iterations(0),
-        );
-        simulation.world.colliders.insert_with_parent(
-            ColliderBuilder::cuboid(2.0, 0.1, 2.0)
-                .density(0.0)
-                .friction(0.65)
-                .collision_groups(InteractionGroups::new(
-                    Group::GROUP_1,
-                    Group::GROUP_2,
-                    InteractionTestMode::Or,
-                )),
-            floor,
-            &mut simulation.world.bodies,
-        );
+        if scene == "floor" {
+            let floor = simulation.world.bodies.insert(
+                RigidBodyBuilder::fixed()
+                    .translation(Vector::new(0.0, -0.1, 0.0))
+                    .additional_solver_iterations(0),
+            );
+            simulation.world.colliders.insert_with_parent(
+                ColliderBuilder::cuboid(2.0, 0.1, 2.0)
+                    .density(0.0)
+                    .friction(0.65)
+                    .collision_groups(InteractionGroups::new(
+                        Group::GROUP_1,
+                        Group::GROUP_2,
+                        InteractionTestMode::Or,
+                    )),
+                floor,
+                &mut simulation.world.bodies,
+            );
+        }
         let reset_started = Instant::now();
         let mut completed = 0;
         let mut reason = None;
@@ -183,6 +237,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "qd_rad_s":state.joint_velocity_rad_s,"jaw_pin_error_m":pin_error,
                 "native_contact_pairs_pre_integration":contact_pairs,
                 "physics_wall_ms":physics_wall_ms}));
+            #[cfg(feature = "sim2sim_limit_row_trace")]
+            {
+                let root = simulation
+                    .world
+                    .multibody_joints
+                    .rigid_body_link(assembly.body_handles["torso"])
+                    .ok_or("native observation root absent")?;
+                let multibody = simulation
+                    .world
+                    .multibody_joints
+                    .get_multibody(root.multibody)
+                    .ok_or("native observation owner absent")?;
+                if let Some(observation) = multibody.sim2sim_observation() {
+                    let matrix = multibody.sim2sim_constraint_mass_matrix();
+                    let rows: Vec<_> = observation.joint_row_timing.iter().map(|row| json!({
+                        "phase":format!("{:?}",row.phase),"substep_id":row.substep_id,"joint_local_dof":row.joint_local_dof,
+                        "impulse":row.impulse,"jacobian":row.jacobian_side2,"weighted_jacobian":row.weighted_jacobian_side2,
+                        "solver_velocity":row.solver_velocity_side2,"rhs":row.rhs,"cfm_gain":row.cfm_gain,
+                        "inverse_row_inertia":row.inverse_row_inertia})).collect();
+                    let mapping: Vec<_> = multibody.links().map(|link| json!({"body":assembly.body_handles.iter()
+                        .find_map(|(name,handle)|(*handle==link.rigid_body_handle()).then_some(name)),
+                        "backend_dof_start":link.assembly_id(),"ndofs":link.joint.ndofs()})).collect();
+                    let limit_rows: Vec<_> = observation
+                        .limit_row_timing
+                        .iter()
+                        .map(|row| {
+                            json!({
+                        "phase":format!("{:?}",row.phase),"row_index":row.row_index,
+                        "backend_dof":row.backend_dof,"jacobian_sign":row.jacobian_sign,
+                        "coordinate":row.coordinate,
+                        "solver_velocity":row.generalized_velocity,"rhs":row.rhs,
+                        "rhs_without_bias":row.rhs_without_bias,"impulse":row.impulse,
+                        "impulse_bounds":row.impulse_bounds})
+                        })
+                        .collect();
+                    trace.last_mut().unwrap()["native_coupled_solve"] = json!({
+                        "valid":true,"epoch":observation.epoch,"dt_s":observation.full_step_dt(),
+                        "energy_guard_fallback":observation.energy_guard_fallback,
+                        "energy_guard_acceleration_cleared":observation.energy_guard_acceleration_cleared,
+                        "mass_matrix_phase":"native constraint matrix last computed before integration",
+                        "mass_matrix":(0..matrix.nrows()).map(|i|matrix.row(i).iter().copied().collect::<Vec<_>>()).collect::<Vec<_>>(),
+                        "backend_dof_mapping":mapping,"pin_rows":rows,"limit_rows":limit_rows});
+                } else {
+                    trace.last_mut().unwrap()["native_coupled_solve"] = json!({"valid":false});
+                }
+            }
             if !pin_error.is_finite()
                 || state
                     .joint_position_rad
@@ -213,7 +313,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     times.sort_by(f64::total_cmp);
     let actual_resets = receipt["resets"].as_array().map_or(0, Vec::len);
     let finished = failures.is_empty() && actual_resets == resets && trace.len() == resets * ticks;
-    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 {"passed"} else if finished {"partial"} else {"failed"},
+    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" {"passed"} else if finished {"partial"} else {"failed"},
         "measurement_passed":finished,"scope":"fresh_world_reinitialization; same-world scene retention/handle cleanup not tested",
         "reset_count":actual_resets,"requested_resets":resets,"requested_ticks_per_reset":ticks,
         "completed_integrations":trace.len(),"failures":failures,

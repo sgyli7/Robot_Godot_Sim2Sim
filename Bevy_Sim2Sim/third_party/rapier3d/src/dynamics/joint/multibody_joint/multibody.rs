@@ -380,6 +380,13 @@ impl Multibody {
         &self.inv_augmented_mass
     }
 
+    /// Read the existing constraint mass matrix; no factorization or solve is added.
+    /// Rows retain the backend's kinematic-reduced ordering and last solve phase.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub fn sim2sim_constraint_mass_matrix(&self) -> &DMatrix<Real> {
+        &self.augmented_mass
+    }
+
     /// The first link of this multibody.
     #[inline]
     pub fn root(&self) -> &MultibodyLink {
