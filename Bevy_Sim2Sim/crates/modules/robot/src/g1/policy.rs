@@ -27,6 +27,7 @@ pub struct HomiePolicy {
     walk: Session,
     history: HomieHistory,
     inference_count: u64,
+    inference_attempt_count: u64,
     halted: bool,
 }
 
@@ -67,6 +68,7 @@ impl HomiePolicy {
             walk,
             history: HomieHistory::default(),
             inference_count: 0,
+            inference_attempt_count: 0,
             halted: false,
         })
     }
@@ -103,6 +105,8 @@ impl HomiePolicy {
         } else {
             &mut self.walk
         };
+        // Count actual ORT calls separately from validated accepted outputs.
+        self.inference_attempt_count += 1;
         let outputs = session
             .run(ort::inputs! { "input" => input })
             .map_err(error)?;
@@ -137,8 +141,14 @@ impl HomiePolicy {
         Ok(())
     }
 
+    /// Successful outputs whose shape/values and history update were accepted.
     pub fn inference_count(&self) -> u64 {
         self.inference_count
+    }
+
+    /// Actual ORT session calls, including calls that returned an error.
+    pub fn inference_attempt_count(&self) -> u64 {
+        self.inference_attempt_count
     }
 }
 
