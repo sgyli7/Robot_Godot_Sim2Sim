@@ -36,6 +36,8 @@ pub struct G1RunnerConfig {
 #[derive(Clone, Debug, Serialize)]
 pub struct G1Step {
     pub frame: G1BodyFrame,
+    /// Native state sampled at the same completed boundary as `frame`.
+    pub measurement: G1Measurement,
     pub joint_positions: Vec<f32>,
     pub joint_velocities: Vec<f32>,
     pub applied_torques: Vec<f32>,
@@ -47,6 +49,20 @@ pub struct G1Step {
     pub integration_count: u64,
     pub torque_update_count: u64,
     pub step_configuration: StepConfiguration,
+}
+
+/// Self state from the owner world, including its real pre-integration state.
+/// No task-object poses or identities enter this observation.
+#[derive(Clone, Debug, Serialize)]
+pub struct G1Measurement {
+    pub episode_id: u64,
+    pub source_tick: u64,
+    pub sim_time_ns: u64,
+    pub joint_positions: Vec<f32>,
+    pub joint_velocities: Vec<f32>,
+    pub root_rotation_wxyz: [f32; 4],
+    pub root_angular_velocity_body: [f32; 3],
+    pub root_velocity_source: [f32; 3],
 }
 
 /// Readable even after a failed boundary; no rendered-frame counts are inferred.
@@ -121,6 +137,30 @@ impl G1Runner {
     pub fn initial_frame(&self) -> Result<G1BodyFrame, RobotError> {
         self.completed_frame(&self.simulation.snapshot())
     }
+
+    /// Read only; loading a world never manufactures an inferred or stepped state.
+    pub fn measurement(&self) -> Result<G1Measurement, RobotError> {
+        let state = self.assembly.state(&self.simulation.world)?;
+        Ok(G1Measurement {
+            episode_id: self.episode_id,
+            source_tick: self.simulation.integration_count,
+            sim_time_ns: self
+                .simulation
+                .integration_count
+                .checked_mul(20_000_000)
+                .ok_or_else(|| error("G1 observation timestamp overflow"))?,
+            joint_positions: state.positions.to_vec(),
+            joint_velocities: state.velocities.to_vec(),
+            root_rotation_wxyz: state.root_rotation_wxyz,
+            root_angular_velocity_body: state.root_angular_velocity_body,
+            root_velocity_source: engine_to_source_vector(
+                self.assembly
+                    .current_root_velocity(&self.simulation.world)?
+                    .linvel
+                    .to_array(),
+            ),
+        })
+    }
     fn completed_frame(&self, snapshot: &crate::StepSnapshot) -> Result<G1BodyFrame, RobotError> {
         let mut frame = self.assembly.frame(snapshot)?;
         frame.episode_id = self.episode_id;
@@ -183,21 +223,17 @@ impl G1Runner {
         {
             return Err(error("G1 policy/torque/physics count mismatch"));
         }
-        let completed = self.assembly.state(&self.simulation.world)?;
+        let measurement = self.measurement()?;
         let root = &self.simulation.world.bodies[self.assembly.root_handle()];
         Ok(G1Step {
             frame: self.completed_frame(&snapshot)?,
-            joint_positions: completed.positions.to_vec(),
-            joint_velocities: completed.velocities.to_vec(),
+            joint_positions: measurement.joint_positions.clone(),
+            joint_velocities: measurement.joint_velocities.clone(),
             applied_torques: applied.to_vec(),
             inference,
             root_position_source: engine_to_source_vector(root.translation().to_array()),
-            root_velocity_source: engine_to_source_vector(
-                self.assembly
-                    .current_root_velocity(&self.simulation.world)?
-                    .linvel
-                    .to_array(),
-            ),
+            root_velocity_source: measurement.root_velocity_source,
+            measurement,
             root_upright_cosine: (*root.rotation() * Vector::Y).y,
             active_contact_pairs: snapshot.active_contact_pair_count,
             integration_count: snapshot.integration_count,
@@ -239,6 +275,15 @@ mod tests {
     fn real_homie_guard_rejects_after_inference_without_integration() {
         let mut runner = G1Runner::load(&config()).unwrap();
         let initial = serde_json::to_value(runner.initial_frame().unwrap()).unwrap();
+        let measurement = runner.measurement().unwrap();
+        assert_eq!(measurement.episode_id, 0);
+        assert_eq!(measurement.source_tick, 0);
+        assert_eq!(measurement.sim_time_ns, 0);
+        assert_eq!(measurement.joint_positions.len(), 43);
+        assert_eq!(measurement.joint_velocities, vec![0.; 43]);
+        assert_eq!(measurement.root_velocity_source, [0.; 3]);
+        assert_eq!(measurement.joint_positions[..15], LOWER_HOME,);
+        let initial_measurement = serde_json::to_value(measurement).unwrap();
         let mut guard_calls = 0;
         let result = runner.step_with_guard(&G1Command::default(), || {
             guard_calls += 1;
@@ -263,6 +308,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(runner.initial_frame().unwrap()).unwrap(),
             initial
+        );
+        assert_eq!(
+            serde_json::to_value(runner.measurement().unwrap()).unwrap(),
+            initial_measurement
         );
         assert!(runner.step(&G1Command::default()).is_err());
         assert_eq!(runner.progress_counts(), rejected);
