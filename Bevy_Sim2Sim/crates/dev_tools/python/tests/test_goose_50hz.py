@@ -13,6 +13,11 @@ from bevy_microduck_tools.goose.runtime import GooseSourceRuntime
 from bevy_microduck_tools.goose.task import TaskGoal
 
 
+@pytest.fixture(autouse=True)
+def native_logs_stay_in_test_temp_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
 def test_full_inertia_condensation_preserves_mass_moments():
     parts = [(2., np.array([1., 0., 0.]), np.diag([.1, .2, .3])),
              (.5, np.array([0., 2., 0.]), np.array([[.05, .01, 0.], [.01, .06, .02], [0., .02, .07]]))]
@@ -249,3 +254,73 @@ def test_pickup_relative_position_clipping_matches_rust_boundary():
     extension = goal.actor_extension(np.zeros(3), np.array([1., 0., 0., 0.]), np.eye(3), phase=0)
     np.testing.assert_array_equal(extension[:3], [20., -20., 20.])
     np.testing.assert_array_equal(extension[7:10], [-20., 20., -20.])
+
+
+def native_jaw_fixture(tmp_path):
+    # A portable pin/stops conformance fixture. The delivered-body diagnostic
+    # is separate, hash-bound evidence; these masses are explicitly synthetic.
+    xml = '''<mujoco><compiler angle="radian"/><option timestep=".02" gravity="0 0 0" integrator="implicit"/>
+    <worldbody><body name="head_roll">
+      <body name="beak_hinge" pos=".031 0 -.025">
+        <inertial mass=".124" pos=".02 0 -.01" diaginertia=".0001 .0001 .0001"/>
+        <joint name="beak_hinge" axis="0 1 0" range="0 .55" damping=".01"/>
+        <site name="jaw_output_pin" pos="-.006 0 -.010392304845413264"/>
+        <site name="jaw_grip_load_point" pos=".06 0 -.023"/>
+      </body>
+      <body name="beak_input_rotor">
+        <inertial mass=".017" pos="0 0 0" diaginertia=".00001 .00001 .00001"/>
+        <joint name="beak_input_rotor" axis="0 1 0" range="0 .55" armature=".024" damping=".001" frictionloss=".08"/>
+        <body name="beak_coupler_link" pos="-.006 0 -.010392304845413264">
+          <inertial mass=".005" pos=".015 0 -.012" diaginertia=".000001 .000001 .000001"/>
+          <joint name="beak_coupler_link" axis="0 1 0" range="-.55 0" damping=".001"/>
+          <site name="coupler_output_pin" pos=".031 0 -.025"/>
+        </body>
+      </body>
+    </body></worldbody><actuator><motor joint="beak_input_rotor"/></actuator>
+    <equality><joint joint1="beak_input_rotor" joint2="beak_hinge" solref=".002 1" solimp=".999 .9999 .0001"/></equality>
+    </mujoco>'''
+    source = tmp_path / "jaw.xml"
+    source.write_text(xml)
+    from bevy_microduck_tools.goose.mouth_constraints import derive_fixture
+    return derive_fixture(source, tmp_path/"predictive_jaw.xml", "native_pin_implicit_metric_predictive_stop")
+
+
+@pytest.mark.parametrize("torque", [4.4, -4.4])
+def test_native_pin_and_predictive_stop_preserve_full_range(tmp_path, torque):
+    from bevy_microduck_tools.goose.mouth_constraints import one_case
+    model = native_jaw_fixture(tmp_path)
+    result = one_case(model, .275, torque_nm=torque, predictive=True)
+    assert result["local_checks_passed"]
+    assert result["integrations"] == 100
+    expected = .55 if torque > 0 else 0.
+    assert result["rows"][-1]["angles_rad"]["beak_hinge"] == pytest.approx(expected, abs=1e-5)
+    assert result["rows"][-1]["time_s"] == pytest.approx(2.)
+    assert model.neq == 1  # Actual output pin; no hidden joint mimics.
+
+
+def test_native_pin_transmits_twenty_newton_resistance(tmp_path):
+    from bevy_microduck_tools.goose.mouth_constraints import one_case
+    model = native_jaw_fixture(tmp_path)
+    result = one_case(model, .275, 20., predictive=True)
+    assert result["local_checks_passed"]
+    assert max(abs(t) for row in result["rows"] for t in row["qfrc_constraint_nm"]) > .1
+    assert result["max_output_pin_distance_m"] < .0001
+
+
+def test_implicit_damping_metric_matches_physical_backward_euler():
+    import mujoco
+    from bevy_microduck_tools.goose.mouth_constraints import apply_implicit_damping_metric
+    root = ET.fromstring('''<mujoco><option timestep=".02" gravity="0 0 0"/>
+      <worldbody><body name="slider"><joint type="slide" axis="0 0 1" armature=".03" damping="2"/>
+        <inertial mass=".1" pos="0 0 0" diaginertia=".01 .01 .01"/>
+      </body></worldbody></mujoco>''')
+    apply_implicit_damping_metric(root)
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    data.qvel[0], data.qfrc_applied[0] = .8, 2.
+    mujoco.mj_step(model, data)
+    physical_inertia = .1+.03
+    expected = (physical_inertia*.8+DT*2.)/(physical_inertia+DT*2.)
+    assert data.qvel[0] == pytest.approx(expected, abs=1e-12)
+    assert data.qpos[0] == pytest.approx(DT*expected, abs=1e-12)
+    assert model.body_mass.sum() == pytest.approx(.1)
