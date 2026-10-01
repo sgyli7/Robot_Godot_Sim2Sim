@@ -1,0 +1,524 @@
+//! Byte-bound original task convex parts and mass in the owner's Rapier world.
+//!
+//! Handles and mutation remain private. Render/acceptance consumers receive
+//! immutable completed poses; decision clients receive images, never these truth
+//! samples. Source cooking is not a claim of full physics or task qualification.
+
+use std::{collections::HashSet, path::Path};
+
+use rapier3d::{
+    math::{Pose, Rotation, Vector},
+    prelude::*,
+};
+use robot_minigame::{
+    RobotError,
+    basis::{engine_to_source_vector, source_to_engine_rotation, source_to_engine_vector},
+    g1::{definition::SourcePose, policy::bound_bytes},
+};
+use serde::{Deserialize, Serialize};
+
+use crate::SimulationWorld;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum TaskObjectKind {
+    #[serde(rename = "t1_apple")]
+    Apple,
+    #[serde(rename = "t1_plate")]
+    Plate,
+    #[serde(rename = "t2_box")]
+    BrownBox,
+    #[serde(rename = "t2_bin")]
+    BlueBin,
+}
+
+impl TaskObjectKind {
+    pub fn source_sha256(self) -> &'static str {
+        match self {
+            Self::Apple => "2e0e0462c4345b340e1c6040c11abe1818437ced1db228a53ec0944001bb46d8",
+            Self::Plate => "286238c8f957e3267fa21a0003b320868130f903a4b1d991a4ffeb49faaea5a8",
+            Self::BrownBox => "50dc139612086b9483770a1abc17dc600445aa4f85323d74fa97069f7c2eb4ed",
+            Self::BlueBin => "b9ffec2e70fd009863a3fa8bd699aca808403522eafb259d5638135e63506999",
+        }
+    }
+    fn source_scale(self) -> [f64; 3] {
+        match self {
+            Self::Apple => [0.009; 3],
+            Self::Plate => [0.5; 3],
+            Self::BrownBox => [1.; 3],
+            Self::BlueBin => [4., 2., 1.],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Material {
+    static_friction: f32,
+    dynamic_friction: f32,
+    restitution: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConvexPart {
+    points: Vec<[f64; 3]>,
+    triangles: Vec<[u32; 3]>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Object {
+    kind: TaskObjectKind,
+    usd_sha256: String,
+    source_scale_override: [f64; 3],
+    mass_kg: f64,
+    center_of_mass: [f64; 3],
+    principal_inertia: [f64; 3],
+    principal_axes_wxyz: [f64; 4],
+    material: Material,
+    convex_parts: Vec<ConvexPart>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Document {
+    schema: String,
+    units: String,
+    source_query_sha256: String,
+    exporter_sha256: String,
+    source_runtime_build: String,
+    physics_parity_qualified: bool,
+    objects: Vec<Object>,
+}
+
+/// Immutable data; no runtime material, shape, mass or placement repair exists.
+pub struct TaskObjectsDefinition {
+    document: Document,
+    file_sha256: String,
+}
+
+impl TaskObjectsDefinition {
+    pub fn load(path: &Path, expected_sha256: &str) -> Result<Self, RobotError> {
+        if std::fs::metadata(path)
+            .map_err(|e| invalid(e.to_string()))?
+            .len()
+            > 32 * 1024 * 1024
+        {
+            return Err(invalid("task object definition exceeds 32 MiB"));
+        }
+        let bytes = bound_bytes(path, expected_sha256)?;
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err(invalid("task object definition exceeds 32 MiB"));
+        }
+        let document: Document =
+            serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+        Self::validate(&document)?;
+        Ok(Self {
+            document,
+            file_sha256: expected_sha256.into(),
+        })
+    }
+
+    fn validate(document: &Document) -> Result<(), RobotError> {
+        if document.schema != "native_g1_task_objects_v1"
+            || document.units != "metres_kilograms_radians_z_up"
+            || document.physics_parity_qualified
+            || document.source_runtime_build.is_empty()
+            || !sha256_text(&document.source_query_sha256)
+            || !sha256_text(&document.exporter_sha256)
+            || document.objects.len() != 4
+        {
+            return Err(invalid(
+                "invalid task object identity or qualification claim",
+            ));
+        }
+        let mut kinds = HashSet::new();
+        for object in &document.objects {
+            if !kinds.insert(object.kind)
+                || object.usd_sha256 != object.kind.source_sha256()
+                || object.source_scale_override != object.kind.source_scale()
+                || !finite_f32(&[object.mass_kg])
+                || object.mass_kg <= 0.
+                || !finite_f32(&object.center_of_mass)
+                || !finite_f32(&object.principal_inertia)
+                || object.principal_inertia.iter().any(|x| *x <= 0.)
+                || !finite_f32(&object.principal_axes_wxyz)
+                || object.convex_parts.is_empty()
+                || object.convex_parts.len() > 1024
+                || !object.material.static_friction.is_finite()
+                || !object.material.dynamic_friction.is_finite()
+                || object.material.static_friction < 0.
+                || object.material.dynamic_friction < 0.
+                || !object.material.restitution.is_finite()
+                || !(0.0..=1.0).contains(&object.material.restitution)
+            {
+                return Err(invalid("invalid task object geometry/material/mass"));
+            }
+            source_to_engine_rotation(object.principal_axes_wxyz.map(|x| x as f32))?;
+            for part in &object.convex_parts {
+                if !(4..=512).contains(&part.points.len())
+                    || part.triangles.len() < 4
+                    || part.triangles.len() > 2048
+                    || part.points.iter().any(|p| !finite_f32(p))
+                    || part.triangles.iter().any(|t| {
+                        t.iter().any(|i| *i as usize >= part.points.len())
+                            || t[0] == t[1]
+                            || t[1] == t[2]
+                            || t[2] == t[0]
+                    })
+                {
+                    return Err(invalid("invalid original cooked convex part"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn file_sha256(&self) -> &str {
+        &self.file_sha256
+    }
+
+    fn object(&self, kind: TaskObjectKind) -> &Object {
+        self.document
+            .objects
+            .iter()
+            .find(|object| object.kind == kind)
+            .expect("validated four distinct original kinds")
+    }
+}
+
+/// Placement is performed once before the first integration; there is no set-pose API.
+pub struct TaskObjectPlacement {
+    pub kind: TaskObjectKind,
+    pub root_pose: SourcePose,
+}
+
+struct Instance {
+    kind: TaskObjectKind,
+    body: RigidBodyHandle,
+    collider: ColliderHandle,
+    convex_parts: usize,
+}
+
+/// Opaque handles stay with the physics owner that constructed this scene.
+pub struct TaskObjectScene {
+    definition_sha256: String,
+    instances: Vec<Instance>,
+}
+
+/// A render/independent-acceptance sample, never a model observation field.
+#[derive(Clone, Debug, Serialize)]
+pub struct TaskObjectSample {
+    pub kind: TaskObjectKind,
+    pub translation_engine: [f32; 3],
+    pub rotation_engine_xyzw: [f32; 4],
+    pub position_source: [f32; 3],
+    pub linear_velocity_source: [f32; 3],
+    pub angular_velocity_source: [f32; 3],
+    pub mass_kg: f32,
+    pub convex_parts: usize,
+    pub dynamic: bool,
+    pub active_contact_pairs: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TaskObjectFrame {
+    pub definition_sha256: String,
+    pub episode_id: u64,
+    pub source_tick: u64,
+    pub sim_time: f64,
+    pub objects: Vec<TaskObjectSample>,
+}
+
+impl TaskObjectScene {
+    /// Owner-only startup. All shapes are prepared before adding any body, so a
+    /// failed geometry/placement check cannot leave a partially assembled scene.
+    pub fn insert_in_owner_world(
+        world: &mut SimulationWorld,
+        definition: &TaskObjectsDefinition,
+        placements: &[TaskObjectPlacement],
+    ) -> Result<Self, RobotError> {
+        if world.snapshot().integration_count != 0 || placements.is_empty() {
+            return Err(invalid(
+                "task objects can only be inserted before integration",
+            ));
+        }
+        let mut kinds = HashSet::new();
+        let mut prepared = Vec::new();
+        for placement in placements {
+            if !kinds.insert(placement.kind) || !finite_f32(&placement.root_pose.position) {
+                return Err(invalid("duplicate task kind or invalid source placement"));
+            }
+            let object = definition.object(placement.kind);
+            let mut parts = Vec::with_capacity(object.convex_parts.len());
+            for part in &object.convex_parts {
+                let vertices = part.points.iter().copied().map(engine_vector).collect();
+                let convex = SharedShape::convex_mesh(vertices, &part.triangles)
+                    .ok_or_else(|| invalid("cannot construct original cooked convex topology"))?;
+                parts.push((Pose::IDENTITY, convex));
+            }
+            let inertia = object.principal_inertia;
+            let mass = MassProperties::with_principal_inertia_frame(
+                engine_vector(object.center_of_mass),
+                object.mass_kg as f32,
+                Vector::new(inertia[0] as f32, inertia[2] as f32, inertia[1] as f32),
+                Rotation::from_array(source_to_engine_rotation(
+                    object.principal_axes_wxyz.map(|v| v as f32),
+                )?),
+            );
+            let body = RigidBodyBuilder::dynamic()
+                .pose(Pose::from_parts(
+                    engine_vector(placement.root_pose.position),
+                    Rotation::from_array(source_to_engine_rotation(
+                        placement.root_pose.rotation_wxyz.map(|v| v as f32),
+                    )?),
+                ))
+                .additional_mass_properties(mass)
+                .can_sleep(false)
+                .linear_damping(0.)
+                .angular_damping(0.)
+                .additional_solver_iterations(0);
+            let collider = ColliderBuilder::compound(parts)
+                .density(0.)
+                // These four original object materials have equal static/dynamic
+                // friction. Rapier has one coefficient; retain dynamic explicitly.
+                .friction(object.material.dynamic_friction)
+                .friction_combine_rule(CoefficientCombineRule::Average)
+                .restitution(object.material.restitution)
+                .collision_groups(InteractionGroups::new(
+                    Group::GROUP_3,
+                    Group::ALL,
+                    InteractionTestMode::And,
+                ));
+            prepared.push((placement.kind, object.convex_parts.len(), body, collider));
+        }
+        let mut instances = Vec::new();
+        for (kind, convex_parts, body, collider) in prepared {
+            let body = world.world.bodies.insert(body);
+            let collider =
+                world
+                    .world
+                    .colliders
+                    .insert_with_parent(collider, body, &mut world.world.bodies);
+            world.world.bodies[body]
+                .recompute_mass_properties_from_colliders(&world.world.colliders);
+            instances.push(Instance {
+                kind,
+                body,
+                collider,
+                convex_parts,
+            });
+        }
+        Ok(Self {
+            definition_sha256: definition.file_sha256.clone(),
+            instances,
+        })
+    }
+
+    pub fn frame(&self, world: &SimulationWorld) -> Result<TaskObjectFrame, RobotError> {
+        let snapshot = world.snapshot();
+        if snapshot.episode_step != snapshot.integration_count {
+            return Err(invalid(
+                "failed integration has no validated task object frame",
+            ));
+        }
+        let mut objects = Vec::new();
+        for instance in &self.instances {
+            let body = world
+                .world
+                .bodies
+                .get(instance.body)
+                .ok_or_else(|| invalid("stale task body handle"))?;
+            let collider = world
+                .world
+                .colliders
+                .get(instance.collider)
+                .ok_or_else(|| invalid("stale task collider handle"))?;
+            if collider.parent() != Some(instance.body)
+                || !body.is_dynamic()
+                || !body.translation().is_finite()
+                || !body.rotation().is_finite()
+                || !body.linvel().is_finite()
+                || !body.angvel().is_finite()
+            {
+                return Err(invalid("task body identity or state changed"));
+            }
+            let active_contact_pairs = world
+                .world
+                .narrow_phase
+                .contact_pairs_with(instance.collider)
+                .filter(|pair| pair.has_any_active_contact())
+                .count();
+            objects.push(TaskObjectSample {
+                kind: instance.kind,
+                translation_engine: body.translation().to_array(),
+                rotation_engine_xyzw: body.rotation().to_array(),
+                position_source: engine_to_source_vector(body.translation().to_array()),
+                linear_velocity_source: engine_to_source_vector(body.linvel().to_array()),
+                angular_velocity_source: engine_to_source_vector(body.angvel().to_array()),
+                mass_kg: body.mass(),
+                convex_parts: instance.convex_parts,
+                dynamic: body.is_dynamic(),
+                active_contact_pairs,
+            });
+        }
+        Ok(TaskObjectFrame {
+            definition_sha256: self.definition_sha256.clone(),
+            episode_id: snapshot.episode_id,
+            source_tick: snapshot.episode_step,
+            sim_time: snapshot.episode_seconds,
+            objects,
+        })
+    }
+}
+
+fn engine_vector(value: [f64; 3]) -> Vector {
+    Vector::from_array(source_to_engine_vector(value.map(|v| v as f32)))
+}
+fn finite_f32(values: &[f64]) -> bool {
+    values
+        .iter()
+        .all(|v| v.is_finite() && (*v as f32).is_finite())
+}
+fn sha256_text(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+fn invalid(message: impl Into<String>) -> RobotError {
+    RobotError::Contract(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs::OpenOptions, io::Write};
+
+    #[test]
+    #[ignore = "requires frozen original cooked objects; performs 150 actual native integrations"]
+    fn real_native_task_object_contact_diagnostic() {
+        let path = std::env::var("G1_TASK_OBJECTS_DEFINITION").expect("definition path");
+        let sha = std::env::var("G1_TASK_OBJECTS_SHA256").expect("definition hash");
+        let output = std::env::var("G1_TASK_OBJECTS_OUTPUT").expect("new output");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .unwrap();
+        let mut receipt = serde_json::json!({"qualified":false,"source_task_physics_parity_proven":false,
+            "robot_present":false,"policy_inferences":0,"executor_actions":0,"source_commit":std::env::var("G1_CODE_COMMIT").ok(),"definition_sha256":sha});
+        let result = (|| -> Result<(), RobotError> {
+            let definition = TaskObjectsDefinition::load(Path::new(&path), &sha)?;
+            let mut world =
+                SimulationWorld::with_game_frequency(50).map_err(|e| invalid(e.to_string()))?;
+            world
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations = 4;
+            let floor = world
+                .world
+                .bodies
+                .insert(RigidBodyBuilder::fixed().translation(Vector::new(0., -0.25, 0.)));
+            world.world.colliders.insert_with_parent(
+                ColliderBuilder::cuboid(10., 0.25, 10.).friction(1.),
+                floor,
+                &mut world.world.bodies,
+            );
+            let kinds = [
+                TaskObjectKind::Apple,
+                TaskObjectKind::Plate,
+                TaskObjectKind::BrownBox,
+                TaskObjectKind::BlueBin,
+            ];
+            let placements: Vec<_> = kinds
+                .into_iter()
+                .enumerate()
+                .map(|(i, kind)| TaskObjectPlacement {
+                    kind,
+                    root_pose: SourcePose {
+                        position: [i as f64 - 1.5, 0., 0.3],
+                        rotation_wxyz: [1., 0., 0., 0.],
+                    },
+                })
+                .collect();
+            let scene =
+                TaskObjectScene::insert_in_owner_world(&mut world, &definition, &placements)?;
+            receipt["initial"] = serde_json::to_value(scene.frame(&world)?).unwrap();
+            let bin = scene
+                .instances
+                .iter()
+                .find(|i| i.kind == TaskObjectKind::BlueBin)
+                .unwrap();
+            let box_instance = scene
+                .instances
+                .iter()
+                .find(|i| i.kind == TaskObjectKind::BrownBox)
+                .unwrap();
+            let bin_center_filled = world.world.colliders[bin.collider]
+                .shape()
+                .contains_local_point(engine_vector([0., 0., 0.04]));
+            let box_center_filled = world.world.colliders[box_instance.collider]
+                .shape()
+                .contains_local_point(Vector::ZERO);
+            receipt["bin_probe_source"] = serde_json::json!([0., 0., 0.04]);
+            receipt["bin_open_center_empty"] = serde_json::json!(!bin_center_filled);
+            receipt["closed_box_center_filled"] = serde_json::json!(box_center_filled);
+            if bin_center_filled || !box_center_filled {
+                return Err(invalid(
+                    "native task topology sealed the bin or inverted the box",
+                ));
+            }
+            receipt["frames"] = serde_json::json!([]);
+            for _ in 0..150 {
+                let boundary = world.step_with_torques(&[]);
+                receipt["integrations"] = serde_json::json!(world.snapshot().integration_count);
+                receipt["final_configuration"] =
+                    serde_json::to_value(world.configuration()).unwrap();
+                receipt["world_counts"] = serde_json::to_value(world.counts()).unwrap();
+                boundary.map_err(|e| invalid(e.to_string()))?;
+                receipt["frames"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::to_value(scene.frame(&world)?).unwrap());
+            }
+            receipt["final_configuration"] = serde_json::to_value(world.configuration()).unwrap();
+            receipt["world_counts"] = serde_json::to_value(world.counts()).unwrap();
+            receipt["integrations"] = serde_json::json!(world.snapshot().integration_count);
+            let final_frame = scene.frame(&world)?;
+            if final_frame.objects.iter().any(|o| {
+                o.active_contact_pairs == 0
+                    || o.linear_velocity_source
+                        .iter()
+                        .map(|v| v * v)
+                        .sum::<f32>()
+                        .sqrt()
+                        > 0.02
+                    || o.angular_velocity_source
+                        .iter()
+                        .map(|v| v * v)
+                        .sum::<f32>()
+                        .sqrt()
+                        > 0.1
+            }) {
+                return Err(invalid(
+                    "original task objects did not settle in physical contact",
+                ));
+            }
+            if world.configuration().num_solver_iterations != 1
+                || world.configuration().max_ccd_substeps != 1
+                || world.snapshot().integration_count != 150
+            {
+                return Err(invalid(
+                    "task object diagnostic altered single integration clock",
+                ));
+            }
+            Ok(())
+        })();
+        receipt["success"] = serde_json::json!(result.is_ok());
+        if let Err(error) = &result {
+            receipt["error"] = serde_json::json!(error.to_string());
+        }
+        file.write_all(serde_json::to_string(&receipt).unwrap().as_bytes())
+            .unwrap();
+        file.write_all(b"\n").unwrap();
+        result.unwrap();
+    }
+}
