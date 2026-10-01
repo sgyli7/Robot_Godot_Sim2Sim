@@ -27,6 +27,7 @@ FROZEN_ASSETS = {
     "stand.onnx": "f645da599d4ca3d29ed273c8f4712620bb680d34977469ca3aeabe5bb9631c18",
     "walk.onnx": "7c82255b6905ffcc4468fa7f8ddcf7b70db168cf1042107ccab887cb6a8e5407",
     "g1_29dof_with_hand_rev_1_0.usd": "a7a2bab76981d19a1d76adecdfffec9b52afa34df9ba8e288ccedf410d3ce6bd",
+    "g1_29dof_with_hand.urdf": "3dcb9c361753f464fa1f0238cdf800af842909628fd153733075607881c12d62",
 }
 
 
@@ -109,6 +110,8 @@ def run_source(args, receipt):
         from isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg import set_control_rate_50hz
         from isaaclab_arena.scene.scene import Scene
         from isaaclab_arena.utils.pose import Pose
+        from isaaclab.utils.assets import retrieve_file_path
+        from isaaclab_arena.assets.nucleus import ARENA_NUCLEUS_DIR
 
         def tensor(value):
             if isinstance(value, torch.Tensor):
@@ -122,6 +125,9 @@ def run_source(args, receipt):
             cfg.episode_length_s = (args.ticks + 100) / 50
             return cfg
 
+        source_urdf = Path(retrieve_file_path(f"{ARENA_NUCLEUS_DIR}/Arena/wbc_policy/robot_model/g1/g1_29dof_with_hand.urdf"))
+        if digest(source_urdf) != FROZEN_ASSETS["g1_29dof_with_hand.urdf"]:
+            raise ValueError("Source resolved a different WBC kinematic URDF")
         ground = GroundPlane()
         embodiment = G1WBCJointEmbodiment(enable_cameras=False)
         embodiment.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.78), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
