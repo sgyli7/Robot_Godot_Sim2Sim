@@ -51,6 +51,7 @@ struct SourceMesh {
     triangles: Vec<[u32; 3]>,
     source_normal_interpolation: String,
     source_uv_interpolation: String,
+    source_normal_fallback_vertices: usize,
     material: Material,
 }
 
@@ -111,7 +112,7 @@ impl G1TaskVisualModel {
     pub fn load(path: &Path, visual_sha256: &str, physics_sha256: &str) -> Result<Self, String> {
         let bytes = bounded_bytes(path, visual_sha256, 128 * 1024 * 1024)?;
         let document: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if document.schema != "native_g1_task_visual_v1"
+        if document.schema != "native_g1_task_visual_v2"
             || document.units != "metres_z_up"
             || !sha_text(&document.source_query_sha256)
             || !sha_text(&document.exporter_sha256)
@@ -168,6 +169,8 @@ impl G1TaskVisualModel {
                         mesh.source_uv_interpolation.as_str(),
                         "vertex" | "faceVarying"
                     )
+                    || mesh.source_normal_fallback_vertices
+                        != if object.kind == "t1_plate" { 36 } else { 0 }
                 {
                     return Err("invalid authored task visual geometry/attributes".into());
                 }

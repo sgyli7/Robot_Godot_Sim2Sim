@@ -81,6 +81,7 @@ def at(values, interpolation, vertex, corner, face, expected):
 
 
 def geometry(prim, matrix):
+    fallback_vertices = 0
     if prim.IsA(UsdGeom.Cube):
         half = float(UsdGeom.Cube(prim).GetSizeAttr().Get()) / 2
         points = [Gf.Vec3d(x * half, y * half, z * half) for x, y, z in
@@ -98,7 +99,7 @@ def geometry(prim, matrix):
         points = mesh.GetPointsAttr().Get()
         counts = list(mesh.GetFaceVertexCountsAttr().Get())
         indices = list(mesh.GetFaceVertexIndicesAttr().Get())
-        normals = mesh.GetNormalsAttr().Get()
+        normals = list(mesh.GetNormalsAttr().Get() or [])
         normal_interpolation = mesh.GetNormalsInterpolation()
         uv = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
         uvs = uv.ComputeFlattened() if uv else None
@@ -108,6 +109,39 @@ def geometry(prim, matrix):
             raise ValueError("Missing original mesh normals/UVs or unsupported holes")
     if sum(counts) != len(indices) or min(counts) < 3 or orientation not in ("rightHanded", "leftHanded"):
         raise ValueError("Invalid original visual faces")
+    # The frozen plate contains 36 vertex normals with zero/denormal length.
+    # Preserve every triangle/UV and all valid authored normals. Only these
+    # invalid source normals receive area-weighted adjacent source-face normals.
+    bad = [i for i, n in enumerate(normals) if Gf.Vec3d(*n).GetLength() < 1e-12]
+    if bad:
+        if normal_interpolation != "vertex":
+            raise ValueError("Invalid non-vertex source normals need a separate audit")
+        sums = {i: Gf.Vec3d(0) for i in bad}
+        largest = {i: Gf.Vec3d(0) for i in bad}
+        offset = 0
+        for count in counts:
+            face = indices[offset:offset+count]
+            for c in range(1, count-1):
+                tri = (face[0], face[c], face[c+1])
+                p, a, b = [Gf.Vec3d(*points[i]) for i in tri]
+                normal = Gf.Cross(a-p, b-p)
+                if orientation == "leftHanded":
+                    normal = -normal
+                for i in tri:
+                    if i in sums:
+                        sums[i] += normal
+                        if normal.GetLength() > largest[i].GetLength():
+                            largest[i] = normal
+            offset += count
+        for i, normal in sums.items():
+            if normal.GetLength() <= 1e-12:
+                # Opposite adjacent faces can cancel at source non-manifold
+                # seams. The largest original supporting face is unambiguous.
+                normal = largest[i]
+            if normal.GetLength() <= 1e-12:
+                raise ValueError("Invalid source normal has no supporting original face")
+            normals[i] = normal.GetNormalized()
+        fallback_vertices = len(bad)
     normal_matrix = matrix.GetInverse().GetTranspose()
     expected = (len(counts), len(points), len(indices))
     vertices, out_normals, out_uvs, triangles, unique = [], [], [], [], {}
@@ -133,7 +167,8 @@ def geometry(prim, matrix):
             triangles.append(tri)
         offset += count
     return {"points": vertices, "normals": out_normals, "uvs": out_uvs, "triangles": triangles,
-            "source_normal_interpolation": normal_interpolation, "source_uv_interpolation": uv_interpolation}
+            "source_normal_interpolation": normal_interpolation, "source_uv_interpolation": uv_interpolation,
+            "source_normal_fallback_vertices": fallback_vertices}
 
 
 def main():
@@ -168,7 +203,7 @@ def main():
         if not meshes or digest(usd) != expected:
             raise ValueError("Empty visuals or modified original USD")
         objects.append({"kind": asset["name"], "usd_sha256": expected, "source_scale_override": list(scale), "meshes": meshes})
-    result = {"schema": "native_g1_task_visual_v1", "units": "metres_z_up",
+    result = {"schema": "native_g1_task_visual_v2", "units": "metres_z_up",
               "source_query_sha256": args.query_sha256, "exporter_sha256": digest(Path(__file__)),
               "source_renderer_parity_proven": False, "objects": objects}
     with args.output.open("x") as out:
