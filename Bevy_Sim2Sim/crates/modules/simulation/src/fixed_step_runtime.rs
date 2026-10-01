@@ -9,9 +9,11 @@ use common_minigame::clock::{ClockError, ClockSnapshot, FixedStepClock};
 use common_minigame::events::{EventError, TickEvent, TickEventQueue};
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::PHYSICS_HZ;
 use crate::{
-    BodyTorque, MAX_STEPS_PER_FRAME, PHYSICS_HZ, RapierCounterSample, SimulationError,
-    SimulationWorld, StepSnapshot,
+    BodyTorque, MAX_STEPS_PER_FRAME, RapierCounterSample, SimulationError, SimulationWorld,
+    StepSnapshot,
 };
 
 /// Ticks completed in one display frame, plus the whole-tick debt still retained.
@@ -93,9 +95,10 @@ impl<E> FixedStepRuntime<E> {
         if world.global_step != 0 || world.integration_count != 0 {
             return Err(FixedStepError::WorldAlreadyAdvanced);
         }
+        let rate_hz = world.configuration().physics_hz;
         Ok(Self {
             world,
-            clock: FixedStepClock::new(PHYSICS_HZ, MAX_STEPS_PER_FRAME)?,
+            clock: FixedStepClock::new(rate_hz, MAX_STEPS_PER_FRAME)?,
             events: TickEventQueue::default(),
             halted: None,
         })
@@ -163,6 +166,12 @@ impl<E> FixedStepRuntime<E> {
     /// Read the shared clock, including retained debt.
     pub fn clock_snapshot(&self) -> ClockSnapshot {
         self.clock.snapshot()
+    }
+
+    /// Display-only interpolation fraction for previous/current completed snapshots.
+    /// Whole-tick debt holds the current snapshot; this value never drives physics.
+    pub fn interpolation_alpha(&self) -> f32 {
+        self.clock.interpolation_alpha()
     }
 
     fn ensure_active(&self) -> Result<(), FixedStepError> {
@@ -454,6 +463,14 @@ mod tests {
         assert_eq!(runtime.world_snapshot().global_step, 0);
         assert_eq!(runtime.world_snapshot().integration_count, 0);
 
+        for rate_hz in [50, 60] {
+            let configured = FixedStepRuntime::<u64>::new(
+                SimulationWorld::with_game_frequency(rate_hz).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(configured.clock_snapshot().rate_hz, rate_hz);
+            assert_eq!(configured.world_snapshot().global_seconds, 0.0);
+        }
         let mut advanced = SimulationWorld::foundation();
         advanced.step_with_torques(&[]).unwrap();
         match FixedStepRuntime::<u64>::new(advanced) {
@@ -531,9 +548,11 @@ mod tests {
     fn six_hundred_ticks_match_inference_integration_and_publish() {
         let mut runtime = foundation_runtime();
         let mut controller = CountingController::default();
+        let expected_ticks = u64::from(runtime.clock_snapshot().rate_hz) * 10;
+        let expected_frames = expected_ticks.div_ceil(u64::from(MAX_STEPS_PER_FRAME)) as u32;
         let mut elapsed = Duration::from_secs(10);
         let mut frames = 0u32;
-        while runtime.clock_snapshot().global_step < 600 {
+        while runtime.clock_snapshot().global_step < expected_ticks {
             let outcome = runtime.advance_frame(elapsed, &mut controller).unwrap();
             assert!(outcome.completed_steps > 0);
             assert!(outcome.completed_steps <= u64::from(MAX_STEPS_PER_FRAME));
@@ -543,17 +562,17 @@ mod tests {
             );
             elapsed = Duration::ZERO;
             frames += 1;
-            assert!(frames <= 75);
+            assert!(frames <= expected_frames);
         }
-        assert_eq!(frames, 75);
-        assert_eq!(controller.syncs, 600);
-        assert_eq!(controller.inferences, 600);
-        assert_eq!(controller.publishes, 600);
+        assert_eq!(frames, expected_frames);
+        assert_eq!(controller.syncs, expected_ticks);
+        assert_eq!(controller.inferences, expected_ticks);
+        assert_eq!(controller.publishes, expected_ticks);
         let world = runtime.world_snapshot();
-        assert_eq!(world.global_step, 600);
-        assert_eq!(world.integration_count, 600);
-        assert_eq!(world.torque_update_count, 600);
-        assert_eq!(runtime.clock_snapshot().global_step, 600);
+        assert_eq!(world.global_step, expected_ticks);
+        assert_eq!(world.integration_count, expected_ticks);
+        assert_eq!(world.torque_update_count, expected_ticks);
+        assert_eq!(runtime.clock_snapshot().global_step, expected_ticks);
         assert_eq!(runtime.clock_snapshot().pending_ticks, 0);
     }
 
@@ -561,6 +580,7 @@ mod tests {
     fn half_second_hitch_budgets_eight_and_retains_debt() {
         let mut runtime = foundation_runtime();
         let mut controller = CountingController::default();
+        let expected_ticks = u64::from(runtime.clock_snapshot().rate_hz) / 2;
         let mut elapsed = Duration::from_millis(500);
         let mut outcomes = Vec::new();
         for _ in 0..4 {
@@ -572,11 +592,19 @@ mod tests {
             );
             outcomes.push((outcome.completed_steps, outcome.pending_ticks));
         }
-        assert_eq!(outcomes, [(8, 22), (8, 14), (8, 6), (6, 0)]);
-        assert_eq!(controller.inferences, 30);
-        assert_eq!(controller.publishes, 30);
-        assert_eq!(runtime.world_snapshot().integration_count, 30);
-        assert_eq!(runtime.clock_snapshot().global_step, 30);
+        let mut remaining = expected_ticks;
+        let expected: Vec<_> = (0..4)
+            .map(|_| {
+                let completed = remaining.min(u64::from(MAX_STEPS_PER_FRAME));
+                remaining -= completed;
+                (completed, u128::from(remaining))
+            })
+            .collect();
+        assert_eq!(outcomes, expected);
+        assert_eq!(controller.inferences, expected_ticks);
+        assert_eq!(controller.publishes, expected_ticks);
+        assert_eq!(runtime.world_snapshot().integration_count, expected_ticks);
+        assert_eq!(runtime.clock_snapshot().global_step, expected_ticks);
     }
 
     #[test]

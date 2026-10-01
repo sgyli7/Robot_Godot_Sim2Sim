@@ -80,7 +80,7 @@ pub enum VerificationError {
 
 /// Run the same single-step world for 600 ticks and then 20 non-integrating resets.
 ///
-/// The offline clock receives exactly ten seconds of debt. No policy Session is
+/// The offline clock receives exactly 600 scheduled boundaries. No policy Session is
 /// loaded, and the count-only reset fixture cannot stand in for robot gates.
 pub fn verify_foundation(output: &Path) -> Result<FoundationReport, VerificationError> {
     let mut clock = FixedStepClock::new(PHYSICS_HZ, MAX_STEPS_PER_FRAME)?;
@@ -100,7 +100,7 @@ pub fn verify_foundation(output: &Path) -> Result<FoundationReport, Verification
     })?;
     let mut events = Vec::new();
     let mut rows = Vec::with_capacity(600);
-    let mut elapsed = Duration::from_secs(10);
+    let mut elapsed = Duration::from_secs_f64(600.0 / f64::from(PHYSICS_HZ));
     while clock.global_step() < 600 {
         let budget = clock.begin_frame(elapsed);
         elapsed = Duration::ZERO;
