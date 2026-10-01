@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     assembly::{self, G1Assembly},
     runner::{G1Measurement, G1ProgressCounts},
+    task_objects::{TaskObjectFrame, TaskObjectKind, TaskObjectScene, TaskObjectSceneConfig},
 };
 use crate::{SimulationWorld, StepConfiguration, WorldCounts};
 
@@ -50,6 +51,8 @@ pub struct AgileRunnerConfig {
     pub robot_contact_friction: f32,
     pub floor_contact_friction: f32,
     pub default_positions: Vec<f32>,
+    #[serde(default)]
+    pub task_objects: Option<TaskObjectSceneConfig>,
 }
 
 impl AgileRunnerConfig {
@@ -97,6 +100,7 @@ pub struct AgileStep {
     pub actuator_backend: AgileActuatorBackend,
     pub frame: G1BodyFrame,
     pub measurement: G1Measurement,
+    pub task_objects: Option<TaskObjectFrame>,
     pub inference: AgileResult,
     pub root_position_source: [f32; 3],
     pub root_velocity_source: [f32; 3],
@@ -118,6 +122,7 @@ pub struct AgileRunner {
     episode_id: u64,
     simulation: SimulationWorld,
     assembly: G1Assembly,
+    task_objects: Option<TaskObjectScene>,
     policy: AgilePolicy,
     parameters: [IdealPd; JOINT_COUNT],
     default_positions: [f32; JOINT_COUNT],
@@ -205,10 +210,21 @@ impl AgileRunner {
         assembly.state(&simulation.world)?;
         assembly.current_root_velocity(&simulation.world)?;
         validate_clock(simulation.configuration())?;
+        let task_objects = config
+            .task_objects
+            .as_ref()
+            .map(|scene| {
+                scene.load_in_owner_world(
+                    &mut simulation,
+                    &[TaskObjectKind::Apple, TaskObjectKind::Plate],
+                )
+            })
+            .transpose()?;
         let runner = Self {
             episode_id: config.episode_id,
             simulation,
             assembly,
+            task_objects,
             policy,
             parameters,
             default_positions,
@@ -219,6 +235,7 @@ impl AgileRunner {
         };
         runner.frame()?;
         runner.measurement()?;
+        runner.task_object_frame()?;
         Ok(runner)
     }
 
@@ -239,6 +256,20 @@ impl AgileRunner {
     /// A load-time read; subsequent calls remain reads of the current boundary.
     pub fn initial_frame(&self) -> Result<G1BodyFrame, RobotError> {
         self.frame()
+    }
+
+    /// Render/acceptance truth at the same completed owner boundary as the robot.
+    pub fn task_object_frame(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.latch(
+            self.task_objects
+                .as_ref()
+                .map(|scene| {
+                    let mut frame = scene.frame(&self.simulation)?;
+                    frame.episode_id = self.episode_id;
+                    Ok(frame)
+                })
+                .transpose(),
+        )
     }
 
     pub fn state(&self) -> Result<AgileState, RobotError> {
@@ -371,6 +402,7 @@ impl AgileRunner {
             actuator_backend: AgileActuatorBackend::NativeForceBased,
             frame,
             measurement: measurement.clone(),
+            task_objects: self.task_object_frame()?,
             inference,
             root_position_source: engine_to_source_vector(root.translation().to_array()),
             root_velocity_source: measurement.root_velocity_source,
@@ -509,6 +541,7 @@ mod tests {
             robot_contact_friction: 0.5,
             floor_contact_friction: 1.,
             default_positions: vec![0.; JOINT_COUNT],
+            task_objects: None,
         }
     }
 

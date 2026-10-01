@@ -881,6 +881,7 @@ fn config_from_env() -> Result<G1RunnerConfig, String> {
         },
         robot_contact_friction: 0.5,
         floor_contact_friction: 1.0,
+        task_objects: None,
     })
 }
 

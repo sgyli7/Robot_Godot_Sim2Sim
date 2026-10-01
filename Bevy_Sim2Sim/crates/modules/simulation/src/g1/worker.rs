@@ -8,6 +8,7 @@
 use super::{
     agile_runner::{AgileRunner, AgileRunnerConfig, AgileStep},
     runner::{G1Measurement, G1ProgressCounts, G1Runner, G1RunnerConfig, G1Step},
+    task_objects::TaskObjectFrame,
 };
 use common_minigame::clock::FixedStepClock;
 use robot_minigame::{
@@ -132,6 +133,8 @@ pub struct WorkerSnapshot<S> {
     pub reason: Option<String>,
     pub frame: Option<Arc<G1BodyFrame>>,
     pub measurement: Option<Arc<G1Measurement>>,
+    /// Immutable render/acceptance truth, never included in model self-state.
+    pub task_objects: Option<Arc<TaskObjectFrame>>,
     pub step: Option<Arc<S>>,
     pub timing: G1WorkerTiming,
 }
@@ -368,6 +371,9 @@ trait BoundaryRunner: Send {
     type Step: BoundaryStep;
     fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError>;
     fn initial_measurement(&self) -> Result<Option<G1Measurement>, RobotError>;
+    fn task_objects(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        Ok(None)
+    }
     fn step(
         &mut self,
         command: &Self::Command,
@@ -379,6 +385,9 @@ trait BoundaryRunner: Send {
 impl BoundaryRunner for G1Runner {
     type Command = G1Command;
     type Step = G1Step;
+    fn task_objects(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.task_object_frame()
+    }
     fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
         G1Runner::initial_frame(self).map(Some)
     }
@@ -403,6 +412,9 @@ impl BoundaryRunner for G1Runner {
 impl BoundaryRunner for AgileRunner {
     type Command = AgileCommand;
     type Step = AgileStep;
+    fn task_objects(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.task_object_frame()
+    }
     fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
         AgileRunner::initial_frame(self).map(Some)
     }
@@ -436,8 +448,12 @@ impl BoundaryCommand for AgileCommand {
 }
 trait BoundaryStep: Clone + Send + Sync + 'static {
     fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32);
+    fn task_objects(&self) -> Option<&TaskObjectFrame>;
 }
 impl BoundaryStep for G1Step {
+    fn task_objects(&self) -> Option<&TaskObjectFrame> {
+        self.task_objects.as_ref()
+    }
     fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
         (
             &self.frame,
@@ -448,6 +464,9 @@ impl BoundaryStep for G1Step {
     }
 }
 impl BoundaryStep for AgileStep {
+    fn task_objects(&self) -> Option<&TaskObjectFrame> {
+        self.task_objects.as_ref()
+    }
     fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
         (
             &self.frame,
@@ -628,6 +647,7 @@ fn run_owner<R, F, C>(
         reason: None,
         frame: None,
         measurement: None,
+        task_objects: None,
         step: None,
         timing: G1WorkerTiming::default(),
     };
@@ -653,6 +673,7 @@ fn run_owner<R, F, C>(
         snapshot.reason = None;
         snapshot.frame = None;
         snapshot.measurement = None;
+        snapshot.task_objects = None;
         snapshot.step = None;
         snapshot.timing.begin_episode();
         publish(&shared, &mut snapshot);
@@ -682,6 +703,13 @@ fn run_owner<R, F, C>(
             }
         }
         snapshot.timing.record_progress(runner.progress_counts());
+        match runner.task_objects() {
+            Ok(objects) => snapshot.task_objects = objects.map(Arc::new),
+            Err(e) => {
+                fail(&shared, &mut snapshot, e.to_string(), &wall);
+                continue;
+            }
+        }
         // Submissions linearized before this loaded-world barrier are discarded.
         let after_revision = shared.command_revision.load(Ordering::Acquire);
         let mut clock = FixedStepClock::new(50, 8).expect("constant G1 clock is valid");
@@ -840,6 +868,7 @@ fn run_owner<R, F, C>(
                             let fell = height < 0.35 || upright < 0.5;
                             snapshot.frame = Some(Arc::new(frame.clone()));
                             snapshot.measurement = Some(Arc::new(measurement.clone()));
+                            snapshot.task_objects = step.task_objects().cloned().map(Arc::new);
                             snapshot.step = Some(Arc::new(step));
                             if fell {
                                 fail(
@@ -911,6 +940,7 @@ fn run_owner<R, F, C>(
             .expect("reset validates episode overflow");
         snapshot.frame = None;
         snapshot.measurement = None;
+        snapshot.task_objects = None;
         snapshot.step = None;
         snapshot.timing.begin_episode();
     }
@@ -1747,6 +1777,7 @@ mod tests {
                 .as_ref()
                 .ok_or_else(|| error("missing real initial frame"))?;
             report["initial_frame"] = json!(initial.as_ref());
+            report["initial_task_objects"] = json!(ready.task_objects.as_deref());
             let mut upper = [0.; 28];
             upper.copy_from_slice(&config.default_positions[15..]);
             worker.submit(TimedAgileCommand {
@@ -1762,6 +1793,7 @@ mod tests {
             let mut last_tick = 0;
             let mut last = None;
             let mut max_drift = 0_f64;
+            let mut settled_object_ticks = 0u64;
             while Instant::now() < deadline {
                 if let Some(snapshot) = worker.take_latest() {
                     if snapshot.phase == G1WorkerPhase::Failed {
@@ -1770,7 +1802,52 @@ mod tests {
                     }
                     if let Some(step) = &snapshot.step {
                         if step.integration_count > last_tick {
+                            let consecutive = step.integration_count == last_tick + 1;
                             last_tick = step.integration_count;
+                            if config.task_objects.is_some() {
+                                let objects = snapshot
+                                    .task_objects
+                                    .as_ref()
+                                    .ok_or_else(|| error("missing same-world task objects"))?;
+                                if objects.episode_id != snapshot.episode_id
+                                    || objects.source_tick != last_tick
+                                    || objects.contact_clustering
+                                    || !objects.contact_recycling
+                                    || objects.world_counts.bodies != 56
+                                    || objects.world_counts.colliders != 55
+                                    || objects.world_counts.multibody_joint_handles != 52
+                                    || objects.objects.len() != 2
+                                {
+                                    return Err(error(
+                                        "task object/robot boundary, topology or contact configuration mismatch",
+                                    ));
+                                }
+                                let settled = objects.objects.iter().all(|o| {
+                                    o.dynamic
+                                        && o.active_contact_pairs > 0
+                                        && o.linear_velocity_source
+                                            .iter()
+                                            .map(|v| v * v)
+                                            .sum::<f32>()
+                                            .sqrt()
+                                            < 0.02
+                                        && o.angular_velocity_source
+                                            .iter()
+                                            .map(|v| v * v)
+                                            .sum::<f32>()
+                                            .sqrt()
+                                            < 0.1
+                                });
+                                settled_object_ticks = if settled {
+                                    if consecutive {
+                                        settled_object_ticks + 1
+                                    } else {
+                                        1
+                                    }
+                                } else {
+                                    0
+                                };
+                            }
                             let dx = f64::from(
                                 step.frame.bodies[0].translation[0]
                                     - initial.bodies[0].translation[0],
@@ -1786,6 +1863,7 @@ mod tests {
                                 "motor_update_count":step.motor_update_count,"upright":step.root_upright_cosine,
                                 "root_position_source":step.root_position_source,
                                 "boundary_duration_ms":snapshot.timing.last_boundary_duration_ms,
+                                "task_objects":snapshot.task_objects.as_deref(),
                             }));
                         }
                     }
@@ -1809,6 +1887,13 @@ mod tests {
                 "display_updates_dropped":t.display_updates_dropped,"episode_halted":t.episode_halted,
             });
             report["observed_max_horizontal_drift_m"] = json!(max_drift);
+            report["final_observed_continuously_settled_object_ticks"] =
+                json!(settled_object_ticks);
+            if config.task_objects.is_some() && settled_object_ticks < 100 {
+                return Err(error(
+                    "same-world objects lack two continuous seconds of observed support",
+                ));
+            }
             report["completed_frame_snapshots_observed"] =
                 json!(report["snapshots"].as_array().unwrap().len());
             report["last_phase"] = json!(format!("{:?}", last.phase));

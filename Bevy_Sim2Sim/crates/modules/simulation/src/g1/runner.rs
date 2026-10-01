@@ -2,6 +2,9 @@
 //! integration. Rendering receives immutable completed frames only.
 
 use super::assembly::{self, G1Assembly};
+use super::task_objects::{
+    TaskObjectFrame, TaskObjectKind, TaskObjectScene, TaskObjectSceneConfig,
+};
 use crate::{SimulationWorld, StepConfiguration, WorldCounts};
 use rapier3d::prelude::*;
 use robot_minigame::{
@@ -44,6 +47,8 @@ pub struct G1RunnerConfig {
     /// Explicit diagnostic materials; do not claim PhysX cooking/material parity.
     pub robot_contact_friction: f32,
     pub floor_contact_friction: f32,
+    #[serde(default)]
+    pub task_objects: Option<TaskObjectSceneConfig>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -52,6 +57,7 @@ pub struct G1Step {
     pub frame: G1BodyFrame,
     /// Native state sampled at the same completed boundary as `frame`.
     pub measurement: G1Measurement,
+    pub task_objects: Option<TaskObjectFrame>,
     pub joint_positions: Vec<f32>,
     pub joint_velocities: Vec<f32>,
     /// Applied external PD efforts. Native motor rows apply their own bounded
@@ -97,6 +103,7 @@ pub struct G1Runner {
     episode_id: u64,
     simulation: SimulationWorld,
     assembly: G1Assembly,
+    task_objects: Option<TaskObjectScene>,
     policy: HomiePolicy,
     actuator_backend: G1ActuatorBackend,
     halted: bool,
@@ -145,10 +152,21 @@ impl G1Runner {
         if config.actuator_backend == G1ActuatorBackend::NativeForceBased {
             assembly.set_force_based_targets(&mut simulation.world, &initial)?;
         }
+        let task_objects = config
+            .task_objects
+            .as_ref()
+            .map(|scene| {
+                scene.load_in_owner_world(
+                    &mut simulation,
+                    &[TaskObjectKind::BrownBox, TaskObjectKind::BlueBin],
+                )
+            })
+            .transpose()?;
         Ok(Self {
             episode_id: config.episode_id,
             simulation,
             assembly,
+            task_objects,
             policy,
             actuator_backend: config.actuator_backend,
             halted: false,
@@ -157,6 +175,18 @@ impl G1Runner {
 
     pub fn initial_frame(&self) -> Result<G1BodyFrame, RobotError> {
         self.completed_frame(&self.simulation.snapshot())
+    }
+
+    /// Truth for rendering/independent acceptance; absent from self-state inputs.
+    pub fn task_object_frame(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.task_objects
+            .as_ref()
+            .map(|scene| {
+                let mut frame = scene.frame(&self.simulation)?;
+                frame.episode_id = self.episode_id;
+                Ok(frame)
+            })
+            .transpose()
     }
 
     /// Read only; loading a world never manufactures an inferred or stepped state.
@@ -270,6 +300,7 @@ impl G1Runner {
             root_position_source: engine_to_source_vector(root.translation().to_array()),
             root_velocity_source: measurement.root_velocity_source,
             measurement,
+            task_objects: self.task_object_frame()?,
             root_upright_cosine: (*root.rotation() * Vector::Y).y,
             active_contact_pairs: snapshot.active_contact_pair_count,
             integration_count: snapshot.integration_count,
@@ -308,6 +339,7 @@ mod tests {
             },
             robot_contact_friction: 0.5,
             floor_contact_friction: 1.,
+            task_objects: None,
         }
     }
 

@@ -4,7 +4,10 @@
 //! immutable completed poses; decision clients receive images, never these truth
 //! samples. Source cooking is not a claim of full physics or task qualification.
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use rapier3d::{
     math::{Pose, Rotation, Vector},
@@ -190,9 +193,40 @@ impl TaskObjectsDefinition {
 }
 
 /// Placement is performed once before the first integration; there is no set-pose API.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskObjectPlacement {
     pub kind: TaskObjectKind,
     pub root_pose: SourcePose,
+}
+
+/// Startup input, kept distinct from image/self-state model observations.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskObjectSceneConfig {
+    pub definition: PathBuf,
+    pub definition_sha256: String,
+    pub placements: Vec<TaskObjectPlacement>,
+}
+
+impl TaskObjectSceneConfig {
+    pub(super) fn load_in_owner_world(
+        &self,
+        world: &mut SimulationWorld,
+        supported: &[TaskObjectKind],
+    ) -> Result<TaskObjectScene, RobotError> {
+        if self.placements.len() != supported.len()
+            || supported
+                .iter()
+                .any(|kind| self.placements.iter().filter(|p| p.kind == *kind).count() != 1)
+        {
+            return Err(invalid(
+                "task objects do not match the owner's task profile",
+            ));
+        }
+        let definition = TaskObjectsDefinition::load(&self.definition, &self.definition_sha256)?;
+        TaskObjectScene::insert_in_owner_world(world, &definition, &self.placements)
+    }
 }
 
 struct Instance {
@@ -236,6 +270,9 @@ pub struct TaskObjectFrame {
     pub episode_id: u64,
     pub source_tick: u64,
     pub sim_time: f64,
+    pub contact_clustering: bool,
+    pub contact_recycling: bool,
+    pub world_counts: crate::WorldCounts,
     pub objects: Vec<TaskObjectSample>,
 }
 
@@ -247,12 +284,18 @@ impl TaskObjectScene {
         definition: &TaskObjectsDefinition,
         placements: &[TaskObjectPlacement],
     ) -> Result<Self, RobotError> {
-        Self::insert_with_representation(
+        let scene = Self::insert_with_representation(
             world,
             definition,
             placements,
             ConvexRepresentation::CopiedFaces,
-        )
+        )?;
+        // The original plate has 256 cooked convex parts. Clustering its support
+        // into four solver points failed the frozen native contact comparison;
+        // retaining each part's contacts settled it without changing dt/geometry.
+        // Only the world that opts into G1 task objects receives this setting.
+        world.world.integration_parameters.contact_clustering = false;
+        Ok(scene)
     }
 
     fn insert_with_representation(
@@ -397,6 +440,9 @@ impl TaskObjectScene {
             episode_id: snapshot.episode_id,
             source_tick: snapshot.episode_step,
             sim_time: snapshot.episode_seconds,
+            contact_clustering: world.world.integration_parameters.contact_clustering,
+            contact_recycling: world.world.integration_parameters.contact_recycling,
+            world_counts: world.counts(),
             objects,
         })
     }
@@ -466,17 +512,11 @@ mod tests {
                 .integration_parameters
                 .num_internal_pgs_iterations = pgs;
             match contact_mode.as_str() {
-                "default" => {}
+                "default" | "task_owner" => {}
                 "fresh_manifolds" => world.world.integration_parameters.contact_recycling = false,
                 "unclustered" => world.world.integration_parameters.contact_clustering = false,
                 _ => return Err(invalid("unsupported bounded contact algorithm comparison")),
             }
-            receipt["contact_algorithms"] = serde_json::json!({"mode":contact_mode,
-                "clustering":world.world.integration_parameters.contact_clustering,
-                "recycling":world.world.integration_parameters.contact_recycling,
-                "prediction_distance":world.world.integration_parameters.normalized_prediction_distance,
-                "allowed_linear_error":world.world.integration_parameters.normalized_allowed_linear_error,
-                "recycle_distance":world.world.integration_parameters.normalized_contact_recycle_distance});
             let floor = world
                 .world
                 .bodies
@@ -517,12 +557,25 @@ mod tests {
                     }
                 })
                 .collect();
-            let scene = TaskObjectScene::insert_with_representation(
-                &mut world,
-                &definition,
-                &placements,
-                representation,
-            )?;
+            let scene = if contact_mode == "task_owner" {
+                if representation_name != "copied_faces" {
+                    return Err(invalid("task owner retains original copied convex faces"));
+                }
+                TaskObjectScene::insert_in_owner_world(&mut world, &definition, &placements)?
+            } else {
+                TaskObjectScene::insert_with_representation(
+                    &mut world,
+                    &definition,
+                    &placements,
+                    representation,
+                )?
+            };
+            receipt["contact_algorithms"] = serde_json::json!({"mode":contact_mode,
+                "clustering":world.world.integration_parameters.contact_clustering,
+                "recycling":world.world.integration_parameters.contact_recycling,
+                "prediction_distance":world.world.integration_parameters.normalized_prediction_distance,
+                "allowed_linear_error":world.world.integration_parameters.normalized_allowed_linear_error,
+                "recycle_distance":world.world.integration_parameters.normalized_contact_recycle_distance});
             receipt["initial"] = serde_json::to_value(scene.frame(&world)?).unwrap();
             let bin = scene
                 .instances
@@ -549,17 +602,32 @@ mod tests {
                 ));
             }
             receipt["frames"] = serde_json::json!([]);
-            for _ in 0..150 {
+            let ticks: u64 = std::env::var("G1_TASK_OBJECTS_DIAGNOSTIC_TICKS")
+                .unwrap_or_else(|_| "150".into())
+                .parse()
+                .map_err(|_| invalid("invalid object Tick budget"))?;
+            if !matches!(ticks, 150 | 500) {
+                return Err(invalid("object Tick budget must be 150 or 500"));
+            }
+            receipt["requested_ticks"] = serde_json::json!(ticks);
+            let mut settled_ticks = 0u64;
+            for _ in 0..ticks {
                 let boundary = world.step_with_torques(&[]);
                 receipt["integrations"] = serde_json::json!(world.snapshot().integration_count);
                 receipt["final_configuration"] =
                     serde_json::to_value(world.configuration()).unwrap();
                 receipt["world_counts"] = serde_json::to_value(world.counts()).unwrap();
                 boundary.map_err(|e| invalid(e.to_string()))?;
+                let frame = scene.frame(&world)?;
+                if frame.objects.iter().all(settled) {
+                    settled_ticks += 1;
+                } else {
+                    settled_ticks = 0;
+                }
                 receipt["frames"]
                     .as_array_mut()
                     .unwrap()
-                    .push(serde_json::to_value(scene.frame(&world)?).unwrap());
+                    .push(serde_json::to_value(frame).unwrap());
             }
             receipt["final_configuration"] = serde_json::to_value(world.configuration()).unwrap();
             receipt["world_counts"] = serde_json::to_value(world.counts()).unwrap();
@@ -582,28 +650,19 @@ mod tests {
             receipt["contact_samples_are_from_last_solve_not_refreshed_end_pose"] =
                 serde_json::json!(true);
             let final_frame = scene.frame(&world)?;
-            if final_frame.objects.iter().any(|o| {
-                o.active_contact_pairs == 0
-                    || o.linear_velocity_source
-                        .iter()
-                        .map(|v| v * v)
-                        .sum::<f32>()
-                        .sqrt()
-                        > 0.02
-                    || o.angular_velocity_source
-                        .iter()
-                        .map(|v| v * v)
-                        .sum::<f32>()
-                        .sqrt()
-                        > 0.1
-            }) {
+            receipt["final_continuously_settled_ticks"] = serde_json::json!(settled_ticks);
+            receipt["final_continuously_settled_seconds"] =
+                serde_json::json!(settled_ticks as f64 * 0.02);
+            if !final_frame.objects.iter().all(settled)
+                || (contact_mode == "task_owner" && settled_ticks < 100)
+            {
                 return Err(invalid(
                     "original task objects did not settle in physical contact",
                 ));
             }
             if world.configuration().num_solver_iterations != 1
                 || world.configuration().max_ccd_substeps != 1
-                || world.snapshot().integration_count != 150
+                || world.snapshot().integration_count != ticks
             {
                 return Err(invalid(
                     "task object diagnostic altered single integration clock",
@@ -619,5 +678,21 @@ mod tests {
             .unwrap();
         file.write_all(b"\n").unwrap();
         result.unwrap();
+    }
+
+    fn settled(o: &TaskObjectSample) -> bool {
+        o.active_contact_pairs > 0
+            && o.linear_velocity_source
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                .sqrt()
+                < 0.02
+            && o.angular_velocity_source
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                .sqrt()
+                < 0.1
     }
 }
