@@ -39,28 +39,7 @@ impl HomiePolicy {
         stand: &Path,
         walk: &Path,
     ) -> Result<Self, RobotError> {
-        bound_bytes(library, library_sha256)?;
-        let mut identity = RUNTIME.lock().map_err(error)?;
-        if let Some(existing) = identity.as_ref() {
-            if existing != library_sha256 {
-                return Err(RobotError::Policy(
-                    "G1 cannot replace the process ONNX Runtime".into(),
-                ));
-            }
-        } else {
-            let installed = ort::init_from(library)
-                .map_err(error)?
-                .with_name("sai_g1_homie_v2")
-                .with_telemetry(false)
-                .commit();
-            if !installed {
-                return Err(RobotError::Policy(
-                    "ONNX Runtime was initialized outside the G1 byte-bound loader".into(),
-                ));
-            }
-            *identity = Some(library_sha256.to_owned());
-        }
-        drop(identity);
+        initialize_runtime(library, library_sha256)?;
         let stand = load_session(&bound_bytes(stand, STAND_SHA256)?)?;
         let walk = load_session(&bound_bytes(walk, WALK_SHA256)?)?;
         Ok(Self {
@@ -150,6 +129,33 @@ impl HomiePolicy {
     pub fn inference_attempt_count(&self) -> u64 {
         self.inference_attempt_count
     }
+}
+
+/// Shared native-runtime identity, preserving the original Homie initialization.
+/// Every loader verifies the library bytes, including subsequent process users.
+pub(super) fn initialize_runtime(library: &Path, library_sha256: &str) -> Result<(), RobotError> {
+    bound_bytes(library, library_sha256)?;
+    let mut identity = RUNTIME.lock().map_err(error)?;
+    if let Some(existing) = identity.as_ref() {
+        if existing != library_sha256 {
+            return Err(RobotError::Policy(
+                "G1 cannot replace the process ONNX Runtime".into(),
+            ));
+        }
+    } else {
+        let installed = ort::init_from(library)
+            .map_err(error)?
+            .with_name("sai_g1_homie_v2")
+            .with_telemetry(false)
+            .commit();
+        if !installed {
+            return Err(RobotError::Policy(
+                "ONNX Runtime was initialized outside the G1 byte-bound loader".into(),
+            ));
+        }
+        *identity = Some(library_sha256.to_owned());
+    }
+    Ok(())
 }
 
 pub fn bound_bytes(path: &Path, expected: &str) -> Result<Vec<u8>, RobotError> {
