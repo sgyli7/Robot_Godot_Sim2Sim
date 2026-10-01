@@ -5,6 +5,7 @@ members = [
     "crates/modules/robot",
     "crates/modules/simulation",
     "crates/modules/rendering",
+    "crates/modules/task",
     "crates/dev_tools",
 ]
 resolver = "3"
@@ -35,6 +36,7 @@ common_minigame = { path = "crates/core" }
 robot_minigame = { path = "crates/modules/robot" }
 simulation_minigame = { path = "crates/modules/simulation" }
 rendering_minigame = { path = "crates/modules/rendering" }
+task_minigame = { path = "crates/modules/task" }
 dev_tools_minigame = { path = "crates/dev_tools" }
 
 [package]
