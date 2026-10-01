@@ -46,6 +46,23 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Generation-bound driven joint handles and articulation slots.
+    /// The ignored actuator diagnostic is the only caller; assembly is unchanged.
+    #[cfg(feature = "sim2sim_motor_row_trace")]
+    #[allow(dead_code)]
+    pub(super) fn driven_motor_trace_pairs(
+        &self,
+    ) -> Option<[(MultibodyJointHandle, usize); JOINT_COUNT]> {
+        if self.driven.len() != JOINT_COUNT {
+            return None;
+        }
+        let mut pairs = [(MultibodyJointHandle::invalid(), 0); JOINT_COUNT];
+        for (index, joint) in self.driven.iter().enumerate() {
+            pairs[index] = (joint.handle, joint.slot);
+        }
+        Some(pairs)
+    }
+
     /// Current free-root motion from the completed generalized state. Rapier's
     /// staged solver writes qdot after its last rigid-body velocity refresh, so
     /// rb.angvel()/linvel() are one boundary old for this articulation.

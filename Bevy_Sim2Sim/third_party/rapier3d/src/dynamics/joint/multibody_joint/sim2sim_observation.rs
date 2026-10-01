@@ -8,9 +8,106 @@ use crate::dynamics::solver::{GenericJointConstraint, WritebackId};
 use crate::dynamics::{Multibody, MultibodyIndex, RigidBodyHandle};
 use crate::dynamics::{MultibodyJointSet, MultibodyLinkId};
 use crate::math::Real;
-#[cfg(feature = "sim2sim-limit-row-trace")]
+#[cfg(any(
+    feature = "sim2sim-limit-row-trace",
+    feature = "sim2sim-motor-row-trace"
+))]
 use crate::math::SPATIAL_DIM;
 use alloc::sync::Arc;
+
+/// Existing solver barriers; motor servo RHS is retained during relaxation.
+#[cfg(feature = "sim2sim-motor-row-trace")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MotorRowTracePhase {
+    AfterBiasedSolve,
+    AfterPositionIntegration,
+    AfterUnbiasedSolve,
+}
+
+#[cfg(feature = "sim2sim-motor-row-trace")]
+impl MotorRowTracePhase {
+    /// Stable receipt label, without implying a new physical integration.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterBiasedSolve => "after_biased_solve",
+            Self::AfterPositionIntegration => "after_position_integration",
+            Self::AfterUnbiasedSolve => "after_unbiased_solve",
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            Self::AfterBiasedSolve => 0,
+            Self::AfterPositionIntegration => 1,
+            Self::AfterUnbiasedSolve => 2,
+        }
+    }
+}
+
+/// Actual internal motor row operands, never JointMotor's unsupported writeback.
+#[cfg(feature = "sim2sim-motor-row-trace")]
+#[derive(Clone, Debug)]
+pub struct MotorRowTraceSample {
+    pub phase: MotorRowTracePhase,
+    pub substep_id: usize,
+    pub row_index: usize,
+    pub backend_dof: usize,
+    pub joint_local_dof: usize,
+    pub coordinate: Real,
+    pub generalized_velocity: Real,
+    pub rhs: Real,
+    pub rhs_without_bias: Real,
+    pub impulse: Real,
+    pub impulse_bounds: [Real; 2],
+    pub gamma: Real,
+    pub inv_lhs: Real,
+    pub target_position: Real,
+    pub stiffness: Real,
+    pub damping: Real,
+    pub max_force: Real,
+    pub force_based: bool,
+    /// Net boundary impulse divided by dt; not a continuous torque waveform.
+    pub equivalent_mean_torque: Real,
+}
+
+/// Fixed-size per-tick aggregates; no historical solver state is retained.
+#[cfg(feature = "sim2sim-motor-row-trace")]
+#[derive(Clone, Debug, Default)]
+pub struct MotorRowTraceAggregate {
+    pub rows_per_phase: [usize; 3],
+    pub max_abs_impulse: Real,
+    pub max_abs_equivalent_mean_torque: Real,
+    pub cap_violation: bool,
+    pub nonfinite: bool,
+    pub ownership_incomplete: bool,
+    pub overflow: bool,
+    pub temporal_step_invalid: bool,
+}
+
+/// One opt-in, bounded G1 session: at most 20 raw ticks and 150 aggregate ticks.
+#[cfg(feature = "sim2sim-motor-row-trace")]
+#[derive(Clone, Debug, Default)]
+pub struct MotorRowTraceReceipt {
+    pub session_started: bool,
+    pub session_tick: u32,
+    pub active: bool,
+    pub dt: Real,
+    pub raw_rows: Vec<MotorRowTraceSample>,
+    pub aggregate: MotorRowTraceAggregate,
+}
+
+#[cfg(feature = "sim2sim-motor-row-trace")]
+impl MotorRowTraceReceipt {
+    fn begin_tick(mut self, dt: Real) -> Self {
+        self.raw_rows.clear();
+        self.aggregate = MotorRowTraceAggregate::default();
+        self.dt = dt;
+        self.active = self.session_started && self.session_tick < 150;
+        if self.active {
+            self.session_tick += 1;
+        }
+        self
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ContactSideOwner {
@@ -95,6 +192,9 @@ pub struct LimitRowTraceSample {
 /// Parallel-backend collection is not qualified in stage A and returns no valid data.
 #[derive(Clone, Debug, Default)]
 pub struct MultibodyObservation {
+    /// Default inactive even when the development feature is compiled.
+    #[cfg(feature = "sim2sim-motor-row-trace")]
+    pub motor_row_trace: MotorRowTraceReceipt,
     /// Epoch of the owning joint set's full pipeline step, never a solver offset.
     pub epoch: u64,
     /// Topology epoch associated with the measurements.
@@ -273,9 +373,11 @@ impl MultibodyJointSet {
                 continue;
             };
             // Native internal limit rows contain exactly one unit Jacobian entry.
-            if row.iter().enumerate().any(|(index, value)| {
-                index != backend_dof && *value != 0.0
-            }) {
+            if row
+                .iter()
+                .enumerate()
+                .any(|(index, value)| index != backend_dof && *value != 0.0)
+            {
                 continue;
             }
             let multibody = &self.multibodies[root.multibody.0];
@@ -294,8 +396,8 @@ impl MultibodyJointSet {
                 continue;
             };
             let coordinate = link.joint().coords()[axis];
-            let Some(&generalized_velocity) = solver_velocities
-                .get(constraint.solver_vel2 as usize + backend_dof)
+            let Some(&generalized_velocity) =
+                solver_velocities.get(constraint.solver_vel2 as usize + backend_dof)
             else {
                 continue;
             };
@@ -334,11 +436,18 @@ impl MultibodyJointSet {
     pub(crate) fn begin_sim2sim_observation_step(&mut self, dt: Real) {
         self.sim2sim_observation_epoch = self.sim2sim_observation_epoch.wrapping_add(1).max(1);
         for (_, multibody) in &mut self.multibodies {
+            #[cfg(feature = "sim2sim-motor-row-trace")]
+            let motor_trace =
+                core::mem::take(&mut multibody.sim2sim_observation.motor_row_trace).begin_tick(dt);
             multibody.sim2sim_observation = MultibodyObservation::begin(
                 self.sim2sim_observation_epoch,
                 self.topology_epoch,
                 dt,
             );
+            #[cfg(feature = "sim2sim-motor-row-trace")]
+            {
+                multibody.sim2sim_observation.motor_row_trace = motor_trace;
+            }
         }
     }
 
@@ -432,11 +541,217 @@ impl MultibodyJointSet {
 }
 
 impl Multibody {
+    /// Raw instrumentation remains readable after a guard failure. Check the
+    /// ordinary validity/coverage/energy-guard flags separately; this is no load API.
+    #[cfg(feature = "sim2sim-motor-row-trace")]
+    pub fn sim2sim_motor_trace_observation(&self) -> Option<&MultibodyObservation> {
+        self.sim2sim_observation
+            .motor_row_trace
+            .session_started
+            .then_some(&self.sim2sim_observation)
+    }
+
     /// Completed native normal/two-tangent contact collection, in addition to stage-A validity.
     /// This is not a BAM external-load API, and asserts no source torsion/rolling compatibility.
     pub fn sim2sim_contact_complete_observation(&self) -> Option<&MultibodyObservation> {
         let observation = &self.sim2sim_observation;
         (observation.valid && observation.contact_coverage).then_some(observation)
+    }
+}
+
+#[cfg(feature = "sim2sim-motor-row-trace")]
+impl MultibodyJointSet {
+    /// Opt in once for one generation-bound, free-root 49-DoF G1 articulation.
+    /// No physical state or solver parameters change. Parallel collection is unsupported.
+    pub fn sim2sim_start_motor_row_trace(
+        &mut self,
+        handle: crate::dynamics::MultibodyJointHandle,
+    ) -> bool {
+        if cfg!(feature = "parallel") {
+            return false;
+        }
+        if self
+            .multibodies
+            .iter()
+            .any(|(_, mb)| mb.sim2sim_observation.motor_row_trace.session_started)
+        {
+            return false;
+        }
+        let Some((mb, _)) = self.get_mut(handle) else {
+            return false;
+        };
+        if mb.ndofs() != 49 || mb.root().joint().ndofs() != 6 {
+            return false;
+        }
+        mb.sim2sim_observation.motor_row_trace.session_started = true;
+        true
+    }
+
+    /// Observe completed stage barriers only; never mutate constraint impulses,
+    /// coordinates, motor targets, Jacobians, or generalized solver velocities.
+    pub(crate) fn observe_motor_row_timing(
+        &mut self,
+        roots: &[MultibodyLinkId],
+        constraints: &[GenericJointConstraint],
+        jacobians: &[Real],
+        solver_velocities: &[Real],
+        phase: MotorRowTracePhase,
+        substep_id: usize,
+    ) {
+        for root in roots {
+            let mb = &mut self.multibodies[root.multibody.0];
+            if !mb.sim2sim_observation.motor_row_trace.active {
+                continue;
+            }
+            if substep_id != 0 {
+                mb.sim2sim_observation
+                    .motor_row_trace
+                    .aggregate
+                    .temporal_step_invalid = true;
+            }
+            for (row_index, c) in constraints.iter().enumerate() {
+                if c.joint_id != usize::MAX
+                    || c.is_rigid_body2
+                    || c.ndofs2 != mb.ndofs()
+                    || c.solver_vel2 != mb.solver_id
+                {
+                    continue;
+                }
+                let WritebackId::Limit(joint_local_dof) = c.writeback_id else {
+                    continue;
+                };
+                if !(c.impulse_bounds[0] < 0.0 && c.impulse_bounds[1] > 0.0) {
+                    continue;
+                }
+                let Some(row) = c
+                    .j_id2
+                    .checked_add(c.ndofs2)
+                    .and_then(|end| jacobians.get(c.j_id2..end))
+                else {
+                    mb.sim2sim_observation
+                        .motor_row_trace
+                        .aggregate
+                        .ownership_incomplete = true;
+                    continue;
+                };
+                let Some(backend_dof) = row.iter().position(|value| *value == 1.0) else {
+                    mb.sim2sim_observation
+                        .motor_row_trace
+                        .aggregate
+                        .ownership_incomplete = true;
+                    continue;
+                };
+                if row
+                    .iter()
+                    .enumerate()
+                    .any(|(i, value)| i != backend_dof && *value != 0.0)
+                {
+                    mb.sim2sim_observation
+                        .motor_row_trace
+                        .aggregate
+                        .ownership_incomplete = true;
+                    continue;
+                }
+                let Some(link) = mb.links().find(|link| {
+                    link.assembly_id() <= backend_dof
+                        && backend_dof < link.assembly_id() + link.joint().ndofs()
+                }) else {
+                    mb.sim2sim_observation
+                        .motor_row_trace
+                        .aggregate
+                        .ownership_incomplete = true;
+                    continue;
+                };
+                let local_dof = backend_dof - link.assembly_id();
+                let locked = link.joint().data.locked_axes.bits();
+                let Some(axis) = (0..SPATIAL_DIM)
+                    .filter(|axis| locked & (1 << axis) == 0)
+                    .nth(local_dof)
+                else {
+                    mb.sim2sim_observation
+                        .motor_row_trace
+                        .aggregate
+                        .ownership_incomplete = true;
+                    continue;
+                };
+                if link.joint().data.motor_axes.bits() & (1 << axis) == 0 {
+                    continue;
+                }
+                let coordinate = link.joint().coords()[axis];
+                let motor = link.joint().data.motors[axis];
+                let Some(&generalized_velocity) =
+                    solver_velocities.get(c.solver_vel2 as usize + backend_dof)
+                else {
+                    mb.sim2sim_observation
+                        .motor_row_trace
+                        .aggregate
+                        .ownership_incomplete = true;
+                    continue;
+                };
+                let trace = &mut mb.sim2sim_observation.motor_row_trace;
+                let dt = trace.dt;
+                let equivalent_mean_torque = -c.impulse / dt;
+                let finite = [
+                    coordinate,
+                    generalized_velocity,
+                    c.rhs,
+                    c.rhs_wo_bias,
+                    c.impulse,
+                    c.impulse_bounds[0],
+                    c.impulse_bounds[1],
+                    c.cfm_gain,
+                    c.inv_lhs,
+                    motor.target_pos,
+                    motor.stiffness,
+                    motor.damping,
+                    motor.max_force,
+                    dt,
+                    equivalent_mean_torque,
+                ]
+                .iter()
+                .all(|value| value.is_finite())
+                    && dt > 0.0;
+                trace.aggregate.nonfinite |= !finite;
+                trace.aggregate.cap_violation |= c.impulse < c.impulse_bounds[0]
+                    || c.impulse > c.impulse_bounds[1]
+                    || c.impulse_bounds != [-motor.max_force * dt, motor.max_force * dt];
+                let count = &mut trace.aggregate.rows_per_phase[phase.index()];
+                *count += 1;
+                if *count > 43 {
+                    trace.aggregate.overflow = true;
+                    continue;
+                }
+                trace.aggregate.max_abs_impulse =
+                    trace.aggregate.max_abs_impulse.max(c.impulse.abs());
+                trace.aggregate.max_abs_equivalent_mean_torque = trace
+                    .aggregate
+                    .max_abs_equivalent_mean_torque
+                    .max(equivalent_mean_torque.abs());
+                if trace.session_tick <= 20 && trace.raw_rows.len() < 129 {
+                    trace.raw_rows.push(MotorRowTraceSample {
+                        phase,
+                        substep_id,
+                        row_index,
+                        backend_dof,
+                        joint_local_dof,
+                        coordinate,
+                        generalized_velocity,
+                        rhs: c.rhs,
+                        rhs_without_bias: c.rhs_wo_bias,
+                        impulse: c.impulse,
+                        impulse_bounds: c.impulse_bounds,
+                        gamma: c.cfm_gain,
+                        inv_lhs: c.inv_lhs,
+                        target_position: motor.target_pos,
+                        stiffness: motor.stiffness,
+                        damping: motor.damping,
+                        max_force: motor.max_force,
+                        force_based: motor.model == crate::dynamics::MotorModel::ForceBased,
+                        equivalent_mean_torque,
+                    });
+                }
+            }
+        }
     }
 }
 

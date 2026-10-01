@@ -7,6 +7,10 @@ mod sim2sim_observation;
 pub use sim2sim_observation::MultibodyObservation;
 #[cfg(all(feature = "alloc", feature = "sim2sim-limit-row-trace"))]
 pub use sim2sim_observation::{LimitRowTracePhase, LimitRowTraceSample};
+#[cfg(all(feature = "alloc", feature = "sim2sim-motor-row-trace"))]
+pub use sim2sim_observation::{
+    MotorRowTraceAggregate, MotorRowTracePhase, MotorRowTraceReceipt, MotorRowTraceSample,
+};
 #[cfg(all(feature = "alloc", feature = "sim2sim-observation"))]
 pub(crate) use sim2sim_observation::{ContactObservationManifest, ContactConstraintIdentity, ContactSideOwner};
 

@@ -5,6 +5,10 @@
 // Local modification: worker-zero read-only collection of final original joint rows.
 use core::sync::atomic::Ordering;
 
+#[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+use crate::dynamics::LimitRowTracePhase;
+#[cfg(all(feature = "sim2sim-motor-row-trace", not(feature = "parallel")))]
+use crate::dynamics::MotorRowTracePhase;
 #[cfg(feature = "dim3")]
 use crate::dynamics::rigid_body::gyroscopic_corrected_angvel;
 use crate::dynamics::solver::JointConstraintsSet;
@@ -15,8 +19,6 @@ use crate::dynamics::solver::joint_constraint::GenericJointConstraintBuilder;
 use crate::dynamics::solver::solver_body::SOLVER_BODY_ALLOW_FAST_ROTATION;
 use crate::dynamics::solver::solver_contact_graph::ContactRef;
 use crate::dynamics::{JointGraphEdge, RigidBodyType, RigidBodyVelocity};
-#[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
-use crate::dynamics::LimitRowTracePhase;
 use crate::geometry::ContactManifold;
 use crate::math::Real;
 use parry::math::SIMD_WIDTH;
@@ -33,15 +35,27 @@ const MAX_ROTATION: Real = core::f64::consts::FRAC_PI_4 as Real;
 
 /// Worker 0 reads the current native limit rows only at completed stage barriers.
 #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
-unsafe fn trace_limit_rows(
-    ctx: &SharedCtx<'_>,
-    phase: LimitRowTracePhase,
-    substep_id: usize,
-) {
+unsafe fn trace_limit_rows(ctx: &SharedCtx<'_>, phase: LimitRowTracePhase, substep_id: usize) {
     let velocity_solver = unsafe { &*ctx.velocity_solver };
     let joints = unsafe { &*ctx.joint_constraints };
     let multibodies = unsafe { &mut *ctx.multibodies };
     multibodies.observe_limit_row_timing(
+        &velocity_solver.multibody_roots,
+        &joints.generic_velocity_constraints,
+        joints.generic_jacobians.as_slice(),
+        velocity_solver.generic_solver_vels.as_slice(),
+        phase,
+        substep_id,
+    );
+}
+
+/// The stage machine executed by every worker. See [`SharedCtx`] for the safety contract.
+#[cfg(all(feature = "sim2sim-motor-row-trace", not(feature = "parallel")))]
+unsafe fn trace_motor_rows(ctx: &SharedCtx<'_>, phase: MotorRowTracePhase, substep_id: usize) {
+    let velocity_solver = unsafe { &*ctx.velocity_solver };
+    let joints = unsafe { &*ctx.joint_constraints };
+    let multibodies = unsafe { &mut *ctx.multibodies };
+    multibodies.observe_motor_row_timing(
         &velocity_solver.multibody_roots,
         &joints.generic_velocity_constraints,
         joints.generic_jacobians.as_slice(),
@@ -586,6 +600,10 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
             if worker_id == 0 && params.num_internal_pgs_iterations > 0 {
                 unsafe { trace_limit_rows(ctx, LimitRowTracePhase::AfterBiasedSolve, substep_id) };
             }
+            #[cfg(all(feature = "sim2sim-motor-row-trace", not(feature = "parallel")))]
+            if worker_id == 0 {
+                unsafe { trace_motor_rows(ctx, MotorRowTracePhase::AfterBiasedSolve, substep_id) };
+            }
 
             /*
              * Stage: integrate positions (parallel over claimed body slots).
@@ -659,7 +677,21 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
             #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
             if worker_id == 0 {
                 unsafe {
-                    trace_limit_rows(ctx, LimitRowTracePhase::AfterPositionIntegration, substep_id)
+                    trace_limit_rows(
+                        ctx,
+                        LimitRowTracePhase::AfterPositionIntegration,
+                        substep_id,
+                    )
+                };
+            }
+            #[cfg(all(feature = "sim2sim-motor-row-trace", not(feature = "parallel")))]
+            if worker_id == 0 {
+                unsafe {
+                    trace_motor_rows(
+                        ctx,
+                        MotorRowTracePhase::AfterPositionIntegration,
+                        substep_id,
+                    )
                 };
             }
 
@@ -682,7 +714,15 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
             }
             #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
             if worker_id == 0 && params.num_internal_stabilization_iterations > 0 {
-                unsafe { trace_limit_rows(ctx, LimitRowTracePhase::AfterUnbiasedSolve, substep_id) };
+                unsafe {
+                    trace_limit_rows(ctx, LimitRowTracePhase::AfterUnbiasedSolve, substep_id)
+                };
+            }
+            #[cfg(all(feature = "sim2sim-motor-row-trace", not(feature = "parallel")))]
+            if worker_id == 0 {
+                unsafe {
+                    trace_motor_rows(ctx, MotorRowTracePhase::AfterUnbiasedSolve, substep_id)
+                };
             }
         }
 

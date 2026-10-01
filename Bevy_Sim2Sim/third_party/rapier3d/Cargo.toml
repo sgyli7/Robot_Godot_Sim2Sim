@@ -93,6 +93,7 @@ simd8 = ["parry3d/simd8"]
 solver-bounds-checks = []
 sim2sim-observation = []
 sim2sim-limit-row-trace = ["sim2sim-observation"]
+sim2sim-motor-row-trace = ["sim2sim-observation"]
 sim2sim-plain-mass-probe = ["sim2sim-observation"]
 sim2sim-source-limit-probe = ["sim2sim-limit-row-trace"]
 std = [
