@@ -100,6 +100,7 @@ def run_source(args, receipt):
     sys.argv = [sys.argv[0]]
     with SimulationAppContext(launch_args), receipt_before_kit_exit(args, receipt):
         import numpy as np
+        import omni.physics.tensors.api as physics_tensor_api
         import torch
         import warp as wp
         from isaaclab_arena.assets.object_library import GroundPlane
@@ -151,11 +152,28 @@ def run_source(args, receipt):
         receipt["body_names"] = list(robot.body_names)
         # Read the compiled PhysX articulation instead of inferring how USD's
         # sentinel COM/inertia values were resolved, or how fixed links merged.
-        plant = {name: tensor(getattr(robot.root_view, method)())[0].detach().cpu().numpy() for name, method in
-                 [("mass", "get_masses"), ("com_pose_xyzw", "get_coms"), ("inertia_matrix", "get_inertias")]}
+        # The public data properties reorder backend buffers to robot.body_names.
+        # Direct root_view tensors can use a different order and must not be
+        # paired with those names without an explicit permutation.
+        plant = {name: tensor(getattr(robot.data, prop))[0].detach().cpu().numpy() for name, prop in
+                 [("mass", "body_mass"), ("com_pose_xyzw", "body_com_pose_b"), ("inertia_matrix", "body_inertia")]}
         receipt["compiled_plant"] = {
             name: {"values": np.where(np.isfinite(value), value, None).tolist(),
                    "nonfinite_indices": np.argwhere(~np.isfinite(value)).tolist()} for name, value in plant.items()
+        }
+        receipt["compiled_plant_semantics"] = {
+            "body_order": "body_names; IsaacLab public data properties apply backend-to-public reordering",
+            "mass": {"getter": "ArticulationData.body_mass", "unit": "kg"},
+            "com_pose_xyzw": {"getter": "ArticulationData.body_com_pose_b",
+                              "translation": "COM position in rigid-body-prim/link frame, meters",
+                              "rotation": "principal-axes frame relative to rigid-body-prim/link frame, xyzw"},
+            "inertia_matrix": {"getter": "ArticulationData.body_inertia",
+                               "reference_point": "center_of_mass", "expressed_in": "rigid_body_prim_frame",
+                               "layout": "column_major_3x3", "unit": "kg*m^2"},
+            "api_docstring_source": {"file": str(Path(physics_tensor_api.__file__).resolve()),
+                                     "sha256": digest(Path(physics_tensor_api.__file__)),
+                                     "symbols": ["ArticulationView.get_coms", "ArticulationView.get_inertias",
+                                                 "ArticulationView.get_dof_friction_properties"]},
         }
         receipt["compiled_sensor_link_presence"] = {name: name in robot.body_names for name in
                                                     ["imu_in_pelvis", "d435_link", "imu_in_torso", "mid360_link"]}
@@ -163,7 +181,14 @@ def run_source(args, receipt):
             {name: cfg.to_dict() for name, cfg in robot.cfg.actuators.items()}, default=str))
         receipt["backend_joint_parameters"] = {name: tensor(getattr(robot.data, name))[0].detach().cpu().tolist()
                                                  for name in ["joint_stiffness", "joint_damping", "joint_armature"]}
-        receipt["backend_joint_friction_properties"] = tensor(robot.root_view.get_dof_friction_properties())[0].detach().cpu().tolist()
+        receipt["backend_joint_friction_properties"] = np.stack([
+            tensor(getattr(robot.data, name))[0].detach().cpu().numpy() for name in
+            ["joint_friction_coeff", "joint_dynamic_friction_coeff", "joint_viscous_friction_coeff"]], axis=-1).tolist()
+        receipt["backend_joint_friction_semantics"] = {
+            "joint_order": "joint_names; IsaacLab public data properties",
+            "columns": ["static_friction_effort_Nm", "dynamic_friction_effort_Nm", "viscous_friction_Nm_s_per_rad"],
+            "version_note": "Isaac Sim >=5.0 uses static/dynamic effort, not the earlier unitless transmitted-force coefficient",
+        }
         receipt["backend_parameter_note"] = "PhysX joint drives differ from IdealPD's explicit controller gains; compare each separately"
         write_receipt(args, receipt)
         if not all(np.isfinite(value).all() for value in plant.values()):
@@ -173,6 +198,10 @@ def run_source(args, receipt):
         receipt["joint_limit_tolerance_radians"] = 0.001
         receipt["runtime_versions"] = {key: importlib.metadata.version(key) for key in ["isaacsim", "torch", "warp-lang", "onnxruntime"]}
         feet = [i for i, name in enumerate(robot.body_names) if name in ("left_ankle_roll_link", "right_ankle_roll_link")]
+        foot_names = [robot.body_names[i] for i in feet]
+        if set(foot_names) != {"left_ankle_roll_link", "right_ankle_roll_link"}:
+            raise AssertionError(f"Compiled source articulation lacks expected named foot links: {foot_names}")
+        receipt["foot_link_names"] = foot_names
 
         def snapshot(tick):
             fields = {name: tensor(getattr(robot.data, name))[0].detach().cpu().numpy() for name in
@@ -191,7 +220,7 @@ def run_source(args, receipt):
             violations = np.flatnonzero((fields["joint_pos"] < limits[:, 0] - 0.001) | (fields["joint_pos"] > limits[:, 1] + 0.001))
             return {"control_tick": tick, "physics_tick": tick * 4, "sample_phase": "control_boundary",
                     "sim_time_seconds": tick / 50, **{key: value.tolist() for key, value in fields.items()},
-                    "foot_link_poses": body_poses[feet].tolist(), "tilt_radians": tilt,
+                    "foot_link_names": foot_names, "foot_link_poses": body_poses[feet].tolist(), "tilt_radians": tilt,
                     "upright_cosine": float(-gravity[2]), "processed_joint_targets": targets.tolist(),
                     "raw_lower_action": lower_action.tolist(),
                     "joint_limit_violations": [{"joint": robot.joint_names[i], "q": float(fields["joint_pos"][i]),
