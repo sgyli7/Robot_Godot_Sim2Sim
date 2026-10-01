@@ -45,3 +45,12 @@ The 2026-10-02 initialization run completed in 2.32 seconds with 0 integrations,
 640×480 / 1920×1080 images. Nine camera contract tests passed. Camera comparisons
 retain the 0.0001 radian rotation tolerance using a sign-invariant quaternion
 chord, which avoids `acos` roundoff rejecting identical orientations.
+
+A later actual Tick-150 run at `49eb9f6` captured the completed boundary after
+150 inferences and 150 integrations. Active simulation/wall ratio was 0.998649,
+with zero missed deadlines and pending ticks. Both PNGs retained 640×480 ego /
+1920×1080 main and MSAA8; their immutable stamp contained the same 53 body poses
+and 43 measured joint positions/velocities. Evidence is frozen under
+`/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_completed_boundary_camera_001/manifest.json`.
+This proves a synchronized running native camera boundary for the floor-only
+scene; it does not qualify science-station contact or task behavior.

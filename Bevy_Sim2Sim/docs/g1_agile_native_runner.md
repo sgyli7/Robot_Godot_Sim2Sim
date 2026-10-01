@@ -75,7 +75,7 @@ The bounded four-pass comparison completed 150 ticks, with maximum drift
 Both initial states, all actuator parameters and the first real inference were
 identical to the one-pass failure. This supports insufficient constraint
 convergence as a contributor to the failure at fixed 20 ms; it does not yet
-prove source physics parity or long standing.
+prove source physics parity.
 
 This task owner now selects four Rapier internal constraint sweeps before the
 same integration. The shared world and Homie defaults are unchanged. The
@@ -84,6 +84,32 @@ receipt records the actual value. `num_solver_iterations`, which splits the
 timestep in this Rapier version, stays one, as do CCD substeps. This comparison
 does not change gains, armatures, defaults, frequency, limits or policy history.
 
-Even a completed 150-tick budget remains
-`qualified=false`: standing duration, physical migration, materials, real-time
-pacing, grasping and visual task success require separate actual evidence.
+The subsequent actual offline 1500-tick run at `793d4a9` completed 30 seconds
+without a fall or source-limit violation. Its first 150 steps exactly matched
+the preceding four-pass run. Maximum drift was 0.080320 m, minimum pelvis
+height 0.745768 m and minimum upright cosine 0.996036. The owner now enforces
+these original joint position bounds before inference and after integration;
+an error latches failure without relabeling the last validated frame.
+
+`AgileWorker` uses the existing bounded physics scheduling through a distinct
+`AgileCommand` / `AgileStep` type. It retains AGILE defaults, gains and recurrence;
+sharing the clock does not convert commands through Homie. The original worker's
+21 deterministic lifecycle guards and the new typed command guard passed.
+
+The actual background-owner diagnostic at `aa297a3` completed 1500 real model
+inferences, motor updates and integrations. Active simulation/wall time was
+30 / 30.001458 seconds (ratio 0.999951), with zero missed control deadlines or
+pending ticks. All 1500 completed boundaries were observed; one initial display
+publication was replaced. The final explicit pause closed the owner. The same
+0.080320 m drift agrees with the offline run. Invoke the ignored test
+`g1::worker::tests::real_agile_owner_standing_clock_diagnostic` with the frozen
+`G1_AGILE_CONFIG`, `G1_AGILE_CONFIG_SHA256`, new `G1_AGILE_WORKER_OUTPUT` and
+compiled `G1_CODE_COMMIT` in a finite process wrapper.
+
+Immutable evidence is under
+`/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_agile_convergence_001/manifest.json`
+and `g1_agile_owner_clock_001/manifest.json`. The original failed one-pass run and
+an invalid first replay comparison remain preserved with their explicit review.
+These flat-floor standing diagnostics remain `qualified=false`: original task
+materials/layout, full source physics parity, walking, real grasp/release and
+visual task success still require their own actual evidence.

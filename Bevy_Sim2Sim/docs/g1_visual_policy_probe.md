@@ -68,3 +68,17 @@ Pure tests cover original stamp schema rejection, the actual 43→31 joint seam
 and unchanged identity, and mandatory offline flags. Native pairing/pose/clock
 guards reuse the shared decision diagnostic's tests; neither those fixtures nor
 these tests are real model or physics qualification.
+
+Actual loopback HTTP diagnostics at compiled source `793d4a9` passed for both
+profiles using the unchanged native Tick-150 Bevy PNG and original 43-joint
+stamp. Each isolated service loaded the pinned original weights once and made
+two real model calls (cold then warm). Static CUDA inference took 553/189 ms and
+Rust HTTP took 604/240 ms; mobile CUDA inference took 785/111 ms and HTTP took
+817/146 ms. Exact profile, revision, frame identity, horizon and every finite
+returned field passed the existing client checks. All owned service processes
+were closed. Server-side model/provider/weight receipts accompany the probes in
+`/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_visual_policy_http_001/manifest.json`.
+
+The image was an older flat-floor diagnostic, and its actual age was retained.
+No returned action was admitted or executed. Two calls per profile are neither
+a latency distribution nor proof of live task scheduling or task success.
