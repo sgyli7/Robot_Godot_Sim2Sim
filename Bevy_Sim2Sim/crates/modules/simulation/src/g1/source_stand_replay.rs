@@ -53,8 +53,8 @@ fn run(report: &mut Value) -> Result<(), RobotError> {
         || input["source_arena_commit"] != "8b4a3a47fc53de23e8205089d71109a2e2348acd"
         || input["usd_sha256"] != robot_minigame::g1::definition::USD_SHA256
         || input["agile_sha256"] != agile::MODEL_SHA256
-        || input["source_physics_hz"] != 200
-        || input["source_control_hz"] != 50
+        || input["source_physics_hz"].as_f64() != Some(200.)
+        || input["source_control_hz"].as_f64() != Some(50.)
         || input["shelf_enabled"] != true
         || input["source_standing_budget_passed"] != true
         || input["joint_names"] != json!(JOINT_NAMES.as_slice())
