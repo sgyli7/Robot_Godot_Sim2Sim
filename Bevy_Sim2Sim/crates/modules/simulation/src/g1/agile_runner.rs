@@ -554,6 +554,7 @@ fn error(value: impl std::fmt::Display) -> RobotError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use robot_minigame::basis::source_to_engine_vector;
     use robot_minigame::g1::{
         definition::{ARENA_COMMIT, USD_SHA256},
         policy::bound_bytes,
@@ -564,6 +565,127 @@ mod tests {
         fs::{self, OpenOptions},
         io::Write,
     };
+
+    fn install_diagnostic_source_hulls(
+        runner: &mut AgileRunner,
+        config: &AgileRunnerConfig,
+        report: &mut Value,
+    ) -> Result<(), RobotError> {
+        let Ok(path) = env::var("G1_AGILE_DIAGNOSTIC_ROBOT_COOKING_QUERY") else {
+            return Ok(());
+        };
+        let sha = env::var("G1_AGILE_DIAGNOSTIC_ROBOT_COOKING_SHA256").map_err(error)?;
+        let bytes = bound_bytes(std::path::Path::new(&path), &sha)?;
+        let query: Value = serde_json::from_slice(&bytes).map_err(error)?;
+        if query["schema"] != "g1_robot_physx_cooking_query_v1"
+            || query["usd_sha256"] != USD_SHA256
+            || query["all_robot_queries_succeeded"] != true
+            || query["closed_timeline_was_stopped"] != true
+            || query["physics_integrations"] != 0
+            || query["timeline_started"] != false
+            || query.get("error").is_some()
+        {
+            return Err(error("invalid zero-integration source robot cooking query"));
+        }
+        let definition = G1Definition::load(&config.definition, &config.definition_sha256)?;
+        let mode = env::var("G1_AGILE_DIAGNOSTIC_ROBOT_COOKING_SCOPE")
+            .unwrap_or_else(|_| "pelvis_contour_only".into());
+        if !matches!(mode.as_str(), "pelvis_contour_only" | "all_source_meshes") {
+            return Err(error("invalid bounded source-cooking comparison scope"));
+        }
+        let collisions = query["collisions"]
+            .as_array()
+            .ok_or_else(|| error("missing source collisions"))?;
+        if collisions.len() != 52 {
+            return Err(error("source collision coverage changed"));
+        }
+        let mut replacements = Vec::new();
+        for source in collisions {
+            if source["source_type"] != "Mesh"
+                || (mode == "pelvis_contour_only" && source["body_name"] != "pelvis_contour_link")
+            {
+                continue;
+            }
+            let name = source["body_name"]
+                .as_str()
+                .ok_or_else(|| error("missing source body name"))?;
+            let index = definition
+                .model()
+                .bodies
+                .iter()
+                .position(|b| b.name == name)
+                .ok_or_else(|| error("foreign cooked body name"))?;
+            let hulls = source["hulls"]
+                .as_array()
+                .ok_or_else(|| error("missing source hulls"))?;
+            if hulls.len() != 1 || source["approximation"] != "convexHull" {
+                return Err(error("source robot convex cooking contract changed"));
+            }
+            let hull = &hulls[0];
+            let points: Vec<[f32; 3]> =
+                serde_json::from_value(hull["vertices_body_local"].clone()).map_err(error)?;
+            let indices: Vec<u32> =
+                serde_json::from_value(hull["indices"].clone()).map_err(error)?;
+            if points.len() < 4 || points.iter().flatten().any(|p| !p.is_finite()) {
+                return Err(error("invalid source cooked vertices"));
+            }
+            let mut triangles = Vec::new();
+            for polygon in hull["polygons"]
+                .as_array()
+                .ok_or_else(|| error("missing source polygons"))?
+            {
+                let start = polygon["index_base"]
+                    .as_u64()
+                    .ok_or_else(|| error("invalid source polygon start"))?
+                    as usize;
+                let count = polygon["num_vertices"]
+                    .as_u64()
+                    .ok_or_else(|| error("invalid source polygon size"))?
+                    as usize;
+                let face = indices
+                    .get(
+                        start
+                            ..start
+                                .checked_add(count)
+                                .ok_or_else(|| error("source face overflow"))?,
+                    )
+                    .filter(|face| {
+                        face.len() >= 3 && face.iter().all(|p| (*p as usize) < points.len())
+                    })
+                    .ok_or_else(|| error("invalid source polygon indices"))?;
+                for i in 1..face.len() - 1 {
+                    triangles.push([face[0], face[i], face[i + 1]]);
+                }
+            }
+            let vertices = points
+                .into_iter()
+                .map(|p| Vector::from_array(source_to_engine_vector(p)))
+                .collect();
+            let shape = SharedShape::convex_mesh(vertices, &triangles)
+                .ok_or_else(|| error("cannot construct copied source convex topology"))?;
+            let body = runner.assembly.diagnostic_body_handles()[index];
+            let handles = runner.simulation.world.bodies[body].colliders();
+            if handles.len() != 1 {
+                return Err(error("cooked mesh comparison needs one collider per body"));
+            }
+            replacements.push((handles[0], shape, name.to_owned()));
+        }
+        let expected = if mode == "pelvis_contour_only" { 1 } else { 38 };
+        if replacements.len() != expected {
+            return Err(error("cooked mesh comparison coverage changed"));
+        }
+        for (handle, shape, _) in &replacements {
+            runner.simulation.world.colliders[*handle].set_shape(SharedShape::compound(vec![(
+                rapier3d::math::Pose::IDENTITY,
+                shape.clone(),
+            )]));
+        }
+        report["diagnostic_source_cooking_overlay"] = json!({"query_sha256":sha,"scope":mode,
+            "source_runtime_build":query["runtime_build"],"t1_matching_runtime_verified":false,
+            "source_task_rollout_verified":false,"replaced_body_names":replacements.iter().map(|r|&r.2).collect::<Vec<_>>(),
+            "copied_polygon_faces":true,"formal_owner_configuration_changed":false});
+        Ok(())
+    }
 
     fn configuration() -> AgileRunnerConfig {
         AgileRunnerConfig {
@@ -686,6 +808,7 @@ mod tests {
         }
         let mut runner = AgileRunner::load(config)?;
         report["initial_task_objects"] = json!(runner.task_object_frame()?);
+        install_diagnostic_source_hulls(&mut runner, config, report)?;
         let shelf = runner
             .task_objects
             .as_ref()
