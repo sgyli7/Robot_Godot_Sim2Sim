@@ -19,8 +19,11 @@ use alloc::sync::Arc;
 #[cfg(feature = "sim2sim-motor-row-trace")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MotorRowTracePhase {
+    /// Motor row after the existing position-bias velocity solve.
     AfterBiasedSolve,
+    /// Motor row after the sole position integration in this Tick.
     AfterPositionIntegration,
+    /// Motor row after the existing relaxation solve, retaining servo RHS.
     AfterUnbiasedSolve,
 }
 
@@ -47,23 +50,41 @@ impl MotorRowTracePhase {
 #[cfg(feature = "sim2sim-motor-row-trace")]
 #[derive(Clone, Debug)]
 pub struct MotorRowTraceSample {
+    /// Existing solver checkpoint that produced this sample.
     pub phase: MotorRowTracePhase,
+    /// Temporal solver substep identity; the G1 diagnostic requires zero.
     pub substep_id: usize,
+    /// Index in the actual internal generic joint-row buffer.
     pub row_index: usize,
+    /// Generalized-coordinate offset in the owning articulation.
     pub backend_dof: usize,
+    /// Coordinate offset within the joint, after locked axes are omitted.
     pub joint_local_dof: usize,
+    /// Actual scalar joint position at this checkpoint.
     pub coordinate: Real,
+    /// Actual scalar generalized velocity at this checkpoint.
     pub generalized_velocity: Real,
+    /// Solver right-hand side including the active bias convention.
     pub rhs: Real,
+    /// Stored right-hand side for the relaxation solve.
     pub rhs_without_bias: Real,
+    /// Internal accumulated motor impulse at this checkpoint.
     pub impulse: Real,
+    /// Lower and upper impulse caps copied from the internal row.
     pub impulse_bounds: [Real; 2],
+    /// Motor compliance term used by the internal solver row.
     pub gamma: Real,
+    /// Effective inverse left-hand-side coefficient of this row.
     pub inv_lhs: Real,
+    /// Configured target position in radians for this motor.
     pub target_position: Real,
+    /// Configured motor stiffness.
     pub stiffness: Real,
+    /// Configured motor damping.
     pub damping: Real,
+    /// Configured effort cap before multiplication by the Tick duration.
     pub max_force: Real,
+    /// Whether this row uses the ForceBased motor model.
     pub force_based: bool,
     /// Net boundary impulse divided by dt; not a continuous torque waveform.
     pub equivalent_mean_torque: Real,
@@ -73,13 +94,21 @@ pub struct MotorRowTraceSample {
 #[cfg(feature = "sim2sim-motor-row-trace")]
 #[derive(Clone, Debug, Default)]
 pub struct MotorRowTraceAggregate {
+    /// Number of observed rows at each of the three existing checkpoints.
     pub rows_per_phase: [usize; 3],
+    /// Largest absolute observed motor impulse in this Tick.
     pub max_abs_impulse: Real,
+    /// Largest absolute observed impulse divided by the Tick duration.
     pub max_abs_equivalent_mean_torque: Real,
+    /// At least one observed impulse exceeded its configured bounds.
     pub cap_violation: bool,
+    /// At least one required operand was not finite.
     pub nonfinite: bool,
+    /// A row could not be uniquely matched to the registered articulation.
     pub ownership_incomplete: bool,
+    /// The fixed diagnostic coverage budget was exceeded.
     pub overflow: bool,
+    /// A duration or temporal-substep identity violated the diagnostic contract.
     pub temporal_step_invalid: bool,
 }
 
@@ -87,11 +116,17 @@ pub struct MotorRowTraceAggregate {
 #[cfg(feature = "sim2sim-motor-row-trace")]
 #[derive(Clone, Debug, Default)]
 pub struct MotorRowTraceReceipt {
+    /// An opt-in diagnostic session was registered for this articulation.
     pub session_started: bool,
+    /// Actual observed Tick number in the bounded session.
     pub session_tick: u32,
+    /// This Tick is within the opt-in aggregate recording budget.
     pub active: bool,
+    /// Actual duration supplied to the solver for this Tick.
     pub dt: Real,
+    /// Raw internal rows, retained only during the first 20 observed Ticks.
     pub raw_rows: Vec<MotorRowTraceSample>,
+    /// Fixed-size coverage and violation counters for this Tick.
     pub aggregate: MotorRowTraceAggregate,
 }
 

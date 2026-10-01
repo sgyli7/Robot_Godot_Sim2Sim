@@ -294,7 +294,9 @@ impl G1BodyFrame {
                 return Err(invalid("duplicate or invalid G1 frame body"));
             }
             finite(&body.translation.map(f64::from))?;
-            rotation(&body.rotation_xyzw.map(f64::from))?;
+            rotation(&body.rotation_xyzw.map(f64::from)).map_err(|cause| {
+                invalid(format!("G1 completed frame body {}: {cause}", body.body))
+            })?;
         }
         Ok(())
     }

@@ -46,6 +46,12 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Read-only, generation-bound source-body order for the ignored diagnostic.
+    #[cfg(feature = "sim2sim_motor_row_trace")]
+    pub(super) fn body_trace_handles(&self) -> &[RigidBodyHandle] {
+        &self.bodies
+    }
+
     /// Generation-bound driven joint handles and articulation slots.
     /// The ignored actuator diagnostic is the only caller; assembly is unchanged.
     #[cfg(feature = "sim2sim_motor_row_trace")]

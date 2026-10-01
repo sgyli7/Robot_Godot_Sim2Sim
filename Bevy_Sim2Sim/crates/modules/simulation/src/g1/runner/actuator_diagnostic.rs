@@ -576,7 +576,7 @@ fn validate_trace(
     Ok(())
 }
 
-fn final_native_receipt(runner: &G1Runner, mapping: &Mapping) -> Value {
+fn final_native_receipt(runner: &G1Runner, definition: &G1Definition, mapping: &Mapping) -> Value {
     let root = runner
         .simulation
         .world
@@ -602,13 +602,49 @@ fn final_native_receipt(runner: &G1Runner, mapping: &Mapping) -> Value {
             json!({"name":JOINT_NAMES[wbc],"backend_dof":slot,"position":q,"velocity":dq})
         })
         .collect();
+    // Preserve the actual rejected boundary without normalizing its quaternions
+    // or manufacturing a valid frame. FK operands distinguish solver storage
+    // from the immutable snapshot copy; this data never enters control.
+    let snapshot = runner.simulation.snapshot();
+    let tree = runner.simulation.world.multibody_joints.get(mapping[0].0);
+    let raw_bodies: Vec<_> = runner
+        .assembly
+        .body_trace_handles()
+        .iter()
+        .enumerate()
+        .map(|(source_body, handle)| {
+            let body = runner.simulation.world.bodies.get(*handle);
+            let raw_handle = handle.into_raw_parts();
+            let sample = snapshot.bodies.iter().find(|sample| {
+                sample.handle == [raw_handle.0, raw_handle.1]
+            });
+            let link = tree.and_then(|(tree, _)| {
+                tree.links().find(|link| link.rigid_body_handle() == *handle)
+            });
+            let rotation = body.map(|body| body.rotation().to_array());
+            let norm_error = rotation.map(|rotation| {
+                rotation.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() - 1.0
+            });
+            json!({"source_body":source_body,"name":definition.model().bodies[source_body].name,
+                "rigid_body_rotation_xyzw":rotation,"squared_norm_error_f64":norm_error,
+                "snapshot_rotation_xyzw":sample.map(|sample| sample.rotation_xyzw),
+                "snapshot_matches_storage_bits":rotation.zip(sample).map(|(q,sample)| bits(&q)==bits(&sample.rotation_xyzw)),
+                "link_id":link.map(|link|link.link_id()),"parent_link_id":link.and_then(|link|link.parent_id()),
+                "fk_world_rotation_xyzw":link.map(|link|link.local_to_world().rotation.to_array()),
+                "fk_parent_rotation_xyzw":link.map(|link|link.local_to_parent().rotation.to_array()),
+                "joint_rotation_xyzw":link.map(|link|link.joint().joint_rot().to_array()),
+                "joint_frame1_rotation_xyzw":link.map(|link|link.joint().data.local_frame1.rotation.to_array()),
+                "joint_frame2_rotation_xyzw":link.map(|link|link.joint().data.local_frame2.rotation.to_array())})
+        })
+        .collect();
     json!({"actual_counts":runner.progress_counts(),"configuration":runner.simulation.configuration(),
         "root_handle_still_live":root.is_some(),
         "raw_root_position_source":root.map(|body| engine_to_source_vector(body.translation().to_array())),
         "raw_root_rotation_xyzw":root.map(|body| body.rotation().to_array()),
         "raw_root_upright_cosine":root.map(|body| (*body.rotation() * Vector::Y).y),
         "max_body_user_torque_after_step":max_user_torque,
-        "raw_joint_operands_not_control_observations":raw_joints})
+        "raw_joint_operands_not_control_observations":raw_joints,
+        "raw_body_rotation_operands_not_control_observations":raw_bodies})
 }
 
 fn run_backend(
@@ -741,7 +777,7 @@ fn run_backend(
         } else {
             Ok(())
         };
-        let native = final_native_receipt(&runner, &mapping);
+        let native = final_native_receipt(&runner, definition, &mapping);
         let max_user_torque = runner
             .simulation
             .world
