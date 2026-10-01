@@ -159,6 +159,12 @@ def run_source(args, receipt):
         }
         receipt["compiled_sensor_link_presence"] = {name: name in robot.body_names for name in
                                                     ["imu_in_pelvis", "d435_link", "imu_in_torso", "mid360_link"]}
+        receipt["authored_actuator_configuration"] = json.loads(json.dumps(
+            {name: cfg.to_dict() for name, cfg in robot.cfg.actuators.items()}, default=str))
+        receipt["backend_joint_parameters"] = {name: tensor(getattr(robot.data, name))[0].detach().cpu().tolist()
+                                                 for name in ["joint_stiffness", "joint_damping", "joint_armature"]}
+        receipt["backend_joint_friction_properties"] = tensor(robot.root_view.get_dof_friction_properties())[0].detach().cpu().tolist()
+        receipt["backend_parameter_note"] = "PhysX joint drives differ from IdealPD's explicit controller gains; compare each separately"
         write_receipt(args, receipt)
         if not all(np.isfinite(value).all() for value in plant.values()):
             raise AssertionError("Compiled PhysX plant contains nonfinite mass/COM/inertia values")
@@ -170,20 +176,24 @@ def run_source(args, receipt):
 
         def snapshot(tick):
             fields = {name: tensor(getattr(robot.data, name))[0].detach().cpu().numpy() for name in
-                      ["root_link_pose_w", "root_link_vel_w", "joint_pos", "joint_vel", "projected_gravity_b"]}
+                      ["root_link_pose_w", "root_link_vel_w", "root_link_ang_vel_b", "joint_pos", "joint_vel",
+                       "projected_gravity_b", "computed_torque", "applied_torque"]}
             if not all(np.isfinite(value).all() for value in fields.values()):
                 raise AssertionError(f"Nonfinite physical state at tick {tick}")
             gravity = fields["projected_gravity_b"]
             tilt = math.acos(float(np.clip(-gravity[2], -1, 1)))
             body_poses = tensor(robot.data.body_link_pose_w)[0].detach().cpu().numpy()
+            body_velocities = tensor(robot.data.body_link_vel_w)[0].detach().cpu().numpy()
             targets = term.processed_actions[0].detach().cpu().numpy()
-            if not np.isfinite(body_poses).all() or not np.isfinite(targets).all():
+            lower_action = np.asarray(term.wbc_policy.action)[0]
+            if not all(np.isfinite(value).all() for value in [body_poses, body_velocities, targets, lower_action]):
                 raise AssertionError(f"Nonfinite body/action state at tick {tick}")
             violations = np.flatnonzero((fields["joint_pos"] < limits[:, 0] - 0.001) | (fields["joint_pos"] > limits[:, 1] + 0.001))
             return {"control_tick": tick, "physics_tick": tick * 4, "sample_phase": "control_boundary",
                     "sim_time_seconds": tick / 50, **{key: value.tolist() for key, value in fields.items()},
                     "foot_link_poses": body_poses[feet].tolist(), "tilt_radians": tilt,
                     "upright_cosine": float(-gravity[2]), "processed_joint_targets": targets.tolist(),
+                    "raw_lower_action": lower_action.tolist(),
                     "joint_limit_violations": [{"joint": robot.joint_names[i], "q": float(fields["joint_pos"][i]),
                                                 "limits": limits[i].tolist()} for i in violations]}
 
