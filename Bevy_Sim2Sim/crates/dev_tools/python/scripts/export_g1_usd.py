@@ -38,10 +38,106 @@ def pose(matrix):
     return {"position": vector(t.GetTranslation()), "rotation_wxyz": quaternion(t.GetRotation().GetQuat())}
 
 
+def inertia_oracle(stage, destination):
+    """Independent f64 tensor calculation from authored USD, not Rust's basis helper."""
+    def matmul(a, b):
+        return [[sum(a[r][k] * b[k][c] for k in range(3)) for c in range(3)] for r in range(3)]
+    def transpose(a):
+        return [list(row) for row in zip(*a)]
+    change = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
+    rows = []
+    for prim in stage.Traverse():
+        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        mass = UsdPhysics.MassAPI(prim)
+        diagonal = vector(mass.GetDiagonalInertiaAttr().Get())
+        source_axes = quaternion(mass.GetPrincipalAxesAttr().Get())
+        axes_sentinel = source_axes == [0.] * 4
+        if axes_sentinel:
+            if max(diagonal) != min(diagonal):
+                raise ValueError("undefined principal axes with anisotropic inertia")
+            q = [1., 0., 0., 0.]
+        else:
+            norm = math.sqrt(sum(v * v for v in source_axes))
+            q = [v / norm for v in source_axes]
+        w, x, y, z = q
+        rotation = [[1 - 2 * (y*y + z*z), 2 * (x*y - w*z), 2 * (x*z + w*y)],
+                    [2 * (x*y + w*z), 1 - 2 * (x*x + z*z), 2 * (y*z - w*x)],
+                    [2 * (x*z - w*y), 2 * (y*z + w*x), 1 - 2 * (x*x + y*y)]]
+        diagonal_matrix = [[diagonal[r] if r == c else 0. for c in range(3)] for r in range(3)]
+        tensor_source = matmul(matmul(rotation, diagonal_matrix), transpose(rotation))
+        tensor_engine = matmul(matmul(change, tensor_source), transpose(change))
+        rows.append({"body": len(rows), "name": prim.GetName(), "mass": float(mass.GetMassAttr().Get()),
+                     "principal_axes_sentinel": axes_sentinel,
+                     "source_tensor_row_major": tensor_source, "engine_tensor_row_major": tensor_engine})
+    def quat_matrix(value):
+        w, x, y, z = quaternion(value)
+        norm = math.sqrt(w*w + x*x + y*y + z*z)
+        w, x, y, z = (v / norm for v in (w, x, y, z))
+        return [[1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+                [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+                [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]]
+    def matvec(matrix, value):
+        return [sum(matrix[r][c] * value[c] for c in range(3)) for r in range(3)]
+    def add(a, b):
+        return [x+y for x,y in zip(a,b)]
+    identity = [[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]]
+    rigid = [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
+    ids = {str(p.GetPath()): i for i,p in enumerate(rigid)}
+    poses = {0: (identity, [0.,0.,3.])}
+    connections, positions, axes = [], {}, []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdPhysics.Joint):
+            continue
+        joint = UsdPhysics.Joint(prim)
+        p = ids[str(joint.GetBody0Rel().GetTargets()[0])]
+        c = ids[str(joint.GetBody1Rel().GetTargets()[0])]
+        r0, r1 = quat_matrix(joint.GetLocalRot0Attr().Get()), quat_matrix(joint.GetLocalRot1Attr().Get())
+        p0, p1 = vector(joint.GetLocalPos0Attr().Get()), vector(joint.GetLocalPos1Attr().Get())
+        if prim.IsA(UsdPhysics.RevoluteJoint):
+            hinge = UsdPhysics.RevoluteJoint(prim)
+            theta = math.radians(0.63 * hinge.GetLowerLimitAttr().Get() + 0.37 * hinge.GetUpperLimitAttr().Get())
+            positions[prim.GetName()] = theta
+            axis = "XYZ".index(str(hinge.GetAxisAttr().Get()))
+            basis = [1. if k == axis else 0. for k in range(3)]
+            x,y,z = basis
+            cross = [[0.,-z,y],[z,0.,-x],[-y,x,0.]]
+            ct, st = math.cos(theta), math.sin(theta)
+            rotation = [[ct * identity[r][col] + (1-ct) * basis[r] * basis[col] + st * cross[r][col] for col in range(3)] for r in range(3)]
+        else:
+            rotation, basis = identity, None
+        local_r = matmul(matmul(r0, rotation), transpose(r1))
+        local_p = add(p0, [-v for v in matvec(local_r,p1)])
+        connections.append((prim.GetName(),p,c,local_r,local_p,r0,basis))
+    pending = list(connections)
+    while pending:
+        ready = [j for j in pending if j[1] in poses]
+        if not ready:
+            raise ValueError("cyclic or disconnected USD source joints")
+        for name,p,c,lr,lp,r0,basis in ready:
+            parent_r,parent_p = poses[p]
+            poses[c] = (matmul(parent_r,lr),add(parent_p,matvec(parent_r,lp)))
+            if basis is not None:
+                axes.append({"name":name,"engine_world_axis":matvec(change,matvec(matmul(parent_r,r0),basis))})
+        pending = [j for j in pending if j not in ready]
+    native_case = {"root_source_position":[0.,0.,3.],"joint_positions_by_name":positions,
+                   "bodies":[{"body":i,"position_engine":matvec(change,poses[i][1]),
+                              "rotation_engine_row_major":matmul(matmul(change,poses[i][0]),transpose(change))} for i in range(len(rigid))],
+                   "joint_axes":axes}
+    result = {"schema": "g1_inertia_oracle_v1", "usd_sha256": USD_SHA256, "exporter_sha256": sha(__file__),
+              "formula": "I_engine = C * (R_source * diag(I_source) * transpose(R_source)) * transpose(C)",
+              "source_axes_normalization": "normalize copied USD quaternion in f64; zero sentinel only accepted for isotropic sensor tensor",
+              "C_row_major": change, "bodies": rows, "independent_joint_frame_case": native_case}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result, separators=(",", ":"), allow_nan=False) + "\n")
+    print(json.dumps({"oracle": str(destination), "sha256": sha(destination), "bodies": len(rows)}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--usd", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--inertia-oracle-output", type=Path, help="independent zero-integration tensor oracle; do not regenerate geometry cache")
     parser.add_argument("--visual-output", type=Path)
     args = parser.parse_args()
     if sha(args.usd) != USD_SHA256:
@@ -49,6 +145,11 @@ def main():
     stage = Usd.Stage.Open(str(args.usd))
     if UsdGeom.GetStageMetersPerUnit(stage) != 1.0 or UsdGeom.GetStageUpAxis(stage) != "Z":
         raise ValueError("unexpected USD units or up axis")
+    if args.inertia_oracle_output:
+        inertia_oracle(stage, args.inertia_oracle_output)
+        return
+    if args.output is None:
+        parser.error("--output is required when not exporting the inertia oracle")
     cache = UsdGeom.XformCache()
     bodies = [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]
     ids = {str(p.GetPath()): i for i, p in enumerate(bodies)}
