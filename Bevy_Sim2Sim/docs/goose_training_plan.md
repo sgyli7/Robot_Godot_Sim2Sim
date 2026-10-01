@@ -122,6 +122,7 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 | 足底独立诊断 | 原生约束行的隐式 Kelvin 映射，96 个小夹具案例全部完成；静态曲线吻合，无释放能量增长 | 只覆盖无摩擦、已接触初态；整机、飞行落地、1.5 mm 行程末端、Rapier 和 Warp 均未授予资格 |
 | 嘴部隔离诊断 | 12 个初始角的销距误差≤1.15e−16 m；固定头、无重力／接触时动态销距最大 3.69 mm，抵抗载荷时最大 8.17 mm | 几何映射正确；原软约束在 20 ms 下是独立阻断 |
 | 嘴部离散约束对照 | 将关节阻尼与原生销／限位约束放到相同离散矩阵中求解；10 组固定头部案例、1000 次 20 ms 积分全部通过局部门槛；覆盖 20 N 载荷和 ±4.4 Nm 输入，销距最大 0.000143 mm、角关系最大 1.253e−5 rad、限位最大 1.311e−7 rad | 找到局部有效方案；尚无整机、碰撞物体、Rapier 或 GPU 资格 |
+| Rapier 同嘴夹具对照 | 保留四杆几何、质量、完整惯量、物理 armature／阻尼／摩擦，分别完成相同十组程序各 1000 次积分；默认平面基最大销距 28.026 mm，沿连杆的等价平面基降至 0.000120 mm，角关系最大 5.621e−6 rad；PGS 4 已保持闭合，PGS 8/16/32 未消除限位问题 | 定位平面约束行收敛问题；新平面基全部通过闭合分项，但仅 2/10 组完整局部通过，限位最大越界 0.153929 rad；未修改整机装配或授予 M0 资格 |
 | 地面可达性 | 2401 个静态蹲弯组合中 53 个夹持点在地面以上 5–50 mm，100/200/300 g 点载荷静力筛查通过 | 只是 FK、静力和几何支撑筛查；未验证碰撞、夹紧、真实起身或物体运输 |
 | 观测时效 | 已证实 `mj_step` 后派生姿态仍为积分前状态；新运行时仅刷新运动学和 COM，关闭数值异常自动重置；17 项 Python 回归通过 | 65／82 布局不变，后续收据显式记录运行时 v2 和力／姿态的时间边界 |
 
@@ -134,10 +135,16 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 本轮 Rust 回归为 14 项 robot 单元、21 项 simulation 单元和 2 项原生 armature／质量检查通过；另有 10 项依赖外部冻结夹具的既有检查未运行。Rust 格式检查和 Git 空白检查通过。这些代码检查不替代本体资格。
 
-新增 [嘴部隐式约束收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_implicit_verified/receipt.json) 和 [执行源码](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/jaw_implicit_verified_code/mouth_constraints.py)。诊断没有 Actor、PD 或优化器更新，没有初始化后的关节坐标写入。21 项 Python 回归及 [489 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_jaw_checkpoint.json)通过；临时日志在测试临时目录或备份目录。
+新增 [嘴部隐式约束收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_implicit_verified/receipt.json) 和 [最终执行源码](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/jaw_implicit_verified_current_code/mouth_constraints.py)。诊断没有 Actor、PD 或优化器更新，没有初始化后的关节坐标写入。21 项 Python 回归及 [489 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_jaw_checkpoint.json)通过；临时日志在测试临时目录或备份目录。
 
 局部对照发现：原生隐式积分器在约束力求解后修改速度增量，固定头部也会因关节阻尼而失去闭合。实验方案统一使用 `M_effective = M_physical + dt*C` 求解阻尼和约束；原生 Euler 仅负责一次状态推进，关闭二次阻尼处理。另用真实边界距离生成预测限位参考，激活余量不缩小实际行程。新增的对角量是数值离散矩阵，必须和物理 armature 分开记录，禁止直接当作目标引擎的真实惯量。非线性速度力仍为显式评估；此方案目前属于实验积分器，没有替换获批的整机候选或 GPU 路线。
 
-下一检查点的首个问题：**Rapier 在相同固定头部夹具、真实四杆几何、载荷和初态下，能否保持闭合与完整限位，并给出可比的真实反力？** 使用相同 10 组载荷程序，核对角度、销距、边界、实际力矩和积分次数。随后补源端无外力耗散检查；源／目标局部对照合格后才创建新的整机候选。
+Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_verified_basis/comparison.json)、[沿连杆平面基完整轨迹](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_verified_basis/coupler_axis.json)、[PGS 收敛对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_coupler_basis/matrix.json)。最终执行源码及实际编译的 `third_party/rapier3d` 已一起冻结在 `attempts/jaw_rapier_verified_basis_code/`；收据核对源码、二进制和依赖哈希。早期辅助文件记录的是 registry 源码哈希，不能当作实际编译依赖证明；[依赖来源说明](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/jaw_rapier_verified_basis/native_dependency_provenance.json)明确实际路径。
+
+开发工具位于 `crates/dev_tools/src/bin/goose_jaw_probe.rs`，用 `--pin-basis source_axes|coupler_axis` 显式选对照；默认保留原平面基。运行时只导出已有的完整物理惯量转换，不改变整机销约束或默认模拟行为。工具每 Tick 清理旧力队列，经统一步进接口提交输入转子力矩和载荷力臂，核对一次力矩更新、一次 20 ms 积分。当前记录的销冲量是最终稳定化后的原生值，不能替代积分阶段完整反力审计。
+
+本检查点的 21 项 simulation 单元及 2 项 armature／完整惯量检查通过，10 项依赖外部冻结夹具的既有检查未运行；[492 项工程结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_rapier_jaw_checkpoint.json)、Rust 格式和 Git 空白检查通过。所有实验输出仍在备份目录，未占用 GPU。
+
+下一检查点的首个问题：**保留完整 0–0.55 rad 行程，在单次 20 ms 积分中用原生预测限位阻止越界，而不是在下一 Tick 才拉回？** 固定使用已验证的连杆平面基，比较原限位与显式选择的预测限位，保持同十组程序和局部门槛。补齐积分阶段反力核对和源端无外力耗散检查；源／目标局部对照合格后才创建新的整机候选。
 
 其后依次验证任务碰撞代理和足底完整接触实现；新代理须保留空腔、脚嘴关键表面及原碰撞过滤，报告来源映射和几何误差。足底需补摩擦、脱离后落地、行程末端和源／目标曲线对照，再接入相同版本整机与 GPU 小批量。未通过这些门槛前不占用 DGX 做 PPO。

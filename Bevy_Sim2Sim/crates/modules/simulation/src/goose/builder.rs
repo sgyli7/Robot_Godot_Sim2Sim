@@ -144,7 +144,7 @@ impl GooseAssembly {
             let handle = world.bodies.insert(
                 RigidBodyBuilder::dynamic()
                     .pose(poses[&body.name])
-                    .additional_mass_properties(mass_properties(body)?)
+                    .additional_mass_properties(native_mass_properties(body)?)
                     .linear_damping(0.0)
                     .angular_damping(0.0)
                     .can_sleep(false)
@@ -413,7 +413,9 @@ fn engine_inertia(source: [[f64; 3]; 3]) -> Matrix {
         (sign[row] * sign[column] * source[index[row]][index[column]]) as f32
     }))
 }
-fn mass_properties(body: &GooseBody) -> Result<MassProperties, RobotError> {
+/// Convert the physical SI mass and complete body-frame tensor to the native basis.
+/// Numerical integration terms must not be added to this physical mass ledger.
+pub fn native_mass_properties(body: &GooseBody) -> Result<MassProperties, RobotError> {
     let tensor = body.inertia_at_com_body_kg_m2;
     let index = [0, 2, 1];
     let sign = [1.0, 1.0, -1.0];
@@ -468,7 +470,8 @@ mod tests {
         };
         let mut world = PhysicsWorld::new();
         let handle = world.bodies.insert(
-            RigidBodyBuilder::dynamic().additional_mass_properties(mass_properties(&body).unwrap()),
+            RigidBodyBuilder::dynamic()
+                .additional_mass_properties(native_mass_properties(&body).unwrap()),
         );
         world.colliders.insert_with_parent(
             ColliderBuilder::compound(vec![(
