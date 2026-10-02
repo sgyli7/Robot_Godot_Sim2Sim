@@ -183,6 +183,12 @@ impl MobileAssistRunner {
                 "classical observation expired before owner handoff",
             ));
         }
+        if let Some(carry) = &self.carry {
+            if !carry.navigator.completed() {
+                return Err(invalid("cannot replace an active carry"));
+            }
+            return Ok((carry.command.clone(), carry.grip.clone()));
+        }
         if let Some(scan) = &self.scan {
             if !scan.navigator.completed() {
                 return Err(invalid("cannot replace an active scan"));
@@ -262,7 +268,14 @@ impl MobileAssistRunner {
             }
             MobileAssistCommand::ClassicalCarry(goal) => {
                 let state = self.owner.measurement()?;
-                if self.carry.is_none() {
+                if self.carry.as_ref().is_none_or(|carry| {
+                    carry.navigator.completed() && carry.navigator.goal() != goal
+                }) {
+                    if self.carry.as_ref().is_some_and(|carry| {
+                        goal.observation.frame_id <= carry.navigator.goal().observation.frame_id
+                    }) {
+                        return Err(invalid("next carry requires a newer actual camera frame"));
+                    }
                     let navigator = MobileCarryNavigator::new(goal.clone(), &state)?;
                     let (command, grip) = self.prepare_classical(&goal.observation, &state)?;
                     self.carry = Some(CarryState {
@@ -387,6 +400,7 @@ mod tests {
         scan: MobileScanGoal,
         lower: MobileLowerGoal,
         carry: Option<MobileCarryGoal>,
+        fine_carry: Option<MobileCarryGoal>,
     }
 
     /// Frozen real-RGB grasp/scan prefix, then lowering and optional visual carry.
@@ -421,6 +435,8 @@ mod tests {
         let mut lower_started = false;
         let mut lower_completed = false;
         let mut carry_started = false;
+        let mut coarse_completed = false;
+        let mut fine_started = false;
         let maximum_ticks = if goals.carry.is_some() { 3150 } else { 1300 };
         let mut actual_ticks = 0;
         let now = || {
@@ -453,6 +469,14 @@ mod tests {
                     goal.observation.captured_at_unix_ms = now();
                     current = Some(MobileAssistCommand::ClassicalCarry(goal.clone()));
                     carry_started = true;
+                } else if carry_started
+                    && !fine_started
+                    && owner.completed_skill()
+                    && let Some(goal) = &mut goals.fine_carry
+                {
+                    goal.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalCarry(goal.clone()));
+                    fine_started = true;
                 }
                 let step = owner.step_with_guard(current.as_ref().unwrap(), &mut || Ok(()))?;
                 if matches!(&step.execution, MobileAssistExecution::ClassicalLower { lowering, .. } if lowering.completed)
@@ -460,6 +484,9 @@ mod tests {
                     lower_completed = true;
                 }
                 actual_ticks = tick;
+                if carry_started && !fine_started && owner.completed_skill() {
+                    coarse_completed = true;
+                }
                 serde_json::to_writer(
                     &mut trace,
                     &serde_json::json!({
@@ -472,6 +499,7 @@ mod tests {
                 if lower_started
                     && owner.completed_skill()
                     && (goals.carry.is_none() || carry_started)
+                    && (goals.fine_carry.is_none() || fine_started)
                 {
                     return Ok(());
                 }
@@ -486,7 +514,8 @@ mod tests {
             .map_err(|e| invalid(e.to_string()))?;
         serde_json::to_writer_pretty(file,&serde_json::json!({
             "actual_integrations":actual_ticks,"lower_started":lower_started,"carry_started":carry_started,
-            "completed_lowering":lower_completed,"completed_carry":carry_started && result.is_ok(),
+            "fine_carry_started":fine_started,"completed_fine_carry":fine_started && result.is_ok(),
+            "completed_lowering":lower_completed,"completed_carry":coarse_completed,
             "completed_selected_sequence":result.is_ok(),"failure":result.as_ref().err().map(ToString::to_string),
             "fresh_vla_calls":0,"saved_native_fixture_used":true,"qualified":false,
             "physics_hz":50,"integrations_per_tick":1,

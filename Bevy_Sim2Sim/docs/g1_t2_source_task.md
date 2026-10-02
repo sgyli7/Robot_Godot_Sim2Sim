@@ -1131,3 +1131,38 @@ steps occur and the owned service closes. Both guards now read one explicit
 per-mode budget. A focused regression verifies2050/1050/1300/3150 separately
 and confirms ordinary modes have no assisted budget. No physics/action limit
 or prior scene budget is increased.
+
+
+Fresh online approach0203 completes1307single50Hz body updates after four
+new actual RGB N1.6 calls. The local worker reads the exact913Tick RGB and
+whitelisted self state, produces heading−1.614499rad/distance1.731257m, and
+the same owner executes its disclosed1.081257m coarse waypoint. All394
+carry/stop samples retain hand-only support; root displacement1.135662m,
+upright≥0.992602, active sim/wall0.998895, zero missed/pending Ticks. A new
+actual near image detects both markers: independent horizontal errors2.22mm
+for box and1.12mm for bin, bin residual0.0448px/minimum edge38.85px. Its
+remaining visual distance is0.573745m. The owned model closes after four calls.
+This establishes online visual approach, not Qwen choice, release or8/10.
+Trace SHA256:
+`9a948fd67a266a1cf4fd910cfc967d65410d86e3b5df1e1716bb10e35eebca82`.
+
+Saved-prefix near approach0204 reproduces all1307body states from0203, then
+admits a newer camera-bound goal while retaining the lowered upper command.
+It fails its finite walk deadline after2326native Ticks, with no new VLA
+calls. At1404the box first receives both original table-leg and bin support;
+no robot/bin impulse occurs. The robot remains upright. Independent geometry
+shows the original table top0.5061–0.5306m and stable bin origin0.5304m.
+The carried cube's lowest tilted corner is0.5532m at the near view and0.5431m
+at first contact, below the original bin rim≈0.581m. The height/geometry data
+are acceptance-only and never become command input. This is a collision
+clearance failure, not a newly qualified release or model/frequency issue.
+
+Completed carry handoff now preserves the current upper/finger command and
+requires a strictly newer current camera boundary; active-goal replacement
+remains rejected. Navigation also checks forward progress from its original
+self velocity: after one gait-start window, less than3cm along the requested
+heading over50Ticks raises a bounded failure requiring pause/reset. Lateral
+drift cannot mask blockage; alternating zero/positive gait velocity is allowed.
+Simulation checks0205:66pass/35explicit real-asset trials ignored. The next
+stage must restore visual/known-geometry clearance before walking over the
+bin; merely extending the collision deadline is not an adopted remedy.

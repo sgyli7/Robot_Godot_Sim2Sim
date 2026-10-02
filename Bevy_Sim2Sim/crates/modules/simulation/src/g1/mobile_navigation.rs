@@ -110,6 +110,8 @@ pub struct MobileCarryNavigator {
     odometry: [f32; 2],
     completed: bool,
     scan_only: bool,
+    forward_window_m: f32,
+    forward_window_ticks: u32,
 }
 
 impl MobileCarryNavigator {
@@ -132,6 +134,8 @@ impl MobileCarryNavigator {
             odometry: [0.; 2],
             completed: false,
             scan_only: false,
+            forward_window_m: 0.,
+            forward_window_ticks: 0,
         })
     }
 
@@ -200,6 +204,21 @@ impl MobileCarryNavigator {
             MobileNavigationPhase::Walk => {
                 for k in 0..2 {
                     self.odometry[k] += state.root_velocity_source[k] * 0.02;
+                }
+                self.forward_window_m += 0.02
+                    * (state.root_velocity_source[0] * self.goal.heading_yaw_source_rad.cos()
+                        + state.root_velocity_source[1] * self.goal.heading_yaw_source_rad.sin());
+                self.forward_window_ticks += 1;
+                if self.forward_window_ticks == 50 {
+                    // One initial gait-start window is allowed. Thereafter,
+                    // lateral drift cannot hide failure to advance toward goal.
+                    if self.phase_ticks >= 100 && self.forward_window_m < 0.03 {
+                        return Err(invalid(
+                            "carry blocked: less than3cm forward progress in1second; pause/reset required",
+                        ));
+                    }
+                    self.forward_window_m = 0.;
+                    self.forward_window_ticks = 0;
                 }
                 if self.odometry[0].hypot(self.odometry[1]) >= self.goal.relative_distance_m + 0.05
                 {
@@ -314,5 +333,41 @@ mod tests {
             assert_eq!(step.completed, tick == 319);
         }
         assert!(nav.update(&state(320)).is_err());
+    }
+    #[test]
+    fn blocked_walk_detects_no_forward_progress_even_with_lateral_drift() {
+        let mut g = goal();
+        g.heading_yaw_source_rad = 0.;
+        let mut nav = MobileCarryNavigator::new(g, &state(200)).unwrap();
+        for tick in 200..220 {
+            nav.update(&state(tick)).unwrap();
+        }
+        for tick in 220..319 {
+            let mut s = state(tick);
+            s.root_velocity_source = [0., 0.3, 0.];
+            assert!(nav.update(&s).is_ok());
+        }
+        let mut s = state(319);
+        s.root_velocity_source = [0., 0.3, 0.];
+        assert!(
+            nav.update(&s)
+                .unwrap_err()
+                .to_string()
+                .contains("carry blocked")
+        );
+    }
+    #[test]
+    fn progress_guard_accepts_a_gait_with_alternating_zero_speed() {
+        let mut g = goal();
+        g.heading_yaw_source_rad = 0.;
+        let mut nav = MobileCarryNavigator::new(g, &state(200)).unwrap();
+        for tick in 200..220 {
+            nav.update(&state(tick)).unwrap();
+        }
+        for tick in 220..420 {
+            let mut s = state(tick);
+            s.root_velocity_source = [if tick % 2 == 0 { 0.6 } else { 0. }, 0., 0.];
+            assert!(nav.update(&s).is_ok());
+        }
     }
 }
