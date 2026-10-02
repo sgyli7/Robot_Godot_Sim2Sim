@@ -269,6 +269,19 @@ enum ConvexRepresentation {
     ReconstructedHull,
 }
 
+/// Aggregated last-solve contact evidence, never a model observation. A pair
+/// can include speculative contacts: distance and impulse must be assessed,
+/// rather than treating its presence as proof of a grasp or support.
+#[derive(Clone, Debug, Serialize)]
+pub struct TaskObjectContactSample {
+    pub other_body_handle: Option<[u32; 2]>,
+    pub other_robot_body_index: Option<usize>,
+    pub manifold_count: usize,
+    pub solver_points: usize,
+    pub min_solver_distance_m: Option<f32>,
+    pub normal_impulse_n_s: f32,
+}
+
 /// A render/independent-acceptance sample, never a model observation field.
 #[derive(Clone, Debug, Serialize)]
 pub struct TaskObjectSample {
@@ -283,6 +296,7 @@ pub struct TaskObjectSample {
     pub dynamic: bool,
     pub active_contact_pairs: usize,
     pub source_shelf_contact: bool,
+    pub last_solve_contacts: Vec<TaskObjectContactSample>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -447,12 +461,41 @@ impl TaskObjectScene {
             {
                 return Err(invalid("task body identity or state changed"));
             }
-            let active_contact_pairs = world
+            let last_solve_contacts: Vec<_> = world
                 .world
                 .narrow_phase
                 .contact_pairs_with(instance.collider)
                 .filter(|pair| pair.has_any_active_contact())
-                .count();
+                .map(|pair| {
+                    let other = if pair.collider1 == instance.collider {
+                        pair.collider2
+                    } else {
+                        pair.collider1
+                    };
+                    let other_body_handle = world.world.colliders[other].parent().map(|h| {
+                        let (index, generation) = h.into_raw_parts();
+                        [index, generation]
+                    });
+                    let solver_points = pair
+                        .manifolds
+                        .iter()
+                        .map(|m| m.data.solver_contacts.len())
+                        .sum();
+                    let minimum = pair
+                        .manifolds
+                        .iter()
+                        .flat_map(|m| m.data.solver_contacts.iter().map(|p| p.dist))
+                        .reduce(f32::min);
+                    TaskObjectContactSample {
+                        other_body_handle,
+                        other_robot_body_index: None,
+                        manifold_count: pair.manifolds.len(),
+                        solver_points,
+                        min_solver_distance_m: minimum,
+                        normal_impulse_n_s: pair.total_impulse_magnitude(),
+                    }
+                })
+                .collect();
             objects.push(TaskObjectSample {
                 kind: instance.kind,
                 translation_engine: body.translation().to_array(),
@@ -463,7 +506,7 @@ impl TaskObjectScene {
                 mass_kg: body.mass(),
                 convex_parts: instance.convex_parts,
                 dynamic: body.is_dynamic(),
-                active_contact_pairs,
+                active_contact_pairs: last_solve_contacts.len(),
                 source_shelf_contact: self.source_t1_shelf.as_ref().is_some_and(|shelf| {
                     world
                         .world
@@ -471,6 +514,7 @@ impl TaskObjectScene {
                         .contact_pair(instance.collider, shelf.collider)
                         .is_some_and(|pair| pair.has_any_active_contact())
                 }),
+                last_solve_contacts,
             });
         }
         Ok(TaskObjectFrame {

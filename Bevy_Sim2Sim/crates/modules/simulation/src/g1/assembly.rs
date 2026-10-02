@@ -46,6 +46,24 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Resolve contact counterpart identities in the frozen 53-body order.
+    /// This annotates independent evidence; it never changes world state or
+    /// contributes object truth to the camera/policy observation contract.
+    pub(super) fn annotate_task_contact_bodies(
+        &self,
+        frame: &mut super::task_objects::TaskObjectFrame,
+    ) {
+        for object in &mut frame.objects {
+            for contact in &mut object.last_solve_contacts {
+                contact.other_robot_body_index = contact.other_body_handle.and_then(|parts| {
+                    self.bodies
+                        .iter()
+                        .position(|body| body.into_raw_parts() == (parts[0], parts[1]))
+                });
+            }
+        }
+    }
+
     /// Opt-in development comparison at startup. The original limits and
     /// coordinates remain unchanged, and the six-DoF root is never selected.
     #[cfg(feature = "g1_constraint_diagnostic")]

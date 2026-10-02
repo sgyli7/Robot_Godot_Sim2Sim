@@ -183,6 +183,7 @@ impl G1Runner {
             .as_ref()
             .map(|scene| {
                 let mut frame = scene.frame(&self.simulation)?;
+                self.assembly.annotate_task_contact_bodies(&mut frame);
                 frame.episode_id = self.episode_id;
                 Ok(frame)
             })
