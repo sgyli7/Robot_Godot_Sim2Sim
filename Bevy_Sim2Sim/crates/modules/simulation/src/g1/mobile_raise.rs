@@ -45,6 +45,9 @@ pub struct MobileRaiseStep {
     pub raising_ticks: u32,
     pub settling_ticks: u32,
     pub completed: bool,
+    /// Integral of original root velocity samples during this stage. No root
+    /// position or prop state is read; used to propagate a recent visual target.
+    pub self_velocity_displacement_source_m: [f64; 3],
     pub correction: Option<MobileGripReceipt>,
     pub command: G1Command,
 }
@@ -55,6 +58,7 @@ pub struct MobileGripRaising {
     raising_ticks: u32,
     settling_ticks: u32,
     completed: bool,
+    self_velocity_displacement_source_m: [f64; 3],
     command: G1Command,
 }
 
@@ -80,6 +84,7 @@ impl MobileGripRaising {
             raising_ticks: 0,
             settling_ticks: 0,
             completed: false,
+            self_velocity_displacement_source_m: [0.; 3],
             command,
         })
     }
@@ -102,9 +107,17 @@ impl MobileGripRaising {
             || state.source_tick != self.next_tick
             || state.sim_time_ns != self.next_tick * 20_000_000
             || !state.root_rotation_wxyz.iter().all(|q| q.is_finite())
+            || !state.root_velocity_source.iter().all(|v| v.is_finite())
             || (state.root_rotation_wxyz.iter().map(|q| q * q).sum::<f32>() - 1.).abs() > 2e-5
         {
             return Err(invalid("foreign/repeated/nonfinite raise self state"));
+        }
+        for (distance, velocity) in self
+            .self_velocity_displacement_source_m
+            .iter_mut()
+            .zip(state.root_velocity_source)
+        {
+            *distance += f64::from(velocity) * 0.02;
         }
         let mut increment = [0.; 3];
         let correction = if self.raising_ticks < self.goal.duration_ticks {
@@ -137,6 +150,7 @@ impl MobileGripRaising {
             raising_ticks: self.raising_ticks,
             settling_ticks: self.settling_ticks,
             completed: self.completed,
+            self_velocity_displacement_source_m: self.self_velocity_displacement_source_m,
             correction,
             command: self.command.clone(),
         })

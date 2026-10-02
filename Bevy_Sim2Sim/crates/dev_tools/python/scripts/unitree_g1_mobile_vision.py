@@ -74,6 +74,46 @@ def root_from_camera(definition, positions):
     return frames[19] @ mount
 
 
+def propagate_target_memory(memory_path, observation):
+    """Fresh static-target assumption, propagated using original self motion."""
+    if Path(memory_path).stat().st_size > 128 * 1024:
+        raise ValueError("target memory exceeds byte budget")
+    memory = json.loads(Path(memory_path).read_text())
+    keys = {"schema", "origin_observation", "current_observation", "origin_image_sha256",
+            "origin_input_sha256", "root_from_target_marker", "origin_root_rotation_wxyz",
+            "self_velocity_displacement_source_m", "static_target_assumption",
+            "world_or_contact_truth_input"}
+    if set(memory) != keys or memory["schema"] != "g1_mobile_static_target_memory_v1" or memory["static_target_assumption"] is not True or memory["world_or_contact_truth_input"] is not False:
+        raise ValueError("foreign target-memory fields/source")
+    now, old = observation["stamp"], memory["origin_observation"]
+    if memory["current_observation"] != now or set(old) != set(now) or old["episode_id"] != now["episode_id"] or old["frame_id"] >= now["frame_id"] or old["sim_time_ns"] % 20_000_000:
+        raise ValueError("foreign/old target-memory camera identity")
+    age_ns = now["sim_time_ns"] - old["sim_time_ns"]
+    wall_age_ms = now["captured_at_unix_ms"] - old["captured_at_unix_ms"]
+    if not 0 < age_ns <= 8_000_000_000 or not 0 < wall_age_ms <= 12_000:
+        raise ValueError("static visual target memory expired")
+    for key in ("origin_image_sha256", "origin_input_sha256"):
+        h = memory[key]
+        if not isinstance(h, str) or len(h) != 64 or any(c not in "0123456789abcdef" for c in h):
+            raise ValueError("target memory has no original image/input identity")
+    previous = np.asarray(memory["root_from_target_marker"], dtype=np.float64)
+    displacement = np.asarray(memory["self_velocity_displacement_source_m"], dtype=np.float64)
+    if previous.shape != (4, 4) or not np.isfinite(previous).all() or not np.allclose(previous[3], [0, 0, 0, 1], atol=1e-8, rtol=0) or not np.allclose(previous[:3, :3].T @ previous[:3, :3], np.eye(3), atol=1e-6, rtol=0) or abs(np.linalg.det(previous[:3, :3])-1) > 1e-6 or displacement.shape != (3,) or not np.isfinite(displacement).all() or np.linalg.norm(displacement) > .25:
+        raise ValueError("invalid bounded self-motion/visual target transform")
+    origin_rotation = rotation(memory["origin_root_rotation_wxyz"])
+    current_rotation = rotation(observation["measured_joints"]["root_rotation_wxyz"])
+    result = np.eye(4)
+    result[:3, :3] = current_rotation.T @ origin_rotation @ previous[:3, :3]
+    result[:3, 3] = current_rotation.T @ (origin_rotation @ previous[:3, 3] - displacement)
+    return {"schema": "g1_propagated_static_visual_target_v1", "observation": now,
+            "origin_observation": old, "target_identity": 21,
+            "origin_image_sha256": memory["origin_image_sha256"],
+            "origin_input_sha256": memory["origin_input_sha256"], "memory_sha256": sha(memory_path),
+            "age_sim_ns": age_ns, "age_wall_ms": wall_age_ms,
+            "static_target_assumption": True, "world_or_contact_truth_input": False,
+            "root_from_marker": result.tolist(), "task_qualified": False}
+
+
 def clearance_from_visible_markers(detections, observation, geometry_path):
     """Public immutable geometry and actual RGB poses, never world coordinates."""
     if Path(geometry_path).stat().st_size > 1024 * 1024 or sha(geometry_path) != TASK_GEOMETRY_SHA256:
@@ -116,7 +156,7 @@ def clearance_from_visible_markers(detections, observation, geometry_path):
                            "duration_ticks": duration} if admitted else None}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None):
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
         raise ValueError("vision input exceeds finite image/self-state byte budget")
     observation = json.loads(Path(observation_path).read_text())
@@ -187,6 +227,16 @@ def localize(image_path, observation_path, definition_path, geometry_path=None):
         raise ValueError("duplicate identity in actual marker image")
     proposal = None
     by_id = {d["marker_id"]: np.array(d["root_from_marker"]) for d in detections}
+    memory_estimate = propagate_target_memory(memory_path, observation) if memory_path is not None else None
+    used_memory = memory_estimate is not None and 21 not in by_id
+    if memory_estimate is not None:
+        if 22 not in by_id:
+            raise ValueError("target memory cannot replace a current carried-box image")
+        if 21 in by_id:
+            if np.linalg.norm(by_id[21][:3, 3] - np.asarray(memory_estimate["root_from_marker"])[:3, 3]) > .03:
+                raise ValueError("current visible target moved outside static-memory tolerance")
+        else:
+            by_id[21] = np.asarray(memory_estimate["root_from_marker"])
     if 21 in by_id and 22 in by_id:
         bin_p = by_id[21][:3, 3]
         box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
@@ -198,17 +248,21 @@ def localize(image_path, observation_path, definition_path, geometry_path=None):
         if not (0.1 <= distance <= 2.5):
             raise ValueError("visual approach lies outside bounded navigation envelope")
         proposal = {"observation": stamp, "heading_yaw_source_rad": heading,
-                    "relative_distance_m": distance, "source": "actual_rgb_marker_pnp_and_original_self_fk",
+                    "relative_distance_m": distance, "source": "actual_box_rgb_and_static_target_memory_self_velocity" if used_memory else "actual_rgb_marker_pnp_and_original_self_fk",
                     "target_identity": 21, "task_qualified": False, "automatically_executed": False}
     result = {"schema":"g1_mobile_actual_marker_localization_v1", "observation":stamp,
             "image_sha256":sha(image_path), "input_sha256":sha(observation_path),
             "robot_definition_sha256":DEFINITION_SHA256, "opencv_version":cv2.__version__,
             "actual_rgb_only_object_measurement":True, "world_or_contact_truth_input":False,
             "camera_in_root_source":camera_in_root.tolist(), "detections":detections,
+            "original_self_root_rotation_wxyz":state["root_rotation_wxyz"],
             "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
-            "target_bin_detected":21 in by_id, "carried_box_detected":22 in by_id,
+            "target_bin_detected":any(d["marker_id"] == 21 for d in detections), "carried_box_detected":22 in by_id,
             "task_qualified":False}
-    if geometry_path is not None:
+    if memory_estimate is not None:
+        result["target_memory_estimate"] = memory_estimate
+        result["target_memory_used"] = used_memory
+    if geometry_path is not None and not used_memory:
         result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path)
     return result
 
@@ -220,8 +274,9 @@ def main():
     parser.add_argument("--definition", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--geometry", type=Path)
+    parser.add_argument("--target-memory", type=Path)
     args = parser.parse_args()
-    result = localize(args.image, args.observation, args.definition, args.geometry)
+    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

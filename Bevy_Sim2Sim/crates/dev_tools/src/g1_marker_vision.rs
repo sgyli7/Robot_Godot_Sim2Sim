@@ -72,7 +72,7 @@ impl MarkerVisionConfiguration {
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
-pub(super) use worker::MarkerVisionJob;
+pub(super) use worker::{MarkerTargetMemory, MarkerVisionJob};
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod worker {
@@ -88,6 +88,116 @@ mod worker {
         time::{Duration, Instant},
     };
     use task_minigame::types::ObservationStamp;
+
+    #[derive(Clone, serde::Deserialize, serde::Serialize)]
+    #[serde(deny_unknown_fields)]
+    pub(crate) struct MarkerTargetMemory {
+        pub schema: String,
+        pub origin_observation: ObservationStamp,
+        pub current_observation: ObservationStamp,
+        pub origin_image_sha256: String,
+        pub origin_input_sha256: String,
+        pub root_from_target_marker: [[f64; 4]; 4],
+        pub origin_root_rotation_wxyz: [f32; 4],
+        pub self_velocity_displacement_source_m: [f64; 3],
+        pub static_target_assumption: bool,
+        pub world_or_contact_truth_input: bool,
+    }
+
+    impl MarkerTargetMemory {
+        pub fn from_localization(reply: &serde_json::Value) -> Result<Self, String> {
+            if reply["target_bin_detected"] != true
+                || reply["carried_box_detected"] != true
+                || reply["world_or_contact_truth_input"] != false
+            {
+                return Err("target memory requires the admitted actual two-marker image".into());
+            }
+            let target = reply["detections"]
+                .as_array()
+                .ok_or("memory marker absent")?
+                .iter()
+                .find(|d| d["marker_id"] == 21)
+                .ok_or("visible target21 absent")?;
+            let origin_observation =
+                serde_json::from_value(reply["observation"].clone()).map_err(|e| e.to_string())?;
+            Ok(Self {
+                schema: "g1_mobile_static_target_memory_v1".into(),
+                origin_observation,
+                current_observation: origin_observation,
+                origin_image_sha256: reply["image_sha256"]
+                    .as_str()
+                    .ok_or("origin image hash absent")?
+                    .into(),
+                origin_input_sha256: reply["input_sha256"]
+                    .as_str()
+                    .ok_or("origin input hash absent")?
+                    .into(),
+                root_from_target_marker: serde_json::from_value(target["root_from_marker"].clone())
+                    .map_err(|e| e.to_string())?,
+                origin_root_rotation_wxyz: serde_json::from_value(
+                    reply["original_self_root_rotation_wxyz"].clone(),
+                )
+                .map_err(|e| e.to_string())?,
+                self_velocity_displacement_source_m: [0.; 3],
+                static_target_assumption: true,
+                world_or_contact_truth_input: false,
+            })
+        }
+        pub fn validate(&self, observation: ObservationStamp) -> Result<(), String> {
+            let old = self.origin_observation;
+            let age = observation.sim_time_ns.checked_sub(old.sim_time_ns);
+            let wall_age = observation
+                .captured_at_unix_ms
+                .checked_sub(old.captured_at_unix_ms);
+            let hashes = [&self.origin_image_sha256, &self.origin_input_sha256];
+            let rotation_norm: f64 = self
+                .origin_root_rotation_wxyz
+                .iter()
+                .map(|v| f64::from(*v).powi(2))
+                .sum();
+            if self.schema != "g1_mobile_static_target_memory_v1"
+                || self.current_observation != observation
+                || !self.static_target_assumption
+                || self.world_or_contact_truth_input
+                || old.episode_id == 0
+                || old.frame_id == 0
+                || old.captured_at_unix_ms == 0
+                || observation.episode_id != old.episode_id
+                || observation.frame_id <= old.frame_id
+                || old.sim_time_ns % 20_000_000 != 0
+                || observation.sim_time_ns % 20_000_000 != 0
+                || age.is_none_or(|ns| ns == 0 || ns > 8_000_000_000)
+                || wall_age.is_none_or(|ms| ms == 0 || ms > 12_000)
+                || hashes.iter().any(|h| {
+                    h.len() != 64
+                        || !h
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+                })
+                || !self
+                    .root_from_target_marker
+                    .iter()
+                    .flatten()
+                    .all(|v| v.is_finite())
+                || self.root_from_target_marker[3] != [0., 0., 0., 1.]
+                || !rotation_norm.is_finite()
+                || (rotation_norm - 1.).abs() > 2e-5
+                || !self
+                    .self_velocity_displacement_source_m
+                    .iter()
+                    .all(|v| v.is_finite())
+                || self
+                    .self_velocity_displacement_source_m
+                    .iter()
+                    .map(|v| v * v)
+                    .sum::<f64>()
+                    > 0.25f64.powi(2)
+            {
+                return Err("foreign/expired/unbound visual target memory or self motion".into());
+            }
+            Ok(())
+        }
+    }
     pub(crate) struct MarkerVisionJob {
         replies: Mutex<Receiver<Result<serde_json::Value, String>>>,
         cancel: Arc<AtomicBool>,
@@ -102,6 +212,17 @@ mod worker {
             directory: PathBuf,
             observation: ObservationStamp,
         ) -> Result<Self, String> {
+            Self::start_with_memory(config, directory, observation, None)
+        }
+        pub fn start_with_memory(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+            memory: Option<MarkerTargetMemory>,
+        ) -> Result<Self, String> {
+            if let Some(memory) = &memory {
+                memory.validate(observation)?;
+            }
             let (sender, receiver) = mpsc::sync_channel(1);
             let cancel = Arc::new(AtomicBool::new(false));
             let stop = cancel.clone();
@@ -119,6 +240,19 @@ mod worker {
                         }
                         let image_hash = digest(&image, 16 * 1024 * 1024)?;
                         let input_hash = digest(&input, 128 * 1024)?;
+                        let memory_path = directory.join("target_memory.json");
+                        let memory_hash = if let Some(memory) = &memory {
+                            let mut file = fs::OpenOptions::new()
+                                .write(true)
+                                .create_new(true)
+                                .open(&memory_path)
+                                .map_err(|e| e.to_string())?;
+                            serde_json::to_writer_pretty(&mut file, memory)
+                                .map_err(|e| e.to_string())?;
+                            Some(digest(&memory_path, 128 * 1024)?)
+                        } else {
+                            None
+                        };
                         let log = fs::OpenOptions::new()
                             .write(true)
                             .create_new(true)
@@ -137,6 +271,9 @@ mod worker {
                             .arg(&output);
                         if let Some(geometry) = &config.task_geometry {
                             command.arg("--geometry").arg(&geometry.path);
+                        }
+                        if memory.is_some() {
+                            command.arg("--target-memory").arg(&memory_path);
                         }
                         let mut child = command
                             .stdin(Stdio::null())
@@ -178,15 +315,18 @@ mod worker {
                         let reply: serde_json::Value =
                             serde_json::from_slice(&fs::read(output).map_err(|e| e.to_string())?)
                                 .map_err(|e| e.to_string())?;
-                        validate_reply(
+                        validate_reply_for_memory(
                             &reply,
                             observation,
                             &image_hash,
                             &input_hash,
                             &config.definition_sha256,
+                            memory.as_ref().zip(memory_hash.as_deref()),
                         )?;
                         if let Some(geometry) = &config.task_geometry {
-                            validate_clearance_reply(&reply, observation, &geometry.sha256)?;
+                            if reply["target_memory_used"] != true {
+                                validate_clearance_reply(&reply, observation, &geometry.sha256)?;
+                            }
                         } else if !reply["clearance_proposal"].is_null() {
                             return Err("unrequested public-geometry clearance reply".into());
                         }
@@ -224,12 +364,24 @@ mod worker {
         }
     }
 
+    #[cfg(test)]
     fn validate_reply(
         reply: &serde_json::Value,
         observation: ObservationStamp,
         image: &str,
         input: &str,
         definition: &str,
+    ) -> Result<(), String> {
+        validate_reply_for_memory(reply, observation, image, input, definition, None)
+    }
+
+    fn validate_reply_for_memory(
+        reply: &serde_json::Value,
+        observation: ObservationStamp,
+        image: &str,
+        input: &str,
+        definition: &str,
+        memory: Option<(&MarkerTargetMemory, &str)>,
     ) -> Result<(), String> {
         let actual: ObservationStamp =
             serde_json::from_value(reply["observation"].clone()).map_err(|e| e.to_string())?;
@@ -247,7 +399,9 @@ mod worker {
         let detections = reply["detections"]
             .as_array()
             .ok_or("marker detections absent")?;
-        if detections.len() != 2 {
+        if (memory.is_none() && detections.len() != 2)
+            || (memory.is_some() && !(1..=2).contains(&detections.len()))
+        {
             return Err("both visible box22 and target21 are required".into());
         }
         let mut ids = Vec::new();
@@ -272,6 +426,45 @@ mod worker {
             }
             ids.push(id);
         }
+        let use_memory = !ids.contains(&21);
+        if !ids.contains(&22) {
+            return Err("current actual box22 is required".into());
+        }
+        if let Some((memory, hash)) = memory {
+            memory.validate(observation)?;
+            let estimate = &reply["target_memory_estimate"];
+            let stamp: ObservationStamp = serde_json::from_value(estimate["observation"].clone())
+                .map_err(|e| e.to_string())?;
+            let origin: ObservationStamp =
+                serde_json::from_value(estimate["origin_observation"].clone())
+                    .map_err(|e| e.to_string())?;
+            let matrix: [[f64; 4]; 4] =
+                serde_json::from_value(estimate["root_from_marker"].clone())
+                    .map_err(|e| e.to_string())?;
+            if stamp != observation
+                || origin != memory.origin_observation
+                || estimate["schema"] != "g1_propagated_static_visual_target_v1"
+                || estimate["target_identity"] != 21
+                || estimate["memory_sha256"] != hash
+                || estimate["origin_image_sha256"] != memory.origin_image_sha256
+                || estimate["origin_input_sha256"] != memory.origin_input_sha256
+                || estimate["age_sim_ns"]
+                    != observation.sim_time_ns - memory.origin_observation.sim_time_ns
+                || estimate["age_wall_ms"]
+                    != observation.captured_at_unix_ms
+                        - memory.origin_observation.captured_at_unix_ms
+                || estimate["static_target_assumption"] != true
+                || estimate["world_or_contact_truth_input"] != false
+                || estimate["task_qualified"] != false
+                || reply["target_memory_used"] != use_memory
+                || !matrix.iter().flatten().all(|v| v.is_finite())
+                || matrix[3] != [0., 0., 0., 1.]
+            {
+                return Err("foreign/unbound propagated target-memory reply".into());
+            }
+        } else if !reply["target_memory_estimate"].is_null() || use_memory {
+            return Err("unrequested static target memory".into());
+        }
         let proposal = &reply["navigation_proposal"];
         let stamp: ObservationStamp =
             serde_json::from_value(proposal["observation"].clone()).map_err(|e| e.to_string())?;
@@ -283,7 +476,12 @@ mod worker {
             .ok_or("visual distance absent")?;
         if stamp != observation
             || proposal["target_identity"] != 21
-            || proposal["source"] != "actual_rgb_marker_pnp_and_original_self_fk"
+            || proposal["source"]
+                != if use_memory {
+                    "actual_box_rgb_and_static_target_memory_self_velocity"
+                } else {
+                    "actual_rgb_marker_pnp_and_original_self_fk"
+                }
             || proposal["task_qualified"] != false
             || proposal["automatically_executed"] != false
             || !heading.is_finite()
@@ -362,7 +560,12 @@ mod worker {
             .map_err(|e| e.to_string())?;
             let stamp =
                 serde_json::from_value(input["stamp"].clone()).map_err(|e| e.to_string())?;
-            let job = MarkerVisionJob::start(config, directory.clone(), stamp)?;
+            let memory = if f["memory"].is_null() {
+                None
+            } else {
+                Some(serde_json::from_value(f["memory"].clone()).map_err(|e| e.to_string())?)
+            };
+            let job = MarkerVisionJob::start_with_memory(config, directory.clone(), stamp, memory)?;
             let result = loop {
                 if let Some(reply) = job.try_take() {
                     break reply?;
@@ -396,6 +599,111 @@ mod worker {
                     "automatically_executed":false,"heading_yaw_source_rad":-1.57,"relative_distance_m":1.7},
             });
             (reply, stamp)
+        }
+        fn memory_fixture() -> (MarkerTargetMemory, ObservationStamp) {
+            let current = ObservationStamp {
+                episode_id: 7,
+                frame_id: 3,
+                sim_time_ns: 40_000_000,
+                captured_at_unix_ms: 43,
+            };
+            (
+                MarkerTargetMemory {
+                    schema: "g1_mobile_static_target_memory_v1".into(),
+                    origin_observation: ObservationStamp {
+                        frame_id: 2,
+                        sim_time_ns: 20_000_000,
+                        captured_at_unix_ms: 42,
+                        ..current
+                    },
+                    current_observation: current,
+                    origin_image_sha256: "a".repeat(64),
+                    origin_input_sha256: "b".repeat(64),
+                    root_from_target_marker: [
+                        [1., 0., 0., 1.],
+                        [0., 1., 0., 0.],
+                        [0., 0., 1., 0.],
+                        [0., 0., 0., 1.],
+                    ],
+                    origin_root_rotation_wxyz: [1., 0., 0., 0.],
+                    self_velocity_displacement_source_m: [0.; 3],
+                    static_target_assumption: true,
+                    world_or_contact_truth_input: false,
+                },
+                current,
+            )
+        }
+        #[test]
+        fn target_memory_expires_and_cannot_cross_reset_or_replace_current_camera() {
+            let (memory, current) = memory_fixture();
+            assert!(memory.validate(current).is_ok());
+            for mutation in 0..5 {
+                let mut bad = memory.clone();
+                match mutation {
+                    0 => bad.origin_observation.episode_id = 8,
+                    1 => bad.origin_observation.frame_id = current.frame_id,
+                    2 => {
+                        bad.current_observation.sim_time_ns = 8_040_000_000;
+                    }
+                    3 => bad.self_velocity_displacement_source_m = [0.26, 0., 0.],
+                    _ => bad.world_or_contact_truth_input = true,
+                }
+                assert!(bad.validate(bad.current_observation).is_err());
+            }
+        }
+        #[test]
+        fn occluded_target_reply_requires_bound_memory_and_current_box_image() {
+            let (memory, current) = memory_fixture();
+            let (mut reply, _) = fixture();
+            reply["observation"] = serde_json::to_value(current).unwrap();
+            reply["navigation_proposal"]["observation"] = serde_json::to_value(current).unwrap();
+            reply["detections"].as_array_mut().unwrap().remove(0);
+            reply["navigation_proposal"]["source"] =
+                "actual_box_rgb_and_static_target_memory_self_velocity".into();
+            reply["target_memory_used"] = true.into();
+            reply["target_memory_estimate"] = serde_json::json!({
+                "schema":"g1_propagated_static_visual_target_v1","observation":current,
+                "origin_observation":memory.origin_observation,"target_identity":21,"memory_sha256":"memory",
+                "origin_image_sha256":memory.origin_image_sha256,"origin_input_sha256":memory.origin_input_sha256,
+                "age_sim_ns":20_000_000,"age_wall_ms":1,"static_target_assumption":true,
+                "world_or_contact_truth_input":false,"root_from_marker":memory.root_from_target_marker,"task_qualified":false,
+            });
+            assert!(
+                validate_reply_for_memory(
+                    &reply,
+                    current,
+                    "image",
+                    "input",
+                    "definition",
+                    Some((&memory, "memory"))
+                )
+                .is_ok()
+            );
+            assert!(validate_reply(&reply, current, "image", "input", "definition").is_err());
+            for mutation in 0..4 {
+                let mut bad = reply.clone();
+                match mutation {
+                    0 => bad["target_memory_estimate"]["memory_sha256"] = "other".into(),
+                    1 => bad["target_memory_estimate"]["age_sim_ns"] = 40_000_000.into(),
+                    2 => {
+                        bad["target_memory_estimate"]["origin_observation"]["episode_id"] = 8.into()
+                    }
+                    _ => {
+                        bad["detections"].as_array_mut().unwrap().clear();
+                    }
+                }
+                assert!(
+                    validate_reply_for_memory(
+                        &bad,
+                        current,
+                        "image",
+                        "input",
+                        "definition",
+                        Some((&memory, "memory"))
+                    )
+                    .is_err()
+                );
+            }
         }
         #[test]
         fn rejects_old_episode_and_unbound_image() {

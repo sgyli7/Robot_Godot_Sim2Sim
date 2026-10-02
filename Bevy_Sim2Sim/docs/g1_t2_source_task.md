@@ -1225,3 +1225,35 @@ work. Admission rejects old frames, foreign public geometry, detached raise
 distance and truth claims. Checks0215:36development-library checks pass/two
 real-asset checks ignored; seven CLI checks pass; default entry compiles.
 Fresh raised-view execution is a separate required test.
+
+Fresh raised-view0216 completes1497single50Hz integrations after four new
+actual RGB grasp calls. Its fresh near image1314 produces a different bounded
+raise,0.082747m/83Ticks, followed by100standing Ticks; all183raise/stand samples
+retain hand-only support. First100body states match0203, with the first physical
+difference at101; the whole fresh prefix is not claimed bit-exact. Every new
+model input still matches its actual captured RGB array exactly. Active sim/wall
+ratio0.999003, zero missed/pending Ticks; owned model closes. The final new
+raised image1497 detects box22 with independent0.94mm horizontal error, while
+box geometry occludes bin21. It is not evidence for final approach or release.
+Trace SHA256:
+`c1d17a80eaa23d00c55844e4a8b21f0ac748588152678c884babc4d9c91f9a7f`.
+
+`g1_mobile_target_memory_view_diagnostic` adds a current raised RGB localization
+without further motion. The admitted actual near image supplies target21's pose,
+original self quaternion and image/input hashes. Raising integrates **original
+root velocity** at each20ms control boundary; absolute root position and object
+state are excluded. A current image/self quaternion propagates that recent
+target into the current root frame. The static-target assumption is explicit;
+memory expires after8sim seconds/12wall seconds, rejects reset/old frame/unbound
+hashes and requires a current actual box22 detection. A newly visible target
+more than3cm from the predicted target rejects the static assumption. Remembered
+targets are stored separately from current marker detections, and any navigation
+proposal remains unexecuted by this view entry. Other entries retain the
+two-current-marker rule and their existing budgets.
+
+Saved actual raised RGB worker0217 localizes the occluded target in412ms using
+183original velocity samples,3.66sim seconds/4697ms image age. Independent
+acceptance-only target error is1.74mm, with no physics/model work. Its proposed
+heading−1.592415rad/distance0.525429m is not executed. Seven focused worker checks
+cover actual roundtrip, old/reset/expired memory, unbound reply and missing
+current-box input. Fresh runtime target-memory admission remains a separate test.
