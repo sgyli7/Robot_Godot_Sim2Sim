@@ -4,7 +4,11 @@
 //! every motor/contact and performs exactly one integration. No network request,
 //! rendered frame or task-object truth is read from this control path.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use robot_minigame::{RobotError, g1::definition::G1Definition};
 use serde::{Deserialize, Serialize};
@@ -75,6 +79,8 @@ pub struct ArenaTaskRunnerConfig {
     /// Explicit controller envelope, further constrained by the frozen URDF.
     pub limits: ActionLimits,
     pub max_observation_age_ns: u64,
+    /// Wall-clock admission age also expires while the simulation is paused.
+    pub max_observation_wall_age_ms: u64,
 }
 
 /// Immutable, bounded whole-chunk replacement. Re-submitting an identical chunk
@@ -115,6 +121,7 @@ pub struct ArenaTaskExecution {
     pub observation: ObservationStamp,
     pub execution_start_sim_ns: u64,
     pub observation_age_ns: u64,
+    pub observation_wall_age_ms: u64,
     pub decoded_waist_targets_rad: [f32; 3],
     /// Admission is counted once per accepted chunk, never per WBC call.
     pub admitted_chunks: u64,
@@ -146,6 +153,7 @@ struct TaskChunkExecutor {
     queue: PolicyActionQueue,
     accepted: Option<Arc<PolicyActionChunk>>,
     admitted_chunks: u64,
+    max_observation_wall_age_ms: u64,
 }
 
 impl TaskChunkExecutor {
@@ -163,6 +171,7 @@ impl TaskChunkExecutor {
             .map_err(error)?,
             accepted: None,
             admitted_chunks: 0,
+            max_observation_wall_age_ms: config.max_observation_wall_age_ms,
         })
     }
 
@@ -170,9 +179,16 @@ impl TaskChunkExecutor {
         &mut self,
         command: &ArenaTaskCommand,
         sim_ns: u64,
+        now_wall_ms: u64,
     ) -> Result<(ArenaControllerCommand, ArenaTaskExecution), RobotError> {
         command.validate()?;
         if self.accepted.as_deref() != Some(command.chunk.as_ref()) {
+            let wall_age = now_wall_ms
+                .checked_sub(command.chunk.observation.captured_at_unix_ms)
+                .ok_or_else(|| error("task observation is from a future wall clock"))?;
+            if wall_age > self.max_observation_wall_age_ms {
+                return Err(error("task observation expired before owner admission"));
+            }
             // Same-sequence mutation and all stale/profile/limit failures are
             // rejected by whole-chunk admission before replacement.
             self.queue
@@ -204,6 +220,8 @@ impl TaskChunkExecutor {
                 observation,
                 execution_start_sim_ns,
                 observation_age_ns,
+                observation_wall_age_ms: now_wall_ms
+                    .saturating_sub(observation.captured_at_unix_ms),
                 decoded_waist_targets_rad: admitted.decoded_waist_targets_rad,
                 admitted_chunks: self.admitted_chunks,
             },
@@ -295,7 +313,13 @@ impl ArenaTaskRunner {
         let result = (|| {
             guard()?;
             let sim_ns = self.measurement()?.sim_time_ns;
-            let (command, execution) = self.executor.next(command, sim_ns)?;
+            let now_wall_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(error)?
+                .as_millis()
+                .try_into()
+                .map_err(error)?;
+            let (command, execution) = self.executor.next(command, sim_ns, now_wall_ms)?;
             let body = match (&mut self.body, command) {
                 (
                     ArenaBodyRunner::StaticAgile(body),
@@ -350,6 +374,7 @@ mod tests {
             limits,
             accepted: None,
             admitted_chunks: 0,
+            max_observation_wall_age_ms: 1000,
         }
     }
 
@@ -386,7 +411,9 @@ mod tests {
         let mut owner = executor();
         let command = command();
         for i in 0..40 {
-            let (controller, frame) = owner.next(&command, 300_000_000 + i * 20_000_000).unwrap();
+            let (controller, frame) = owner
+                .next(&command, 300_000_000 + i * 20_000_000, 500 + i * 20)
+                .unwrap();
             assert_eq!(frame.frame_index, i as usize);
             assert_eq!(frame.admitted_chunks, 1);
             assert_eq!(frame.execution_start_sim_ns, 300_000_000);
@@ -396,14 +423,14 @@ mod tests {
             };
             assert_eq!(command.upper_positions[0], i as f32 * 0.01);
         }
-        assert!(owner.next(&command, 1_100_000_000).is_err());
+        assert!(owner.next(&command, 1_100_000_000, 1300).is_err());
     }
 
     #[test]
     fn same_sequence_mutation_and_profile_switch_cannot_replace_owner_timeline() {
         let mut owner = executor();
         let command = command();
-        owner.next(&command, 0).unwrap();
+        owner.next(&command, 0, 500).unwrap();
         let mut changed = (*command.chunk).clone();
         changed.frames[1].left_arm[0] = 2.;
         assert!(
@@ -412,11 +439,12 @@ mod tests {
                     &ArenaTaskCommand {
                         chunk: Arc::new(changed)
                     },
-                    20_000_000
+                    20_000_000,
+                    500
                 )
                 .is_err()
         );
-        let (_, frame) = owner.next(&command, 20_000_000).unwrap();
+        let (_, frame) = owner.next(&command, 20_000_000, 500).unwrap();
         assert_eq!(frame.frame_index, 1);
         let mut changed = (*command.chunk).clone();
         changed.profile = TaskProfile::MobileBox;
@@ -429,7 +457,35 @@ mod tests {
                     &ArenaTaskCommand {
                         chunk: Arc::new(changed)
                     },
-                    40_000_000
+                    40_000_000,
+                    500
+                )
+                .is_err()
+        );
+        assert_eq!(owner.admitted_chunks, 1);
+    }
+
+    #[test]
+    fn a_paused_simulation_cannot_make_an_expired_image_fresh() {
+        let mut owner = executor();
+        let command = command();
+        assert!(owner.next(&command, 0, 1001).is_err());
+        assert_eq!(owner.admitted_chunks, 0);
+        let (_, frame) = owner.next(&command, 0, 500).unwrap();
+        assert_eq!(frame.frame_index, 0);
+        assert_eq!(frame.observation_wall_age_ms, 500);
+        let mut future = (*command.chunk).clone();
+        future.sequence_id = 2;
+        future.observation.frame_id = 2;
+        future.observation.captured_at_unix_ms = 501;
+        assert!(
+            owner
+                .next(
+                    &ArenaTaskCommand {
+                        chunk: Arc::new(future)
+                    },
+                    20_000_000,
+                    500
                 )
                 .is_err()
         );

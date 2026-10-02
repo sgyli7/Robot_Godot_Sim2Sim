@@ -292,7 +292,7 @@ def main():
     mode.add_argument('--policy-socket', type=Path)
     mode.add_argument('--expert-sequence', type=Path)
     parser.add_argument('--expert-sha256')
-    parser.add_argument('--reset-camera-refresh', action='store_true',
+    parser.add_argument('--reset-camera-refresh', action='store_true', default=True,
                         help='Render-only source reset cache diagnostic; assert unchanged physical state/counters')
     args = parser.parse_args()
     if not 1 <= args.ticks <= 300 or args.episode_id < 1:
