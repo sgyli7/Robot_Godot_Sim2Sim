@@ -12,7 +12,7 @@ sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_limit_row_trace"]
 sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]
 sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "simulation_minigame/sim2sim_source_limit_probe"]
-rendering_preview = ["dep:rendering_minigame", "dep:bevy"]
+rendering_preview = ["dep:rendering_minigame", "dep:bevy", "task_minigame/ui"]
 live_physics_profile = ["rapier3d/profiler"]
 live_render_profile = ["rendering_preview", "dep:libc"]
 

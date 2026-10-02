@@ -91,6 +91,9 @@ struct CaptureConfiguration {
     /// on its independent 50 Hz owner clock; no asset/quality setting changes.
     #[serde(default)]
     diagnostic_vsync: bool,
+    /// One finite application-side contention control, never a physical clock.
+    #[serde(default)]
+    diagnostic_render_hz: Option<u32>,
     #[serde(default)]
     diagnostic_ambient_brightness: Option<f32>,
     #[serde(default)]
@@ -105,6 +108,8 @@ struct CaptureConfiguration {
     /// at measured external poses. This never admits actions or steps physics.
     #[serde(default)]
     render_only_environment_translation: Option<[f64; 3]>,
+    #[serde(default)]
+    task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
 }
 
 #[derive(Deserialize)]
@@ -302,6 +307,22 @@ pub fn run_capture_from_file(
     path: &Path,
     options: G1CaptureOptions,
 ) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, false)
+}
+
+/// Interactive development entry; it never advertises unqualified execution.
+pub fn run_task_lab_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, true)
+}
+
+fn run_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+    interactive: bool,
+) -> Result<G1CaptureReceipt, String> {
     let config: CaptureConfiguration = serde_json::from_slice(
         &fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
     )
@@ -311,6 +332,12 @@ pub fn run_capture_from_file(
     }
     if matches!(config.runner, CaptureRunnerConfig::Task(_)) != config.policy.is_some() {
         return Err("task owner and live policy configuration must be supplied together".into());
+    }
+    if config.task_lab.is_some() != interactive
+        || (interactive
+            && (options.ticks != 0 || !matches!(config.runner, CaptureRunnerConfig::Task(_))))
+    {
+        return Err("task_lab configuration requires the explicit g1_task_lab scene, matched task owner and zero automatic Ticks".into());
     }
     run_capture_owner(
         config.runner,
@@ -325,12 +352,14 @@ pub fn run_capture_from_file(
         config.exposure_ev100,
         config.directional_shadow_maps,
         config.diagnostic_vsync,
+        config.diagnostic_render_hz,
         config.diagnostic_ambient_brightness,
         config.diagnostic_directional_illuminance,
         config.predictive_limit_diagnostic,
         config.diagnostic_constraint_sweeps,
         config.background_visual,
         config.render_only_environment_translation,
+        config.task_lab,
     )
 }
 
@@ -389,6 +418,7 @@ pub struct G1CaptureReceipt {
     pub ego_stamp: Option<G1CaptureStamp>,
     pub main_resolution: [u32; 2],
     pub render_present_mode: &'static str,
+    pub diagnostic_render_hz: Option<u32>,
     pub live_policy_inference_calls: u32,
     pub live_policy_successes: u32,
     pub live_action_chunks: Vec<serde_json::Value>,
@@ -508,6 +538,7 @@ impl G1CaptureReceipt {
             ego_stamp: None,
             main_resolution: [1920, 1080],
             render_present_mode: "auto_no_vsync",
+            diagnostic_render_hz: None,
             live_policy_inference_calls: 0,
             live_policy_successes: 0,
             live_action_chunks: Vec::new(),
@@ -582,7 +613,7 @@ fn configure_diagnostic_exposure(
 }
 
 #[derive(Resource)]
-struct CaptureRuntime {
+pub(super) struct CaptureRuntime {
     worker: CaptureWorker,
     options: G1CaptureOptions,
     episode_id: u64,
@@ -595,6 +626,73 @@ struct CaptureRuntime {
     main_saved: Arc<Mutex<Result<bool, String>>>,
     live_policy: Option<LivePolicyRuntime>,
     owner_evidence: Option<OwnerEvidence>,
+    interactive: bool,
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum CaptureSystems {
+    OwnerSnapshot,
+}
+
+impl CaptureRuntime {
+    pub(super) fn lab_render_frames(&self) -> u64 {
+        self.render_frames.into()
+    }
+
+    pub(super) fn lab_pause(&self) {
+        self.worker.pause();
+    }
+
+    pub(super) fn lab_reset(&mut self) -> Result<u64, String> {
+        self.worker.pause();
+        let episode_id = self.episode_id.checked_add(1).ok_or("episode exhausted")?;
+        match &self.worker {
+            CaptureWorker::Task(worker) => worker.reset(),
+            CaptureWorker::Mobile(worker) => worker.reset(),
+            CaptureWorker::Static { worker, .. } => worker.reset(),
+        }
+        .map_err(|error| error.to_string())?;
+        if let Some(live) = &mut self.live_policy {
+            live.worker
+                .reset_episode(episode_id)
+                .map_err(|error| format!("{error:?}"))?;
+            live.pending = None;
+            live.next_sequence = 1;
+            live.submitted_chunks = 0;
+            live.next_boundary_tick = 0;
+        }
+        self.episode_id = episode_id;
+        self.latest = None;
+        self.requested = false;
+        Ok(episode_id)
+    }
+
+    pub(super) fn lab_counts(&self) -> serde_json::Value {
+        let timing = self.latest.as_ref().map(|latest| &latest.timing);
+        serde_json::json!({
+            "episode_id": self.episode_id,
+            "actual_total_integrations": timing.map_or(0, |timing| timing.total_integrations),
+            "actual_episode_integrations": timing.map_or(0, |timing| timing.episode_integrations),
+            "render_frames": self.render_frames,
+            "task_qualified": false,
+        })
+    }
+
+    pub(super) fn lab_clock(&self) -> Option<task_minigame::interactive::TaskOwnerClock> {
+        self.latest
+            .as_ref()
+            .map(|latest| task_minigame::interactive::TaskOwnerClock {
+                episode_id: latest.episode_id,
+                sim_time_ns: latest.timing.episode_integrations * ARENA_ACTION_PERIOD_NS,
+                ready: latest.frame.is_some() && latest.measurement.is_some(),
+                failure: (latest.phase == G1WorkerPhase::Failed).then(|| {
+                    latest
+                        .reason
+                        .clone()
+                        .unwrap_or("physical owner failed".into())
+                }),
+            })
+    }
 }
 
 /// Development-only file output. No consumer I/O runs on the physics thread.
@@ -672,7 +770,9 @@ pub fn run_capture(
         false,
         None,
         None,
+        None,
         false,
+        None,
         None,
         None,
         None,
@@ -689,13 +789,25 @@ fn run_capture_owner(
     exposure_ev100: Option<f32>,
     directional_shadow_maps: Option<bool>,
     diagnostic_vsync: bool,
+    diagnostic_render_hz: Option<u32>,
     diagnostic_ambient_brightness: Option<f32>,
     diagnostic_directional_illuminance: Option<f32>,
     predictive_limit_diagnostic: bool,
     diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
     render_only_environment_translation: Option<[f64; 3]>,
+    task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
 ) -> Result<G1CaptureReceipt, String> {
+    let interactive = task_lab.is_some();
+    if diagnostic_render_hz.is_some_and(|hz| hz != 60) {
+        return Err(
+            "renderer contention comparison permits only an explicit 60 Hz display limit".into(),
+        );
+    }
+    let task_profile = match &config {
+        CaptureRunnerConfig::Task(config) => Some(config.body.profile()),
+        CaptureRunnerConfig::Mobile(_) | CaptureRunnerConfig::Static(_) => None,
+    };
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
     let ambient_brightness = diagnostic_ambient_brightness.unwrap_or(450.);
@@ -774,7 +886,7 @@ fn run_capture_owner(
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
                 || policy.max_calls > 8
-                || options.ticks != policy.max_calls * horizon
+                || (!interactive && options.ticks != policy.max_calls * horizon)
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
                 || config.max_observation_wall_age_ms == 0
@@ -846,6 +958,7 @@ fn run_capture_owner(
     } else {
         "auto_no_vsync"
     };
+    outcome.0.lock().unwrap().diagnostic_render_hz = diagnostic_render_hz;
     outcome.0.lock().unwrap().camera_ambient_brightness = ambient_brightness;
     outcome.0.lock().unwrap().camera_directional_illuminance = directional_illuminance;
     if render_only_environment_translation.is_some() {
@@ -860,6 +973,9 @@ fn run_capture_owner(
             .as_ref()
             .and_then(|live| live.prefetch_after_ticks);
         receipt.pauses_for_camera_and_policy = receipt.diagnostic_prefetch_after_ticks.is_none();
+    }
+    if interactive {
+        outcome.0.lock().unwrap().scope = "native_local_qwen_interactive_lab_no_qualified_executor";
     }
     let worker = config.spawn(predictive_limit_diagnostic, diagnostic_constraint_sweeps)?;
     let owner_evidence = match &worker {
@@ -915,6 +1031,7 @@ fn run_capture_owner(
             main_saved: Arc::new(Mutex::new(Ok(false))),
             live_policy,
             owner_evidence,
+            interactive,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .add_plugins(
@@ -945,7 +1062,9 @@ fn run_capture_owner(
         .add_systems(Startup, setup_floor_scene)
         .add_systems(
             Update,
-            (configure_diagnostic_exposure, drive_capture).chain(),
+            (configure_diagnostic_exposure, drive_capture)
+                .chain()
+                .in_set(CaptureSystems::OwnerSnapshot),
         );
     if let Some(model) = task_model {
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
@@ -954,6 +1073,23 @@ fn run_capture_owner(
         app.insert_resource(model)
             .add_plugins(G1BackgroundVisualPlugin);
     }
+    let lab_outcome = task_lab
+        .map(|configuration| {
+            super::g1_task_lab::install(
+                &mut app,
+                configuration,
+                episode_id,
+                task_profile.ok_or("task lab requires task profile")?,
+                &output,
+            )
+        })
+        .transpose()?;
+    if diagnostic_render_hz.is_some() {
+        app.insert_resource(DiagnosticRenderPace {
+            last_frame: Instant::now(),
+        })
+        .add_systems(Last, pace_diagnostic_render);
+    }
     if episode_id > 0 {
         app.world()
             .resource::<G1CameraPort>()
@@ -961,7 +1097,22 @@ fn run_capture_owner(
             .map_err(|error| format!("camera episode: {error}"))?;
     }
     install_station_render_health(&mut app)?;
-    let exit = app.run();
+    let mut exit = app.run();
+    if let Some(outcome) = lab_outcome {
+        let mut lab = outcome.0.lock().map_err(|_| "lab outcome poisoned")?;
+        lab.window_closed = true;
+        if lab.smoke_required && !lab.smoke_succeeded {
+            lab.failure.get_or_insert(
+                "window closed before the required decision/reset smoke completed".into(),
+            );
+            exit = AppExit::error();
+        }
+        fs::write(
+            output.join("task_lab_receipt.json"),
+            serde_json::to_vec_pretty(&*lab).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+    }
     let mut receipt = outcome
         .0
         .lock()
@@ -975,12 +1126,28 @@ fn run_capture_owner(
         serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    if !receipt.capture_succeeded {
+    if (!receipt.capture_succeeded && !interactive)
+        || (interactive && !matches!(exit, AppExit::Success))
+    {
         return Err(receipt
             .failure_reason
             .unwrap_or_else(|| "native camera capture did not finish".into()));
     }
     Ok(receipt)
+}
+
+#[derive(Resource)]
+struct DiagnosticRenderPace {
+    last_frame: Instant,
+}
+
+/// Rendering may wait; the independent physical owner never calls this system.
+fn pace_diagnostic_render(mut pace: ResMut<DiagnosticRenderPace>) {
+    let period = Duration::from_nanos(1_000_000_000 / 60);
+    if let Some(remaining) = period.checked_sub(pace.last_frame.elapsed()) {
+        std::thread::sleep(remaining);
+    }
+    pace.last_frame = Instant::now();
 }
 
 fn setup_floor_scene(
@@ -1527,6 +1694,9 @@ fn drive_capture(
         let Some(latest) = runtime.latest.clone() else {
             return Ok(());
         };
+        if runtime.interactive {
+            return Ok(());
+        }
         if latest.phase == G1WorkerPhase::Stopped {
             return Err("worker stopped before capture".into());
         }
@@ -1700,7 +1870,7 @@ fn drive_capture(
         Ok(())
     })();
     let error = result.err().or_else(|| {
-        (runtime.started.elapsed() > runtime.options.timeout)
+        (!runtime.interactive && runtime.started.elapsed() > runtime.options.timeout)
             .then(|| format!("native camera diagnostic timed out: {}", port.progress()))
     });
     if let Some(error) = error {

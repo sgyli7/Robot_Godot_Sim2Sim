@@ -11,7 +11,7 @@ use reqwest::{Url, blocking::Client, redirect::Policy};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{DecisionError, DecisionInput, ModelDecision, decision_json_schema};
+use super::{DecisionError, DecisionInput, ModelDecision, wire::request_schema};
 
 const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
 
@@ -31,6 +31,9 @@ execute_task requires both target and destination observed in this response and 
 There are no world coordinates in your output. A separate calibrated controller resolves geometry. \
 Navigation adjustment is only a short bounded mobile_box correction, never an unvalidated full path. \
 On failure, reassess the current image and feedback, observe or choose a supported correction; never blindly replay the previous command. \
+Keep output compact: reason at most 64 characters, visible_description at most 32 characters, no repeated goal or capability list. \
+For observe or stop, leave observed_targets empty and briefly describe the visible scene or missing capability in reason. \
+For execute_task, include only its target and destination; omit unrelated and uncertain objects. \
 Echo exactly the input episode_id and frame_id. Return only the requested JSON object.";
 
 #[derive(Debug, Clone)]
@@ -180,7 +183,7 @@ impl LocalQwenClient {
             "model":self.config.model,
             "temperature":0.0,"max_tokens":self.config.max_output_tokens,"stream":false,
             "chat_template_kwargs":{"enable_thinking":false},
-            "response_format":{"type":"json_schema","json_schema":{"name":"g1_task_decision","strict":true,"schema":decision_json_schema()}},
+            "response_format":{"type":"json_schema","json_schema":{"name":"g1_task_decision","strict":true,"schema":request_schema(input.available_skills)}},
             "messages":[
                 {"role":"system","content":SYSTEM_PROMPT},
                 {"role":"user","content":[

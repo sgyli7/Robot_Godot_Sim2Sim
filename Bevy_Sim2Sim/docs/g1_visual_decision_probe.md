@@ -87,3 +87,134 @@ Frozen logs, receipts, source/binary hashes and original captures are in
 This is a paused initial-state observation seam. Evolving task scenes, model
 coexistence, task execution, latency percentiles and formal success rates remain
 unverified.
+
+## Interactive native-camera window
+
+The main development executable also provides an explicit `g1_task_lab` scene:
+
+```bash
+flock /tmp/sai-g1-cargo.lock env CARGO_BUILD_JOBS=2 \
+  CARGO_TARGET_DIR=/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target \
+  cargo build --features dev_tools,dev_tools_minigame/g1_constraint_diagnostic
+
+/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target/debug/bevy_sim2sim \
+  --scene g1_task_lab --robot g1 \
+  --g1-config .scratch/NEW_LAB/config.json --output .scratch/NEW_LAB/native
+```
+
+The matched capture configuration must contain `task_lab.qwen` with `endpoint`,
+`model`, `timeout_ms` and `max_output_tokens`. It uses the existing task owner,
+original G1/prop visual assets and head camera. The output directory must be new.
+Automatic `--g1-ticks`, a missing task owner, and a lab configuration used through
+the ordinary capture scene are rejected before creating the output directory.
+No service is started by this window. Verify `/health` and `/v1/models` on the
+exact configured loopback port before opening it.
+
+Chinese text entry, start, stop, reset, overview and grasp-detail controls feed
+the runtime task module. Start rebuilds the scene and waits for the actual new
+owner episode before acquiring RGB. Reset cancels the session/history and
+rejects an old HTTP result without launching a second parallel request. Stop
+explicitly pauses simulation. Runtime ports carry camera observations, owner
+clock, execution intents and feedback; the decision module cannot access the
+physical world. Only native RGB and named robot self measurements enter Qwen.
+All three physical skill capabilities remain false in this development window,
+which admits only observation/stop decisions and performs zero integrations.
+
+`task_lab.smoke_reset_during_request: true` runs one finite reset injection through
+the same UI intent path. It requires one old result discarded, one new decision
+admitted in the new episode, and an actual window screenshot. The maximum run is
+90 seconds, and failures return nonzero with retained receipts. HTTP attempt,
+completion and discarded-generation counters are transport evidence; they are
+not mislabeled as successful model inferences or task completion. The ordinary
+manual window has no automatic termination.
+
+The first GUI runs retained two real native frames, three actual owner resets
+and one discarded in-flight HTTP result, but the fresh decision exceeded the
+unchanged 30-second image/request limit. An explicit 60 Hz display pacing control
+reduced the measured render rate from about 132 to 58 FPS and did not resolve
+that failure. Resolution remains 1920×1080 with MSAA8; the independent physical
+clock remains 50 Hz. This finite display control is recorded as
+`diagnostic_render_hz: 60` and is absent by default.
+
+A subsequent decode-graph service comparison initially used a mismatched
+client/service port (8002/8003). Both sends failed before server inference; that
+case is retained as a configuration failure and excluded from latency claims.
+
+With the endpoint corrected, the decode-graph profile still exceeded the live
+deadline. An isolated original-image warmup without rendering took 63.386
+seconds of HTTP time and returned four detections plus a long explanation;
+one reported box had reversed horizontal bounds. Warmup does not run admission
+and is not a successful visual-location test. A compact prompt subsequently
+returned within the GUI deadline but ordinary admission rejected an invalid
+detection. Both failures are retained; bounding-box checks were not relaxed.
+
+The generation schema now reflects the already closed physical capabilities:
+when all are false it exposes only observe/stop, no unused target enumeration,
+and a maximum 64-character reason. The model still receives the real image and
+self measurements. When task capabilities are enabled, the existing target and
+destination evidence remains required by ordinary admission. The generic wire
+format and both robot action contracts are unchanged. An incompatible service
+that ignores the generation schema still cannot bypass runtime capability
+checks. This only bounds the observation/stop seam; it does not qualify grasping
+or certify visual target localization.
+
+Receipts retain the actual last UI failure as well as the finite-test outcome;
+the test exits on a fresh decision failure instead of waiting until its overall
+90-second budget expires. Chinese widgets use character wrapping. Existing
+ICU4X segmentation warnings remain a disclosed dependency limitation rather
+than being treated as a measured cause of model latency.
+
+The bounded schema did not itself fix the GUI deadline. Exact Rust request/response
+tracing through one owned loopback relay showed 512 completion tokens ending in
+`finish_reason=length`: after opening the empty detection array, the decoder
+repeated tabs until the budget ran out. The same failure occurred without
+rendering. Removing the unreachable item grammar did not fix it; a separate
+sorted-schema-order control completed 49 tokens in 8.605 seconds, so property
+order was not established as the cause. These controls remain warmup-only and
+admit no skill. The installed service reported vLLM 0.27.1 and XGrammar 0.2.3.
+
+The next isolated service control uses explicit XGrammar
+`disable_any_whitespace: true` with otherwise identical cached weights, image,
+decode graphs, 4 GiB KV allocation and loopback port. This is a service decoder
+setting, not a longer image lifetime, a host/GPU configuration change or an
+alteration of the physical clock. vLLM documents the option in its
+[structured-output configuration](https://docs.vllm.ai/en/latest/api/vllm/config/structured_outputs/).
+
+That real GUI control passed: two completed local requests, one discarded old
+generation and one admitted fresh `observe`, at 11639 ms service time and
+11707 ms original image age. Both actual native camera frames retained their
+own episode/frame identity. The owner performed zero integrations and all task
+capabilities remained false. Workspace checks passed 223 tests with 33 ignored
+diagnostics. The actual 1920×1080 window screenshot initially captured the
+previous pending HUD; the screenshot injection now waits four completed display
+updates after admission before requesting the native screenshot. This affects
+only evidence capture, not model timestamps or physical execution.
+
+The service control's frozen `service_creation.json` records the complete Docker
+argv, immutable image identity, read-only cached checkpoint mount, owned cache
+mount, owner/profile labels and compact decoder option. Recreate from that argv
+only when its named container is absent. The existing lifecycle script can then
+start/stop that owned container using the exact copied `service_profile.env`:
+
+```bash
+env QWEN_PROFILE=/ABSOLUTE/EVIDENCE/service_profile.env \
+  /home/ethan/LocalServices/Local_Qwen/qwen38-27b-fp8-dgx-spark/g1-service.sh start
+# After /health and /v1/models pass on the profile's port, use the lab command above.
+env QWEN_PROFILE=/ABSOLUTE/EVIDENCE/service_profile.env \
+  /home/ethan/LocalServices/Local_Qwen/qwen38-27b-fp8-dgx-spark/g1-service.sh stop
+```
+
+Do not use that script to create the compact profile from scratch: its original
+creation path does not read `STRUCTURED_OUTPUTS_JSON`. The recorded Docker argv
+is required for this isolated control. For a manual window set the lab smoke
+flag to false in a new configuration, preserving all model/body/asset hashes and
+using the exact service port. These commands reproduce the development seam;
+the final science-station task runbook remains incomplete.
+
+The corrected native screenshot run passed the same real reset/model seam:
+two completed HTTP requests, one old result discarded, one fresh observation
+admitted at 11499 ms service / 11561 ms image age, zero physical integrations.
+Visual inspection confirmed that the saved HUD displays that actual decision,
+latency and observation-only feedback. Prematurely closing a required smoke
+window now returns failure instead of treating ordinary window closure as a
+completed test. The owned inference container was stopped after both runs.

@@ -40,19 +40,24 @@ fn run() -> Result<(), String> {
     let Some(arguments) = parse_arguments(std::env::args().skip(1))? else {
         return Ok(());
     };
-    if arguments.scene.as_deref() == Some("g1_camera_diagnostic") {
+    if matches!(
+        arguments.scene.as_deref(),
+        Some("g1_camera_diagnostic" | "g1_task_lab")
+    ) {
         if arguments.robot.as_deref() != Some("g1")
             || arguments.headless
             || arguments.verify
             || arguments.capture.is_some()
             || arguments.frames.is_some()
         {
-            return Err("g1_camera_diagnostic requires --robot g1, --g1-config and --output; headless/verify/preview capture flags do not apply".into());
+            return Err("G1 development scenes require --robot g1, --g1-config and --output; headless/verify/preview capture flags do not apply".into());
         }
         return capture_g1_diagnostic(arguments);
     }
     if arguments.g1_config.is_some() || arguments.g1_ticks.is_some() {
-        return Err("G1 diagnostic options require --scene g1_camera_diagnostic".into());
+        return Err(
+            "G1 diagnostic options require --scene g1_camera_diagnostic or g1_task_lab".into(),
+        );
     }
     let robot = arguments.robot.as_deref().unwrap_or("none");
     if robot != "none" {
@@ -153,18 +158,33 @@ fn run() -> Result<(), String> {
 
 #[cfg(feature = "dev_tools")]
 fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
+    let interactive = arguments.scene.as_deref() == Some("g1_task_lab");
+    if interactive && arguments.g1_ticks.is_some() {
+        return Err(
+            "g1_task_lab admits UI intentions; --g1-ticks automatic execution is forbidden".into(),
+        );
+    }
     let path = arguments.g1_config.ok_or("--g1-config is required")?;
     let output = arguments
         .output
         .ok_or("--output must name a new directory")?;
-    let receipt = dev_tools_minigame::g1_capture::run_capture_from_file(
-        &path,
-        dev_tools_minigame::g1_capture::G1CaptureOptions {
-            output,
-            ticks: arguments.g1_ticks.unwrap_or(0),
-            timeout: Duration::from_secs(75),
-        },
-    )?;
+    let options = dev_tools_minigame::g1_capture::G1CaptureOptions {
+        output,
+        ticks: arguments.g1_ticks.unwrap_or(0),
+        timeout: Duration::from_secs(75),
+    };
+    let receipt = if interactive {
+        dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
+    } else {
+        dev_tools_minigame::g1_capture::run_capture_from_file(&path, options)
+    }?;
+    if interactive {
+        println!(
+            "native_task_lab window_closed=true, integrations={}, task_qualified=false",
+            receipt.actual_integrations
+        );
+        return Ok(());
+    }
     println!(
         "native_camera_diagnostic capture={}, integrations={}, model_calls={}, task_qualified={}",
         receipt.capture_succeeded,
@@ -260,7 +280,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview or g1_camera_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic or g1_task_lab\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\

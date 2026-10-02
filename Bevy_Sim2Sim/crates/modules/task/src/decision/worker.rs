@@ -20,6 +20,9 @@ pub struct DecisionWorker {
     busy: Arc<AtomicBool>,
     episode: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
+    http_attempts: Arc<AtomicU64>,
+    http_results: Arc<AtomicU64>,
+    discarded_results: Arc<AtomicU64>,
 }
 
 impl DecisionWorker {
@@ -29,6 +32,12 @@ impl DecisionWorker {
         let busy = Arc::new(AtomicBool::new(false));
         let episode = Arc::new(AtomicU64::new(episode_id));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let http_attempts = Arc::new(AtomicU64::new(0));
+        let http_results = Arc::new(AtomicU64::new(0));
+        let discarded_results = Arc::new(AtomicU64::new(0));
+        let worker_attempts = http_attempts.clone();
+        let worker_results = http_results.clone();
+        let worker_discarded = discarded_results.clone();
         let worker_busy = Arc::clone(&busy);
         let worker_episode = Arc::clone(&episode);
         let worker_shutdown = Arc::clone(&shutdown);
@@ -46,10 +55,13 @@ impl DecisionWorker {
                         continue;
                     }
                     let started = Instant::now();
+                    worker_attempts.fetch_add(1, Ordering::AcqRel);
                     let result = client.decide(&request);
+                    worker_results.fetch_add(1, Ordering::AcqRel);
                     if worker_episode.load(Ordering::Acquire)
                         != request.observation.stamp.episode_id
                     {
+                        worker_discarded.fetch_add(1, Ordering::AcqRel);
                         worker_busy.store(false, Ordering::Release);
                         continue;
                     }
@@ -71,6 +83,9 @@ impl DecisionWorker {
             busy,
             episode,
             shutdown,
+            http_attempts,
+            http_results,
+            discarded_results,
         })
     }
 
@@ -121,6 +136,16 @@ impl DecisionWorker {
 
     pub fn is_busy(&self) -> bool {
         self.busy.load(Ordering::Acquire)
+    }
+
+    /// Actual client invocation/results, including transport failures. These
+    /// are not counts of successful model inference or accepted skills.
+    pub fn transport_counts(&self) -> (u64, u64, u64) {
+        (
+            self.http_attempts.load(Ordering::Acquire),
+            self.http_results.load(Ordering::Acquire),
+            self.discarded_results.load(Ordering::Acquire),
+        )
     }
 
     /// An already running HTTP operation ends at its configured timeout. Its

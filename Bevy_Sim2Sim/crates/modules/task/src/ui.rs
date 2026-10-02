@@ -111,13 +111,21 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
     let title = commands
         .spawn((
             Text::new("G1 · 本地视觉任务"),
+            TextLayout {
+                linebreak: LineBreak::AnyCharacter,
+                ..default()
+            },
             normal.clone(),
             TextColor(Color::WHITE),
         ))
         .id();
     let help = commands
         .spawn((
-            Text::new("点击输入框可粘贴中文；Ctrl+Enter 启动，Esc 停止。"),
+            Text::new("点击输入框可粘贴中文；启动会重置场景。Ctrl+Enter 启动，Esc 停止。"),
+            TextLayout {
+                linebreak: LineBreak::AnyCharacter,
+                ..default()
+            },
             TextFont {
                 font: font.clone().into(),
                 font_size: FontSize::Px(15.0),
@@ -134,6 +142,10 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
         .spawn((
             TaskEditor,
             editor,
+            TextLayout {
+                linebreak: LineBreak::AnyCharacter,
+                ..default()
+            },
             TabIndex(0),
             normal.clone(),
             TextColor(Color::WHITE),
@@ -176,7 +188,15 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
             ))
             .id();
         let label = commands
-            .spawn((Text::new(label), normal.clone(), TextColor(Color::WHITE)))
+            .spawn((
+                Text::new(label),
+                TextLayout {
+                    linebreak: LineBreak::AnyCharacter,
+                    ..default()
+                },
+                normal.clone(),
+                TextColor(Color::WHITE),
+            ))
             .id();
         commands.entity(entity).add_child(label);
         commands.entity(buttons).add_child(entity);
@@ -188,7 +208,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
             normal,
             TextColor(Color::srgb(0.85, 0.9, 0.92)),
             TextLayout {
-                linebreak: LineBreak::WordOrCharacter,
+                linebreak: LineBreak::AnyCharacter,
                 ..default()
             },
         ))

@@ -257,6 +257,10 @@ fn sends_real_png_and_strict_schema_without_privileged_state() {
     assert_eq!(request["response_format"]["type"], "json_schema");
     assert_eq!(request["response_format"]["json_schema"]["strict"], true);
     assert_eq!(request["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(
+        request["response_format"]["json_schema"]["schema"]["properties"]["observed_targets"]["maxItems"],
+        16
+    );
     let parts = &request["messages"][1]["content"];
     assert!(
         parts[1]["image_url"]["url"]
@@ -268,6 +272,41 @@ fn sends_real_png_and_strict_schema_without_privileged_state() {
     assert!(context.get("robot_proprioception").is_some());
     assert!(context.get("object_positions").is_none());
     assert_eq!(context["camera"]["width"], 2);
+    mock.handle.join().unwrap();
+}
+
+#[test]
+fn disabled_executor_generation_is_bounded_and_ignoring_it_cannot_enable_execution() {
+    let mut session = session(TaskProfile::StaticApple, false);
+    let input = session
+        .prepare(observation(1, 1), 1000, 20_000_000)
+        .unwrap();
+    // An incompatible/malicious service can ignore generation constraints.
+    // Ordinary runtime admission must still refuse its physical request.
+    let mock = serve(
+        "200 OK",
+        completion(&decision(execute()), "stop"),
+        Duration::ZERO,
+    );
+    let result = client(&mock.url, Duration::from_secs(2))
+        .decide(&input)
+        .unwrap();
+    assert!(
+        session
+            .accept(reply(&input, result), 1100, 20_000_000)
+            .is_err()
+    );
+    assert!(session.take_safe_stop().is_some());
+    let body = mock.request.recv_timeout(Duration::from_secs(1)).unwrap();
+    let schema = &body["response_format"]["json_schema"]["schema"];
+    assert_eq!(schema["properties"]["observed_targets"]["maxItems"], 0);
+    let skills: Vec<_> = schema["properties"]["request"]["anyOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|variant| variant["properties"]["skill"]["const"].as_str().unwrap())
+        .collect();
+    assert_eq!(skills, ["observe", "stop"]);
     mock.handle.join().unwrap();
 }
 

@@ -3,6 +3,8 @@
 #[cfg(feature = "rendering_preview")]
 pub mod g1_capture;
 #[cfg(feature = "rendering_preview")]
+pub mod g1_task_lab;
+#[cfg(feature = "rendering_preview")]
 pub mod g1_decision_diagnostic;
 #[cfg(feature = "rendering_preview")]
 pub mod g1_policy_diagnostic;

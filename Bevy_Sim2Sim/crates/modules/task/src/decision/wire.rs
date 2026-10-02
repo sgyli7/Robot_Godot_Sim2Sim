@@ -161,6 +161,38 @@ pub fn decision_json_schema() -> Value {
     )
 }
 
+/// Narrow generation to the already admitted capabilities. A disabled physical
+/// executor needs an image-grounded observation/stop summary, not unused target
+/// enumeration. Runtime admission remains authoritative even if a server
+/// ignores this schema. Active task decisions retain their target evidence.
+pub(super) fn request_schema(availability: SkillAvailability) -> Value {
+    let mut schema = decision_json_schema();
+    schema["properties"]["reason"]["maxLength"] = json!(64);
+    schema["properties"]["observed_targets"]["items"]["properties"]["visible_description"]["maxLength"] =
+        json!(32);
+    let variants = schema["properties"]["request"]["anyOf"]
+        .as_array_mut()
+        .expect("authored request variants");
+    for variant in variants.iter_mut() {
+        if variant["properties"]["skill"]["const"] == "stop" {
+            variant["properties"]["reason"]["maxLength"] = json!(64);
+        }
+    }
+    if !availability.static_apple && !availability.mobile_box && !availability.navigate_adjustment {
+        variants.retain(|variant| {
+            matches!(
+                variant["properties"]["skill"]["const"].as_str(),
+                Some("observe" | "stop")
+            )
+        });
+        schema["properties"]["observed_targets"]["maxItems"] = json!(0);
+        // No item can exist at maxItems=0. Avoid compiling an unreachable
+        // target grammar; active-task schemas keep the complete evidence type.
+        schema["properties"]["observed_targets"]["items"] = json!({"type":"object"});
+    }
+    schema
+}
+
 fn object(properties: Value, required: &[&str]) -> Value {
     json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
 }
