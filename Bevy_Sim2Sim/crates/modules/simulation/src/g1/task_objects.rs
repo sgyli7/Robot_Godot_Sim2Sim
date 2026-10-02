@@ -305,6 +305,9 @@ pub struct TaskObjectContactSample {
     /// Zero means intersection/touch; None means the query was unsupported.
     pub geometric_distance_after_step_m: Option<f32>,
     pub normal_impulse_n_s: f32,
+    /// Last-solve normal impulse acting on this object, in source Z-up axes.
+    /// Tangential/friction impulse is excluded; acceptance-only evidence.
+    pub normal_impulse_on_object_source: [f32; 3],
 }
 
 /// A render/independent-acceptance sample, never a model observation field.
@@ -554,6 +557,10 @@ impl TaskObjectScene {
                         .ok()
                         .filter(|distance| distance.is_finite() && *distance >= 0.),
                         normal_impulse_n_s: pair.total_impulse_magnitude(),
+                        normal_impulse_on_object_source: normal_impulse_on_collider(
+                            pair,
+                            instance.collider,
+                        ),
                     }
                 })
                 .collect();
@@ -607,6 +614,23 @@ impl TaskObjectScene {
     }
 }
 
+fn normal_impulse_on_collider(
+    pair: &rapier3d::geometry::ContactPair,
+    collider: ColliderHandle,
+) -> [f32; 3] {
+    // Rapier's constraint uses -manifold.normal on collider1, +normal on2.
+    // Both collider insertion orders are checked against gravity contact below.
+    let impulse = pair.total_impulse();
+    engine_to_source_vector(
+        (if pair.collider1 == collider {
+            -impulse
+        } else {
+            impulse
+        })
+        .to_array(),
+    )
+}
+
 fn engine_vector(value: [f64; 3]) -> Vector {
     Vector::from_array(source_to_engine_vector(value.map(|v| v as f32)))
 }
@@ -626,6 +650,56 @@ fn invalid(message: impl Into<String>) -> RobotError {
 mod tests {
     use super::*;
     use std::{fs::OpenOptions, io::Write};
+
+    #[test]
+    fn support_impulse_points_up_for_both_collider_orders() {
+        for object_first in [false, true] {
+            let mut world = SimulationWorld::with_game_frequency(50).unwrap();
+            let object = world
+                .world
+                .bodies
+                .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0., 0.3, 0.)));
+            let floor = world.world.bodies.insert(RigidBodyBuilder::fixed());
+            let insert_object = |world: &mut SimulationWorld| {
+                world.world.colliders.insert_with_parent(
+                    ColliderBuilder::cuboid(0.1, 0.1, 0.1).mass(0.1),
+                    object,
+                    &mut world.world.bodies,
+                )
+            };
+            let insert_floor = |world: &mut SimulationWorld| {
+                world.world.colliders.insert_with_parent(
+                    ColliderBuilder::cuboid(1., 0.1, 1.),
+                    floor,
+                    &mut world.world.bodies,
+                )
+            };
+            let object_collider = if object_first {
+                let c = insert_object(&mut world);
+                insert_floor(&mut world);
+                c
+            } else {
+                insert_floor(&mut world);
+                insert_object(&mut world)
+            };
+            for _ in 0..100 {
+                world.step_with_torques(&[]).unwrap();
+            }
+            let pair = world
+                .world
+                .narrow_phase
+                .contact_pairs_with(object_collider)
+                .find(|pair| pair.total_impulse_magnitude() > 0.)
+                .expect("gravity support");
+            let impulse = normal_impulse_on_collider(pair, object_collider);
+            assert!(
+                impulse[2] > 0.01,
+                "support must oppose gravity: {impulse:?}"
+            );
+            assert!(impulse[0].abs() < 1e-6 && impulse[1].abs() < 1e-6);
+            assert_eq!(world.snapshot().integration_count, 100);
+        }
+    }
 
     #[test]
     #[ignore = "requires frozen original cooked objects; performs 150 actual native integrations"]

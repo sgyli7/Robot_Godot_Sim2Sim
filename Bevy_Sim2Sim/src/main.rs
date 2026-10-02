@@ -287,7 +287,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification or G1 diagnostic directory\n\
                      --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
-                     --g1-ticks N    camera 0..400 (standing max150); explicit mobile carry exactly1000\n\
+                     --g1-ticks N    camera 0..400 (standing max150); explicit mobile carry1000/1500\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -314,8 +314,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                 let ticks = value()?
                     .parse::<u32>()
                     .map_err(|_| "--g1-ticks requires a nonnegative integer")?;
-                if ticks > 1000 {
-                    return Err("--g1-ticks must be at most1000".into());
+                if ticks > 1500 {
+                    return Err("--g1-ticks must be at most1500".into());
                 }
                 options.g1_ticks = Some(ticks);
             }
@@ -335,8 +335,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
         }
     }
     if options.scene.as_deref() == Some("g1_mobile_carry_diagnostic") {
-        if options.g1_ticks != Some(1000) {
-            return Err("mobile carry scene requires exactly --g1-ticks1000".into());
+        if !matches!(options.g1_ticks, Some(1000 | 1500)) {
+            return Err("mobile carry scene requires --g1-ticks1000 or1500".into());
         }
     } else if options.g1_ticks.is_some_and(|ticks| ticks > 400) {
         return Err("--g1-ticks must be at most400 outside the explicit mobile carry scene".into());
@@ -357,27 +357,19 @@ mod tests {
 
     #[test]
     fn longer_mobile_budget_cannot_escape_its_scene_or_depend_on_argument_order() {
-        for args in [
-            [
-                "--g1-ticks",
-                "1000",
-                "--scene",
-                "g1_mobile_carry_diagnostic",
-            ],
-            [
-                "--scene",
-                "g1_mobile_carry_diagnostic",
-                "--g1-ticks",
-                "1000",
-            ],
-        ] {
-            assert_eq!(
-                parse_arguments(args.map(str::to_owned).into_iter())
-                    .unwrap()
-                    .unwrap()
-                    .g1_ticks,
-                Some(1000)
-            );
+        for ticks in ["1000", "1500"] {
+            for args in [
+                ["--g1-ticks", ticks, "--scene", "g1_mobile_carry_diagnostic"],
+                ["--scene", "g1_mobile_carry_diagnostic", "--g1-ticks", ticks],
+            ] {
+                assert_eq!(
+                    parse_arguments(args.map(str::to_owned).into_iter())
+                        .unwrap()
+                        .unwrap()
+                        .g1_ticks,
+                    Some(ticks.parse().unwrap())
+                );
+            }
         }
         for args in [
             ["--scene", "g1_camera_diagnostic", "--g1-ticks", "1000"],

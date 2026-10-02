@@ -342,7 +342,7 @@ pub fn run_capture_from_file(
     run_from_file(path, options, CaptureMode::Camera)
 }
 
-/// One fixed1000Tick/20chunk original mobile carry-stage diagnostic. This does
+/// Two fixed1000/1500Tick original mobile carry-stage budgets. This does
 /// not widen the ordinary camera/static-task budgets or qualify task execution.
 pub fn run_mobile_carry_from_file(
     path: &Path,
@@ -922,21 +922,21 @@ fn run_capture_owner(
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
     if mobile_carry
-        && (options.ticks != 1000
+        && (!matches!(options.ticks, 1000 | 1500)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
             || config
                 .task_objects()
                 .is_none_or(|c| c.source_t2_background.is_none())
-            || policy
-                .as_ref()
-                .is_none_or(|p| p.max_calls != 20 || p.prefetch_after_ticks.is_some())
+            || policy.as_ref().is_none_or(|p| {
+                p.max_calls != options.ticks / 50 || p.prefetch_after_ticks.is_some()
+            })
             || diagnostic_constraint_sweeps != Some(4)
             || predictive_limit_diagnostic
             || diagnostic_source_rect_lighting.is_none()
             || !diagnostic_aces_fitted
             || task_lab.is_some())
     {
-        return Err("mobile carry entry requires exactly1000Ticks/20original chunks, matched T2 scene/source-light profile and the existing4PGS candidate; static/UI/prefetch modes are forbidden".into());
+        return Err("mobile carry entry requires1000/1500Ticks and20/30original chunks, matched T2 scene/source-light profile and the existing4PGS candidate; static/UI/prefetch modes are forbidden".into());
     }
     if diagnostic_render_hz.is_some_and(|hz| hz != 60) {
         return Err(
@@ -1048,7 +1048,7 @@ fn run_capture_owner(
         })
         .transpose()?;
     let tick_limit = if mobile_carry {
-        1000
+        1500
     } else if matches!(config, CaptureRunnerConfig::Task(_)) {
         400
     } else {
@@ -1067,7 +1067,7 @@ fn run_capture_owner(
             let profile = config.body.profile();
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
-                || policy.max_calls > if mobile_carry { 20 } else { 8 }
+                || policy.max_calls > if mobile_carry { 30 } else { 8 }
                 || (!interactive && options.ticks != policy.max_calls * horizon)
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
@@ -1167,7 +1167,7 @@ fn run_capture_owner(
     }
     if mobile_carry {
         outcome.0.lock().unwrap().scope =
-            "native_mobile_1000_tick_carry_stage_diagnostic_not_qualified";
+            "native_mobile_bounded_carry_stage_diagnostic_not_qualified";
     }
     if interactive {
         outcome.0.lock().unwrap().scope = "native_local_qwen_interactive_lab_no_qualified_executor";

@@ -743,7 +743,7 @@ or release. All400integrations/control/body calls and eight realRGB model
 inputs are verified; the owned service closes after60.22s. Trace SHA256:
 `5717e16d93f91a896878f219e9707c3f5021e119b4d2f0a1c054b602da40dc89`.
 
-The separate `g1_mobile_carry_diagnostic` entry now admits exactly1000Ticks and
+The initial `g1_mobile_carry_diagnostic` entry admits exactly1000Ticks and
 20original50frame chunks, with a finite120s application timeout. It requires
 the matched mobile T2 physics/background, the verified source-light profile,
 the existing4PGS development candidate and no UI/static/prefetch combination.
@@ -754,4 +754,50 @@ not a registration of qualified user-facing execution.
 
 ```bash
 cargo run -p bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_source_lighting,dev_tools_minigame/g1_constraint_diagnostic -- --scene g1_mobile_carry_diagnostic --robot g1 --g1-config /absolute/mobile_20_chunk_config.json --g1-ticks 1000 --output /absolute/new_evidence_directory
+```
+
+Carry-stage0166 completes20real N1.6 calls and1000actual native single20ms
+integrations. The robot remains upright (minimum0.990024), travels1.128330m
+from reset XY and carries the box1.796482m from reset. There are883positive
+hand-support ticks,848with both original hands; no supporting robot contact
+belongs to a torso/leg. The maximum uninterrupted raised-held interval is356
+Ticks. The final box is[-0.322805,-1.393144,0.907623]source, still held, moving
+0.272038m/s and1.041169rad/s. No bin-support impulse occurs. Actual PNG/model
+NPZ inputs remain byte-identical and contain only RGB/named self state. The
+owned model closes after83.07s. Trace SHA256:
+`81d3e0f9edbc3432c634b2f0b5075dba4595f03c225732c940b761582d579e46`.
+This proves native physical carry beyond the original reaching range, but
+not the strict2m/release/stability task or1x timing.
+
+Inspection at the fixed endpoint finds a partial approach to the bin, no drop
+or fall. Chunk19 lowers the pelvis, chunk20 raises it and commands forward
+motion again; the original policy has not completed its placement phase.
+The dedicated carry entry consequently retains the1000/20budget and adds one
+fixed1500Tick/30chunk release-stage budget, with the same120s timeout. All
+scene/model/light/physics/gain/friction/seed parameters stay fixed. Arbitrary
+longer budgets remain rejected; this is one justified continuation-stage test,
+not an unbounded repeat/parameter sweep.
+
+`unitree_g1_mobile_placement_audit.py` independently uses the upward prism over
+convex part2 of the frozen original bin: its flat interior floor, excluding the
+rim. It transforms every original box collision vertex into the actual moving
+bin frame. Every vertex must fit that footprint and lie above its lowest local
+floorZ. All robot links must be physically separated, the bin must supply a
+positive upward normal impulse, and strict0.02m/s/0.1rad/s speed limits and
+standing must hold for101consecutive50Hz samples spanning2s. Fall history is
+sticky. This target is a disclosed diagnostic rule, not the frozen ten-episode
+formal suite. Actual old0166geometry fails the rule and records0s placement;
+its absent bin contacts require no inference of missing impulse directions.
+
+The physical trace now publishes the last-solve normal impulse acting on each
+object in source Z-up coordinates, excluding friction. This is read-only
+acceptance data and never enters model observations/control. A100step real
+gravity-contact check verifies its upward sign for both collider insertion
+orders (Rapier's solver applies `-normal` on collider1). Eight adversarial
+Python checks cover moving/rotating targets, rim overhang, side-only support,
+unknown/touching robot distance, strict speed thresholds, sticky falls, missing
+Ticks/resets and the101sample duration rule. Both CLI checks also pass.
+
+```bash
+python crates/dev_tools/python/scripts/unitree_g1_mobile_placement_audit.py --definition /absolute/frozen_task_objects.json --trace /absolute/native/owner_steps.jsonl --output /absolute/new_placement_audit.json
 ```
