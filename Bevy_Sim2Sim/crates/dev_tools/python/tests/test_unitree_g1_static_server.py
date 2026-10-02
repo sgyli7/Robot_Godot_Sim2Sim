@@ -17,7 +17,7 @@ import unitree_g1_static_server as protocol
 
 
 def request():
-    return {"schema": "unitree_g1_static_observation_v1", "profile": "static_apple", "sequence_id": 7,
+    return {"schema": "unitree_g1_static_observation_v2", "profile": "static_apple", "sequence_id": 7,
             "observation": {"episode_id": 2, "frame_id": 5, "sim_time_ns": 40_000_000, "captured_at_unix_ms": 100},
             "camera_rgb_b64": base64.b64encode(bytes([17]) * (640 * 480 * 3)).decode(),
             "state_groups": {name: [0.1] * width for name, width in protocol.GROUP_WIDTHS.items()}}
@@ -49,6 +49,18 @@ class FixturePolicy:
 
 
 class DecoderTests(unittest.TestCase):
+    def test_legacy_hand_label_contract_is_rejected_and_canonical_values_are_preserved(self):
+        body = request()
+        body["schema"] = "unitree_g1_static_observation_v1"
+        with self.assertRaises(ValueError):
+            protocol.decode_request(body)
+        body["schema"] = "unitree_g1_static_observation_v2"
+        body["state_groups"]["left_hand"] = [-0.1, -0.2, -0.3, -0.4, 0.01, 0.02, 0.03]
+        body["state_groups"]["right_hand"] = [-0.11, -0.22, -0.33, -0.44, 0.04, 0.05, 0.06]
+        decoded = protocol.decode_request(body)
+        for key in ("left_hand", "right_hand"):
+            np.testing.assert_array_equal(decoded[key][0], np.array(body["state_groups"][key], np.float32))
+
     def test_real_byte_layout_and_joint_groups_are_preserved(self):
         observation = protocol.decode_request(request())
         self.assertEqual(observation["ego_view"].shape, (1, 480, 640, 3))

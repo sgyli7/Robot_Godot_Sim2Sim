@@ -1,5 +1,10 @@
 # Native G1 offline visual policy probe
 
+Historical static HTTP receipts below used the superseded v1 hand-input mapping.
+The numeric export-label discrepancy, corrected v2 input semantics and current
+source task evidence are documented in [g1_t1_source_task.md](g1_t1_source_task.md).
+Those historical receipts retain their original bytes and remain unqualified.
+
 This development binary sends one unchanged saved native ego PNG and its original
 stamp through the existing matched `StaticPolicyClient` or `MobilePolicyClient`.
 It validates the native 53-body/43-joint camera pairing using the shared
