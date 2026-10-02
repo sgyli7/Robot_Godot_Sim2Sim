@@ -1,7 +1,13 @@
 //! Six-DoF condensed-foot force/moment diagnostic; no whole-body admission.
 
 use std::{
-    collections::HashMap, env, fs, path::Path, process::ExitCode, sync::Mutex, time::Instant,
+    collections::HashMap,
+    env, fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    sync::Mutex,
+    time::Instant,
 };
 
 use rapier3d::{
@@ -27,6 +33,51 @@ const PROGRAMS: [&str; 5] = [
     "roll_plus",
     "roll_minus",
 ];
+
+/// Frozen external load program; reads each foot's own immutable plant ledger.
+#[derive(serde::Deserialize)]
+struct FootMatrixCase {
+    program: String,
+    foot_name: String,
+    roll_deg: f64,
+    pitch_deg: f64,
+    initial_gap_m: f64,
+    initial_vertical_velocity_m_s: f64,
+    force_point_local_m: [f64; 3],
+    loads_n: Vec<f64>,
+    #[serde(skip)]
+    trace_path: Option<PathBuf>,
+}
+
+impl FootMatrixCase {
+    fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if !["left_ankle_roll", "right_ankle_roll"].contains(&self.foot_name.as_str())
+            || self.program.is_empty()
+            || !self
+                .program
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+            || self.loads_n.len() != 150
+            || self
+                .loads_n
+                .iter()
+                .any(|f| !f.is_finite() || !(0.0..=240.0).contains(f))
+            || !self.roll_deg.is_finite()
+            || !self.pitch_deg.is_finite()
+            || self.roll_deg.abs() > 3.0
+            || self.pitch_deg.abs() > 3.0
+            || self.roll_deg != 0.0 && self.pitch_deg != 0.0
+            || !self.initial_gap_m.is_finite()
+            || !(0.0005..=0.03).contains(&self.initial_gap_m)
+            || !self.initial_vertical_velocity_m_s.is_finite()
+            || !(-0.4..=0.0).contains(&self.initial_vertical_velocity_m_s)
+            || self.force_point_local_m.iter().any(|v| !v.is_finite())
+        {
+            return Err("undeclared full-foot matrix input".into());
+        }
+        Ok(())
+    }
+}
 
 fn vector([x, y, z]: [f64; 3]) -> Vector {
     Vector::new(x as f32, z as f32, -y as f32)
@@ -131,11 +182,28 @@ fn case(
     raw: &Value,
     program: &str,
     mode: &str,
+    matrix: Option<&FootMatrixCase>,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    if let Some(input) = matrix {
+        input.validate()?;
+        #[cfg(not(feature = "sim2sim_limit_row_trace"))]
+        return Err(
+            "full-foot energy reporting requires explicit mass-matrix trace feature".into(),
+        );
+        if mode != "free_shared" {
+            return Err("full-foot matrix requires original shared compression mechanics".into());
+        }
+    }
+    let foot_name = matrix.map_or("right_ankle_roll", |m| m.foot_name.as_str());
+    let prefix = if foot_name == "left_ankle_roll" {
+        "left_sole_pad_"
+    } else {
+        "right_sole_pad_"
+    };
     let foot = plant
         .bodies
         .iter()
-        .find(|b| b.name == "right_ankle_roll")
+        .find(|b| b.name == foot_name)
         .ok_or("foot absent")?;
     let patches: Vec<_> = plant
         .colliders
@@ -144,20 +212,28 @@ fn case(
             p.body == foot.name
                 && p.contact_patch
                     .as_deref()
-                    .is_some_and(|n| n.starts_with("right_sole_pad_"))
+                    .is_some_and(|n| n.starts_with(prefix))
         })
         .collect();
     if patches.len() != 6 || foot.rotation_world_wxyz != [1.0, 0.0, 0.0, 0.0] {
-        return Err("frozen right condensed foot required".into());
+        return Err("frozen original condensed foot required".into());
     }
     let angle = (3.0_f32).to_radians();
-    let scaled_axis = match program {
-        "pitch_plus" => -Vector::Z * angle,
-        "pitch_minus" => Vector::Z * angle,
-        "roll_plus" => Vector::X * angle,
-        "roll_minus" => -Vector::X * angle,
-        "flat" => Vector::ZERO,
-        _ => return Err("undeclared program".into()),
+    let scaled_axis = if let Some(input) = matrix {
+        vector([
+            input.roll_deg.to_radians(),
+            input.pitch_deg.to_radians(),
+            0.0,
+        ])
+    } else {
+        match program {
+            "pitch_plus" => -Vector::Z * angle,
+            "pitch_minus" => Vector::Z * angle,
+            "roll_plus" => Vector::X * angle,
+            "roll_minus" => -Vector::X * angle,
+            "flat" => Vector::ZERO,
+            _ => return Err("undeclared program".into()),
+        }
     };
     let rotation = Rotation::from_scaled_axis(scaled_axis);
     let all_corners: Vec<_> = patches
@@ -167,14 +243,28 @@ fn case(
         .into_iter()
         .flatten()
         .collect();
-    let height = 0.0005
+    let height = matrix.map_or(0.0005_f32, |m| m.initial_gap_m as f32)
         - all_corners
             .iter()
             .map(|p| (rotation * *p).y)
             .fold(f32::INFINITY, f32::min);
     let pose = Pose::from_parts(Vector::Y * height, rotation);
     let load = plant.robot_mass_kg * 9.81 / 2.0;
-    let band = load * DT * DT / foot.mass_kg + 0.02 + 0.0015;
+    let max_load = matrix.map_or(load, |m| m.loads_n.iter().copied().fold(0.0, f64::max));
+    let initial_speed = matrix.map_or(0.0, |m| m.initial_vertical_velocity_m_s);
+    let band = max_load * DT * DT / foot.mass_kg + 0.02 + 0.0015 + initial_speed.abs() * DT;
+    if let Some(input) = matrix {
+        for axis in 0..3 {
+            let centroid = patches
+                .iter()
+                .map(|p| p.local_position_m[axis])
+                .sum::<f64>()
+                / 6.0;
+            if (centroid - input.force_point_local_m[axis]).abs() > 1e-12 {
+                return Err("matrix force point must be the original patch centroid".into());
+            }
+        }
+    }
     let mut simulation = SimulationWorld::new_with_profile(PhysicsClockProfile::Goose50);
     let world = &mut simulation.world;
     world.gravity = Vector::ZERO;
@@ -288,7 +378,7 @@ fn case(
         }
     }
     world.bodies[body].recompute_mass_properties_from_colliders(&world.colliders);
-    let (mb, _) = world.multibody_joints.get_mut(joint).unwrap();
+    let (mb, link_id) = world.multibody_joints.get_mut(joint).unwrap();
     mb.forward_kinematics(&world.bodies, true);
     assert_eq!(mb.ndofs(), 6);
     mb.damping_mut().fill(0.0);
@@ -303,17 +393,44 @@ fn case(
     if mode == "free_shared" {
         mb.sim2sim_configure_shared_pads(shared_mechanics);
     }
+    if matrix.is_some() {
+        // This free joint's translation basis is its initial rotated local frame.
+        // The protocol declares world velocity, matching MuJoCo's free qvel.
+        let local_velocity = rotation.inverse() * (Vector::Y * initial_speed as f32);
+        for (index, value) in local_velocity.to_array().into_iter().enumerate() {
+            mb.generalized_velocity_mut()[index] = value;
+        }
+    }
     mb.update_rigid_bodies(&mut world.bodies, true);
+    let initial_twist = mb.body_jacobian(link_id) * mb.generalized_velocity();
+    let initial_velocity_world = source(Vector::new(
+        initial_twist[0],
+        initial_twist[1],
+        initial_twist[2],
+    ));
     let mut frames = Vec::new();
     let mut elapsed = Vec::new();
-    for tick in 0..100 {
+    let mut trace = matrix
+        .and_then(|m| m.trace_path.as_ref())
+        .map(|path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        })
+        .transpose()?;
+    let ticks = matrix.map_or(100, |m| m.loads_n.len());
+    for tick in 0..ticks {
         let com = world.bodies[body].center_of_mass();
         let origin = world.bodies[body].translation();
-        let applied = -Vector::Y * load as f32;
-        let torque = (origin - com).cross(applied);
+        let force_point = matrix.map_or(origin, |m| {
+            *world.bodies[body].position() * vector(m.force_point_local_m)
+        });
+        let applied = -Vector::Y * matrix.map_or(load, |m| m.loads_n[tick]) as f32;
+        let torque = (force_point - com).cross(applied);
         world.bodies[body].reset_forces(true);
         world.bodies[body].reset_torques(true);
-        world.bodies[body].add_force_at_point(applied, origin, true);
+        world.bodies[body].add_force_at_point(applied, force_point, true);
         materials.points.lock().unwrap().clear();
         let start = Instant::now();
         world.step_with_events(&materials, &());
@@ -411,13 +528,38 @@ fn case(
                 "barrier_compression_difference_m":s.barrier_compression_difference_m,
                 "algebraic_iterations":s.algebraic_iterations});
         }
+        if matrix.is_some() {
+            #[cfg(feature = "sim2sim_limit_row_trace")]
+            {
+                let velocity = mb.generalized_velocity();
+                let kinetic = 0.5 * velocity.dot(&(mb.sim2sim_constraint_mass_matrix() * velocity));
+                let spring = mb
+                    .sim2sim_shared_pad_compressions()
+                    .unwrap()
+                    .iter()
+                    .zip(&ledger)
+                    .map(|(q, p)| {
+                        0.5 * p["contact_parameters"]["stiffness_n_m"].as_f64().unwrap() * q * q
+                    })
+                    .sum::<f64>();
+                frame["endpoint_pre_pose_metric_energy_j"] = json!(kinetic as f64 + spring);
+            }
+            frame["force_point_world_m"] = json!(source(force_point));
+        }
+        if let Some(file) = &mut trace {
+            serde_json::to_writer(&mut *file, &frame)?;
+            file.write_all(b"\n")?;
+        }
         frames.push(frame);
     }
     elapsed.sort_by(f64::total_cmp);
-    Ok(
-        json!({"program":program,"integrations":100,"foot_physical_ledger":foot,"patches":ledger,
-        "native_mass_kg":world.bodies[body].mass(),"search_band_m":band,"physics_p95_ms":elapsed[94],"frames":frames}),
-    )
+    let p95_index = (elapsed.len() * 95).div_ceil(100) - 1;
+    let mut result = json!({"program":program,"integrations":ticks,"foot_physical_ledger":foot,"patches":ledger,
+        "native_mass_kg":world.bodies[body].mass(),"search_band_m":band,"physics_p95_ms":elapsed[p95_index],"frames":frames});
+    if matrix.is_some() {
+        result["initial_velocity_world_m_s"] = json!(initial_velocity_world);
+    }
+    Ok(result)
 }
 
 fn hash(path: &Path) -> Result<String, std::io::Error> {
@@ -565,7 +707,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if !(3..=4).contains(&args.len()) {
         return Err(
-            "usage: goose_free_sole_probe FROZEN_CONDENSED_PLANT NEW_OUTPUT_DIR native|free_block|free_block_plain|free_shared|inertia_native|inertia_plain [FROZEN_SOURCE_INERTIA_RECEIPT]"
+            "usage: goose_free_sole_probe FROZEN_CONDENSED_PLANT NEW_OUTPUT_DIR native|free_block|free_block_plain|free_shared|inertia_native|inertia_plain [FROZEN_INERTIA_RECEIPT_OR_SHARED_FOOT_PROTOCOL]"
                 .into(),
         );
     }
@@ -650,13 +792,57 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    if args.len() != 3 {
-        return Err("unexpected source input for contact mode".into());
-    }
-    let cases = PROGRAMS
-        .into_iter()
-        .map(|p| case(&plant, &raw, p, mode))
-        .collect::<Result<Vec<_>, _>>()?;
+    let protocol_path = if args.len() == 4 && mode == "free_shared" {
+        Some(Path::new(&args[3]).canonicalize()?)
+    } else if args.len() == 3 {
+        None
+    } else {
+        return Err("unexpected input for contact mode".into());
+    };
+    let cases = if let Some(path) = &protocol_path {
+        let protocol: Value = serde_json::from_slice(&fs::read(path)?)?;
+        if protocol["schema"] != "goose_shared_full_foot_protocol_v1"
+            || protocol["revision"] != "goose_shared_pad_condensed_contact_v4"
+            || protocol["plant_sha256"] != plant_hash
+            || protocol["physics_dt_s"] != DT
+            || protocol["integrations_per_tick"] != 1
+            || protocol["substeps"] != 0
+        {
+            return Err("frozen full-foot protocol identity or timing mismatch".into());
+        }
+        let mut inputs: Vec<FootMatrixCase> = serde_json::from_value(protocol["cases"].clone())?;
+        if inputs.len() != 16 {
+            return Err("sixteen frozen foot-matrix programs required".into());
+        }
+        for input in &inputs {
+            input.validate()?;
+        }
+        let mut names = std::collections::HashSet::new();
+        if inputs
+            .iter()
+            .any(|input| !names.insert(input.program.as_str()))
+        {
+            return Err("duplicate frozen foot-matrix program".into());
+        }
+        fs::create_dir(output)?;
+        fs::copy(path, output.join("frozen_protocol.json"))?;
+        for input in &mut inputs {
+            input.trace_path = Some(output.join(format!("{}.jsonl", input.program)));
+        }
+        inputs
+            .iter()
+            .map(|input| case(&plant, &raw, &input.program, mode, Some(input)))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        PROGRAMS
+            .into_iter()
+            .map(|p| case(&plant, &raw, p, mode, None))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let integrations: u64 = cases
+        .iter()
+        .map(|c| c["integrations"].as_u64().unwrap())
+        .sum();
     let mut hashes = serde_json::Map::new();
     for path in [
         "crates/dev_tools/src/bin/goose_free_sole_probe.rs",
@@ -682,18 +868,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         hashes.insert(path.to_owned(), json!(hash(&project.join(path))?));
     }
     let executable = env::current_exe()?.canonicalize()?;
-    fs::create_dir(output)?;
+    if protocol_path.is_none() {
+        fs::create_dir(output)?;
+    }
     fs::write(
         output.join("receipt.json"),
         serde_json::to_vec_pretty(
-            &json!({"schema":if mode=="free_shared" {"goose_shared_free_pad_target_v4"} else {"goose_free_condensed_target_v2"},
+            &json!({"schema":if protocol_path.is_some() {"goose_shared_full_foot_target_v1"} else if mode=="free_shared" {"goose_shared_free_pad_target_v4"} else {"goose_free_condensed_target_v2"},
         "revision":if mode=="free_shared" {"goose_shared_pad_condensed_contact_v4"} else if mode == "free_block_plain" { "goose_free_condensed_be_contact_v3" } else { "goose_free_condensed_contact_v2" },
         "plant_path":plant_path,"plant_sha256":plant_hash,
         "physics_dt_s":DT,"integrations_per_tick":1,"substeps":0,"coordinate_writes_after_initialization":0,
         "qualified":false,"m0_passed":false,"optimizer_updates":0,"inference_count":0,
         "normal_mode":mode,"cases":cases,"runtime_code_sha256":hashes,
+        "protocol_path":protocol_path,"protocol_sha256":protocol_path.as_ref().map(|p| hash(p)).transpose()?,
         "executable":executable,"executable_sha256":hash(&executable)?,"elapsed_wall_s":start.elapsed().as_secs_f64(),
-        "limitations":if mode=="free_shared" {vec!["isolated frictionless six-DoF right foot; not whole body",
+        "limitations":if protocol_path.is_some() {vec!["separate frictionless six-DoF original left/right feet; not whole body",
+            "declared static loads, release and free-foot impact only; no whole-robot landing inertia",
+            "no friction, moving counterpart, whole-body or high-frequency admission"]} else if mode=="free_shared" {vec!["isolated frictionless six-DoF right foot; not whole body",
             "six original shared K/C/history/stroke coordinates; no independent pad mass",
             "no full load/impact series, left foot, friction, whole-body or high-frequency admission"]} else {vec!["isolated frictionless six-DoF right foot; not whole body",
             "per-point foundation approximates shared sliding patches; not exact pad force/moment equivalence",
@@ -702,7 +893,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "{}",
-        json!({"status":"DIAGNOSTIC_ONLY","receipt":output.join("receipt.json"),"integrations":500})
+        json!({"status":"DIAGNOSTIC_ONLY","receipt":output.join("receipt.json"),"integrations":integrations})
     );
     Ok(())
 }

@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前停留在 M0，GPU／优化器使用为零。v3 与原共享滑动脚垫的侧倾映射失败保留；共同压缩 v4 已通过五组源端映射及 Rapier 配对检查，每引擎完成 500 次积分。它仅覆盖无摩擦右脚夹具，尚未晋升整机候选。最新执行入口为 [共同压缩源／目标检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_pad_target_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前停留在 M0，GPU／优化器使用为零。共同压缩 v4 已通过左右脚的 16 个无摩擦载荷／释放／冲击程序，原结构源端、凝聚源端和 Rapier 各完成 2,400 次积分。原机构与凝聚模型的卸载飞行位置差约 0.939 mm，摩擦、接触方向及整机耦合仍未准入；旧失败保留。最新执行入口为 [左右足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_full_foot_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -113,7 +113,7 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 当前M0实施中，尚未启动PPO。原始产物归档 `/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/`；本页为唯一计划和状态入口。最终交付冻结策略、本体/合同、Bevy包、复现命令、三主线报告及未通过清单。制造/电气/实物载荷仍由机器人工程侧维护；仿真资格不自动等于实物资格。
 
-当前下一项是完整足底准入：按原左／右脚物理清单覆盖 5／10／20／30 N、行程末端、释放及声明的冲击，再补摩擦和接触方向耦合，建立同版 21 体源／目标候选。局部六自由度求解器不能直接绕过拓扑守卫装入整机。已有嘴部、PGS、缓存与代理失败不再重复扫描；未改变 M0 门槛或启动 PPO。
+当前下一项是摩擦和接触方向耦合：法向及切向行都要包含真实虚拟滑动方向，覆盖法向投影为负或接近零的情形及原行程反力。完成接触法则验证后，与同版 21 体的关节、嘴销和限位共同求解，再做整机准入。局部六自由度求解器不能直接绕过拓扑守卫装入整机。已有嘴部、PGS、缓存与代理失败不再重复扫描；未改变 M0 门槛或启动 PPO。
 
 ## 6. 实施检查点：M0 未通过
 
@@ -328,3 +328,17 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 最新权威入口为 [共同压缩源／目标检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_pad_target_checkpoint.json)；[185 文件执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/shared_pad_target_v4_executed_code/verified_snapshot.json)核对实际源码、原生 fork、依赖、二进制和比较器哈希，并保存复现命令。原生关节 **30 项通过**，默认 simulation **22 项通过、10 项外部夹具未运行**，未改变的源端 Python **67 项通过**；**543 项结构检查**、Rust 格式及 Git 空白检查通过。临时日志、模型、轨迹、脚本和快照全部在项目备份目录。
 
 **下一批补完整足底准入，再进入同版 21 体源／目标接入。** 原左／右脚物理清单、四档载荷、行程末端、释放／冲击及摩擦／接触方向耦合均需实测；不能删除局部守卫来宣称整机支持。当前只晋升为 `LOCAL_PAIR_ONLY`，没有整机、GPU、Warp 或高频动态等价资格。**M0 未通过，PPO／GPU／优化器使用为零。**
+
+### 左右足底载荷、行程与释放／冲击检查点
+
+[预先冻结的 16 程序协议](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/shared_full_foot_protocol_v1.json)分别读取原左右脚的质量、COM、完整惯量及六接触区，未用镜像副本代替左脚。每脚覆盖 5／10／20／30 N 每区、40 N 超载、30 N 加载后释放、30 mm 初始间隙与 −0.4 m/s 竖直冲击，以及 3° 侧倾冲击；外力施加于原接触区中心的平均位置，身体不导向、不保持。每程序 150 次积分，原滑动脚垫源端、凝聚源端与 Rapier 最终各 **2,400 次 20 ms 积分**，共 **7,200 次**，无数值失败。开发探针接受显式冻结协议并逐 Tick 保存轨迹，原五程序入口保留。
+
+首批冲击夹具把 Rapier 自由关节的局部平移速度当作世界速度，3° 侧倾初态多出了约 0.020934 m/s 横向速度；压缩检查没有捕获这项输入错误。[首批轨迹、错误说明、实际源码及二进制](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/shared_full_foot_initial_velocity_failure/failure.json)保留，明确拒绝其冲击资格。修复采用已验证的逆旋转坐标变换；最终比较额外核对实际原生身体 Jacobian 的世界初速度与源端一致，未修改冻结物理门槛。
+
+[最终独立比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/shared_full_foot_comparison_corrected_v1.json)中，16 程序通过冻结的压缩、四档静载、行程、旋转与卸载压缩检查。源／目标最大支撑面高度差 **0.00170 mm**，内部压缩差 **0.000106 mm**；原机构与凝聚模型在四档静载程序中的最大支撑面差 **0.0000419 mm**，曲线误差 ≤**0.0125%**。40 N 超载达到原 1.5 mm 末端并产生上限反力；最大越界 **1.27e−10 m**。释放末尾三种实现的压缩均接近零。源／目标合力差最大 **9.16e−5 N**、共同世界原点力矩差最大 **0.001279 N·m**，分别报告；局部物理 P95 ≤**0.1212 ms**，不外推整机。
+
+原机构与凝聚模型的内部压缩差最大 **0.000748 mm**，但卸载后的自由飞行支撑面位置差达到 **0.9393 mm**；该动态差异明确保留，不授予原机构动态轨迹或高频等价。释放能量记录使用积分前物理质量度量下的完成速度，加已提交的弹簧能量，最大相邻增长 **1.17e−10 J**；这项描述性记录不等于完整积分后物理能量准入。
+
+最新入口为 [左右足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_full_foot_checkpoint.json)，状态为 `FRICTIONLESS_FOOT_MATRIX_ONLY`；[234 文件执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/shared_full_foot_corrected_executed_code/verified_snapshot.json)保存实际源码、模型、依赖、协议、比较器和二进制。[控制结果](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/shared_full_foot_final_control.json)确认最终二进制的默认 500 帧全部字段与原失败轨迹一致；源端只补初态元数据，原结构和凝聚各 2,400 帧物理字段与首批完全一致。发布构建、格式、Git 空白及 **543 项结构检查**通过；本轮未修改原生物理核心或 Actor 合同。
+
+**下一批实施摩擦及接触方向耦合，再接入整机关节／嘴销／限位。** 当前仍是分开的六自由度无摩擦足体，不能表达任意倒地接触或移动物体对侧，也不能通过删除守卫直接装入 21 体。**M0 未通过，PPO／GPU／优化器使用为零。**
