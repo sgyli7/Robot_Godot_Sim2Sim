@@ -244,3 +244,23 @@ body-target hold in that same physical world. It performs no new VLA inference,
 coordinate write, expired-chunk extension or observation restamp. It reports
 release/support/velocity windows but does not verify whole-object containment
 or grant task/runtime safe-hold qualification.
+
+The actual matched-object release diagnostic completed 360 native body
+inferences and integrations, with zero VLA calls and zero missed deadlines.
+The same last source command was explicitly held for 200 Ticks after its 160
+saved action frames. Released, plate-supported, slow motion and standing
+conditions held for the final 3.3 continuous seconds. The first 160 physical
+state/action rows match the original background replay at every original f32
+bit pattern, with f64 simulation times exactly equal. The new read-only task
+contact identity does not change that trajectory.
+
+`unitree_g1_static_placement_audit.py` independently evaluates every collision
+vertex against the actual moving plate's original convex XY outer footprint,
+with a disclosed vertical-prism diagnostic target. Positive plate support,
+no robot contact, speed limits, standing and 101 consecutive 50 Hz samples are
+required separately. This trace passed for 3.3 seconds with a minimum geometric
+margin of 0.01393 m. In-memory controls that move the apple one metre outside or
+remove a physical Tick fail the same audit. The target rule is explicitly
+not yet frozen for the formal ten-episode suite, and source-action execution
+plus a diagnostic hold is not autonomous task success. Native RGB grasping,
+continuous live waiting/holding, T1/T2 scores and station integration remain open.
