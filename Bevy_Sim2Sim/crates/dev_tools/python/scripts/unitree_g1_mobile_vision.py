@@ -50,8 +50,8 @@ def transform(pose):
     return result
 
 
-def root_from_camera(definition, positions):
-    """Original FK in root coordinates, followed by the published ROS camera mount."""
+def original_self_body_frames(definition, positions):
+    """Original FK in root coordinates, using named measured self joints only."""
     if len(positions) != 43 or not np.isfinite(positions).all():
         raise ValueError("vision requires43original measured joint positions")
     slots = dict(zip(JOINT_NAMES, positions))
@@ -68,6 +68,12 @@ def root_from_camera(definition, positions):
             motion[:3, :3] = cv2.Rodrigues(axis * slots[ready["name"]])[0]
         frames[ready["child"]] = (frames[ready["parent"]] @ transform(ready["frame_parent"])
                                   @ motion @ np.linalg.inv(transform(ready["frame_child"])))
+    return frames
+
+
+def root_from_camera(definition, positions):
+    """Original FK in root coordinates, followed by the published ROS camera mount."""
+    frames = original_self_body_frames(definition, positions)
     mount_q = np.array([0.32651, -0.62721, 0.62721, -0.32651])
     mount_q /= np.linalg.norm(mount_q)
     mount = transform({"position": [0.04485, 0., 0.35325], "rotation_wxyz": mount_q})
@@ -156,7 +162,9 @@ def clearance_from_visible_markers(detections, observation, geometry_path):
                            "duration_ticks": duration} if admitted else None}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False):
+    if box_view_only and (geometry_path is not None or memory_path is not None):
+        raise ValueError("current box view cannot request navigation geometry or target memory")
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
         raise ValueError("vision input exceeds finite image/self-state byte budget")
     observation = json.loads(Path(observation_path).read_text())
@@ -237,7 +245,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                 raise ValueError("current visible target moved outside static-memory tolerance")
         else:
             by_id[21] = np.asarray(memory_estimate["root_from_marker"])
-    if 21 in by_id and 22 in by_id:
+    if not box_view_only and 21 in by_id and 22 in by_id:
         bin_p = by_id[21][:3, 3]
         box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
         # Rotate relative vectors into the gravity/yaw-aligned source plane.
@@ -259,6 +267,13 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
             "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
             "target_bin_detected":any(d["marker_id"] == 21 for d in detections), "carried_box_detected":22 in by_id,
             "task_qualified":False}
+    if box_view_only:
+        result["box_view_only"] = True
+        if 22 in by_id:
+            frames = original_self_body_frames(definition, state["positions"])
+            midpoint = (frames[28][:3, 3] + frames[45][:3, 3]) * .5
+            center = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
+            result["current_box_palm_center_distance_m"] = float(np.linalg.norm(center-midpoint))
     if memory_estimate is not None:
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory
@@ -275,8 +290,9 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--geometry", type=Path)
     parser.add_argument("--target-memory", type=Path)
+    parser.add_argument("--box-view-only", action="store_true")
     args = parser.parse_args()
-    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory)
+    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

@@ -220,6 +220,27 @@ mod worker {
             observation: ObservationStamp,
             memory: Option<MarkerTargetMemory>,
         ) -> Result<Self, String> {
+            Self::start_internal(config, directory, observation, memory, false)
+        }
+
+        pub fn start_box_view(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+        ) -> Result<Self, String> {
+            if config.task_geometry.is_some() {
+                return Err("box visibility cannot request navigation clearance".into());
+            }
+            Self::start_internal(config, directory, observation, None, true)
+        }
+
+        fn start_internal(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+            memory: Option<MarkerTargetMemory>,
+            box_view_only: bool,
+        ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
             }
@@ -275,6 +296,9 @@ mod worker {
                         if memory.is_some() {
                             command.arg("--target-memory").arg(&memory_path);
                         }
+                        if box_view_only {
+                            command.arg("--box-view-only");
+                        }
                         let mut child = command
                             .stdin(Stdio::null())
                             .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -315,13 +339,14 @@ mod worker {
                         let reply: serde_json::Value =
                             serde_json::from_slice(&fs::read(output).map_err(|e| e.to_string())?)
                                 .map_err(|e| e.to_string())?;
-                        validate_reply_for_memory(
+                        validate_reply_for_policy(
                             &reply,
                             observation,
                             &image_hash,
                             &input_hash,
                             &config.definition_sha256,
                             memory.as_ref().zip(memory_hash.as_deref()),
+                            box_view_only,
                         )?;
                         if let Some(geometry) = &config.task_geometry {
                             if reply["target_memory_used"] != true {
@@ -375,6 +400,7 @@ mod worker {
         validate_reply_for_memory(reply, observation, image, input, definition, None)
     }
 
+    #[cfg(test)]
     fn validate_reply_for_memory(
         reply: &serde_json::Value,
         observation: ObservationStamp,
@@ -382,6 +408,18 @@ mod worker {
         input: &str,
         definition: &str,
         memory: Option<(&MarkerTargetMemory, &str)>,
+    ) -> Result<(), String> {
+        validate_reply_for_policy(reply, observation, image, input, definition, memory, false)
+    }
+
+    fn validate_reply_for_policy(
+        reply: &serde_json::Value,
+        observation: ObservationStamp,
+        image: &str,
+        input: &str,
+        definition: &str,
+        memory: Option<(&MarkerTargetMemory, &str)>,
+        box_view_only: bool,
     ) -> Result<(), String> {
         let actual: ObservationStamp =
             serde_json::from_value(reply["observation"].clone()).map_err(|e| e.to_string())?;
@@ -399,10 +437,16 @@ mod worker {
         let detections = reply["detections"]
             .as_array()
             .ok_or("marker detections absent")?;
-        if (memory.is_none() && detections.len() != 2)
+        if (memory.is_none() && !box_view_only && detections.len() != 2)
             || (memory.is_some() && !(1..=2).contains(&detections.len()))
+            || (box_view_only && !(1..=2).contains(&detections.len()))
         {
-            return Err("both visible box22 and target21 are required".into());
+            return Err(if box_view_only {
+                "current actual box22 visibility is required before view motion"
+            } else {
+                "both visible box22 and target21 are required"
+            }
+            .into());
         }
         let mut ids = Vec::new();
         for detection in detections {
@@ -429,6 +473,28 @@ mod worker {
         let use_memory = !ids.contains(&21);
         if !ids.contains(&22) {
             return Err("current actual box22 is required".into());
+        }
+        if box_view_only {
+            let proximity = reply["current_box_palm_center_distance_m"]
+                .as_f64()
+                .ok_or("current RGB/self FK grip proximity absent")?;
+            if !proximity.is_finite() || !(0. ..=0.25).contains(&proximity) {
+                return Err("current RGB box is outside the bounded self FK grip region; owner remains paused".into());
+            }
+            if memory.is_some()
+                || reply["box_view_only"] != true
+                || !reply["navigation_proposal"].is_null()
+                || !reply["target_memory_estimate"].is_null()
+                || reply["target_memory_used"] == true
+                || !reply["clearance_proposal"].is_null()
+                || reply["carried_box_detected"] != true
+            {
+                return Err("box visibility cannot admit navigation or remembered targets".into());
+            }
+            return Ok(());
+        }
+        if reply["box_view_only"] == true {
+            return Err("box visibility cannot replace a target localization".into());
         }
         if let Some((memory, hash)) = memory {
             memory.validate(observation)?;
@@ -565,16 +631,38 @@ mod worker {
             } else {
                 Some(serde_json::from_value(f["memory"].clone()).map_err(|e| e.to_string())?)
             };
-            let job = MarkerVisionJob::start_with_memory(config, directory.clone(), stamp, memory)?;
-            let result = loop {
+            let job = if f["box_view_only"] == true {
+                MarkerVisionJob::start_box_view(config, directory.clone(), stamp)?
+            } else {
+                MarkerVisionJob::start_with_memory(config, directory.clone(), stamp, memory)?
+            };
+            let reply = loop {
                 if let Some(reply) = job.try_take() {
-                    break reply?;
+                    break reply;
                 }
                 if job.started.elapsed() > Duration::from_secs(4) {
                     return Err("worker did not report finite completion".into());
                 }
                 thread::sleep(Duration::from_millis(5));
             };
+            if let Some(expected) = f["expected_rejection_substring"].as_str() {
+                let error = reply.err().ok_or("fixture unexpectedly admitted a goal")?;
+                if !error.contains(expected) {
+                    return Err(format!("unexpected rejection: {error}"));
+                }
+                fs::write(
+                    directory.join("roundtrip_receipt.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "actual_saved_rgb_fixture":true,"fresh_vla_calls":0,"actual_integrations":0,
+                        "qualified":false,"expected_rejection":error,"no_view_motion_admitted":true,
+                        "wall_ms":job.started.elapsed().as_secs_f64()*1000.,
+                    }))
+                    .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            let result = reply?;
             fs::write(directory.join("roundtrip_receipt.json"),serde_json::to_vec_pretty(&serde_json::json!({
                 "actual_saved_rgb_fixture":true,"fresh_vla_calls":0,"actual_integrations":0,
                 "qualified":false,"wall_ms":job.started.elapsed().as_secs_f64()*1000.,"reply":result,
@@ -599,6 +687,31 @@ mod worker {
                     "automatically_executed":false,"heading_yaw_source_rad":-1.57,"relative_distance_m":1.7},
             });
             (reply, stamp)
+        }
+        #[test]
+        fn box_visibility_cannot_admit_target_navigation_or_missing_distant_old_box() {
+            let (mut reply, stamp) = fixture();
+            reply["detections"].as_array_mut().unwrap().remove(0);
+            reply["navigation_proposal"] = serde_json::Value::Null;
+            reply["box_view_only"] = true.into();
+            reply["carried_box_detected"] = true.into();
+            reply["current_box_palm_center_distance_m"] = 0.19.into();
+            let check = |r: &serde_json::Value| {
+                validate_reply_for_policy(r, stamp, "image", "input", "definition", None, true)
+            };
+            assert!(check(&reply).is_ok());
+            assert!(validate_reply(&reply, stamp, "image", "input", "definition").is_err());
+            for mutation in 0..5 {
+                let mut bad = reply.clone();
+                match mutation {
+                    0 => bad["detections"] = serde_json::json!([]),
+                    1 => bad["current_box_palm_center_distance_m"] = 0.7.into(),
+                    2 => bad["observation"]["frame_id"] = 2.into(),
+                    3 => bad["navigation_proposal"] = serde_json::json!({"target_identity":21}),
+                    _ => bad["target_memory_used"] = true.into(),
+                }
+                assert!(check(&bad).is_err());
+            }
         }
         fn memory_fixture() -> (MarkerTargetMemory, ObservationStamp) {
             let current = ObservationStamp {

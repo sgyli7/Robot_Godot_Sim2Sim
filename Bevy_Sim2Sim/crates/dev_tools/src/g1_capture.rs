@@ -176,6 +176,8 @@ struct MobileAssistCaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     restored_view_completed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    restored_view_rotation: Option<[f32; 4]>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     target_memory: Option<MarkerTargetMemory>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     memory_completed: bool,
@@ -221,6 +223,8 @@ impl MobileAssistCaptureRuntime {
             reobserve_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             restored_view_completed: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            restored_view_rotation: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             target_memory: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2402,11 +2406,25 @@ fn drive_restored_reobserve_view(
         }) {
             return Err("view turn requires completed native transport restoration".into());
         }
-        let Some((observation, [w, x, y, z])) =
-            capture_current_marker_frame(runtime, port, "restored_view_turn")?
-        else {
+        let Some(job) = &assist.vision_job else {
+            start_marker_job(runtime, port, "restored_view_turn")?;
             return Ok(false);
         };
+        let Some(reply) = job.try_take() else {
+            return Ok(false);
+        };
+        // An unseen or visually distant box leaves the owner paused. A view
+        // turn is never admitted solely because the posture command finished.
+        let reply = reply?;
+        let observation = job.observation;
+        if observation.episode_id != runtime.episode_id
+            || observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
+        {
+            return Err("grip visibility belongs to an old episode/boundary".into());
+        }
+        let [w, x, y, z] = assist
+            .restored_view_rotation
+            .ok_or("current view self rotation absent")?;
         let yaw = (2. * (w * z + x * y)).atan2(1. - 2. * (y * y + z * z));
         // One disclosed, fixed diagnostic view action; this is not model navigation.
         let heading = (yaw - 0.33 + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
@@ -2433,11 +2451,14 @@ fn drive_restored_reobserve_view(
             .ok_or("view turn provenance absent")?;
         handoff["restored_view_turn"] = serde_json::json!({
             "executed_goal":goal,"current_self_yaw_rad":yaw,"fixed_view_offset_rad":-0.33,
+            "actual_current_box_visibility":reply,
             "same_owner_boundary_tick":latest.timing.episode_integrations,
             "traditional_fixed_diagnostic_view_action":true,"synthetic_camera_stamp":false,
             "object_truth_in_command":false,"task_qualified":false,
         });
-        runtime.mobile_assist.as_mut().unwrap().reobserve_submitted = true;
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        assist.vision_job.take();
+        assist.reobserve_submitted = true;
         runtime.requested = false;
         return Ok(false);
     }
@@ -2690,7 +2711,8 @@ fn start_marker_job(
     if latest.phase != G1WorkerPhase::Paused {
         return Err("marker job requires a stationary completed skill boundary".into());
     }
-    let Some((observation, _)) = capture_current_marker_frame(runtime, port, stage_directory)?
+    let Some((observation, rotation)) =
+        capture_current_marker_frame(runtime, port, stage_directory)?
     else {
         return Ok(());
     };
@@ -2702,10 +2724,21 @@ fn start_marker_job(
     let MobileAssistStage::Scan(config) = &assist.configuration else {
         return Err("visual approach lacks scan profile".into());
     };
-    let config = config
+    let mut config = config
         .vision
         .clone()
         .ok_or("visual localization worker config absent")?;
+    if stage_directory == "restored_view_turn" {
+        config.task_geometry = None;
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        assist.restored_view_rotation = Some(rotation);
+        assist.vision_job = Some(MarkerVisionJob::start_box_view(
+            config,
+            directory,
+            observation,
+        )?);
+        return Ok(());
+    }
     let memory = if stage_directory == "visual_memory_view" {
         use simulation_minigame::g1::mobile_assist::MobileAssistExecution;
         let mut memory = assist

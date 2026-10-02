@@ -1334,3 +1334,28 @@ Ticks. One disclosed fixed−0.33rad standing observation turn uses original
 self yaw, followed by a new actual RGB localization requiring both current
 markers. Target memory and navigation proposals are not executed here.
 This grants no formal placement, generalized target ability or task UI execution.
+
+
+Fresh online0231 completes2112single50Hz integrations/four new actual RGB
+grasp calls. All231raise/stand and300restore/stand samples retain hand-only
+support; the subsequent standing turn first loses support at1897,59Ticks after
+its current1838boundary. The final actual RGB shows the dropped box, and target
+localization fails. Upright≥0.994460, zero control misses/pending Ticks, active
+sim/wall0.998875; owned model closes. Trace SHA256:
+`e583f2f9b448ad46b0767640552c105d1a054b0c371990df889be85bbc93ca99`.
+Saved0219/0225retention does not qualify this fresh episode. Earlier startup0229
+fails before any inference/integration because the binary lacks the existing
+source-light feature; corrected build0230 preserves it and records the exact
+binary SHA. This is not a light/physics parameter experiment.
+
+The actual post-restore image1838also exposes an observation gap: fingers
+occlude box22, so no current box detection is available before the turn.
+The restored-view entry now requires a bound actual box-only image and self FK
+proximity before admitting any observation motion. This mode cannot admit a
+navigation proposal, clearance or target memory, and cannot substitute for the
+existing two-marker target localizer. Missing box22 or distance>0.25m from the
+measured palm midpoint leaves the native owner paused. Visibility/proximity is
+only a necessary guard, never proof of secure grip. The original GR00T camera,
+action contract, formal clock, gains and materials remain unchanged. Further
+body-motion trials require usable current grip observation; restoration alone
+is insufficient.
