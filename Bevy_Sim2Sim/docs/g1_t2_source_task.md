@@ -801,3 +801,59 @@ Ticks/resets and the101sample duration rule. Both CLI checks also pass.
 ```bash
 python crates/dev_tools/python/scripts/unitree_g1_mobile_placement_audit.py --definition /absolute/frozen_task_objects.json --trace /absolute/native/owner_steps.jsonl --output /absolute/new_placement_audit.json
 ```
+
+The single release-stage trial0168 completes30real RGB N1.6 calls and1500
+single20ms integrations but **fails**: first loss of hand support occurs at727;
+the box ultimately lies on the floor outside the target. Minimum upright is
+0.990278; maximum box displacement1.582313m. Independent original-interior-floor
+placement remains0s, including support-direction checks. Owned N1.6 closes after
+99.54s. Trace SHA256:
+`de83f4fe43e715ea0dd7b2787f73f6105013d4487dc8f55f2a75be7f983a72ed`.
+No further longer VLA budget is admitted by this diagnosis.
+
+Actual copied source files0169 match the frozen released source tree0109:
+T2 success checks only absolute object/bin XYZ proximity (0.260/0.130/0.150m).
+It does not check release, supporting contact or speed/stable duration. This
+explains why source proximity success is insufficient evidence; it does not
+establish what release examples were used during weight training.
+
+Finite input control0170 runs four actual N1.6 calls and zero physics steps.
+Two second-frame inputs from0166/0168 have identical named self state and differ
+in only one RGB component by1/255 at[y362,x189,R]. Restoring the same CPU/CUDA
+RNG after their identical first call exactly reproduces both original second
+outputs; an A-repeat is bit-exact. The image change alone produces maximum
+arm-target differences0.003960/0.003431rad. This establishes the initial action
+branch's input sensitivity, not the sole cause of the eventual slip. Inputs
+are exact captured pixels; no quantization/filtering/normalization workaround
+is installed. The model closes after23.40s.
+
+`real_mobile_fixed_grip_body_carry_diagnostic` is an ignored, hash-bound
+mechanical comparison. It holds the exact last saved upper targets after a
+200Tick grasp fixture, changes only body navigation, retains one native
+integration per Tick and never performs pose writes. Original source-grasp0171
+keeps grip through fixed turn/walk/stop (final701consecutive held ticks;
+minimum upright0.991701), but the350Tick timed walk covers1.105823m rather than
+the required2m, so its test correctly fails. Commands0.4rad/s turn/0.3m/s walk
+are command values, not claims of achieved speed. No VLA runs in this check.
+
+Matched native-grasp0172 copies the exact first four real replies from failed
+0168. Its first200body/joint/action/object/contact samples reproduce0168
+exactly. Holding the last upper targets while steering toward+pi/2 using only
+robot quaternion and measured velocity still drops the box at473Ticks,
+minimum upright0.993887. A single straight-back comparison0173 retains the
+same captured heading and commands-0.3m/s with the same self-state feedback;
+it drops at1071Ticks after1.262310m root travel, minimum upright0.994449.
+Both stop on the independent failure guard, remain unqualified, use0new VLA
+calls and retain failed traces. The feedback cases have fixed750/1000/100
+maximum turn/walk/stop budgets and abort instead of repeating indefinitely.
+Robot/object truth is used only for logging/independent failure abortion;
+navigation commands read robot self state, not prop/contact/acceptance data.
+No production navigation or grip controller is registered by these tests.
+
+The200Tick boundary comparison provides a next geometric question: original
+source-grasp palms are0.243239m apart with box center about5.25mm above their
+mean height; native-grasp palms are0.234067m apart with box center about51.35mm
+above them. Native total positive robot normal impulse is0.743422N.s versus
+source0.562707N.s, so "just insufficient lateral squeeze" is not established.
+The next diagnosis examines actual wrist/contact geometry and retention;
+there is no new lighting/gain/friction/PGS/long-VLA sweep.
