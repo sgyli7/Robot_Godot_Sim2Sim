@@ -525,3 +525,18 @@ comparison with identical random-generator state, rather than another physical
 parameter or longer-rollout sweep. Successful source actions establish that
 this native grasp window is mechanically possible; they do not establish the
 whole2m carry, or rule out tracking/contact limitations later in that task.
+
+Case0140 performs three actual N1.6 calls in one freshly loaded frozen owner:
+source reset RGB, native reset RGB, then source RGB again. Each call restores
+the exact saved CPU/CUDA random state from immediately after model loading;
+all five measured state groups and the fixed instruction are identical. No
+pixels, camera poses, preprocessing, weights or physical state are changed.
+Both original first replies are reproduced **bit-for-bit**, and the repeated
+source reply is also identical. Replacing only the actual input image exactly
+reproduces the0.22428rad/0.19726rad arm-command difference. This establishes a
+causal image effect on the initial command; it does not claim a particular
+material, light or later feedback difference is the sole cause of task failure.
+There are3 actual model calls,0 physics steps, no HTTP service and no autonomous
+rollout. The owned model is closed after the24.62s bounded comparison. The next
+render repair must use source-authored data and a new finite live grasp test;
+substituting source screenshots is not a task capability.
