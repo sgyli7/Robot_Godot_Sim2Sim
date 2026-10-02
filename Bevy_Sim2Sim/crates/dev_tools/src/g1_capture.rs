@@ -16,6 +16,7 @@ use std::{
 use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
+    camera::Exposure,
     core_pipeline::tonemapping::Tonemapping,
     prelude::*,
     render::{
@@ -78,6 +79,8 @@ struct CaptureConfiguration {
     task_visual_sha256: Option<String>,
     #[serde(default)]
     policy: Option<LivePolicyConfiguration>,
+    #[serde(default)]
+    exposure_ev100: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -253,6 +256,7 @@ pub fn run_capture_from_file(
             .zip(config.task_visual_sha256.as_deref()),
         options,
         config.policy,
+        config.exposure_ev100,
     )
 }
 
@@ -307,6 +311,7 @@ pub struct G1CaptureReceipt {
     pub live_policy_successes: u32,
     pub live_action_chunks: Vec<serde_json::Value>,
     pub pauses_for_camera_and_policy: bool,
+    pub camera_exposure_ev100: f32,
     pub unqualified: Vec<&'static str>,
 }
 
@@ -410,6 +415,7 @@ impl G1CaptureReceipt {
             live_policy_successes: 0,
             live_action_chunks: Vec::new(),
             pauses_for_camera_and_policy: false,
+            camera_exposure_ev100: Exposure::default().ev100,
             unqualified: vec![
                 "standing_stability",
                 "science_station_contact_geometry",
@@ -445,6 +451,18 @@ struct CaptureOutcome(Arc<Mutex<G1CaptureReceipt>>);
 struct SourceShelfVisual;
 
 #[derive(Resource)]
+struct DiagnosticExposure(f32);
+
+fn configure_diagnostic_exposure(
+    setting: Res<DiagnosticExposure>,
+    mut cameras: Query<&mut Exposure, With<Camera3d>>,
+) {
+    for mut camera in &mut cameras {
+        camera.ev100 = setting.0;
+    }
+}
+
+#[derive(Resource)]
 struct CaptureRuntime {
     worker: CaptureWorker,
     options: G1CaptureOptions,
@@ -475,6 +493,7 @@ pub fn run_capture(
         None,
         options,
         None,
+        None,
     )
 }
 
@@ -485,7 +504,12 @@ fn run_capture_owner(
     task_visual: Option<(&Path, &str)>,
     options: G1CaptureOptions,
     policy: Option<LivePolicyConfiguration>,
+    exposure_ev100: Option<f32>,
 ) -> Result<G1CaptureReceipt, String> {
+    let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
+    if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
+        return Err("diagnostic exposure must be finite EV100 in 0..=20".into());
+    }
     if options.ticks > 150
         || options.timeout.is_zero()
         || options.timeout > Duration::from_secs(180)
@@ -559,6 +583,7 @@ fn run_capture_owner(
     ))));
     outcome.0.lock().unwrap().task_visual_sha256 =
         task_model.as_ref().map(|m| m.file_sha256.clone());
+    outcome.0.lock().unwrap().camera_exposure_ev100 = exposure_ev100;
     if live_policy.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
@@ -569,6 +594,7 @@ fn run_capture_owner(
     // Scene supplies the existing enamel configuration only. Its meshes, props,
     // fixtures and camera shots are not spawned in this floor diagnostic.
     app.insert_resource(scene)
+        .insert_resource(DiagnosticExposure(exposure_ev100))
         .insert_resource(model)
         .insert_resource(outcome.clone())
         .init_resource::<G1TaskVisualInput>()
@@ -608,7 +634,10 @@ fn run_capture_owner(
         )
         .add_plugins((G1VisualPlugin, G1CameraPlugin, G1ObservationPlugin))
         .add_systems(Startup, setup_floor_scene)
-        .add_systems(Update, drive_capture);
+        .add_systems(
+            Update,
+            (configure_diagnostic_exposure, drive_capture).chain(),
+        );
     if let Some(model) = task_model {
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
     }
