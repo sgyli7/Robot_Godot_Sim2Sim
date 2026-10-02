@@ -73,8 +73,12 @@ def query(args, receipt, output):
         stage_id = UsdUtils.StageCache.Get().GetId(stage).ToLongInt()
         if stage_id < 0:
             raise ValueError("Source stage has no valid Kit cache identity")
-        version = Path(sys.modules['isaacsim'].__file__).parent / "VERSION"
+        version = Path('/isaac-sim/VERSION')
+        if not version.is_file():
+            version = Path(sys.modules['isaacsim'].__file__).parent / "VERSION"
         receipt["runtime_build"] = version.read_text().strip()
+        receipt['t1_matching_runtime_verified'] = (
+            receipt['runtime_build'] == '6.0.0-rc.22+release.33481.407f3ea1.gl')
         receipt["isaacsim_package_version"] = importlib.metadata.version("isaacsim")
         receipt["openusd_version"] = list(Usd.GetVersion())
 
