@@ -28,6 +28,15 @@ ARM_SUFFIXES = ('shoulder_pitch', 'shoulder_roll', 'shoulder_yaw', 'elbow', 'wri
 HAND_SUFFIXES = ('index_0', 'index_1', 'middle_0', 'middle_1', 'thumb_0', 'thumb_1', 'thumb_2')
 
 
+def take_prefetched_chunk(pending, tick, consumed_frames):
+    """Exact simulated boundary; neither drop predecessor frames nor rebase RGB."""
+    if (pending is None or tick <= 0 or tick % 40 != 0 or consumed_frames != 40
+            or pending['observed_tick'] != tick - 30
+            or len(pending['frames']) != 40):
+        raise ValueError('Prefetched source chunk requires all40 predecessor frames and exact30-Tick image age')
+    return pending['frames'], pending['sequence'], pending['observed_tick']
+
+
 def digest(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -225,6 +234,9 @@ def run(args, receipt, output):
             frames = []
             frame_index = 0
             sequence = 0
+            active_sequence = 0
+            pending_chunk = None
+            last_action_sha256 = None
             trace = args.output.with_suffix('.jsonl')
             captures = args.output.with_suffix('.captures')
             captures.mkdir()
@@ -239,7 +251,8 @@ def run(args, receipt, output):
                         'physics_steps_since_reset': int(raw._sim_step_counter) - physics_counter_at_reset,
                         'root_link_pose_w': root.tolist(), 'joint_positions': q.tolist(),
                         'processed_joint_targets': term.processed_actions[0].detach().cpu().tolist(),
-                        'upright': float(-gravity[2]), 'policy_sequence': sequence,
+                        'upright': float(-gravity[2]), 'policy_sequence': active_sequence,
+                        'last_action_frame_sha256': last_action_sha256,
                         'last_action_frame': min(tick - 1, len(expert['frames']) - 1) if expert and tick else
                             (frame_index - 1 if frames else None),
                         'acceptance_truth_only': {name: {
@@ -275,7 +288,9 @@ def run(args, receipt, output):
                             json.dumps(audit, allow_nan=False))
                     if root[2] + .795 < .35 or sample['upright'] < .5:
                         raise ValueError(f'Original T1 fall guard at {tick}')
-                    if tick % 40 == 0:
+                    early_observation = (args.policy_prefetch_after_ticks is not None
+                        and tick % 40 == 10 and tick + 30 < args.ticks)
+                    if tick % 40 == 0 or early_observation:
                         rgb = measured(camera.data.output['rgb'])[:, :, :3]
                         if rgb.shape != (480, 640, 3) or rgb.dtype != np.uint8:
                             raise ValueError('Original camera did not produce 640x480 uint8 RGB')
@@ -325,23 +340,49 @@ def run(args, receipt, output):
                         # preprocess_state element_names incorrectly say thumb first.
                         stamp = {'episode_id': args.episode_id, 'frame_id': tick,
                             'sim_time_ns': tick * 20_000_000, 'captured_at_unix_ms': captured_at_unix_ms}
-                        sequence += 1
+                        make_request = (args.policy_prefetch_after_ticks is None
+                            or tick == 0 or early_observation)
+                        if make_request:
+                            sequence += 1
                         request = {'schema': 'unitree_g1_static_observation_v2', 'profile': 'static_apple',
                             'sequence_id': sequence, 'observation': stamp,
                             'camera_rgb_b64': base64.b64encode(rgb.tobytes()).decode(), 'state_groups': state}
-                        (captures / f'request_{tick:04}.json').write_text(json.dumps(request, allow_nan=False))
-                        if args.policy_socket and tick < args.ticks:
+                        if make_request:
+                            (captures / f'request_{tick:04}.json').write_text(json.dumps(request, allow_nan=False))
+                        submit_policy = (args.policy_socket and tick < args.ticks
+                            and (args.policy_prefetch_after_ticks is None or tick == 0 or early_observation))
+                        if submit_policy:
                             started = time.monotonic()
                             reply = policy_reply(args.policy_socket, request)
                             (captures / f'reply_{tick:04}.json').write_text(json.dumps(reply, allow_nan=False))
-                            frames = reply['frames']; frame_index = 0
+                            if early_observation:
+                                if pending_chunk is not None or frame_index != 10:
+                                    raise ValueError('Source prefetch exceeded one pending chunk or changed trigger')
+                                pending_chunk = {'frames': reply['frames'], 'sequence': sequence,
+                                    'observed_tick': tick}
+                            else:
+                                frames = reply['frames']; frame_index = 0
+                                active_sequence = sequence
+                                receipt.setdefault('installed_chunks', []).append({
+                                    'sequence': sequence, 'observation_control_tick': tick,
+                                    'start_control_tick': tick, 'observation_age_ticks': 0})
                             receipt['policy_calls'] += 1
                             receipt.setdefault('policy_call_seconds', []).append(time.monotonic() - started)
                         print(f'G1_T1_TASK tick={tick} policy_calls={receipt["policy_calls"]} root_z={root[2]:.6f}', flush=True)
                     if tick == args.ticks:
                         break
+                    if args.policy_prefetch_after_ticks is not None and tick > 0 and tick % 40 == 0:
+                        frames, active_sequence, observed_tick = take_prefetched_chunk(
+                            pending_chunk, tick, frame_index)
+                        pending_chunk = None
+                        frame_index = 0
+                        receipt.setdefault('installed_chunks', []).append({
+                            'sequence': active_sequence, 'observation_control_tick': observed_tick,
+                            'start_control_tick': tick, 'observation_age_ticks': tick - observed_tick})
                     if frames or expert:
                         frame = expert['frames'][min(tick, len(expert['frames']) - 1)] if expert else frames[frame_index]
+                        last_action_sha256 = hashlib.sha256(json.dumps(
+                            frame, sort_keys=True, allow_nan=False).encode()).hexdigest()
                         # Original remap_policy_joints_to_sim_joints_np starts
                         # with zero for unpredicted leg joint targets; WBC then
                         # fills those joints from the lower-body policy.
@@ -392,6 +433,8 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--policy-socket', type=Path)
     mode.add_argument('--expert-sequence', type=Path)
+    parser.add_argument('--policy-prefetch-after-ticks', type=int, choices=[10],
+        help='Simulated image-age diagnostic only: observe at10, apply at next40 boundary; inference still pauses source physics')
     parser.add_argument('--renderer-socket', type=Path,
                         help='Diagnostic only: source physics plus zero-Tick Bevy render of its measured poses')
     parser.add_argument('--expert-sha256')
@@ -404,6 +447,10 @@ def main():
         parser.error('Use 1..300 ticks within the original six-second episode and a positive episode identity')
     if bool(args.expert_sequence) != bool(args.expert_sha256):
         parser.error('Expert diagnostics require both sequence and its SHA-256 identity')
+    if args.policy_prefetch_after_ticks is not None and (
+            not args.policy_socket or args.renderer_socket or args.ticks % 40 != 0
+            or not 80 <= args.ticks <= 240):
+        parser.error('Image-age comparison requires originalRTX policy mode and2..6 whole40-frame chunks')
     if args.renderer_socket:
         if not args.policy_socket:
             parser.error('Renderer comparison requires the original local policy bridge')
@@ -417,6 +464,10 @@ def main():
         'policy_calls': 0, 'requested_control_ticks': args.ticks, 'seed': args.seed,
         'episode_id': args.episode_id, 'environment_translation': [0, 0, 0],
         'scope': 'original full T1 scene/camera; optional local ONNX or expert diagnostic; no native qualification'}
+    if args.policy_prefetch_after_ticks is not None:
+        receipt.update(scope='original source200/50 simulated30-Tick observation-to-action delay; source inference pauses; not a continuous1x or native qualification',
+            simulated_image_age_diagnostic=True, source_inference_pauses=True,
+            observation_trigger_after_ticks=10, scheduled_image_age_ticks=30)
     if args.renderer_socket:
         receipt.update(scope='original source physics/control with external zero-Tick Bevy-rendered observations; causal renderer diagnostic only',
                        external_renderer_diagnostic=True, source_renderer=str(args.renderer_socket))

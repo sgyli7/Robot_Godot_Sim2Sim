@@ -273,3 +273,40 @@ Further wait-target searching is not selected. The next timing comparison will
 prefetch inference during an existing unexpired chunk while preserving every
 original action frame and explicitly measuring observation age; a missed
 replacement deadline must pause rather than retain expired targets.
+
+## Original-source image-age comparison
+
+The optional `--policy-prefetch-after-ticks 10` is a finite timing diagnostic
+with the original RTX observations, AGILE controller and 200/50 Hz source
+physics/control. It observes at controls 10/50/90/130/170 and installs each
+replacement at 40/80/120/160/200, preserving all forty predecessor frames and
+all forty replacement frames. Thus the replacement image is thirty controls
+(0.6 s) old in simulation time. **Inference still pauses source physics** at
+capture: this comparison does not establish asynchronous or continuous 1×
+operation. The native frequency remains 50 Hz with one integration per Tick.
+
+The mode requires `--policy-socket`, original RTX rendering, 80–240 controls in
+whole forty-frame chunks, and no expert or external-renderer mode. A single
+pending chunk retains its acquisition Tick and sequence; the boundary guard
+rejects a missing/partial replacement, incomplete predecessor, early/late
+application or rebasing. Traces record the actually applied sequence and frame
+SHA256 independently of a queued future result.
+
+The frozen seed-42 comparison used the same harness and original model/export.
+Immediate observations triggered Arena success at control 137, with four
+actual VLA calls and 548 source integrations. The delayed observation run
+completed 240 controls, six actual calls and 960 integrations without a
+success trigger. All 240 applied delayed-run frames were independently
+matched to the original replies; the robot's minimum upright value was
+0.99658. The apple's final horizontal distance from the plate was 0.17516 m,
+versus 0.03179 m just before baseline termination. The two initial robot states
+were identical, but RTX images and the first predicted chunks were not byte
+identical. This is evidence against the present 0.6 s scheduling candidate,
+not an isolated proof of the only failure cause. No offset sweep or hidden
+frame skipping was selected.
+
+The baseline's original success trigger is not the independent two-second
+placement rule: its terminal step automatically resets the source environment.
+Neither run qualifies native T1 or the ten-episode scores. The different
+baseline completion Tick also failed an exploratory exact-repeat check against
+an earlier control-146 run; that failed check is retained separately.
