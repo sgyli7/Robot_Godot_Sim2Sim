@@ -126,6 +126,49 @@ def run(args, receipt, output):
                 joint_names=names, camera_config=camera.cfg.to_dict(),
                 task_assets=list(description.scene.assets), action_shape=list(env.action_space.shape))
             env.reset(seed=args.seed)
+            if args.reset_camera_refresh:
+                # Lab's RTX dedup key contains only sim id + physics step. A
+                # reset at that same step can re-read the pre-reset annotator
+                # despite new q. Pump a render-only update and invalidate the
+                # sensor cache; assert that no physical state/clock advanced.
+                import carb
+                import omni.kit.app
+                capture_dir = args.output.with_suffix('.reset_camera')
+                capture_dir.mkdir()
+                before_rgb = measured(camera.data.output['rgb'])[:, :, :3].copy()
+                Image.fromarray(before_rgb).save(capture_dir / 'before.png')
+                def physical_state():
+                    return {
+                        'q': measured(robot.data.joint_pos).copy(),
+                        'dq': measured(robot.data.joint_vel).copy(),
+                        'root': measured(robot.data.root_link_pose_w).copy(),
+                        **{name: measured(raw.scene[name].data.root_state_w).copy()
+                           for name in (launch.object, launch.destination)}}
+                before = physical_state()
+                counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                setting = '/app/player/playSimulations'
+                previous = carb.settings.get_settings().get(setting)
+                try:
+                    raw.sim.physics_manager.forward()
+                    raw.sim.set_setting(setting, False)
+                    omni.kit.app.get_app().update()
+                finally:
+                    raw.sim.set_setting(setting, previous)
+                camera.reset()
+                after_rgb = measured(camera.data.output['rgb'])[:, :, :3].copy()
+                Image.fromarray(after_rgb).save(capture_dir / 'after.png')
+                after = physical_state()
+                error = max(float(np.abs(after[key] - value).max()) for key, value in before.items())
+                receipt['reset_camera_refresh'] = {
+                    'render_only_pumps': 1, 'before_sdk_counters': counters,
+                    'after_sdk_counters': (int(raw._sim_step_counter), int(raw.sim._physics_step_count)),
+                    'physical_state_max_abs_change': error,
+                    'before_rgb_sha256': hashlib.sha256(before_rgb.tobytes()).hexdigest(),
+                    'after_rgb_sha256': hashlib.sha256(after_rgb.tobytes()).hexdigest(),
+                    'changed_rgb_bytes': int(np.count_nonzero(before_rgb != after_rgb)),
+                    'camera_frame': camera.frame.detach().cpu().tolist()}
+                if error != 0 or counters != (int(raw._sim_step_counter), int(raw.sim._physics_step_count)):
+                    raise ValueError('Render-only reset refresh changed physical state or integration counters')
             physics_counter_at_reset = int(raw._sim_step_counter)
             expert = load_sequence(args.expert_sequence, args.expert_sha256) if args.expert_sequence else None
             if expert:
@@ -249,6 +292,8 @@ def main():
     mode.add_argument('--policy-socket', type=Path)
     mode.add_argument('--expert-sequence', type=Path)
     parser.add_argument('--expert-sha256')
+    parser.add_argument('--reset-camera-refresh', action='store_true',
+                        help='Render-only source reset cache diagnostic; assert unchanged physical state/counters')
     args = parser.parse_args()
     if not 1 <= args.ticks <= 300 or args.episode_id < 1:
         parser.error('Use 1..300 ticks within the original six-second episode and a positive episode identity')

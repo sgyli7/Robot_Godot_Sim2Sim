@@ -173,12 +173,18 @@ def prepare(profile_name: str, args) -> dict:
     from huggingface_hub import HfApi, snapshot_download
 
     profile = PROFILES[profile_name]
+    patterns = list(profile["patterns"])
+    reference_checkpoint = getattr(args, 'static_reference_checkpoint', False)
+    if reference_checkpoint:
+        if profile_name != 'static_apple':
+            raise ValueError('Static PyTorch reference cannot change the mobile artifact contract')
+        patterns += ['model-*.safetensors', 'model.safetensors.index.json']
     info = HfApi().model_info(
         profile["repo_id"], revision=profile["revision"], files_metadata=True
     )
     if info.sha != profile["revision"]:
         raise ValueError("Hugging Face did not resolve the requested immutable revision")
-    entries = selected_files(info, profile["patterns"])
+    entries = selected_files(info, patterns)
     root = args.models_root / profile_name / profile["revision"]
     receipt = {
         "schema": "unitree_g1_policy_files_v1", "profile": profile_name,
@@ -187,6 +193,7 @@ def prepare(profile_name: str, args) -> dict:
         "intended_use_scope": "non_commercial_research",
         "local_files_verified": False, "inference_verified": False,
         "source_rollout_verified": False, "bevy_rollout_verified": False,
+        "static_reference_checkpoint": reference_checkpoint,
         "files": [],
     }
     if not entries:
@@ -196,7 +203,7 @@ def prepare(profile_name: str, args) -> dict:
     if args.download:
         snapshot_download(
             repo_id=profile["repo_id"], revision=profile["revision"],
-            local_dir=root, allow_patterns=profile["patterns"], max_workers=2,
+            local_dir=root, allow_patterns=patterns, max_workers=2,
         )
     for entry in entries:
         path = root / entry.rfilename
@@ -235,7 +242,8 @@ def prepare(profile_name: str, args) -> dict:
             ]},
         }
     args.receipts.mkdir(parents=True, exist_ok=True)
-    target = args.receipts / f"{profile_name}_files.json"
+    suffix = '_reference' if reference_checkpoint else ''
+    target = args.receipts / f"{profile_name}{suffix}_files.json"
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(receipt, indent=2) + "\n")
     temporary.replace(target)
@@ -252,10 +260,14 @@ def main() -> None:
     parser.add_argument("--arena-source", type=Path)
     parser.add_argument("--static-arena-source", type=Path)
     parser.add_argument("--gr00t-source", type=Path)
+    parser.add_argument("--static-reference-checkpoint", action='store_true',
+                        help='Also cache the same frozen T1 safetensors for export/source comparison; no training')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--download", action="store_true")
     mode.add_argument("--verify", action="store_true")
     args = parser.parse_args()
+    if args.static_reference_checkpoint and args.profile != 'static_apple':
+        parser.error('Reference checkpoint mode requires the static_apple profile')
     names = list(PROFILES) if args.profile == "all" else [args.profile]
     try:
         for name in names:
