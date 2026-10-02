@@ -81,6 +81,8 @@ struct CaptureConfiguration {
     policy: Option<LivePolicyConfiguration>,
     #[serde(default)]
     exposure_ev100: Option<f32>,
+    #[serde(default)]
+    predictive_limit_diagnostic: bool,
 }
 
 #[derive(Deserialize)]
@@ -128,7 +130,23 @@ impl CaptureRunnerConfig {
             Self::Static(c) => c.episode_id,
         }
     }
-    fn spawn(self) -> Result<CaptureWorker, String> {
+    fn spawn(self, predictive_limit_diagnostic: bool) -> Result<CaptureWorker, String> {
+        if predictive_limit_diagnostic {
+            let Self::Task(config) = self else {
+                return Err("predictive limit comparison requires the static task owner".into());
+            };
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            return ArenaTaskWorker::spawn_static_predictive_limit_diagnostic(config)
+                .map(CaptureWorker::Task)
+                .map_err(|e| e.to_string());
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
+            {
+                let _ = config;
+                return Err(
+                    "predictive limit comparison requires its explicit development feature".into(),
+                );
+            }
+        }
         match self {
             Self::Task(c) => ArenaTaskWorker::spawn(c)
                 .map(CaptureWorker::Task)
@@ -257,6 +275,7 @@ pub fn run_capture_from_file(
         options,
         config.policy,
         config.exposure_ev100,
+        config.predictive_limit_diagnostic,
     )
 }
 
@@ -312,6 +331,7 @@ pub struct G1CaptureReceipt {
     pub live_action_chunks: Vec<serde_json::Value>,
     pub pauses_for_camera_and_policy: bool,
     pub camera_exposure_ev100: f32,
+    pub factory_verified_predictive_limit_joints: usize,
     pub unqualified: Vec<&'static str>,
 }
 
@@ -416,6 +436,7 @@ impl G1CaptureReceipt {
             live_action_chunks: Vec::new(),
             pauses_for_camera_and_policy: false,
             camera_exposure_ev100: Exposure::default().ev100,
+            factory_verified_predictive_limit_joints: 0,
             unqualified: vec![
                 "standing_stability",
                 "science_station_contact_geometry",
@@ -501,6 +522,7 @@ pub fn run_capture(
         options,
         None,
         None,
+        false,
     )
 }
 
@@ -512,6 +534,7 @@ fn run_capture_owner(
     options: G1CaptureOptions,
     policy: Option<LivePolicyConfiguration>,
     exposure_ev100: Option<f32>,
+    predictive_limit_diagnostic: bool,
 ) -> Result<G1CaptureReceipt, String> {
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
@@ -603,7 +626,14 @@ fn run_capture_owner(
         receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
         receipt.pauses_for_camera_and_policy = true;
     }
-    let worker = config.spawn()?;
+    let worker = config.spawn(predictive_limit_diagnostic)?;
+    if predictive_limit_diagnostic {
+        outcome
+            .0
+            .lock()
+            .unwrap()
+            .factory_verified_predictive_limit_joints = 43;
+    }
     let mut app = App::new();
     // Scene supplies the existing enamel configuration only. Its meshes, props,
     // fixtures and camera shots are not spawned in this floor diagnostic.
