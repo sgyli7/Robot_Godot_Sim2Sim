@@ -264,3 +264,11 @@ not installed into the service. Online rendering runs measured roughly
 277--305 ms of graph execution. The performance comparison does not establish
 the cause of that difference or task success, and does not change precision,
 inference steps, action timing, model identity or physics frequency.
+
+`diagnostic_vsync: true` selects `AutoVsync` only in the development window and
+records `render_present_mode`; the default remains `AutoNoVsync`. Resolution,
+MSAA8, ego camera, lighting, original assets and the independent physical clock
+are unchanged. A frozen two-call comparison failed before the first integration
+because its acquired observation exceeded the existing 2000 ms owner wall TTL.
+Only its first model call completed. The second-call performance gate could not
+be evaluated, so this is not an adopted remedy and the deadline was not relaxed.

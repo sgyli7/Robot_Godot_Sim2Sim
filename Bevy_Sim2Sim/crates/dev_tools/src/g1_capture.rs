@@ -87,6 +87,10 @@ struct CaptureConfiguration {
     exposure_ev100: Option<f32>,
     #[serde(default)]
     directional_shadow_maps: Option<bool>,
+    /// Development-only renderer/compute contention comparison. Physics stays
+    /// on its independent 50 Hz owner clock; no asset/quality setting changes.
+    #[serde(default)]
+    diagnostic_vsync: bool,
     #[serde(default)]
     diagnostic_ambient_brightness: Option<f32>,
     #[serde(default)]
@@ -320,6 +324,7 @@ pub fn run_capture_from_file(
         config.policy,
         config.exposure_ev100,
         config.directional_shadow_maps,
+        config.diagnostic_vsync,
         config.diagnostic_ambient_brightness,
         config.diagnostic_directional_illuminance,
         config.predictive_limit_diagnostic,
@@ -383,6 +388,7 @@ pub struct G1CaptureReceipt {
     pub failure_reason: Option<String>,
     pub ego_stamp: Option<G1CaptureStamp>,
     pub main_resolution: [u32; 2],
+    pub render_present_mode: &'static str,
     pub live_policy_inference_calls: u32,
     pub live_policy_successes: u32,
     pub live_action_chunks: Vec<serde_json::Value>,
@@ -501,6 +507,7 @@ impl G1CaptureReceipt {
             failure_reason: None,
             ego_stamp: None,
             main_resolution: [1920, 1080],
+            render_present_mode: "auto_no_vsync",
             live_policy_inference_calls: 0,
             live_policy_successes: 0,
             live_action_chunks: Vec::new(),
@@ -662,6 +669,7 @@ pub fn run_capture(
         None,
         None,
         None,
+        false,
         None,
         None,
         false,
@@ -680,6 +688,7 @@ fn run_capture_owner(
     policy: Option<LivePolicyConfiguration>,
     exposure_ev100: Option<f32>,
     directional_shadow_maps: Option<bool>,
+    diagnostic_vsync: bool,
     diagnostic_ambient_brightness: Option<f32>,
     diagnostic_directional_illuminance: Option<f32>,
     predictive_limit_diagnostic: bool,
@@ -832,6 +841,11 @@ fn run_capture_owner(
         task_model.as_ref().map(|m| m.file_sha256.clone());
     outcome.0.lock().unwrap().camera_exposure_ev100 = exposure_ev100;
     outcome.0.lock().unwrap().diagnostic_directional_shadow_maps = directional_shadow_maps;
+    outcome.0.lock().unwrap().render_present_mode = if diagnostic_vsync {
+        "auto_vsync"
+    } else {
+        "auto_no_vsync"
+    };
     outcome.0.lock().unwrap().camera_ambient_brightness = ambient_brightness;
     outcome.0.lock().unwrap().camera_directional_illuminance = directional_illuminance;
     if render_only_environment_translation.is_some() {
@@ -913,7 +927,11 @@ fn run_capture_owner(
                     primary_window: Some(Window {
                         title: "G1 native camera diagnostic — unqualified floor candidate".into(),
                         resolution: (1920, 1080).into(),
-                        present_mode: bevy::window::PresentMode::AutoNoVsync,
+                        present_mode: if diagnostic_vsync {
+                            bevy::window::PresentMode::AutoVsync
+                        } else {
+                            bevy::window::PresentMode::AutoNoVsync
+                        },
                         ..default()
                     }),
                     ..default()
