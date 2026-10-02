@@ -152,7 +152,8 @@ impl PolicyActionFrame {
 
 /// Limits supplied from the frozen embodiment and the verified controller.
 /// No permissive default silently substitutes for the robot's actual limits.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionLimits {
     pub joint_min_rad: [f32; 31],
     pub joint_max_rad: [f32; 31],
@@ -189,7 +190,7 @@ impl ActionLimits {
 /// The observation stamp remains unchanged during admission. The matched Arena
 /// interface executes frame zero after inference returns; the physical owner
 /// separately records that execution start and enforces observation age limits.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyActionChunk {
     pub profile: TaskProfile,

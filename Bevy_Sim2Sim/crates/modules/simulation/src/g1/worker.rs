@@ -9,6 +9,9 @@ use super::{
     agile_runner::{AgileRunner, AgileRunnerConfig, AgileStep},
     runner::{G1Measurement, G1ProgressCounts, G1Runner, G1RunnerConfig, G1Step},
     task_objects::TaskObjectFrame,
+    task_runner::{
+        ArenaBodyStep, ArenaTaskCommand, ArenaTaskRunner, ArenaTaskRunnerConfig, ArenaTaskStep,
+    },
 };
 use common_minigame::clock::FixedStepClock;
 use robot_minigame::{
@@ -27,10 +30,13 @@ use std::{
 /// Mobile Homie and static AGILE share timing, never policy/command contents.
 pub type G1Worker = PhysicsWorker<G1Command, G1Step>;
 pub type AgileWorker = PhysicsWorker<AgileCommand, AgileStep>;
+pub type ArenaTaskWorker = PhysicsWorker<ArenaTaskCommand, ArenaTaskStep>;
 pub type TimedG1Command = TimedCommand<G1Command>;
 pub type TimedAgileCommand = TimedCommand<AgileCommand>;
+pub type TimedArenaTaskCommand = TimedCommand<ArenaTaskCommand>;
 pub type G1WorkerSnapshot = WorkerSnapshot<G1Step>;
 pub type AgileWorkerSnapshot = WorkerSnapshot<AgileStep>;
+pub type ArenaTaskWorkerSnapshot = WorkerSnapshot<ArenaTaskStep>;
 #[cfg(test)]
 type Shared = WorkerShared<G1Command, G1Step>;
 
@@ -286,6 +292,24 @@ impl PhysicsWorker<AgileCommand, AgileStep> {
     }
 }
 
+impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
+    /// Model transport remains outside physics. Whole chunks are admitted and
+    /// indexed on this same thread as WBC, motors, contacts and integration.
+    pub fn spawn(config: ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        let episode = config.body.episode_id();
+        Self::spawn_owner(
+            episode,
+            move |episode_id| {
+                ArenaTaskRunner::load(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+}
+
 // Concrete public aliases are the supported contracts. The private traits only
 // let these native owners share scheduling; they never convert action semantics.
 #[allow(private_bounds)]
@@ -433,6 +457,30 @@ impl BoundaryRunner for AgileRunner {
     }
 }
 
+impl BoundaryRunner for ArenaTaskRunner {
+    type Command = ArenaTaskCommand;
+    type Step = ArenaTaskStep;
+    fn task_objects(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.task_object_frame()
+    }
+    fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
+        ArenaTaskRunner::initial_frame(self).map(Some)
+    }
+    fn initial_measurement(&self) -> Result<Option<G1Measurement>, RobotError> {
+        self.measurement().map(Some)
+    }
+    fn step(
+        &mut self,
+        command: &ArenaTaskCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<Option<ArenaTaskStep>, RobotError> {
+        self.step_with_guard(command, guard).map(Some)
+    }
+    fn progress_counts(&self) -> G1ProgressCounts {
+        ArenaTaskRunner::progress_counts(self)
+    }
+}
+
 trait BoundaryCommand: Clone + Send + 'static {
     fn validate(&self) -> Result<(), RobotError>;
 }
@@ -444,6 +492,11 @@ impl BoundaryCommand for G1Command {
 impl BoundaryCommand for AgileCommand {
     fn validate(&self) -> Result<(), RobotError> {
         AgileCommand::validate(self)
+    }
+}
+impl BoundaryCommand for ArenaTaskCommand {
+    fn validate(&self) -> Result<(), RobotError> {
+        ArenaTaskCommand::validate(self)
     }
 }
 trait BoundaryStep: Clone + Send + Sync + 'static {
@@ -474,6 +527,20 @@ impl BoundaryStep for AgileStep {
             self.root_position_source[2],
             self.root_upright_cosine,
         )
+    }
+}
+impl BoundaryStep for ArenaTaskStep {
+    fn task_objects(&self) -> Option<&TaskObjectFrame> {
+        match &self.body {
+            ArenaBodyStep::StaticAgile(step) => step.task_objects(),
+            ArenaBodyStep::MobileHomieV2(step) => step.task_objects(),
+        }
+    }
+    fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
+        match &self.body {
+            ArenaBodyStep::StaticAgile(step) => step.parts(),
+            ArenaBodyStep::MobileHomieV2(step) => step.parts(),
+        }
     }
 }
 

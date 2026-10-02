@@ -4,5 +4,6 @@ pub mod assembly;
 pub mod runner;
 pub mod task_objects;
 pub mod task_policy;
+pub mod task_runner;
 pub mod task_shelf;
 pub mod worker;
