@@ -1010,10 +1010,11 @@ grip correction; a completed scan auto-pauses and cannot enter walking.
 Fresh observation identity/age guards apply to every handoff. The old2m
 carry entry and all default physics/contracts retain their bounds.
 
-This opt-in scene mounts disclosed DICT_4X4_50 printed markers21on the bin
-floor (16cm black square) and22on the original box's top (10cm). Original box
-orientation makes its local-Z face the physical top; its published mount is
-explicitly flipped. Fixed white margins, metric mounts and PNG hashes are
+The initial0190 scene mounts disclosed DICT_4X4_50 printed markers21on the bin
+floor (16cm black square) and22on the original box's top (10cm). That top mount
+is preserved in the failed trial's code/receipt. The subsequent visibility
+entry puts22on the original robot-facing local+X face instead. Fixed white
+margins, metric mounts and PNG hashes are
 recorded. Marker visibility begins at actual Tick200, so the four original
 grasp images remain unmarked. Markers inherit displayed native object poses;
 they add no physics, light, constraint or object sensor.
@@ -1033,3 +1034,41 @@ from actual native self state agrees with the render camera within9.78e-8m
 and1.14e-7rotation-matrix elements; no world poses enter localization. These
 are zero-physics/zero-model calibration and entry checks, not a target-visibility
 or placement result.
+
+Live trial0190 completes663actual native Ticks with four fresh unmarked RGB
+grasp calls and zero walking commands. The final100Ticks retain hand-only
+support, minimum scan upright0.994135, no missed deadlines or pending debt;
+active sim/wall ratio0.998337. Both marker detections fail. Independent optical
+audit shows all bin corners in view but occluded by the carried box; all top
+box-marker corners are above the image and its face points away. This is an
+actual visibility failure, not missing weights or service failure. The model
+closes after its four calls; camera/object truth is auditor-only.
+
+Finite saved-prefix trials0191/0192 preserve all663body states bit-exactly and
+call no fresh VLA. Vertical-only lowering stops safely at726completed Ticks
+when a single IK target change would exceed0.1rad. Independent FK shows the
+right-arm Jacobian minimum singular value falling from0.06338to0.00884 as its
+reach extends. Preserving shoulder-to-palm radius reaches790Ticks, then
+fails the unchanged solver bound; the actual shoulder-to-wrist radius still
+grows0.317114→0.335083m and the minimum singular value falls to0.00236.
+Neither failure relaxes joint/solver bounds or modifies physical parameters.
+
+Preserving **shoulder-to-wrist** reach instead passes the zero-world/model
+planning envelope0193 and physical trial0194. It lowers both palm targets18cm
+over150native Ticks, adding only the shared inward shift calculated from
+original self-state FK; rotations, palm gap and all fingers remain unchanged.
+The913Tick trial includes100settling Ticks and keeps hand-only support through
+all250lower/settle samples, upright at least0.999392. Box height moves
+0.938082→0.779938m. The commanded additional inward shift is0.150518m.
+Independent optical geometry places both bin and robot-facing box markers
+inside the image, with no box occlusion of the bin; this still requires actual
+RGB detection. Its trace SHA256 is
+`89589917a32ca6cad9054ac916fa5f4990c9e2c9914e494fd1b0fdd0465354cb`.
+
+The separate `g1_mobile_target_view_diagnostic` admits1300maximum Ticks/four
+fresh unmarked grasp calls, the public-map scan, then exactly18cm/150Tick
+lowering and100settling Ticks. A fresh actual stationary RGB stamp admits that
+lowering on the same typed owner. Original scan/carry budgets stay unchanged.
+The final actual RGB/self-sensor whitelist feeds classical marker localization;
+no target height, object pose, contact truth or saved action enters execution.
+This visibility pose is not bin approach, physical release or task acceptance.

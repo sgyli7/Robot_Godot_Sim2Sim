@@ -116,6 +116,94 @@ impl MobileGripCalibration {
         state: &G1Measurement,
         original: &G1Command,
     ) -> Result<MobileGripCorrection, RobotError> {
+        self.solve(state, original, None)
+    }
+
+    /// One bounded Cartesian increment preserves both palm rotations/gap and
+    /// all original finger/lower targets. It reads self state, never the box.
+    pub fn translate(
+        &self,
+        state: &G1Measurement,
+        previous: &G1Command,
+        offset_root_source_m: [f64; 3],
+    ) -> Result<MobileGripCorrection, RobotError> {
+        if !offset_root_source_m.iter().all(|x| x.is_finite())
+            || Vector3::from(offset_root_source_m).norm() > 0.003
+        {
+            return Err(invalid(
+                "Cartesian grip increment exceeds3mm per native Tick",
+            ));
+        }
+        self.solve(state, previous, Some(offset_root_source_m))
+    }
+
+    /// Keep both original shoulder-to-wrist radii from increasing during a
+    /// downward increment. One common inward shift keeps the box grip rigid.
+    pub fn reach_preserving_offset(
+        &self,
+        state: &G1Measurement,
+        command: &G1Command,
+        downward_root_source_m: [f64; 3],
+    ) -> Result<[f64; 3], RobotError> {
+        validate_self_state(state)?;
+        command.validate()?;
+        let mut q = [0.; JOINT_COUNT];
+        for (i, value) in q.iter_mut().enumerate() {
+            *value = f64::from(if i < LOWER_COUNT {
+                state.joint_positions[i]
+            } else {
+                command.upper_positions[i - LOWER_COUNT]
+            });
+        }
+        let poses = self.forward(&q);
+        let downward = Vector3::from(downward_root_source_m);
+        if !downward.iter().all(|x| x.is_finite()) || downward.norm() > 0.003 {
+            return Err(invalid("reach-preserving increment exceeds3mm"));
+        }
+        let mut inward = 0_f64;
+        for (arm, slot) in [15, 29].into_iter().enumerate() {
+            let joint = self
+                .joints
+                .iter()
+                .find(|j| j.slot == Some(slot))
+                .ok_or_else(|| invalid("original shoulder pitch joint absent"))?;
+            let shoulder = (poses[joint.parent] * joint.frame_parent)
+                .translation
+                .vector;
+            let wrist_joint = self
+                .joints
+                .iter()
+                .find(|j| j.slot == Some([21, 35][arm]))
+                .ok_or_else(|| invalid("original wrist yaw joint absent"))?;
+            // A fixed palm orientation fixes the wrist-center offset too.
+            // Palm-center radius alone misses that offset and still reaches
+            // the arm-extension singularity (physical diagnostic0192).
+            let wrist = (poses[wrist_joint.parent] * wrist_joint.frame_parent)
+                .translation
+                .vector;
+            let relative = wrist - shoulder;
+            let candidate = relative + downward;
+            let radicand = relative.norm_squared() - candidate.y.powi(2) - candidate.z.powi(2);
+            if relative.x < 0.05 || radicand <= 0.0025 {
+                return Err(invalid(
+                    "lowering would leave the forward arm reach envelope",
+                ));
+            }
+            inward = inward.min(radicand.sqrt() - candidate.x);
+        }
+        let offset = downward + Vector3::new(inward, 0., 0.);
+        if offset.norm() > 0.003 {
+            return Err(invalid("reach-preserving inward step exceeds3mm"));
+        }
+        Ok(offset.into())
+    }
+
+    fn solve(
+        &self,
+        state: &G1Measurement,
+        original: &G1Command,
+        translation: Option<[f64; 3]>,
+    ) -> Result<MobileGripCorrection, RobotError> {
         validate_self_state(state)?;
         original.validate()?;
         let mut q = [0.; JOINT_COUNT];
@@ -143,8 +231,14 @@ impl MobileGripCalibration {
         }
         let direction = delta / original_gap;
         let mut goals = [initial[28], initial[45]];
-        goals[0].translation.vector = midpoint + direction * (SOURCE_PALM_GAP_M * 0.5);
-        goals[1].translation.vector = midpoint - direction * (SOURCE_PALM_GAP_M * 0.5);
+        if let Some(offset) = translation {
+            for goal in &mut goals {
+                goal.translation.vector += Vector3::from(offset);
+            }
+        } else {
+            goals[0].translation.vector = midpoint + direction * (SOURCE_PALM_GAP_M * 0.5);
+            goals[1].translation.vector = midpoint - direction * (SOURCE_PALM_GAP_M * 0.5);
+        }
         let mut iterations = [0; 2];
         for arm in 0..2 {
             let mut converged = false;
@@ -216,7 +310,11 @@ impl MobileGripCalibration {
         Ok(MobileGripCorrection {
             command,
             receipt: MobileGripReceipt {
-                schema: "g1_mobile_source_gap_assist_v1",
+                schema: if translation.is_some() {
+                    "g1_mobile_self_state_cartesian_grip_v1"
+                } else {
+                    "g1_mobile_source_gap_assist_v1"
+                },
                 episode_id: state.episode_id,
                 source_tick: state.source_tick,
                 original_vla_output: false,
@@ -317,6 +415,63 @@ mod tests {
             )?,
             root_velocity_source: serde_json::from_value(v["root_velocity_source"].clone())?,
         })
+    }
+
+    #[derive(Deserialize)]
+    struct LowerFixture {
+        state: serde_json::Value,
+        command: G1Command,
+        goal: super::super::mobile_lowering::MobileLowerGoal,
+    }
+
+    /// Pure planning with one frozen real self state. Future Tick identities
+    /// below belong only to this numeric fixture, never a physical observation.
+    #[test]
+    #[ignore = "requires frozen G1/self-state lowering fixture;0physical steps/0models"]
+    fn real_mobile_grip_lowering_envelope() -> Result<(), RobotError> {
+        let env = |name| std::env::var(name).map_err(|e| invalid(format!("{name}: {e}")));
+        let definition = G1Definition::load(
+            Path::new(&env("G1_GRIP_DEFINITION")?),
+            &env("G1_GRIP_DEFINITION_SHA256")?,
+        )?;
+        let fixture: LowerFixture = serde_json::from_slice(&bound_bytes(
+            Path::new(&env("G1_GRIP_FIXTURE")?),
+            &env("G1_GRIP_FIXTURE_SHA256")?,
+        )?)
+        .map_err(|e| invalid(e.to_string()))?;
+        let original_state = measurement(fixture.state).map_err(|e| invalid(e.to_string()))?;
+        let calibration = MobileGripCalibration::new(&definition)?;
+        let mut lowering = super::super::mobile_lowering::MobileGripLowering::new(
+            fixture.goal,
+            &original_state,
+            fixture.command,
+        )?;
+        let mut steps = Vec::new();
+        let result = (|| -> Result<(), RobotError> {
+            for index in 0..350 {
+                let mut synthetic = original_state.clone();
+                synthetic.source_tick += index;
+                synthetic.sim_time_ns = synthetic.source_tick * 20_000_000;
+                let step = lowering.update(&synthetic, &calibration)?;
+                let completed = step.completed;
+                steps.push(step);
+                if completed {
+                    return Ok(());
+                }
+            }
+            Err(invalid("pure lowering envelope exceeded350fixture updates"))
+        })();
+        let output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(env("G1_GRIP_OUTPUT")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(output,&serde_json::json!({
+            "pure_numeric_fixture_not_execution":true,"actual_integrations":0,"actual_model_inferences":0,
+            "qualified":false,"completed":result.is_ok(),"steps":steps,
+            "failure":result.as_ref().err().map(ToString::to_string),
+        })).map_err(|e| invalid(e.to_string()))?;
+        result
     }
 
     /// Cross-language numerical comparison to the independent offline FK/IK

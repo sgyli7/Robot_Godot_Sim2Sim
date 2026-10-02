@@ -15,6 +15,7 @@ use task_minigame::{
 
 use super::{
     mobile_grip::{MobileGripCalibration, MobileGripReceipt},
+    mobile_lowering::{MobileGripLowering, MobileLowerGoal, MobileLowerStep},
     mobile_navigation::{
         MobileCarryGoal, MobileCarryNavigator, MobileNavigationStep, MobileScanGoal,
         MobileScanNavigator,
@@ -33,6 +34,7 @@ pub enum MobileAssistCommand {
     OriginalVla(ArenaTaskCommand),
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
+    ClassicalLower(MobileLowerGoal),
 }
 
 impl MobileAssistCommand {
@@ -47,6 +49,7 @@ impl MobileAssistCommand {
             }
             Self::ClassicalCarry(goal) => goal.validate(),
             Self::ClassicalScan(goal) => goal.validate(),
+            Self::ClassicalLower(goal) => goal.validate(),
         }
     }
 }
@@ -67,6 +70,10 @@ pub enum MobileAssistExecution {
         navigation: MobileNavigationStep,
         command: G1Command,
     },
+    ClassicalLower {
+        goal: MobileLowerGoal,
+        lowering: MobileLowerStep,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -85,6 +92,7 @@ pub struct MobileAssistRunner {
     last_vla_command: Option<G1Command>,
     carry: Option<CarryState>,
     scan: Option<ScanState>,
+    lower: Option<MobileGripLowering>,
     halted: bool,
 }
 
@@ -117,6 +125,7 @@ impl MobileAssistRunner {
             last_vla_command: None,
             carry: None,
             scan: None,
+            lower: None,
             halted: false,
         })
     }
@@ -141,7 +150,11 @@ impl MobileAssistRunner {
     }
 
     pub fn completed_skill(&self) -> bool {
-        self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
+        if let Some(lower) = &self.lower {
+            lower.completed()
+        } else {
+            self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
+        }
     }
 
     fn prepare_classical(
@@ -173,6 +186,12 @@ impl MobileAssistRunner {
         if let Some(scan) = &self.scan {
             if !scan.navigator.completed() {
                 return Err(invalid("cannot replace an active scan"));
+            }
+            if let Some(lower) = &self.lower {
+                if !lower.completed() {
+                    return Err(invalid("cannot replace active lowering"));
+                }
+                return Ok((lower.command().clone(), scan.grip.clone()));
             }
             return Ok((scan.command.clone(), scan.grip.clone()));
         }
@@ -215,6 +234,7 @@ impl MobileAssistRunner {
                         .scan
                         .as_ref()
                         .is_some_and(|scan| !scan.navigator.completed())
+                    || self.lower.as_ref().is_some_and(|lower| !lower.completed())
                 {
                     return Err(invalid(
                         "cannot replace active classical carry with a VLA chunk",
@@ -234,6 +254,7 @@ impl MobileAssistRunner {
                 self.last_vla_execution = Some(step.execution.clone());
                 self.carry = None;
                 self.scan = None;
+                self.lower = None;
                 Ok(MobileAssistStep {
                     execution: MobileAssistExecution::OriginalVla(step.execution),
                     body: step.body,
@@ -250,6 +271,7 @@ impl MobileAssistRunner {
                         grip,
                     });
                     self.scan = None;
+                    self.lower = None;
                 }
                 let carry = self.carry.as_mut().unwrap();
                 if carry.navigator.goal() != goal {
@@ -274,7 +296,7 @@ impl MobileAssistRunner {
             }
             MobileAssistCommand::ClassicalScan(goal) => {
                 let state = self.owner.measurement()?;
-                if self.carry.is_some() {
+                if self.carry.is_some() || self.lower.is_some() {
                     return Err(invalid(
                         "scan after carry requires a separately admitted next stage",
                     ));
@@ -307,6 +329,35 @@ impl MobileAssistRunner {
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
             }
+            MobileAssistCommand::ClassicalLower(goal) => {
+                let state = self.owner.measurement()?;
+                if self.lower.is_none() {
+                    if self.carry.is_some()
+                        || self.scan.as_ref().is_none_or(|s| !s.navigator.completed())
+                    {
+                        return Err(invalid(
+                            "lowering requires the admitted completed stationary scan",
+                        ));
+                    }
+                    let (command, _) = self.prepare_classical(&goal.observation, &state)?;
+                    self.lower = Some(MobileGripLowering::new(goal.clone(), &state, command)?);
+                }
+                let lower = self.lower.as_mut().unwrap();
+                if lower.goal() != goal {
+                    return Err(invalid("lower goal changed while executing"));
+                }
+                let lowering = lower.update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&lowering.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalLower {
+                        goal: goal.clone(),
+                        lowering,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
         }
     }
 }
@@ -330,6 +381,97 @@ mod tests {
         let path = std::env::var(name).map_err(|e| invalid(e.to_string()))?;
         let hash = std::env::var(format!("{name}_SHA256")).map_err(|e| invalid(e.to_string()))?;
         bound_bytes(Path::new(&path), &hash)
+    }
+    #[derive(Deserialize)]
+    struct ScanLowerFixture {
+        scan: MobileScanGoal,
+        lower: MobileLowerGoal,
+    }
+
+    /// Frozen real-RGB grasp/scan prefix, then one new physical lowering stage.
+    /// This has zero fresh VLA calls and grants no autonomous/task qualification.
+    #[test]
+    #[ignore = "requires frozen four-grasp/scan goals/new output;<=1300native50HzTicks,0freshVLA"]
+    fn real_mobile_scan_lowering_diagnostic() -> Result<(), RobotError> {
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        let sequence: Sequence = serde_json::from_slice(&read("G1_MOBILE_REPLAY_ACTIONS")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut goals: ScanLowerFixture =
+            serde_json::from_slice(&read("G1_MOBILE_SCAN_LOWER_GOALS")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        if sequence.schema != "g1_saved_native_mobile_action_sequence_v1"
+            || sequence.chunks.len() != 4
+        {
+            return Err(invalid(
+                "scanlower requires four original saved native replies",
+            ));
+        }
+        let output =
+            std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::new(&output).with_extension("jsonl"))
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut owner = MobileAssistRunner::load(&config)?;
+        let mut current = None;
+        let mut lower_started = false;
+        let mut actual_ticks = 0;
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let result = (|| -> Result<(), RobotError> {
+            for tick in 1..=1300 {
+                if tick <= 200 && (tick - 1) % 50 == 0 {
+                    let mut chunk = sequence.chunks[((tick - 1) / 50) as usize].clone();
+                    chunk.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::OriginalVla(ArenaTaskCommand {
+                        chunk: Arc::new(chunk),
+                        scheduled_start_sim_ns: None,
+                    }));
+                } else if tick == 201 {
+                    goals.scan.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalScan(goals.scan.clone()));
+                } else if !lower_started && owner.completed_skill() {
+                    goals.lower.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalLower(goals.lower.clone()));
+                    lower_started = true;
+                }
+                let step = owner.step_with_guard(current.as_ref().unwrap(), &mut || Ok(()))?;
+                actual_ticks = tick;
+                serde_json::to_writer(
+                    &mut trace,
+                    &serde_json::json!({
+                        "saved_grasp_scan_fixture":true,"fresh_vla_calls":0,"qualified":false,
+                        "execution":step.execution,"body":step.body,
+                    }),
+                )
+                .map_err(|e| invalid(e.to_string()))?;
+                writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+                if lower_started && owner.completed_skill() {
+                    return Ok(());
+                }
+            }
+            Err(invalid("finite scanlower diagnostic deadline missed"))
+        })();
+        trace.flush().map_err(|e| invalid(e.to_string()))?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(file,&serde_json::json!({
+            "actual_integrations":actual_ticks,"lower_started":lower_started,
+            "completed_lowering":result.is_ok(),"failure":result.as_ref().err().map(ToString::to_string),
+            "fresh_vla_calls":0,"saved_native_fixture_used":true,"qualified":false,
+            "physics_hz":50,"integrations_per_tick":1,
+        })).map_err(|e| invalid(e.to_string()))?;
+        result
     }
     #[test]
     #[ignore = "requires frozen mobileconfig/four saved native replies/new output; <=2050real50Hzsteps,0VLA"]
@@ -416,7 +558,8 @@ mod tests {
                 minimum_upright = minimum_upright.min(body.root_upright_cosine);
                 let (phase, command) = match &step.execution {
                     MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
-                    MobileAssistExecution::ClassicalScan { .. } => {
+                    MobileAssistExecution::ClassicalScan { .. }
+                    | MobileAssistExecution::ClassicalLower { .. } => {
                         return Err(invalid("unexpected scan in saved carry fixture"));
                     }
                     MobileAssistExecution::ClassicalCarry {
@@ -541,7 +684,8 @@ mod worker_diagnostic {
                     observed_steps += 1;
                     let (phase, command) = match &record.step.execution {
                         MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
-                        MobileAssistExecution::ClassicalScan { .. } => {
+                        MobileAssistExecution::ClassicalScan { .. }
+                        | MobileAssistExecution::ClassicalLower { .. } => {
                             return Err(invalid("unexpected scan in saved carry fixture"));
                         }
                         MobileAssistExecution::ClassicalCarry {

@@ -141,6 +141,15 @@ struct MobileAssistCaptureConfiguration {
 struct MobileScanCaptureConfiguration {
     heading_yaw_source_rad: f32,
     fiducial_assets: BackgroundVisualConfiguration,
+    #[serde(default)]
+    lowering: Option<MobileLowerCaptureConfiguration>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MobileLowerCaptureConfiguration {
+    distance_m: f32,
+    duration_ticks: u32,
 }
 
 enum MobileAssistStage {
@@ -150,6 +159,9 @@ enum MobileAssistStage {
 
 struct MobileAssistCaptureRuntime {
     scan_only: bool,
+    view_with_lowering: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    lower_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     configuration: MobileAssistStage,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -160,10 +172,15 @@ struct MobileAssistCaptureRuntime {
 impl MobileAssistCaptureRuntime {
     fn new(configuration: MobileAssistStage) -> Self {
         let scan_only = matches!(&configuration, MobileAssistStage::Scan(_));
+        let view_with_lowering =
+            matches!(&configuration, MobileAssistStage::Scan(c) if c.lowering.is_some());
         #[cfg(not(feature = "g1_constraint_diagnostic"))]
         let _ = configuration;
         Self {
             scan_only,
+            view_with_lowering,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            lower_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             configuration,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -485,6 +502,14 @@ pub fn run_mobile_scan_from_file(
     run_from_file(path, options, CaptureMode::MobileScan)
 }
 
+/// Matched live grasp, public-map scan, bounded lowering, then actual marker RGB.
+pub fn run_mobile_target_view_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileTargetView)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
@@ -492,6 +517,7 @@ enum CaptureMode {
     MobileCarry,
     MobileAssist,
     MobileScan,
+    MobileTargetView,
 }
 
 /// Interactive development entry; it never advertises unqualified execution.
@@ -1098,7 +1124,8 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
-    let scan_only = mode == CaptureMode::MobileScan;
+    let target_view = mode == CaptureMode::MobileTargetView;
+    let scan_only = mode == CaptureMode::MobileScan || target_view;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only;
     if (mode == CaptureMode::MobileAssist) != mobile_assist.is_some()
         || scan_only != mobile_scan.is_some()
@@ -1107,7 +1134,14 @@ fn run_capture_owner(
     }
     if assisted_carry
         && (!cfg!(feature = "g1_constraint_diagnostic")
-            || options.ticks != if scan_only { 1050 } else { 2050 }
+            || options.ticks
+                != if target_view {
+                    1300
+                } else if scan_only {
+                    1050
+                } else {
+                    2050
+                }
             || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::MobileBox)
             || config
                 .task_objects()
@@ -1129,6 +1163,10 @@ fn run_capture_owner(
             || mobile_scan.as_ref().is_some_and(|c| {
                 !c.heading_yaw_source_rad.is_finite()
                     || c.heading_yaw_source_rad.abs() > std::f32::consts::PI
+                    || c.lowering.is_some() != target_view
+                    || c.lowering
+                        .as_ref()
+                        .is_some_and(|l| l.distance_m != 0.18 || l.duration_ticks != 150)
             }))
     {
         return Err("mobile assist/scan entry requires its2050/1050maximumTicks,4liveoriginalgrasp chunks and the matched mobile scene/source-light/4PGS profile;carry distance is exactly2m".into());
@@ -1267,7 +1305,13 @@ fn run_capture_owner(
         })
         .transpose()?;
     let tick_limit = if assisted_carry {
-        if scan_only { 1050 } else { 2050 }
+        if target_view {
+            1300
+        } else if scan_only {
+            1050
+        } else {
+            2050
+        }
     } else if mobile_carry {
         1500
     } else if matches!(config, CaptureRunnerConfig::Task(_)) {
@@ -1817,8 +1861,18 @@ fn drive_mobile_assist(
         return Ok(true);
     }
     if assist.submitted {
-        let completed=latest.phase==G1WorkerPhase::Paused && latest.assist_step.as_ref().is_some_and(|step|
-            matches!(&step.execution,MobileAssistExecution::ClassicalCarry {navigation,..} | MobileAssistExecution::ClassicalScan {navigation,..} if navigation.completed));
+        let scan_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
+            .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalScan { navigation, .. } if navigation.completed));
+        if assist.view_with_lowering && !assist.lower_submitted && scan_complete {
+            return drive_lower_view(runtime, outcome, port);
+        }
+        let completed = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref().is_some_and(|step| {
+            if assist.view_with_lowering {
+                matches!(&step.execution, MobileAssistExecution::ClassicalLower { lowering, .. } if lowering.completed)
+            } else {
+                matches!(&step.execution,MobileAssistExecution::ClassicalCarry {navigation,..} | MobileAssistExecution::ClassicalScan {navigation,..} if navigation.completed)
+            }
+        });
         if completed {
             runtime.mobile_assist.as_mut().unwrap().completed = true;
             let mut receipt = outcome.0.lock().unwrap();
@@ -1923,6 +1977,110 @@ fn drive_mobile_assist(
         "object_truth_in_command":false,"task_qualified":false,"autonomous_goal_selection":false,
     }));
     runtime.mobile_assist.as_mut().unwrap().submitted = true;
+    runtime.requested = false;
+    Ok(false)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_lower_view(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    use simulation_minigame::g1::{
+        mobile_assist::MobileAssistCommand, mobile_lowering::MobileLowerGoal, worker::TimedCommand,
+    };
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("lower view lacks current owner")?
+        .clone();
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("lower view lacks admitted stage")?;
+    let MobileAssistStage::Scan(config) = &assist.configuration else {
+        return Err("lower view requires its public-map scan predecessor".into());
+    };
+    let lowering = config
+        .lowering
+        .clone()
+        .ok_or("lower view lacks bounded pose configuration")?;
+    if assist.lower_submitted {
+        return Err("lower view handoff cannot repeat".into());
+    }
+    if !runtime.requested {
+        port.request()?;
+        runtime.requested = true;
+        return Ok(false);
+    }
+    let Some(frame) = port.take() else {
+        return Ok(false);
+    };
+    let frame = frame?;
+    let tick = latest.timing.episode_integrations;
+    if latest.phase != G1WorkerPhase::Paused
+        || frame.stamp.source != CameraPoseSource::PhysicsBody
+        || frame.stamp.episode_id != runtime.episode_id
+        || frame.stamp.source_ticks != [tick; 2]
+        || frame.stamp.sim_time_ns != tick * 20_000_000
+    {
+        return Err("lower view RGB is not from the exact completed stationary scan".into());
+    }
+    frame
+        .stamp
+        .native_state
+        .as_ref()
+        .ok_or("lower view lacks original self sensors")?
+        .validate()?;
+    let rgb = task_minigame::decision::CameraRgb::from_rgb(
+        "native_ego",
+        frame.width,
+        frame.height,
+        frame.rgb,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        runtime.options.output.join("lower_handoff_ego.png"),
+        rgb.png(),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        runtime.options.output.join("lower_handoff_stamp.json"),
+        serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let goal = MobileLowerGoal {
+        observation: ObservationStamp {
+            episode_id: runtime.episode_id,
+            frame_id: frame.stamp.capture_sequence,
+            sim_time_ns: frame.stamp.sim_time_ns,
+            captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
+        },
+        distance_m: lowering.distance_m,
+        duration_ticks: lowering.duration_ticks,
+    };
+    let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+        return Err("lower view lost the sole typed native owner".into());
+    };
+    owner
+        .submit(TimedCommand {
+            episode_id: runtime.episode_id,
+            valid_until_sim_ns: frame.stamp.sim_time_ns + 7_000_000_000,
+            valid_until_wall: Instant::now() + Duration::from_secs(8),
+            command: MobileAssistCommand::ClassicalLower(goal.clone()),
+        })
+        .map_err(|e| e.to_string())?;
+    let mut receipt = outcome.0.lock().unwrap();
+    let handoff = receipt
+        .mobile_assist_handoff
+        .as_mut()
+        .ok_or("lower view lost provenance")?;
+    handoff["lowering_goal"] = serde_json::to_value(goal).map_err(|e| e.to_string())?;
+    handoff["lowering_goal_origin"] = "finite_self_state_visibility_pose_not_bin_height".into();
+    handoff["scan_completed_at_actual_tick"] = tick.into();
+    handoff["object_truth_in_command"] = false.into();
+    runtime.mobile_assist.as_mut().unwrap().lower_submitted = true;
     runtime.requested = false;
     Ok(false)
 }
@@ -2452,7 +2610,7 @@ fn drive_capture(
                     .is_some_and(|assist| assist.completed)
                 {
                     if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
-                        "bounded_classical_scan_complete_not_task_qualified"
+                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
                     } else {
                         "bounded_classical_carry_skill_complete_not_task_qualified"
                     }

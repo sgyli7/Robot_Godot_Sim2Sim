@@ -91,8 +91,8 @@ impl G1TaskFiducialModel {
                 printed_black_square_size_m: [0.16, 0.10],
                 white_margin_overall_size_m: [0.20, 0.125],
                 object_kinds: ["t2_bin", "t2_box"],
-                object_local_center_source_m: [[0.008351, 0.0113635, 0.0045], [0., 0., -0.1005]],
-                object_local_rotation_wxyz: [[1., 0., 0., 0.], [0., 1., 0., 0.]],
+                object_local_center_source_m: [[0.008351, 0.0113635, 0.0045], [0.1005, 0., 0.]],
+                object_local_rotation_wxyz: [[1., 0., 0., 0.], [0.70710677, 0., 0.70710677, 0.]],
                 activation_tick: 200,
                 asset_sha256: sha256.into(),
                 physics_modified: false,
@@ -186,7 +186,7 @@ fn spawn(
                 Transform {
                     translation: Vec3::new(x, z, -y),
                     rotation: if marker == 1 {
-                        Quat::from_rotation_x(std::f32::consts::PI)
+                        Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
                     } else {
                         Quat::IDENTITY
                     },
