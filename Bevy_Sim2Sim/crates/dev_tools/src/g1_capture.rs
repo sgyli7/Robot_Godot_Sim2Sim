@@ -87,6 +87,8 @@ struct CaptureConfiguration {
     #[serde(default)]
     predictive_limit_diagnostic: bool,
     #[serde(default)]
+    diagnostic_constraint_sweeps: Option<u32>,
+    #[serde(default)]
     background_visual: Option<BackgroundVisualConfiguration>,
 }
 
@@ -142,15 +144,31 @@ impl CaptureRunnerConfig {
             Self::Static(c) => c.episode_id,
         }
     }
-    fn spawn(self, predictive_limit_diagnostic: bool) -> Result<CaptureWorker, String> {
+    fn spawn(
+        self,
+        predictive_limit_diagnostic: bool,
+        diagnostic_constraint_sweeps: Option<u32>,
+    ) -> Result<CaptureWorker, String> {
+        if diagnostic_constraint_sweeps.is_some()
+            && (diagnostic_constraint_sweeps != Some(16) || !predictive_limit_diagnostic)
+        {
+            return Err(
+                "contact comparison permits only 16 sweeps with explicit predictive limits".into(),
+            );
+        }
         if predictive_limit_diagnostic {
             let Self::Task(config) = self else {
                 return Err("predictive limit comparison requires the static task owner".into());
             };
             #[cfg(feature = "g1_constraint_diagnostic")]
-            return ArenaTaskWorker::spawn_static_predictive_limit_diagnostic(config)
-                .map(CaptureWorker::Task)
-                .map_err(|e| e.to_string());
+            {
+                let worker = if diagnostic_constraint_sweeps.is_some() {
+                    ArenaTaskWorker::spawn_static_predictive_constraint_diagnostic(config)
+                } else {
+                    ArenaTaskWorker::spawn_static_predictive_limit_diagnostic(config)
+                };
+                return worker.map(CaptureWorker::Task).map_err(|e| e.to_string());
+            }
             #[cfg(not(feature = "g1_constraint_diagnostic"))]
             {
                 let _ = config;
@@ -288,6 +306,7 @@ pub fn run_capture_from_file(
         config.policy,
         config.exposure_ev100,
         config.predictive_limit_diagnostic,
+        config.diagnostic_constraint_sweeps,
         config.background_visual,
     )
 }
@@ -345,6 +364,7 @@ pub struct G1CaptureReceipt {
     pub pauses_for_camera_and_policy: bool,
     pub camera_exposure_ev100: f32,
     pub factory_verified_predictive_limit_joints: usize,
+    pub factory_verified_diagnostic_constraint_sweeps: Option<u32>,
     pub background_visual_status: Option<G1BackgroundVisualStatus>,
     pub unqualified: Vec<&'static str>,
 }
@@ -451,6 +471,7 @@ impl G1CaptureReceipt {
             pauses_for_camera_and_policy: false,
             camera_exposure_ev100: Exposure::default().ev100,
             factory_verified_predictive_limit_joints: 0,
+            factory_verified_diagnostic_constraint_sweeps: None,
             background_visual_status: None,
             unqualified: vec![
                 "standing_stability",
@@ -539,6 +560,7 @@ pub fn run_capture(
         None,
         false,
         None,
+        None,
     )
 }
 
@@ -551,6 +573,7 @@ fn run_capture_owner(
     policy: Option<LivePolicyConfiguration>,
     exposure_ev100: Option<f32>,
     predictive_limit_diagnostic: bool,
+    diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
 ) -> Result<G1CaptureReceipt, String> {
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
@@ -653,7 +676,7 @@ fn run_capture_owner(
         receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
         receipt.pauses_for_camera_and_policy = true;
     }
-    let worker = config.spawn(predictive_limit_diagnostic)?;
+    let worker = config.spawn(predictive_limit_diagnostic, diagnostic_constraint_sweeps)?;
     if predictive_limit_diagnostic {
         outcome
             .0
@@ -661,6 +684,11 @@ fn run_capture_owner(
             .unwrap()
             .factory_verified_predictive_limit_joints = 43;
     }
+    outcome
+        .0
+        .lock()
+        .unwrap()
+        .factory_verified_diagnostic_constraint_sweeps = diagnostic_constraint_sweeps;
     let mut app = App::new();
     // Scene supplies the existing enamel configuration only. Its meshes, props,
     // fixtures and camera shots are not spawned in this floor diagnostic.

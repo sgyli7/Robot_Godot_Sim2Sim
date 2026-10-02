@@ -60,9 +60,9 @@ scene; it does not qualify science-station contact or task behavior.
 The same entry also accepts an `ArenaTaskRunnerConfig` in `runner` and a
 `policy` object with `endpoint`, `max_calls` and `timeout_ms`. Both must be
 supplied together. The endpoint is IPv4 localhost `/infer`; the profile selects
-the separate static or mobile client. This mode permits one to four complete
+the separate static or mobile client. This mode permits one to eight complete
 chunks only, and `--g1-ticks` must exactly equal the selected model's horizon
-times `max_calls` (at most 200 ticks). The runner requires an explicit wall-clock image age limit.
+times `max_calls` (at most 400 ticks). The runner requires an explicit wall-clock image age limit.
 
 Prepare and start the verified local service separately, for example:
 
@@ -111,3 +111,27 @@ background are separate USD geometry. The disclosed visible diagnostic cuboid
 therefore does not establish source image parity, even with matching object
 meshes, UVs and camera calibration. This remaining input disparity must be
 assessed alongside physical grasp/release contacts.
+
+An optional `background_visual` object supplies `path` and `sha256` for the
+original static background export. The import requires the original translated
+T1 shelf profile. It adds rendering meshes only and hides the diagnostic floor
+and support visuals; their actual collision bodies remain in the same world.
+The measured export contains 16 material surfaces, 177889 vertices, 263703
+triangles and seven original textures. All three shelf surfaces are included.
+Thirty-three surfaces with unsupported/unbound material or authored-UV gaps
+remain explicitly omitted. Bevy lighting and MDL compatibility remain different;
+this does not establish source renderer or full background physics parity.
+
+With that original shelf/background candidate, four live calls completed 160
+Ticks but still failed grasping. The bounded eight-call extension completed
+320 Ticks (6.4 active simulated seconds), covering the original six-second task
+window while retaining complete 40-frame chunks. The robot remained upright
+and no joint-limit guard fired, but the apple stayed at pickup. Active
+simulation/wall ratio was approximately 0.9947, with zero missed/pending Ticks.
+Camera/inference pauses are still excluded; this is not continuous 1× acceptance.
+
+`diagnostic_constraint_sweeps: 16` is a separate explicit development comparison
+and requires `predictive_limit_diagnostic: true`. No other count is accepted.
+It selects the fresh static diagnostic factory and records its selection in
+the receipt. These sweeps solve constraints without another temporal
+integration. Normal configuration and loading remain unchanged at four sweeps.

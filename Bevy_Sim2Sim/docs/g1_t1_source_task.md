@@ -157,3 +157,38 @@ independent evidence only and remain absent from the model wire. A second
 160-Tick run produced identical mechanical state/action rows after excluding
 the new evidence fields and naturally different wall-clock observation ages.
 Speculative positive-distance pairs do not by themselves prove a grasp.
+
+## Joint mapping and contact convergence controls
+
+`unitree_g1_t1_source_task.py --joint-kinematics-audit` records the original SDK's
+world Jacobian, all named joint coordinates and body-link poses at existing
+40-Tick boundaries. It performs no additional integration or coordinate write;
+SDK counters are checked before/after each read. The original expert-action
+diagnostic was bounded at 80 controls / 320 source integrations for this audit,
+with no task-policy inference. Source physics remains the reference 200/50 Hz.
+
+`unitree_g1_joint_kinematics_audit.py` independently compares all 43 immediate
+child angular Jacobian columns and 53 links against a zero-Tick native assembly
+initialized at exactly the measured q/root. This initialization is explicitly
+an oracle mapping test with zero native integration/inference, never task
+performance or a controller. Both startup and the bent left-hand grasp posture
+passed: maximum native position error was 3.080e-7 m, rotation-matrix component
+error 1.284e-6 and joint-axis vector error 9.544e-7. A deliberately reversed
+finger axis failed the same comparison. These controls exclude the tested
+axis/sign/FK mismatch; they do not prove migrated contact dynamics.
+
+An isolated contact-convergence comparison now combines the explicit predictive
+limit rows with 16 nonintegrating PGS sweeps. Use the same original chunk/config
+bytes and append `--predictive-limits --constraint-sweeps 16` to
+`g1_task_chunk_probe ... --offline-diagnostic`. It retains the free root,
+original ranges/gains, 50 Hz, one 20 ms integration per Tick and actual owner
+execution. The normal constructor remains unchanged.
+
+The four- and sixteen-sweep runs both completed all 160 source action frames.
+Maximum apple height was 0.87048 / 0.87738 m. With sixteen sweeps the last state
+had no robot-object contact and a positive normal impulse from the plate;
+apple linear speed was 0.00439 m/s and angular speed was 0.10756 rad/s. The
+four-sweep final state drifted outside the plate at 0.11897 m/s. Whole-object
+containment and two continuous released/stable seconds were not established,
+and neither offline action replay is autonomous task success. The larger sweep
+count also does not eliminate the measured transient contact penetrations.
