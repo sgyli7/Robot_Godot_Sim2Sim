@@ -212,6 +212,14 @@ or the required ten-episode score. Those gates remain open. The source-stack
 failure is preserved, while the next work is T2 native body/action/geometry
 migration using this released reference.
 
+Before that transfer, the original 6.0 Homie stand/walk URLs were independently
+hashed and matched both cached binaries (1,886,682 bytes each). A source AST
+comparison also found identical `G1_CFG` assignments and Homie reset,
+observation, goal and action functions between the two pinned Arena revisions;
+the Homie YAML, helper and canonical joint-order files are byte-identical.
+The constructor's download-cache flag differs. These checks bind the selected
+body contract without claiming identical SDK actuation or native stability.
+
 The audit also retains two failed geometry-reader assumptions (unmeasured
 dynamic background and lowercase robot path) and a failed released-stack import
 root check. The latter was resolved by verifying the actual installed copied
