@@ -10,7 +10,10 @@ pub(crate) use sim2sim_observation::{
     ContactConstraintIdentity, ContactObservationManifest, ContactSideOwner,
 };
 #[cfg(all(feature = "alloc", feature = "sim2sim-limit-row-trace"))]
-pub use sim2sim_observation::{LimitRowTracePhase, LimitRowTraceSample, NativeJointRowTraceSample};
+pub use sim2sim_observation::{
+    LimitRowTracePhase, LimitRowTraceSample, NativeGenericJointUpdateSample,
+    NativeJointRowTraceSample,
+};
 
 #[cfg(feature = "alloc")]
 pub use self::multibody::{Multibody, MultibodyDofCoupling};

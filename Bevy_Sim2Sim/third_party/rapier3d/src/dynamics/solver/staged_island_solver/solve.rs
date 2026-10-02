@@ -141,15 +141,48 @@ pub(super) unsafe fn solve_pass(
                     generic_velocity_constraints,
                     ..
                 } = joints;
-                for c in generic_velocity_constraints.iter_mut() {
+                for (row_index, c) in generic_velocity_constraints.iter_mut().enumerate() {
                     if wo_bias {
                         c.remove_bias_from_rhs();
                     }
+                    #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+                    let before = (!c.is_rigid_body2
+                        && c.solver_vel2 != u32::MAX
+                        && c.ndofs1 == 0
+                        && c.solver_vel1 == u32::MAX)
+                        .then(|| {
+                            (
+                                c.impulse,
+                                vs.generic_solver_vels
+                                    .rows(c.solver_vel2 as usize, c.ndofs2)
+                                    .iter()
+                                    .copied()
+                                    .collect(),
+                            )
+                        });
                     c.solve(
                         generic_jacobians,
                         &mut vs.solver_bodies,
                         &mut vs.generic_solver_vels,
                     );
+                    #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
+                    if let Some((impulse_before, velocity_before)) = before {
+                        // Worker zero owns this generic stage. This only copies
+                        // the row operands and velocities after its original solve.
+                        let multibodies = unsafe { &mut *ctx.multibodies };
+                        multibodies.observe_generic_joint_update(
+                            &vs.multibody_roots,
+                            c,
+                            row_index,
+                            wo_bias,
+                            impulse_before,
+                            velocity_before,
+                            generic_jacobians.as_slice(),
+                            vs.generic_solver_vels.as_slice(),
+                        );
+                    }
+                    #[cfg(any(not(feature = "sim2sim-limit-row-trace"), feature = "parallel"))]
+                    let _ = row_index;
                 }
             }
             sync.complete(stage, 1, 1);

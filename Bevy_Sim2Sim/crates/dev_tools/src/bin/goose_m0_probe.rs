@@ -53,6 +53,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !["all", "jaw_only"].contains(&stop_scope) {
         return Err("diagnostic stop scope must be all or jaw_only".into());
     }
+    let recycling = option("--contact-recycling")
+        .map(String::as_str)
+        .unwrap_or("default");
+    if !["default", "off"].contains(&recycling) {
+        return Err("diagnostic contact recycling must be default or off".into());
+    }
+    let prediction = option("--prediction-mode")
+        .map(String::as_str)
+        .unwrap_or("default");
+    if !["default", "two_mm"].contains(&prediction) {
+        return Err("diagnostic prediction mode must be default or two_mm".into());
+    }
     if ticks == 0 || ticks > 100 || resets == 0 || resets > 20 || ![4, 8, 16, 32].contains(&pgs) {
         return Err("bounded M0 requires ticks1..100, cold-resets1..20, PGS4/8/16/32".into());
     }
@@ -111,6 +123,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "controller_gravity_feedforward":{"status":"not_checked"},
         "same_world_reset_cleanup":{"status":"not_checked"}
     }});
+    receipt["contact_reporting"] = json!(
+        "ContactPair::solver_manifolds() matches native solver clustering; raw source manifolds reported separately"
+    );
+    receipt["diagnostic_contact_recycling"] = json!(recycling);
+    receipt["diagnostic_prediction_mode"] = json!(prediction);
+    receipt["numerical_contract_override"] =
+        json!(stop_scope != "all" || recycling != "default" || prediction != "default");
     let mut trace = Vec::new();
     let mut times = Vec::new();
     let mut failures = Vec::new();
@@ -122,6 +141,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .num_internal_pgs_iterations = pgs;
         if scene == "zero_gravity" {
             simulation.world.gravity = Vector::ZERO;
+        }
+        if recycling == "off" {
+            simulation.world.integration_parameters.contact_recycling = false;
+        }
+        if prediction == "two_mm" {
+            simulation
+                .world
+                .integration_parameters
+                .normalized_prediction_distance = 0.002;
+        }
+        if reset == 0 {
+            receipt["native_contact_parameters"] = json!({
+                "prediction_distance_m":simulation.world.integration_parameters.prediction_distance(),
+                "contact_recycling":simulation.world.integration_parameters.contact_recycling});
         }
         let assembly = match GooseAssembly::build(&mut simulation, &plant) {
             Ok(assembly) => assembly,
@@ -200,6 +233,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut maximum_pin_error = 0.0_f32;
         for tick in 0..ticks {
             let started = Instant::now();
+            let collider_poses_before: std::collections::HashMap<_, _> = simulation
+                .world
+                .colliders
+                .iter()
+                .map(|(handle, collider)| (handle, *collider.position()))
+                .collect();
             let mut torque = [0.0; 18];
             torque[5] = if tick < 25 { 0.24 } else { 0.0 };
             let snapshot = match assembly.step(&mut simulation, torque) {
@@ -227,11 +266,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             (Some(*handle) == body).then_some(name.clone())
                         }).unwrap_or_else(|| "scene".into())
                     };
-                    let minimum_distance = pair.manifolds.iter().flat_map(|manifold| manifold.points.iter())
+                    let solver_manifolds = pair.solver_manifolds();
+                    let minimum_distance = solver_manifolds.iter().flat_map(|manifold| manifold.points.iter())
                         .map(|point| point.dist).reduce(f32::min);
+                    let source_minimum_distance = pair.manifolds.iter().flat_map(|manifold| manifold.points.iter())
+                        .map(|point| point.dist).reduce(f32::min);
+                    let source_geometry = |collider: ColliderHandle, subshape: u32| {
+                        assembly.collider_source_groups.get(collider.into_raw_parts().0 as usize)
+                            .and_then(|group|group.get(subshape as usize))
+                    };
+                    let closest_source = pair.manifolds.iter().flat_map(|manifold| {
+                        manifold.points.iter().map(move |point|(manifold,point))
+                    }).min_by(|a,b|a.1.dist.total_cmp(&b.1.dist)).map(|(manifold,point)| {
+                        let leaf_query = simulation.world.colliders[pair.collider1].shape().as_compound()
+                            .zip(simulation.world.colliders[pair.collider2].shape().as_compound())
+                            .and_then(|(a,b)|a.shapes().get(manifold.subshape1 as usize)
+                                .zip(b.shapes().get(manifold.subshape2 as usize)))
+                            .map(|((local1,shape1),(local2,shape2))| {
+                                let pose1 = collider_poses_before[&pair.collider1] * *local1;
+                                let pose2 = collider_poses_before[&pair.collider2] * *local2;
+                                let distance = rapier3d::parry::query::distance(&pose1,&**shape1,&pose2,&**shape2);
+                                let contact = rapier3d::parry::query::contact(&pose1,&**shape1,&pose2,&**shape2,0.02);
+                                let intersection = rapier3d::parry::query::intersection_test(&pose1,&**shape1,&pose2,&**shape2);
+                                let aabb1 = shape1.compute_aabb(&pose1);
+                                let aabb2 = shape2.compute_aabb(&pose2);
+                                let fresh_manifolds: Vec<_> = [0.02,0.002].into_iter().map(|margin| {
+                                    let mut manifolds: Vec<rapier3d::geometry::ContactManifold> = Vec::new();
+                                    let mut workspace = None;
+                                    let supported = rapier3d::parry::query::PersistentQueryDispatcher::contact_manifolds(
+                                        &rapier3d::parry::query::DefaultQueryDispatcher,
+                                        &pose1.inv_mul(&pose2),&**shape1,&**shape2,margin,
+                                        &mut manifolds,&mut workspace).is_ok();
+                                    json!({"prediction_m":margin,"supported":supported,
+                                        "point_count":manifolds.iter().map(|m|m.points.len()).sum::<usize>(),
+                                        "minimum_distance_m":manifolds.iter().flat_map(|m|m.points.iter()).map(|p|p.dist).reduce(f32::min)})
+                                }).collect();
+                                json!({"distance_m":distance.ok(),"contact_distance_m":contact.ok().flatten().map(|c|c.dist),
+                                    "fresh_manifold_queries":fresh_manifolds,
+                                    "intersection":intersection.ok(),"aabb1_min":aabb1.mins.to_array(),
+                                    "aabb1_max":aabb1.maxs.to_array(),"aabb2_min":aabb2.mins.to_array(),
+                                    "aabb2_max":aabb2.maxs.to_array(),"pose_time":"before this Tick integration"})
+                            });
+                        json!({
+                        "geom1":source_geometry(pair.collider1,manifold.subshape1),
+                        "geom2":source_geometry(pair.collider2,manifold.subshape2),
+                        "subshape1":manifold.subshape1,"subshape2":manifold.subshape2,
+                        "distance_m":point.dist,"standalone_native_leaf_query":leaf_query})
+                    });
                     json!({"body1":owner(pair.collider1),"body2":owner(pair.collider2),
-                        "minimum_distance_m":minimum_distance,"manifold_count":pair.manifolds.len(),
-                        "solver_contact_count":pair.manifolds.iter().map(|m| m.data.solver_contacts.len()).sum::<usize>()})
+                        "minimum_distance_m":minimum_distance,"source_minimum_distance_m":source_minimum_distance,
+                        "closest_source_geometry":closest_source,
+                        "source_manifold_count":pair.manifolds.len(),"solver_manifold_count":solver_manifolds.len(),
+                        "solver_contact_count":solver_manifolds.iter().map(|m| m.data.solver_contacts.len()).sum::<usize>()})
                 }).collect();
             trace.push(json!({"reset":reset,"tick":tick,"snapshot":snapshot,"q_rad":state.joint_position_rad,
                 "qd_rad_s":state.joint_velocity_rad_s,"jaw_pin_error_m":pin_error,
@@ -272,13 +358,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "impulse_bounds":row.impulse_bounds})
                         })
                         .collect();
+                    let updates: Vec<_> = observation.generic_joint_updates.iter().map(|row| json!({
+                        "row_index":row.row_index,"without_bias":row.without_bias,
+                        "writeback_kind":row.writeback_kind,"joint_index":row.joint_index,
+                        "impulse_before":row.impulse_before,"impulse_after":row.impulse_after,
+                        "impulse_bounds":row.impulse_bounds,"jacobian":row.jacobian,
+                        "weighted_jacobian":row.weighted_jacobian,"velocity_before":row.velocity_before,
+                        "velocity_after":row.velocity_after,"rhs":row.rhs,"cfm_gain":row.cfm_gain,
+                        "inverse_row_inertia":row.inverse_row_inertia})).collect();
                     trace.last_mut().unwrap()["native_coupled_solve"] = json!({
                         "valid":true,"epoch":observation.epoch,"dt_s":observation.full_step_dt(),
                         "energy_guard_fallback":observation.energy_guard_fallback,
                         "energy_guard_acceleration_cleared":observation.energy_guard_acceleration_cleared,
                         "mass_matrix_phase":"native constraint matrix last computed before integration",
                         "mass_matrix":(0..matrix.nrows()).map(|i|matrix.row(i).iter().copied().collect::<Vec<_>>()).collect::<Vec<_>>(),
-                        "backend_dof_mapping":mapping,"pin_rows":rows,"limit_rows":limit_rows});
+                        "backend_dof_mapping":mapping,"pin_rows":rows,"limit_rows":limit_rows,
+                        "generic_joint_updates":updates});
                 } else {
                     trace.last_mut().unwrap()["native_coupled_solve"] = json!({"valid":false});
                 }
@@ -313,7 +408,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     times.sort_by(f64::total_cmp);
     let actual_resets = receipt["resets"].as_array().map_or(0, Vec::len);
     let finished = failures.is_empty() && actual_resets == resets && trace.len() == resets * ticks;
-    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" {"passed"} else if finished {"partial"} else {"failed"},
+    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" {"passed"} else if finished {"partial"} else {"failed"},
         "measurement_passed":finished,"scope":"fresh_world_reinitialization; same-world scene retention/handle cleanup not tested",
         "reset_count":actual_resets,"requested_resets":resets,"requested_ticks_per_reset":ticks,
         "completed_integrations":trace.len(),"failures":failures,

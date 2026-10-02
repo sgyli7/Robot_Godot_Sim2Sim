@@ -124,6 +124,41 @@ pub struct NativeJointRowTraceSample {
     pub inverse_row_inertia: Real,
 }
 
+/// Read-only operands immediately before and after one native generic row update.
+/// This diagnostic supports a multibody second side and an empty first side.
+#[cfg(feature = "sim2sim-limit-row-trace")]
+#[derive(Clone, Debug)]
+pub struct NativeGenericJointUpdateSample {
+    /// Existing solver row ordinal; repeated ordinals delimit existing passes.
+    pub row_index: usize,
+    /// Whether the existing relaxation pass removed position bias.
+    pub without_bias: bool,
+    /// Original writeback kind, copied before any classification by the consumer.
+    pub writeback_kind: &'static str,
+    /// Original graph joint identity; None identifies an internal row.
+    pub joint_index: Option<usize>,
+    /// Native lambda immediately before this update.
+    pub impulse_before: Real,
+    /// Native lambda immediately after this update.
+    pub impulse_after: Real,
+    /// Original permitted native lambda interval.
+    pub impulse_bounds: [Real; 2],
+    /// Original unweighted second-side Jacobian.
+    pub jacobian: Vec<Real>,
+    /// Original native inverse-mass response to that Jacobian.
+    pub weighted_jacobian: Vec<Real>,
+    /// Native generalized velocities immediately before this row update.
+    pub velocity_before: Vec<Real>,
+    /// Native generalized velocities immediately after this row update.
+    pub velocity_after: Vec<Real>,
+    /// Native row RHS used by this update.
+    pub rhs: Real,
+    /// Native CFM gain used by this update.
+    pub cfm_gain: Real,
+    /// Native reciprocal row inertia used by this update.
+    pub inverse_row_inertia: Real,
+}
+
 /// Partial measurements from one completed full pipeline step.
 ///
 /// The partial getter retains stage-A validity; complete native contact data needs
@@ -159,6 +194,9 @@ pub struct MultibodyObservation {
     /// Original impulse-joint rows at the same diagnostic barriers.
     #[cfg(feature = "sim2sim-limit-row-trace")]
     pub joint_row_timing: Vec<NativeJointRowTraceSample>,
+    /// Per-row update operands, only with the separate serial trace feature.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub generic_joint_updates: Vec<NativeGenericJointUpdateSample>,
     /// Number of recorded native dry-friction row sides.
     pub own_dry_friction_row_side_count: usize,
     /// Whether the existing implicit-Coriolis energy guard was evaluated.
@@ -271,6 +309,55 @@ impl MultibodyObservation {
 }
 
 impl MultibodyJointSet {
+    /// Copy an existing row update without adding a solve or modifying velocities.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub(crate) fn observe_generic_joint_update(
+        &mut self,
+        roots: &[MultibodyLinkId],
+        constraint: &GenericJointConstraint,
+        row_index: usize,
+        without_bias: bool,
+        impulse_before: Real,
+        velocity_before: Vec<Real>,
+        jacobians: &[Real],
+        velocities_after: &[Real],
+    ) {
+        let Some(root) = roots.iter().find(|root| {
+            let mb = &self.multibodies[root.multibody.0];
+            mb.solver_id == constraint.solver_vel2 && mb.ndofs() == constraint.ndofs2
+        }) else {
+            return;
+        };
+        let offset = constraint.j_id2;
+        let ndofs = constraint.ndofs2;
+        let velocity_offset = constraint.solver_vel2 as usize;
+        let sample = NativeGenericJointUpdateSample {
+            row_index,
+            without_bias,
+            writeback_kind: match constraint.writeback_id {
+                WritebackId::Dof(_) => "dof",
+                WritebackId::Limit(_) => "limit",
+                WritebackId::Motor(_) => "motor",
+                WritebackId::Friction(_) => "friction",
+            },
+            joint_index: (constraint.joint_id != usize::MAX).then_some(constraint.joint_id),
+            impulse_before,
+            impulse_after: constraint.impulse,
+            impulse_bounds: constraint.impulse_bounds,
+            jacobian: jacobians[offset..offset + ndofs].to_vec(),
+            weighted_jacobian: jacobians[offset + ndofs..offset + 2 * ndofs].to_vec(),
+            velocity_before,
+            velocity_after: velocities_after[velocity_offset..velocity_offset + ndofs].to_vec(),
+            rhs: constraint.rhs,
+            cfm_gain: constraint.cfm_gain,
+            inverse_row_inertia: constraint.inv_lhs,
+        };
+        self.multibodies[root.multibody.0]
+            .sim2sim_observation
+            .generic_joint_updates
+            .push(sample);
+    }
+
     /// Capture one checkpoint without changing constraint state or solver velocity.
     #[cfg(feature = "sim2sim-limit-row-trace")]
     pub(crate) fn observe_limit_row_timing(

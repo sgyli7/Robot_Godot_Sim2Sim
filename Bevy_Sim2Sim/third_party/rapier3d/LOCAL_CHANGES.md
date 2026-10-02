@@ -52,3 +52,11 @@ matrix in native reduced-coordinate order. Neither path adds a factorization,
 solve, velocity write, position write or temporal step. These operands diagnose
 whole-body loop residuals; a small inverse-mass residual alone does not qualify
 loop convergence or physical behavior.
+
+The serial trace feature can additionally copy each original generic joint row's
+lambda, bounds, Jacobian, inverse-mass response, RHS, CFM and generalized velocities
+immediately before and after its existing solve. Row ordinals and the bias-pass
+flag preserve the original update order. Collection supports an empty first side
+and multibody second side; other ownership patterns are omitted. It adds no solve
+or write to physical state. These extra copies are a development diagnostic and
+must not be used as production performance evidence.

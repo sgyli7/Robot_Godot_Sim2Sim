@@ -167,7 +167,7 @@ Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/Project
 
 本检查点 Python 30 项、Goose 合同 5 项、simulation/armature/预测限位 27 项通过；10 项依赖外部冻结夹具的既有 simulation 检查未运行。[510 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_pad_candidate_checkpoint.json)、格式及空白检查通过。实际执行源码和原生依赖哈希冻结在备份目录；GPU 使用为零，M0/M1 未通过。
 
-补充 [目标端接触轨迹](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_be_v2_target_contacts/receipt.json)：前 12 Tick 的关节坐标、速度和销点距离与原收据逐项完全一致，只读记录不改变物理。首 Tick 的 31 个有 manifold 点的 body pair 中，19 个没有 solver contact，实际求解接触来自 12 个脚垫与地面。第 10 Tick 嘴销误差突增时也没有嘴部求解接触；不能把 manifold 数量直接当作发生碰撞的证据，后续需检查整机耦合求解及脚底载荷传播。
+补充 [目标端接触轨迹](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_be_v2_target_contacts/receipt.json)：前 12 Tick 的关节坐标、速度和销点距离与原收据逐项完全一致。**该旧探针误把原始流形当作求解流形，接触计数与“没有嘴部求解接触”的结论撤回**；对应纠正清单另存，见下文最新接触检查点。物理轨迹和实际执行源码继续保留。
 
 下一周期以 **整机接触与任务碰撞代理** 为主线：先对齐同初态下的接触对、距离和约束，再建立保留空腔、脚底、嘴部及干涉关键面的代理，分别量化源／目标载荷、冲击、销点闭合和吞吐。原几何失败保留，不扩张排除项、不延长预算凑过关，不再重复已通过的固定头嘴部或脚垫微实验。之后才进行同世界重置、实际控制器和 GPU 小批量准入。
 
@@ -175,7 +175,7 @@ Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/Project
 
 ### 整机耦合诊断检查点
 
-[无地面诊断对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_coupling_comparison/receipt.json)保留全部原始身体、自碰撞几何和过滤：零重力与自由落体各 20 Tick 均没有实际 solver contact，最大嘴销误差分别 **0.768 mm**、**0.711 mm**。误差不能仅归因于脚底载荷传播。只保留嘴部预测限位的对照，销点误差完全一致，主动坐标和速度最大差分别为 4.64e−12 rad、2.33e−10 rad/s；不据此修改正式限位合同。
+[无地面诊断对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_coupling_comparison/receipt.json)保留全部原始身体、自碰撞几何和过滤：零重力与自由落体的最大嘴销误差分别为 **0.768 mm**、**0.711 mm**。**旧接触计数及“零求解接触”结论已撤回**，因为求解器使用聚类后的 `solver_manifolds()`。只保留嘴部预测限位的对照，销点误差完全一致，主动坐标和速度最大差分别为 4.64e−12 rad、2.33e−10 rad/s；不据此修改正式限位合同。
 
 只读记录的 `M*WJ-J` 相对残差约 1e−7 至 7.6e−7，没有触发原生能量守卫回退；但第 12、15 Tick 积分前销点行的速度残差分别为 **0.00959 m/s**、**−0.03838 m/s**，与随后 0.192、0.768 mm 的位置漂移吻合。现有证据尚未定位产生残差的具体约束更新。[扩展限位记录](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_coupling_limit_trace/receipt.json)加入原生 Jacobian、加权 Jacobian、速度、RHS、CFM、矩阵和限位行，状态与原探针逐项完全一致；[实际执行源码与二进制](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/full50_coupling_limit_trace_code/verified_snapshot.json)全部冻结。PGS8 的最大误差反而增至 **2.680 mm**，停止扩大迭代数扫描。
 
@@ -184,3 +184,19 @@ Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/Project
 下一轮限定两个可检验问题：用逐次原生约束更新记录定位销点行残差首次出现的位置；从 CAD 已有壳体面和关键接触区域构造更少几何的代理，先做静态距离与空腔对照。每个实验预先限定时间与输出，未改善时保留失败并回到诊断，不重复固定头微实验或增加 PGS 扫描。M0/M1 仍未通过。
 
 本轮启用只读记录的 simulation、完整惯量和预测限位回归 **31 项通过，10 项外部夹具检查未运行**；Rust 格式和 Git 空白检查通过。运行时代码、开发工具与实验产物继续遵循 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)，[本轮结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_coupling_checkpoint.json)作为提交门槛。原先平铺的 `goose_contract.rs` 已归入 `crates/modules/robot/src/goose/contract.rs`，不另设工程规则入口。
+
+### 求解接触统计纠正与同状态几何检查点
+
+最新权威入口为 [接触检查点及撤回清单](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/contact_manifold_checkpoint.json)。原探针过滤使用 `has_any_active_contact()`，计数却读取原始 `pair.manifolds`；开启聚类时，实际求解器使用 `pair.solver_manifolds()`。旧计数为零不代表没有求解接触。修正后零重力首 Tick 有 **2,401 个求解候选接触点**，包含正距离的预测点，不能把该数量直接当作非零力或真实相撞数量。旧收据保持原样，并分别附上 `contact_reporting_correction.json`。
+
+逐次原生行更新显示：嘴部两条约束行在自身求解后残差约 1e−9 至 1e−8 m/s；较大的速度改变量出现在随后的接触求解阶段，再进入下一轮关节求解。关闭 Rapier 接触复用没有改变 20 Tick 的状态。源端以相同初态、零重力、无地面、rotor **0.24 Nm**、其他执行器零力矩运行 [20 Tick 对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_source_prescribed_zero_gravity/receipt.json)，没有嘴部求解接触，最大销点误差 **2.98e−9 m**。
+
+[同状态几何核对](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_same_state_geometry/receipt.json)定位到 `beak_input_bush_candidate_collision_005/007` 与 `beak_motor_catalog_case_collision_000`：目标端原始流形报告 **−1.846/−5.586 mm**，但身体位姿差仅 26–56 nm；MuJoCo、独立双精度凸体相交检查、目标端原生 f32 的独立距离／接触查询，都确认这两块凸体相距约 **8.075 mm**。原生 f32 的新建叶流形也得到正距离。[原生叶查询收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_native_leaf_query/receipt.json)保留全部证据。因此问题已缩小到复合体持久流形路径的一致性，尚未定位库内具体触发条件；不能以关节质量矩阵误差或硬件碰撞作结论。
+
+保留原几何与过滤，仅在开发探针把预测距离从默认 **20 mm** 改为 **2 mm**，得到 [新受控短试验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_prediction_two_mm/receipt.json)：零重力 20 Tick 最大销点误差 **0.120 µm**。记录功能开启／关闭时坐标、速度和销点误差完全一致；[关闭记录的构建](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_two_mm_feature_off/receipt.json)物理 P95 **9.80 ms**。这只覆盖无地面的规定力矩程序，没有 Actor、用户输入或全技能验收；2 mm 参数仍是声明的诊断覆盖项，未晋升正式运行合同。
+
+带地面 100 Tick 的 [PGS4 试验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_two_mm_floor_pilot/receipt.json)仍不合格：P95 **105.00 ms**，最大销点误差 **2.103 mm**，最大报告穿透 **44.36 mm**，来自右脚垫与地面。因接触路径已改变，额外执行一次 [PGS32 对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_two_mm_floor_pgs32/receipt.json)：P95 **29.71 ms**、销点误差 **0.233 mm**、最大报告穿透 **27.09 mm**，仍未达到物理及性能门槛。停止该分支的冷重置长批与迭代扫描，不据短试验宣告 50 Hz 或 M0 合格。
+
+下一周期以 **足底与整机任务碰撞代理** 为单一主线：在同状态下先核对脚垫—地面接触距离、实际冲量及限位响应，再做保留空腔和脚嘴关键面的几何简化，用源／目标对照验证载荷与冲击。保持真实质量、完整惯量、K/C/A、原碰撞过滤及 65／18、82／18 Actor 合同。源与目标同版物理准入前不开始 PPO；M0/M1 均未通过，GPU 使用为零。上一轮归类为有证据推进，本轮同样产出了改变下一行动的真实收据。
+
+本检查点 **31 项回归通过、10 项外部夹具检查未运行**，开启／关闭记录的真实整机轨迹对照通过；[510 项工程结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_contact_manifold_checkpoint.json)、Rust 格式和 Git 空白检查通过。所有临时脚本、模型、收据、轨迹与按执行哈希冻结的源码仍在项目备份目录。
