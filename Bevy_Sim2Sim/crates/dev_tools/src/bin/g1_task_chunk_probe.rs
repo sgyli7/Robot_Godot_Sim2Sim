@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use simulation_minigame::g1::{
@@ -19,6 +20,20 @@ use simulation_minigame::g1::{
     worker::{ArenaTaskWorker, G1WorkerPhase, TimedArenaTaskCommand},
 };
 use task_minigame::policy::{ARENA_ACTION_PERIOD_NS, PolicyActionChunk};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedSequence {
+    schema: String,
+    chunks: Vec<PolicyActionChunk>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SavedInput {
+    Chunk(PolicyActionChunk),
+    Sequence(SavedSequence),
+}
 
 fn bounded_read(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     if fs::metadata(path).map_err(|e| e.to_string())?.len() > max {
@@ -56,29 +71,42 @@ fn main() -> Result<(), String> {
         let chunk_bytes = bounded_read(Path::new(&args[1]), 1_048_576)?;
         let config: ArenaTaskRunnerConfig =
             serde_json::from_slice(&config_bytes).map_err(|e| e.to_string())?;
-        let chunk: PolicyActionChunk =
-            serde_json::from_slice(&chunk_bytes).map_err(|e| e.to_string())?;
-        if chunk.observation.episode_id != config.body.episode_id()
-            || chunk.profile != config.body.profile()
-            || chunk.observation.sim_time_ns != 0
-        {
-            return Err(
-                "saved chunk must match the fresh diagnostic world episode/profile/Tick zero"
-                    .into(),
-            );
+        let input: SavedInput = serde_json::from_slice(&chunk_bytes).map_err(|e| e.to_string())?;
+        let chunks = match input {
+            SavedInput::Chunk(chunk) => vec![chunk],
+            SavedInput::Sequence(sequence) if sequence.schema == "g1_saved_action_sequence_v1" => {
+                sequence.chunks
+            }
+            _ => return Err("unrecognized saved sequence schema".into()),
+        };
+        if chunks.is_empty() || chunks.len() > 8 {
+            return Err("offline comparison requires 1..=8 original chunks".into());
         }
-        let expected_ticks = chunk.frames.len() as u64;
-        let duration_ns = expected_ticks
-            .checked_mul(ARENA_ACTION_PERIOD_NS)
-            .ok_or("chunk duration overflow")?;
+        let mut expected_ticks = 0;
+        let mut expected_frames = Vec::new();
+        let mut previous_sequence = 0;
+        for chunk in &chunks {
+            if chunk.observation.episode_id != config.body.episode_id()
+                || chunk.profile != config.body.profile()
+                || chunk.observation.sim_time_ns != expected_ticks * ARENA_ACTION_PERIOD_NS
+                || chunk.sequence_id <= previous_sequence
+            {
+                return Err("original chunks must match the same world, profile and successive physical boundaries".into());
+            }
+            expected_frames.extend((0..chunk.frames.len()).map(|i| (chunk.sequence_id, i)));
+            expected_ticks += chunk.frames.len() as u64;
+            previous_sequence = chunk.sequence_id;
+        }
         receipt["config_sha256"] = json!(format!("{:x}", Sha256::digest(&config_bytes)));
         receipt["chunk_sha256"] = json!(format!("{:x}", Sha256::digest(&chunk_bytes)));
-        receipt["input_observation"] = json!(chunk.observation);
+        receipt["input_observations"] =
+            json!(chunks.iter().map(|c| c.observation).collect::<Vec<_>>());
         receipt["expected_ticks"] = json!(expected_ticks);
         let owner = ArenaTaskWorker::spawn(config).map_err(|e| e.to_string())?;
         let start = Instant::now();
         let deadline = start + Duration::from_secs(30);
-        let mut submitted = false;
+        let mut submitted_chunks = 0;
+        let mut next_boundary_tick = 0;
         let mut observed_frames = Vec::new();
         while Instant::now() < deadline {
             let Some(snapshot) = owner.take_latest() else {
@@ -106,7 +134,7 @@ fn main() -> Result<(), String> {
                     .unwrap_or("task owner failed".into()));
             }
             if let Some(step) = &snapshot.step {
-                let index = step.execution.frame_index;
+                let index = (step.execution.sequence_id, step.execution.frame_index);
                 if observed_frames.last() != Some(&index) {
                     observed_frames.push(index);
                     serde_json::to_writer(&mut trace, step.as_ref()).map_err(|e| e.to_string())?;
@@ -114,23 +142,29 @@ fn main() -> Result<(), String> {
                     trace.flush().map_err(|e| e.to_string())?;
                 }
             }
-            if !submitted && snapshot.phase == G1WorkerPhase::Paused {
-                owner
-                    .submit(TimedArenaTaskCommand {
-                        episode_id: chunk.observation.episode_id,
-                        valid_until_sim_ns: duration_ns,
-                        valid_until_wall: Instant::now() + Duration::from_secs(5),
-                        command: ArenaTaskCommand {
-                            chunk: Arc::new(chunk.clone()),
-                        },
-                    })
-                    .map_err(|e| e.to_string())?;
-                submitted = true;
-            } else if submitted && snapshot.phase == G1WorkerPhase::Paused {
+            if snapshot.phase == G1WorkerPhase::Paused
+                && snapshot.timing.episode_integrations == next_boundary_tick
+            {
+                if submitted_chunks < chunks.len() {
+                    let chunk = &chunks[submitted_chunks];
+                    next_boundary_tick += chunk.frames.len() as u64;
+                    owner
+                        .submit(TimedArenaTaskCommand {
+                            episode_id: chunk.observation.episode_id,
+                            valid_until_sim_ns: next_boundary_tick * ARENA_ACTION_PERIOD_NS,
+                            valid_until_wall: Instant::now() + Duration::from_secs(5),
+                            command: ArenaTaskCommand {
+                                chunk: Arc::new(chunk.clone()),
+                            },
+                        })
+                        .map_err(|e| e.to_string())?;
+                    submitted_chunks += 1;
+                    continue;
+                }
                 if snapshot.timing.episode_integrations != expected_ticks
                     || snapshot.timing.episode_torque_updates != expected_ticks
                     || snapshot.timing.episode_successful_inferences != expected_ticks
-                    || observed_frames != (0..expected_ticks as usize).collect::<Vec<_>>()
+                    || observed_frames != expected_frames
                 {
                     return Err(
                         "native chunk missed/restarted frames or changed physical update counts"
