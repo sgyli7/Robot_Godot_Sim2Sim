@@ -212,3 +212,13 @@ Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/Project
 Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD／求解时间步；默认仍为原值，MicroDuck 的步进规则保持原值。此选择尚未晋升正式候选。下一次对照检查整机关节几何在关闭 CCD 后是否一致，并建立源／目标同版本的 20 ms 法向接触试验；不继续盲扫 PGS。任务碰撞代理继续保持空腔、脚嘴关键面及原自碰撞过滤。**M0 未通过，PPO／GPU 使用仍为零。**
 
 结果、范围和下一问题集中在 [足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/guided_sole_checkpoint.json)。运行时代码位于 `crates/modules/simulation/src/`；新增 Rust、Python 夹具分别位于 `crates/dev_tools/src/bin/`、`crates/dev_tools/python/src/bevy_microduck_tools/goose/`；临时模型、日志、收据与冻结源码均位于项目备份目录。模拟库 **22 项通过、10 项外部夹具未运行**，Goose Python **30 项通过**，工程结构、Rust 格式及 Git 空白检查通过。
+
+### 整机 CCD 配对与预测法向接触检查点
+
+[关闭 CCD 的整机对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_floor_ccd_off/receipt.json)和 [同代码开启 CCD 的控制组](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_floor_ccd_on_control/receipt.json)各运行 100 Tick，保留 33 体、全部原始几何／过滤、PGS32 与 2 mm 预测距离。两组的实际身体位姿、主动坐标、速度、嘴销误差完全相同，刚体—原生关节链位置差均为零。物理 P95 分别 **6.96／24.93 ms**，只代表这次本机规定力矩程序；关闭 CCD 没有改善该程序的 **0.233 mm** 嘴销误差。脚垫实际最低点的最大地面穿透为 **4.43 mm**；原始接触流形的最大负距离来自嘴与躯干，不能将其当作足底穿透。此前可移动足底的 CCD 失配不能外推为这份整机轨迹的根因。
+
+新增显式 `predictive_rigid` **无摩擦法向接触实验**：源端以 2 mm 接触搜索带，用实际有符号距离建立 `v_next ≥ −distance / 20 ms` 的原生单边行；目标端保留原生接触求解，声明接触系数、零容许穿透、关闭接触复用与 CCD、PGS32。两者仍有有限正则化及 Newton／PGS 差别，不声称完整接触法则已等价。真实质量、完整惯量、K/C/A、六个原始脚垫和初态未改变；没有积分后的坐标改写，也没有额外时间子步。默认 v2 源端／游戏接触行为不采用这个局部实验。
+
+[源端](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_predictive_source/receipt.json)与 [目标端](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_predictive_target/receipt.json)各完成 7 个程序、700 次积分。源端四档静载已不穿过有限厚度地面；末 25 Tick 的逐脚垫压缩差小于 **0.000005 mm**，稳态总载荷曲线误差小于 **0.00003%**。加载瞬态的压缩差仍达 **1.26 mm**，冲击首 Tick 仍有约 **69.35 mm** 穿透；不得用稳态成绩代替动态、冲击或整机准入。首 Tick 法向约束新增三档载荷回归，确认实际间隙、单次原生积分和未改写坐标；Goose Python **33 项通过**。
+
+证据、实际执行源码及未通过项集中在 [预测法向接触检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/predictive_normal_checkpoint.json)。下一主线转回任务碰撞代理与复合体持久流形的一致性，保留空腔、脚嘴关键表面和原自碰撞过滤，不再做局部嘴部或 PGS 扫描。**M0 未通过，未启动 PPO／GPU，也未晋升新运行候选。**

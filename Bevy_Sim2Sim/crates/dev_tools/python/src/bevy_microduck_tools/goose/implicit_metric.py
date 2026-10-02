@@ -92,8 +92,15 @@ def prepare_xml(root: ET.Element, physical_model) -> dict:
             "qualification": "CPU experiment only; no GPU or M0 admission"}
 
 
-def native_step(model, data):
-    """One native solve/integration; no coordinate projection or substeps."""
+def native_step(model, data, *, normal_contact_mode="native"):
+    """One native solve/integration; optional declared frictionless normal experiment.
+
+    ``predictive_rigid`` uses each contact's actual signed distance instead of
+    its search margin for the one-Tick unilateral velocity bound. It is only
+    for a separately declared CPU diagnostic; default v2 behavior is unchanged.
+    """
+    if normal_contact_mode not in ("native", "predictive_rigid"):
+        raise ValueError("Unsupported normal contact experiment")
     if (mujoco.__version__ != "3.10.0" or model.opt.timestep != DT
             or model.opt.integrator != int(mujoco.mjtIntegrator.mjINT_EULER)
             or model.opt.solver != int(mujoco.mjtSolver.mjSOL_NEWTON)
@@ -104,13 +111,21 @@ def native_step(model, data):
     rigid_kinds = {int(mujoco.mjtConstraint.mjCNSTR_EQUALITY),
                    int(mujoco.mjtConstraint.mjCNSTR_LIMIT_TENDON)}
     for row in range(data.nefc):
-        if int(data.efc_type[row]) not in rigid_kinds:
+        kind = int(data.efc_type[row])
+        predictive_contact = (normal_contact_mode == "predictive_rigid"
+                              and kind == int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS))
+        if normal_contact_mode == "predictive_rigid" and kind in (
+                int(mujoco.mjtConstraint.mjCNSTR_CONTACT_PYRAMIDAL),
+                int(mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC)):
+            raise RuntimeError("Predictive normal experiment requires frictionless condim=1")
+        if kind not in rigid_kinds and not predictive_contact:
             continue
         # Newton's primal M/J/R system uses the compiled implicit metric.
         # Reprojecting here would overwrite these R/D values from XML solimp.
         data.efc_R[row] = max(1e-12, 1e-7*data.efc_diagA[row])
         data.efc_D[row] = 1./data.efc_R[row]
-        data.efc_aref[row] = -data.efc_vel[row]/DT-data.efc_pos[row]/DT**2
+        distance = float(data.contact[int(data.efc_id[row])].dist) if predictive_contact else data.efc_pos[row]
+        data.efc_aref[row] = -data.efc_vel[row]/DT-distance/DT**2
         if data.nisland:
             index = int(data.map_efc2iefc[row])
             if index < 0:

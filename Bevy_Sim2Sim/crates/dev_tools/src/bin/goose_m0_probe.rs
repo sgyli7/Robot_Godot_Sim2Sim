@@ -65,6 +65,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !["default", "two_mm"].contains(&prediction) {
         return Err("diagnostic prediction mode must be default or two_mm".into());
     }
+    let ccd = option("--ccd-mode")
+        .map(String::as_str)
+        .unwrap_or("default");
+    if !["default", "off"].contains(&ccd) {
+        return Err("diagnostic CCD mode must be default or off".into());
+    }
     if ticks == 0 || ticks > 100 || resets == 0 || resets > 20 || ![4, 8, 16, 32].contains(&pgs) {
         return Err("bounded M0 requires ticks1..100, cold-resets1..20, PGS4/8/16/32".into());
     }
@@ -128,8 +134,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     receipt["diagnostic_contact_recycling"] = json!(recycling);
     receipt["diagnostic_prediction_mode"] = json!(prediction);
-    receipt["numerical_contract_override"] =
-        json!(stop_scope != "all" || recycling != "default" || prediction != "default");
+    receipt["diagnostic_ccd_mode"] = json!(ccd);
+    receipt["numerical_contract_override"] = json!(
+        stop_scope != "all"
+            || recycling != "default"
+            || prediction != "default"
+            || ccd != "default"
+    );
     let mut trace = Vec::new();
     let mut times = Vec::new();
     let mut failures = Vec::new();
@@ -151,10 +162,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .integration_parameters
                 .normalized_prediction_distance = 0.002;
         }
+        if ccd == "off" {
+            simulation.world.integration_parameters.max_ccd_substeps = 0;
+        }
         if reset == 0 {
             receipt["native_contact_parameters"] = json!({
                 "prediction_distance_m":simulation.world.integration_parameters.prediction_distance(),
-                "contact_recycling":simulation.world.integration_parameters.contact_recycling});
+                "contact_recycling":simulation.world.integration_parameters.contact_recycling,
+                "max_ccd_substeps":simulation.world.integration_parameters.max_ccd_substeps});
         }
         let assembly = match GooseAssembly::build(&mut simulation, &plant) {
             Ok(assembly) => assembly,
@@ -254,6 +269,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let state = assembly.state(&simulation)?;
             let pin_error = assembly.jaw_pin_error_m(&simulation);
             maximum_pin_error = maximum_pin_error.max(pin_error);
+            let link_geometry: Vec<_> = assembly
+                .body_handles
+                .iter()
+                .filter_map(|(name, handle)| {
+                    let owner = simulation.world.multibody_joints.rigid_body_link(*handle)?;
+                    let multibody = simulation
+                        .world
+                        .multibody_joints
+                        .get_multibody(owner.multibody)?;
+                    let link = multibody.link(owner.id)?;
+                    let body = &simulation.world.bodies[*handle];
+                    Some(
+                        json!({"body":name,"body_to_native_link_translation_error_m":
+                    (body.translation()-link.local_to_world().translation).length()}),
+                    )
+                })
+                .collect();
+            let pad_ground_geometry: Vec<_> = simulation.world.colliders.iter().filter_map(|(_, collider)| {
+                let owner = collider.parent()?;
+                let name = assembly.body_handles.iter().find_map(|(name, handle)|
+                    (*handle == owner && name.contains("_sole_pad_")).then_some(name))?;
+                let bottom = collider.shape().compute_aabb(collider.position()).mins.y;
+                Some(json!({"patch":name,"post_integration_bottom_m":bottom,
+                    "post_integration_ground_penetration_m":if scene=="floor" {(-bottom).max(0.0)} else {0.0}}))
+            }).collect();
             // Native manifolds were detected before this Tick's integration.
             // Name the actual owners and signed distances without rebuilding
             // collisions from the post-integration published poses.
@@ -322,6 +362,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             trace.push(json!({"reset":reset,"tick":tick,"snapshot":snapshot,"q_rad":state.joint_position_rad,
                 "qd_rad_s":state.joint_velocity_rad_s,"jaw_pin_error_m":pin_error,
                 "native_contact_pairs_pre_integration":contact_pairs,
+                "body_link_geometry_post_integration":link_geometry,
+                "pad_ground_geometry_post_integration":pad_ground_geometry,
                 "physics_wall_ms":physics_wall_ms}));
             #[cfg(feature = "sim2sim_limit_row_trace")]
             {
@@ -408,7 +450,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     times.sort_by(f64::total_cmp);
     let actual_resets = receipt["resets"].as_array().map_or(0, Vec::len);
     let finished = failures.is_empty() && actual_resets == resets && trace.len() == resets * ticks;
-    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" {"passed"} else if finished {"partial"} else {"failed"},
+    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" && ccd=="default" {"passed"} else if finished {"partial"} else {"failed"},
         "measurement_passed":finished,"scope":"fresh_world_reinitialization; same-world scene retention/handle cleanup not tested",
         "reset_count":actual_resets,"requested_resets":resets,"requested_ticks_per_reset":ticks,
         "completed_integrations":trace.len(),"failures":failures,

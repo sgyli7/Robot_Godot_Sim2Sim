@@ -41,6 +41,7 @@ fn case(
     program: &str,
     pgs: usize,
     ccd: usize,
+    normal_mode: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let foot = plant
         .bodies
@@ -61,6 +62,15 @@ fn case(
     world.integration_parameters.num_internal_pgs_iterations = pgs;
     world.integration_parameters.normalized_prediction_distance = 0.002;
     world.integration_parameters.max_ccd_substeps = ccd;
+    if normal_mode == "predictive_rigid" {
+        world.integration_parameters.normalized_allowed_linear_error = 0.0;
+        world
+            .integration_parameters
+            .normalized_max_corrective_velocity = 100.0;
+        world.integration_parameters.contact_softness = SpringCoefficients::new(1.0e6, 1.0);
+        world.integration_parameters.static_contact_softness = SpringCoefficients::new(1.0e6, 1.0);
+        world.integration_parameters.contact_recycling = false;
+    }
     let initial_lift = if program == "impact_half_weight" {
         0.01
     } else {
@@ -302,8 +312,8 @@ fn hash(path: &Path) -> Result<String, std::io::Error> {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    if args.len() != 4 {
-        return Err("usage: goose_sole_probe PHYSICAL_PLANT OUTPUT PGS(4|32) CCD(0|1)".into());
+    if !(4..=5).contains(&args.len()) {
+        return Err("usage: goose_sole_probe PHYSICAL_PLANT OUTPUT PGS(4|32) CCD(0|1) [native|predictive_rigid]".into());
     }
     let plant_path = Path::new(&args[0]).canonicalize()?;
     let output = Path::new(&args[1]);
@@ -318,6 +328,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if ccd > 1 {
         return Err("only zero or one CCD pass, never time subdivision".into());
     }
+    let normal_mode = match args.get(4) {
+        Some(value) => value
+            .to_str()
+            .ok_or("normal-contact experiment must be valid UTF-8")?,
+        None => "native",
+    };
+    if !["native", "predictive_rigid"].contains(&normal_mode) {
+        return Err("unknown explicit normal-contact experiment".into());
+    }
+    if normal_mode == "predictive_rigid" && ccd != 0 {
+        return Err("normal-contact experiment requires coherent CCD-off integration".into());
+    }
     let (plant, plant_hash) = GoosePlant::read(&plant_path)?;
     if plant.candidate_id != "goose_460_full50_v1" {
         return Err("use unchanged original physical ledger".into());
@@ -325,7 +347,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut cases = Vec::new();
     for program in PROGRAMS {
-        cases.push(case(&plant, program, pgs, ccd)?);
+        cases.push(case(&plant, program, pgs, ccd, normal_mode)?);
     }
     let project = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -347,7 +369,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "qualified":false,"m0_passed":false,"optimizer_updates":0,"inference_count":0,
         "programs":PROGRAMS,"ticks_per_program":TICKS,"internal_pgs_iterations":pgs,
         "max_ccd_substeps":ccd,"post_integration_motion_clamping":ccd == 1,
-        "prediction_distance_m":0.002,"contact_recycling":"default","contact_law":"native default normal contact; restitution=0; friction=0",
+        "normal_contact_experiment":normal_mode,
+        "prediction_distance_m":0.002,"contact_recycling":normal_mode != "predictive_rigid",
+        "normal_softness_hz":if normal_mode=="predictive_rigid" {[1.0e6,1.0e6]} else {[30.0,60.0]},
+        "normal_softness_damping_ratio":if normal_mode=="predictive_rigid" {1.0} else {10.0},
+        "allowed_linear_error_m":if normal_mode=="predictive_rigid" {0.0} else {0.005},
+        "max_corrective_velocity_m_s":if normal_mode=="predictive_rigid" {100.0} else {3.0},
+        "contact_law":"native normal-contact solve with declared coefficients; restitution=0; friction=0",
         "fixture_scope":"original physical right foot + six pads; vertical guide locks horizontal/rotational motion; no other foot geometry",
         "external_load":"applied downward on physical foot; zero gravity; no artificial mass augmentation",
         "initial_impact_gap_added_m":0.01,"initial_impact_velocity_m_s":-0.5,

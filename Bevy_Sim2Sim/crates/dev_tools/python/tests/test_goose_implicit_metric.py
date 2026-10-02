@@ -94,3 +94,36 @@ def test_default_runtime_cannot_silently_use_compiled_numerical_inertia(tmp_path
     contract.write_text('{"numerical_metric":{"revision":"goose_joint_backward_euler_predictive_v1"}}')
     with pytest.raises(ValueError, match="explicit experimental runtime"):
         GooseSourceRuntime(tmp_path/"missing_model.xml", contract)
+
+
+@pytest.mark.parametrize("downward_force", [1., 10., 100.])
+def test_predictive_normal_contact_uses_actual_gap_and_one_integration(downward_force, monkeypatch):
+    root = ET.fromstring('''<mujoco><option timestep=".02" gravity="0 0 0" iterations="100" tolerance="1e-12"/>
+      <worldbody><geom type="plane" size="1 1 .1" condim="1"/>
+        <body pos="0 0 .0105"><inertial mass="1" pos="0 0 0" diaginertia=".01 .01 .01"/>
+          <joint name="vertical" type="slide" axis="0 0 1" limited="false"/>
+          <geom type="box" size=".01 .01 .01" condim="1" margin=".002"/>
+        </body>
+      </worldbody></mujoco>''')
+    physical = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    implicit_metric.prepare_xml(root, physical)
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    data = mujoco.MjData(model)
+    data.qfrc_applied[0] = -downward_force
+    calls = {"step1": 0, "step2": 0}
+    for name in calls:
+        native = getattr(mujoco, "mj_"+name)
+
+        def counted(m, d, native=native, name=name):
+            calls[name] += 1
+            native(m, d)
+
+        monkeypatch.setattr(mujoco, "mj_"+name, counted)
+    implicit_metric.native_step(model, data, normal_contact_mode="predictive_rigid")
+    expected_displacement = max(-.0005, -downward_force*DT**2)
+    assert data.qpos[0] == pytest.approx(expected_displacement, abs=1e-8)
+    assert data.qpos[0] == pytest.approx(DT*data.qvel[0], abs=1e-14)
+    assert data.time == pytest.approx(DT)
+    assert calls == {"step1": 1, "step2": 1}
+    assert all(c.dist == pytest.approx(.0005) for c in data.contact)
+    assert not any(w.number for w in data.warning)

@@ -30,7 +30,7 @@ def inertial(element, body):
                                      tensor[0, 1], tensor[0, 2], tensor[1, 2]]))
 
 
-def fixture(plant, path, impact):
+def fixture(plant, path, impact, normal_mode="native"):
     bodies = {b["name"]: b for b in plant["bodies"]}
     foot = bodies["right_ankle_roll"]
     pads = [j for j in plant["joints"] if j["parent"] == foot["name"] and j["kind"] == "slide"]
@@ -65,7 +65,8 @@ def fixture(plant, path, impact):
                       frictionloss=str(joint["frictionloss"]), springref="0", limited="true")
         ET.SubElement(element, "geom", name=geometry["name"], type="box", size=values(geometry["half_extents_m"]),
                       friction="0 0 0", contype="2", conaffinity="1", condim="1",
-                      solref="0.005 1", solimp="0.95 0.99 0.001 0.5 2")
+                      solref="0.005 1", solimp="0.95 0.99 0.001 0.5 2",
+                      margin="0.002" if normal_mode == "predictive_rigid" else "0")
     physical = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     ledger = implicit_metric.prepare_xml(root, physical)
     ET.indent(root, space="  ")
@@ -81,7 +82,7 @@ def load(program, tick, mass):
     return mass*9.81/2
 
 
-def one_case(model, plant, pads, bodies, program):
+def one_case(model, plant, pads, bodies, program, normal_mode="native"):
     data = mujoco.MjData(model)
     if program == "impact_half_weight":
         data.qvel[0] = -.5
@@ -96,7 +97,7 @@ def one_case(model, plant, pads, bodies, program):
         data.qfrc_applied[0] = -downward
         started = time.perf_counter()
         try:
-            implicit_metric.native_step(model, data)
+            implicit_metric.native_step(model, data, normal_contact_mode=normal_mode)
         except (RuntimeError, mujoco.FatalError) as exc:
             reason = str(exc)
             break
@@ -145,6 +146,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plant", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--normal-contact-mode", choices=("native", "predictive_rigid"), default="native")
     args = parser.parse_args(argv)
     plant_path, output = args.plant.resolve(), args.output.resolve()
     if output.parent.exists() and any(output.parent.iterdir()):
@@ -158,9 +160,9 @@ def main(argv=None):
     cases, ledgers = [], []
     for impact in (False, True):
         path = output.parent/("impact.xml" if impact else "static.xml")
-        model, ledger, pads, bodies = fixture(plant, path, impact)
+        model, ledger, pads, bodies = fixture(plant, path, impact, args.normal_contact_mode)
         ledgers.append({"impact": impact, "model_sha256": sha256(path), "numerical_metric": ledger})
-        cases.extend(one_case(model, plant, pads, bodies, name) for name in PROGRAMS
+        cases.extend(one_case(model, plant, pads, bodies, name, args.normal_contact_mode) for name in PROGRAMS
                      if (name == "impact_half_weight") == impact)
     receipt = {"schema": "goose_guided_sole_source_diagnostic_v1", "engine": "mujoco_cpu", "engine_version": mujoco.__version__,
                "plant_sha256": sha256(plant_path), "physics_dt_s": DT, "integrations_per_tick": 1,
@@ -168,8 +170,11 @@ def main(argv=None):
                "optimizer_updates": 0, "inference_count": 0, "programs": PROGRAMS, "ticks_per_program": TICKS,
                "fixture_scope": "original physical right foot + six pads; vertical guide; no other foot geometry",
                "external_load": "downward generalized force on physical foot; zero gravity; no added physical mass",
-               "contact_law": {"normal": "MuJoCo native compliant contact", "solref": [.005, 1],
+               "contact_law": {"normal": "explicit predictive rigid normal rows" if args.normal_contact_mode == "predictive_rigid" else "MuJoCo native compliant contact", "xml_solref": [.005, 1],
                                "solimp": [.95, .99, .001, .5, 2], "friction": 0, "condim": 1},
+               "normal_contact_experiment": args.normal_contact_mode,
+               "normal_search_margin_m": .002 if args.normal_contact_mode == "predictive_rigid" else 0,
+               "normal_row_law": "v_next >= -actual_signed_distance/DT; native unilateral solve; tiny inverse-inertia-scaled regularization" if args.normal_contact_mode == "predictive_rigid" else "native XML contact law",
                "initial_impact_gap_added_m": .01, "initial_impact_velocity_m_s": -.5,
                "cases": cases, "model_ledgers": ledgers,
                "code_sha256": {str(p): sha256(p) for p in (Path(__file__).resolve(), Path(implicit_metric.__file__).resolve())},
