@@ -85,6 +85,8 @@ struct CaptureConfiguration {
     #[serde(default)]
     exposure_ev100: Option<f32>,
     #[serde(default)]
+    directional_shadow_maps: Option<bool>,
+    #[serde(default)]
     predictive_limit_diagnostic: bool,
     #[serde(default)]
     diagnostic_constraint_sweeps: Option<u32>,
@@ -305,6 +307,7 @@ pub fn run_capture_from_file(
         options,
         config.policy,
         config.exposure_ev100,
+        config.directional_shadow_maps,
         config.predictive_limit_diagnostic,
         config.diagnostic_constraint_sweeps,
         config.background_visual,
@@ -363,6 +366,7 @@ pub struct G1CaptureReceipt {
     pub live_action_chunks: Vec<serde_json::Value>,
     pub pauses_for_camera_and_policy: bool,
     pub camera_exposure_ev100: f32,
+    pub diagnostic_directional_shadow_maps: bool,
     pub factory_verified_predictive_limit_joints: usize,
     pub factory_verified_diagnostic_constraint_sweeps: Option<u32>,
     pub background_visual_status: Option<G1BackgroundVisualStatus>,
@@ -470,6 +474,7 @@ impl G1CaptureReceipt {
             live_action_chunks: Vec::new(),
             pauses_for_camera_and_policy: false,
             camera_exposure_ev100: Exposure::default().ev100,
+            diagnostic_directional_shadow_maps: true,
             factory_verified_predictive_limit_joints: 0,
             factory_verified_diagnostic_constraint_sweeps: None,
             background_visual_status: None,
@@ -509,6 +514,9 @@ struct SourceShelfVisual;
 
 #[derive(Resource)]
 struct DiagnosticExposure(f32);
+
+#[derive(Resource)]
+struct DiagnosticDirectionalShadows(bool);
 
 fn configure_diagnostic_exposure(
     mut commands: Commands,
@@ -558,6 +566,7 @@ pub fn run_capture(
         options,
         None,
         None,
+        None,
         false,
         None,
         None,
@@ -572,11 +581,13 @@ fn run_capture_owner(
     options: G1CaptureOptions,
     policy: Option<LivePolicyConfiguration>,
     exposure_ev100: Option<f32>,
+    directional_shadow_maps: Option<bool>,
     predictive_limit_diagnostic: bool,
     diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
 ) -> Result<G1CaptureReceipt, String> {
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
+    let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
         return Err("diagnostic exposure must be finite EV100 in 0..=20".into());
     }
@@ -671,6 +682,7 @@ fn run_capture_owner(
     outcome.0.lock().unwrap().task_visual_sha256 =
         task_model.as_ref().map(|m| m.file_sha256.clone());
     outcome.0.lock().unwrap().camera_exposure_ev100 = exposure_ev100;
+    outcome.0.lock().unwrap().diagnostic_directional_shadow_maps = directional_shadow_maps;
     if live_policy.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
@@ -694,6 +706,7 @@ fn run_capture_owner(
     // fixtures and camera shots are not spawned in this floor diagnostic.
     app.insert_resource(scene)
         .insert_resource(DiagnosticExposure(exposure_ev100))
+        .insert_resource(DiagnosticDirectionalShadows(directional_shadow_maps))
         .insert_resource(model)
         .insert_resource(outcome.clone())
         .init_resource::<G1TaskVisualInput>()
@@ -778,6 +791,7 @@ fn setup_floor_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     background: Option<Res<G1BackgroundVisualModel>>,
+    shadows: Res<DiagnosticDirectionalShadows>,
 ) {
     commands.spawn((
         Name::new("g1_runner_actual_floor"),
@@ -802,7 +816,7 @@ fn setup_floor_scene(
     commands.spawn((
         DirectionalLight {
             illuminance: 15_000.,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: shadows.0,
             ..default()
         },
         Transform::from_xyz(3., 5., 2.).looking_at(Vec3::ZERO, Vec3::Y),
