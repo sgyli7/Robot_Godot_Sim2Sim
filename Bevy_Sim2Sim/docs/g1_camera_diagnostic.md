@@ -159,3 +159,11 @@ described in `g1_t1_source_task.md`. Normal background loading still requires
 the frozen physical source-shelf profile. An actual zero-Tick preflight passed
 all robot/prop pose checks; a nonzero-Tick invocation failed before creating a
 capture or loading a world. Receipts label this mode as external-pose rendering.
+
+The background exporter now retains otherwise unbound surfaces when the
+original Gprim explicitly authors uniform opaque `displayColor`. No color is
+inferred from images. Missing/nonuniform colors, translucent opacity and
+unsupported color spaces remain rejected. This restores three complete black
+box meshes and four black face subsets previously omitted; all existing sixteen
+mesh/material/UV/normal records are exactly unchanged. Procedural MDL wall UVs
+and unbound-surface shading parity remain disclosed limitations.

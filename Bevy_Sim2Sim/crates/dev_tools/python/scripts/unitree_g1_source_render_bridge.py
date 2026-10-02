@@ -156,6 +156,8 @@ def main():
     for key in ('socket', 'output', 'template', 'binary', 'workdir'):
         parser.add_argument(f'--{key}', type=Path, required=True)
     parser.add_argument('--max-calls', type=int, default=8)
+    parser.add_argument('--background-sha256', default=BACKGROUND_SHA,
+                        help='Freeze one explicitly selected original-background export for this comparison')
     args = parser.parse_args()
     args.socket = args.socket.resolve()
     if args.socket.exists() or not 1 <= args.max_calls <= 8:
@@ -167,7 +169,10 @@ def main():
             or template['runner']['task_objects']['definition_sha256'] != MATCHED_PROPS_SHA
             or digest(template['runner']['task_objects']['definition']) != MATCHED_PROPS_SHA
             or template['visual_sha256'] != ROBOT_VISUAL_SHA
-            or template['background_visual']['sha256'] != BACKGROUND_SHA
+            or len(args.background_sha256) != 64
+            or any(c not in '0123456789abcdef' for c in args.background_sha256)
+            or template['background_visual']['sha256'] != args.background_sha256
+            or digest(template['background_visual']['path']) != args.background_sha256
             or template['exposure_ev100'] != 11.7
             or template['directional_shadow_maps'] is not False):
         parser.error('Use the frozen static renderer candidate and matched 6.0 props')
@@ -176,6 +181,7 @@ def main():
     summary = {'schema': 'g1_source_renderer_bridge_v1', 'task_qualified': False,
         'harness_sha256': digest(__file__), 'binary_sha256': digest(args.binary),
         'template_sha256': digest(args.template), 'renders': [], 'closed': False,
+        'background_sha256': args.background_sha256,
         'scope': 'finite causal image-domain comparison; external-pose initialization is explicit'}
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:

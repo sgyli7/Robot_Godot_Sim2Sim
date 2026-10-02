@@ -23,10 +23,48 @@ DEACTIVATE = ("BackgroundAssets/boxes/jetson_orin_06", "BackgroundAssets/boxes/j
               "BackgroundAssets/boxes/hesai_box_06")
 
 
-def surface(prim, usd):
+def display_color_surface(prim):
+    """Retain authored uniform Gprim colors on otherwise unbound surfaces.
+
+    No replacement color is inferred from screenshots. Nonuniform colors,
+    procedural shaders and translucent primvars remain unsupported.
+    """
+    color = UsdGeom.Gprim(prim).GetDisplayColorPrimvar()
+    values = color.ComputeFlattened() if color and color.HasAuthoredValue() else None
+    if not values:
+        raise ValueError(f"Unbound background surface has no authored displayColor: {prim.GetPath()}")
+    first = tuple(map(float, values[0]))
+    if any(tuple(map(float, value)) != first for value in values):
+        raise ValueError("Nonuniform unbound displayColor needs vertex-color mapping")
+    if any(not 0 <= value <= 1 for value in first):
+        raise ValueError("Unbound displayColor exceeds its finite color bound")
+    color_space = Usd.ColorSpaceAPI.ComputeColorSpaceName(color.GetAttr(), None)
+    if color_space not in ('', 'lin_rec709_scene', 'lin_rec709'):
+        raise ValueError(f'Unbound authored color space needs explicit conversion: {color_space}')
+    interpolation = color.GetInterpolation()
+    expected = {'constant': 1, 'vertex': len(UsdGeom.Mesh(prim).GetPointsAttr().Get() or []),
+                'uniform': len(UsdGeom.Mesh(prim).GetFaceVertexCountsAttr().Get() or []),
+                'faceVarying': len(UsdGeom.Mesh(prim).GetFaceVertexIndicesAttr().Get() or [])}.get(interpolation)
+    if expected != len(values):
+        raise ValueError('Unbound authored displayColor interpolation/count mismatch')
+    opacity = UsdGeom.Gprim(prim).GetDisplayOpacityPrimvar()
+    opacity_values = opacity.ComputeFlattened() if opacity and opacity.HasAuthoredValue() else []
+    if any(float(value) != 1 for value in opacity_values):
+        raise ValueError('Translucent unbound displayOpacity is unsupported')
+    return {'source_material': 'usd_displayColor:' + str(prim.GetPath()),
+            'base_color': list(first), 'base_color_space': 'linear_rec709',
+            'roughness': .5, 'metallic': 0., 'albedo': None, 'normal': None, 'orm': None,
+            'uv_scale': [1., 1.], 'normal_flip_tangent_v': False,
+            'authored_shader_inputs': {'source_fallback': 'authored uniform Gprim displayColor; no bound material',
+                'displayColor_interpolation': interpolation, 'displayColor_count': str(len(values)),
+                'displayOpacity_count': str(len(opacity_values)),
+                'roughness_metallic_scope': 'renderer approximation; original unbound shading parity unproven'}}
+
+
+def surface(prim, usd, geometry_prim=None):
     bound = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
     if not bound:
-        raise ValueError(f"Background surface has no bound source material: {prim.GetPath()}")
+        return display_color_surface(geometry_prim if geometry_prim is not None else prim)
     shaders = [UsdShade.Shader(p) for p in Usd.PrimRange(bound.GetPrim()) if p.IsA(UsdShade.Shader)]
     if len(shaders) != 1:
         raise ValueError("Background shader graph requires a separate material audit")
@@ -98,7 +136,7 @@ def main():
 
     def append_mesh(prim, material_prim, transform, selected=None):
         try:
-            material = surface(material_prim, args.usd)
+            material = surface(material_prim, args.usd, prim)
         except ValueError as error:
             omitted.append({"path": str(material_prim.GetPath()), "reason": str(error),
                             "face_indices": selected})
@@ -143,10 +181,6 @@ def main():
                 omitted.append({"path": str(prim.GetPath()), "reason": "unbound faces outside original material subsets",
                                 "face_indices": remaining})
         else:
-            bound = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
-            if not bound:
-                omitted.append({"path": str(prim.GetPath()), "reason": "no source-bound material or face subset"})
-                continue
             append_mesh(prim, prim, transform)
     if not meshes or len(meshes) > 128 or digest(args.usd) != USD_SHA:
         raise ValueError("Background geometry is empty, unbounded or modified")

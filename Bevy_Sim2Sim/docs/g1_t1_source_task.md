@@ -215,3 +215,19 @@ side's frequency changes, and this paused comparison cannot qualify 1× runtime.
 The comparison freezes the current original-background/EV11.7/no-directional-
 shadow renderer candidate and matched 6.0 prop definition. Its outcome is not
 known until the original source task has executed these observations.
+
+The frozen original-background candidate failed this causal test: eight actual
+policy calls executed 300 source controls / 1200 original PhysX integrations,
+then the original six-second timeout fired without success or apple lift.
+Across all eight boundaries the largest native body-position error was
+5.36e-7 m and joint-axis error 1.43e-6; source physical-state change while
+rendering was exactly zero. The earlier original-RTX camera reference succeeded
+with four calls at 140 controls. This one comparison establishes that the
+current Bevy observations can break the original-source task independently of
+the migrated physics. It does not exclude additional native dynamic issues or
+establish success rates. Inspection then found three omitted visible boxes:
+they have no bound material but do have explicitly authored black displayColor.
+The original-RTX camera control was also rerun with the current harness: it
+again succeeded with four actual policy calls, at 146 controls / 584 source
+integrations. This supports the image-domain comparison against a current
+reference, while retaining the original auto-reset/termination limitations.
