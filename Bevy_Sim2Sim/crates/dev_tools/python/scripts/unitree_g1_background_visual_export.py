@@ -19,6 +19,7 @@ from unitree_g1_task_asset_query import digest
 from unitree_g1_task_visual_export import geometry
 
 USD_SHA = "7e14dcfd948591b8fdae61d41b412097b39490022dfc25aab9b90b6884509051"
+WAREHOUSE_MDL_SHA = "2e2aef644544b619f5df253eacbaed941be89bc1018fb58cbb47d0e8ac1d4192"
 DEACTIVATE = ("BackgroundAssets/boxes/jetson_orin_06", "BackgroundAssets/boxes/jetson_orin_03",
               "BackgroundAssets/boxes/hesai_box_06")
 
@@ -88,6 +89,39 @@ def surface(prim, usd, geometry_prim=None):
         if path.stat().st_size > 128 * 1024 * 1024:
             raise ValueError(f"Background texture exceeds 128 MiB byte bound: {path}")
         return {"path": str(path), "sha256": digest(path)}
+
+    # This original UE4 graph uses different input names from OmniPBR. Reading
+    # OmniPBR defaults here silently replaced three textured brown boxes with
+    # gray surfaces. Map only the inspected byte-bound graph, not generic MDL.
+    source = shader.GetPrim().GetAttribute("info:mdl:sourceAsset").Get()
+    if source is not None and Path(source.path).name == "MI_LampCeilingA.mdl":
+        mdl = Path(source.resolvedPath or (usd.parent / source.path)).resolve()
+        if (not mdl.is_file() or digest(mdl) != WAREHOUSE_MDL_SHA
+                or shader.GetPrim().GetAttribute("info:mdl:sourceAsset:subIdentifier").Get() != "MI_LampCeilingA"):
+            raise ValueError("Warehouse MDL graph identity changed")
+        required = {"U_Tiling", "V_Tiling", "MainNormalInput", "AlbedoTexture",
+                    "Desaturation", "BaseColor_Tint", "MergeMapInput", "RoughnessMin", "RoughnessMax"}
+        if {i.GetBaseName() for i in shader.GetInputs()} != required:
+            raise ValueError("Warehouse MDL input contract changed")
+        tint = list(map(float, value("BaseColor_Tint", None)))
+        desaturation = float(value("Desaturation", None))
+        roughness = [float(value("RoughnessMin", None)), float(value("RoughnessMax", None))]
+        tiling = [float(value("U_Tiling", None)), float(value("V_Tiling", None))]
+        if (len(tint) != 4 or tint[3] != 1. or any(not 0. <= v <= 1. for v in tint)
+                or not 0. <= desaturation <= 1. or not 0. <= roughness[0] <= roughness[1] <= 1.
+                or any(not 0. < v <= 1024. for v in tiling)):
+            raise ValueError("Warehouse MDL parameters exceed inspected finite mapping")
+        textures = {key: texture(name) for key, name in (
+            ("albedo", "AlbedoTexture"), ("normal", "MainNormalInput"), ("orm", "MergeMapInput"))}
+        if any(v is None for v in textures.values()):
+            raise ValueError("Warehouse MDL requires all three original textures")
+        return {"source_material": str(bound.GetPath()), "base_color": tint[:3],
+                "base_color_space": "linear_rec709", "albedo_add": 0.,
+                "roughness": 1., "metallic": 1., **textures,
+                "uv_scale": tiling, "normal_flip_tangent_v": False,
+                "warehouse_mdl": {"source_mdl_sha256": WAREHOUSE_MDL_SHA,
+                                  "albedo_desaturation": desaturation, "roughness_min_max": roughness},
+                "authored_shader_inputs": {i.GetBaseName(): str(i.Get()) for i in shader.GetInputs()}}
 
     if value("enable_opacity", False) or value("enable_emission", False):
         raise ValueError("Active background opacity/emission needs a separate mapping")

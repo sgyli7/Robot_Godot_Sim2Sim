@@ -85,6 +85,17 @@ struct Material {
     uv_scale: [f32; 2],
     normal_flip_tangent_v: bool,
     authored_shader_inputs: HashMap<String, String>,
+    #[serde(default)]
+    warehouse_mdl: Option<WarehouseMdl>,
+}
+
+/// Only the inspected source graph's color and green-channel roughness map.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WarehouseMdl {
+    source_mdl_sha256: String,
+    albedo_desaturation: f32,
+    roughness_min_max: [f32; 2],
 }
 
 type BackgroundMaterial = ExtendedMaterial<StandardMaterial, BackgroundAlbedo>;
@@ -95,6 +106,8 @@ type BackgroundMaterial = ExtendedMaterial<StandardMaterial, BackgroundAlbedo>;
 struct BackgroundAlbedo {
     #[uniform(100)]
     tint_and_add: Vec4,
+    #[uniform(101)]
+    warehouse_color_roughness: Vec4,
 }
 
 impl MaterialExtension for BackgroundAlbedo {
@@ -265,6 +278,26 @@ impl G1BackgroundVisualModel {
                 return Err("invalid original background geometry/attributes".into());
             }
             let material = &mesh.material;
+            if let Some(warehouse) = &material.warehouse_mdl {
+                if warehouse.source_mdl_sha256
+                    != "2e2aef644544b619f5df253eacbaed941be89bc1018fb58cbb47d0e8ac1d4192"
+                    || !warehouse.albedo_desaturation.is_finite()
+                    || !(0.0..=1.0).contains(&warehouse.albedo_desaturation)
+                    || warehouse
+                        .roughness_min_max
+                        .iter()
+                        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                    || warehouse.roughness_min_max[0] > warehouse.roughness_min_max[1]
+                    || material.albedo.is_none()
+                    || material.normal.is_none()
+                    || material.orm.is_none()
+                    || material.albedo_add != 0.
+                    || material.roughness != 1.
+                    || material.metallic != 1.
+                {
+                    return Err("invalid inspected warehouse MDL mapping".into());
+                }
+            }
             if material.source_material.is_empty()
                 || material.base_color_space != "linear_rec709"
                 || !material.albedo_add.is_finite()
@@ -441,11 +474,13 @@ fn spawn(
             let orm = m.orm.as_ref().map(|t| texture(t, false)).transpose()?;
             let material = materials.add(BackgroundMaterial {
                 base: StandardMaterial {
-                    base_color: Color::linear_rgb(
-                        m.base_color[0],
-                        m.base_color[1],
-                        m.base_color[2],
-                    ),
+                    // UE4 desaturates the untinted linear lookup first. Its
+                    // tint is applied by the inspected fragment extension.
+                    base_color: if m.warehouse_mdl.is_some() {
+                        Color::WHITE
+                    } else {
+                        Color::linear_rgb(m.base_color[0], m.base_color[1], m.base_color[2])
+                    },
                     // An unbound Gprim authors diffuse displayColor only. Do
                     // not add a specular material to these restored surfaces.
                     reflectance: if m.source_material.starts_with("usd_displayColor:") {
@@ -458,7 +493,13 @@ fn spawn(
                     flip_normal_map_y: m.normal_flip_tangent_v,
                     metallic: if orm.is_some() { 1. } else { m.metallic },
                     perceptual_roughness: if orm.is_some() { 1. } else { m.roughness },
-                    occlusion_texture: orm.clone(),
+                    // The warehouse graph uses only green roughness and blue
+                    // metallic; its red channel is not ambient occlusion.
+                    occlusion_texture: if m.warehouse_mdl.is_some() {
+                        None
+                    } else {
+                        orm.clone()
+                    },
                     metallic_roughness_texture: orm,
                     uv_transform: Affine2::from_scale(Vec2::from_array(m.uv_scale)),
                     ..default()
@@ -470,6 +511,14 @@ fn spawn(
                         m.base_color[2],
                         m.albedo_add,
                     ),
+                    warehouse_color_roughness: m.warehouse_mdl.as_ref().map_or(Vec4::ZERO, |w| {
+                        Vec4::new(
+                            w.albedo_desaturation,
+                            w.roughness_min_max[0],
+                            w.roughness_min_max[1],
+                            1.,
+                        )
+                    }),
                 },
             });
             let mut entity = commands.spawn((

@@ -540,3 +540,40 @@ There are3 actual model calls,0 physics steps, no HTTP service and no autonomous
 rollout. The owned model is closed after the24.62s bounded comparison. The next
 render repair must use source-authored data and a new finite live grasp test;
 substituting source screenshots is not a task capability.
+
+Cases0141–0144 locate and repair one concrete background material import bug.
+Read-only camera rays identify the gray left-hand foreground as the original
+`hesai_box_06`. Its shader is **MI_LampCeilingA**, SHA256
+`2e2aef644544b619f5df253eacbaed941be89bc1018fb58cbb47d0e8ac1d4192`,
+with UE4 `AlbedoTexture/MainNormalInput/MergeMapInput`, linear tint,
+desaturation and a green-channel roughness remap. The prior generic OmniPBR
+reader ignored these differently named inputs and silently produced gray.
+Only this inspected graph is explicitly mapped; unknown MDL parity is unproven.
+
+The new external T2 visual file is
+`native_t2_background_visual_warehouse_v2.json`, SHA256
+`1243478cc15a87229a7f348699c7e0b9fbe605a4643a83931c79079db6279c66`.
+All122 geometry/normal/UV/triangle/owner arrays, all other119 materials and the
+46 disclosed omissions are identical to v1. Exactly three original cardboard
+materials now retain their three byte-bound2048x2048 textures, authored tint,
+linear desaturation and roughness remap. Their albedo alpha is255 everywhere;
+the source graph does not use the merge texture's red channel as occlusion.
+No lighting, exposure, camera, model or physical parameter is changed.
+
+Three actual-source USD regression tests pass, including malformed graph entry
+and nonfinite desaturation rejection. Rendering checks pass31tests/2ignored;
+the development app build and actual zero-Tick GPU capture0143 pass, with0model
+or physical updates. The new binary SHA256 is
+`bd6cc5ee48ce181c68768cbe43962463b58daa0e77567d89f1111bc209175d91`.
+Old files keep the original fragment behavior through a zero/default extension.
+
+The same frozen200Tick/four-real-call visual grasp budget0144 **fails**. All200
+real body calls/updates/integrations complete; minimum upright cosine0.993606,
+maximum robot XY drift0.174337m. The box remains shelf-supported at everyTick,
+with0positive hand impulses and at most0.038mm rise. Relative to the source first
+chunk, arm maxima improve from0.22428/0.19726rad to0.12878/0.11666rad; this
+numerical proximity is not a task success measure. It does not prove the
+remaining lighting, normals or feedback gap is harmless. The service is closed
+and the full actual input/response/trajectory records are retained. No longer
+rollout or parameter sweep follows this negative result; source actual render
+settings and source-authored normal correspondence are the next bounded audit.
