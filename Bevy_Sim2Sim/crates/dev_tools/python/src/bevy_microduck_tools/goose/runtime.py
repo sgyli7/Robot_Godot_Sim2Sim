@@ -24,6 +24,8 @@ class GooseSourceRuntime:
             raise ValueError("Unknown Goose skill")
         self.skill = skill
         self.contract = json.loads(contract_path.read_text())
+        if self.contract.get("native_discrete") is not None and type(self) is GooseSourceRuntime:
+            raise ValueError("Native discrete contract requires its explicit versioned runtime")
         if self.contract.get("numerical_metric") is not None and type(self) is GooseSourceRuntime:
             raise ValueError("Numerical metric requires the explicit experimental runtime")
         if any(self.contract[k] != DT for k in ("physics_dt_s", "torque_dt_s", "policy_dt_s")):

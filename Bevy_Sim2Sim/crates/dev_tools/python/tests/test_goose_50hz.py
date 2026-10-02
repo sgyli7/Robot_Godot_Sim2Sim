@@ -43,10 +43,11 @@ def test_admission_cannot_use_finite_only_or_stale_target():
         require_m0_admission(candidate, source, target)
 
 
-def fixture_runtime(tmp_path, skill="locomotion"):
+def fixture_runtime(tmp_path, skill="locomotion", *, native_discrete=False):
     # Real MuJoCo integration in a deliberately small controller conformance rig.
     root = ET.Element("mujoco")
-    ET.SubElement(root, "option", timestep=str(DT), gravity="0 0 -9.81", integrator="implicit")
+    ET.SubElement(root, "option", timestep=str(DT), gravity="0 0 -9.81",
+                  integrator="discrete" if native_discrete else "implicit")
     world = ET.SubElement(root, "worldbody")
     ET.SubElement(world, "geom", name="ground", type="plane", size="1 1 .1")
     torso = ET.SubElement(world, "body", name="torso", pos="0 0 1")
@@ -73,8 +74,16 @@ def fixture_runtime(tmp_path, skill="locomotion"):
                 "bodies": [], "phase_frequency_hz": 1.2, "positive_mechanical_power_limit_w": 350.,
                 "source_checkpoint": {"source_root": str(tmp_path), "source_module_sha256": {"src/sai_agent/goose/stage_one_gravity.py": sha256(module)}}}
     path = tmp_path / "contract.json"
+    runtime_type = GooseSourceRuntime
+    if native_discrete:
+        from bevy_microduck_tools.goose.native_discrete_runtime import (
+            CANDIDATE, ENGINE_VERSION, REVISION, GooseDiscreteSourceRuntime)
+        contract.update(candidate=CANDIDATE, integrator="discrete", native_discrete={
+            "revision": REVISION, "engine_version": ENGINE_VERSION,
+            "physical_parameters_changed": False})
+        runtime_type = GooseDiscreteSourceRuntime
     write_json(path, contract)
-    return GooseSourceRuntime(model, path, skill=skill), path
+    return runtime_type(model, path, skill=skill), path
 
 
 def test_real_tick_has_single_integration_and_20ms_slew(tmp_path):
@@ -324,3 +333,88 @@ def test_implicit_damping_metric_matches_physical_backward_euler():
     assert data.qvel[0] == pytest.approx(expected, abs=1e-12)
     assert data.qpos[0] == pytest.approx(DT*expected, abs=1e-12)
     assert model.body_mass.sum() == pytest.approx(.1)
+
+
+def test_native_discrete_contract_cannot_silently_enter_default_runtime(tmp_path):
+    _, path = fixture_runtime(tmp_path)
+    contract = json.loads(path.read_text())
+    contract["native_discrete"] = {"engine_version": "3.13.0"}
+    write_json(path, contract)
+    with pytest.raises(ValueError, match="explicit versioned runtime"):
+        GooseSourceRuntime(tmp_path/"robot.xml", path)
+
+
+def test_native_discrete_engine_guard_precedes_model_loading(tmp_path):
+    import mujoco
+    from bevy_microduck_tools.goose.native_discrete_runtime import ENGINE_VERSION, GooseDiscreteSourceRuntime
+    if mujoco.__version__ == ENGINE_VERSION:
+        pytest.skip("This check requires the preserved earlier engine")
+    with pytest.raises(ValueError, match="isolated MuJoCo 3.13.0"):
+        GooseDiscreteSourceRuntime(tmp_path/"absent.xml", tmp_path/"absent.json")
+
+
+def test_native_discrete_identity_and_compiled_integrator_must_agree(tmp_path):
+    import mujoco
+    from bevy_microduck_tools.goose.native_discrete_runtime import (
+        CANDIDATE, ENGINE_VERSION, REVISION, GooseDiscreteSourceRuntime)
+    if mujoco.__version__ != ENGINE_VERSION:
+        pytest.skip("Native discrete conformance uses the isolated 3.13.0 engine")
+    _, path = fixture_runtime(tmp_path)
+    contract = json.loads(path.read_text())
+    with pytest.raises(ValueError, match="frozen native discrete identity"):
+        GooseDiscreteSourceRuntime(tmp_path/"robot.xml", path)
+    contract.update(candidate=CANDIDATE, integrator="discrete", native_discrete={
+        "revision": REVISION, "engine_version": ENGINE_VERSION,
+        "physical_parameters_changed": False})
+    write_json(path, contract)
+    with pytest.raises(ValueError, match="Compiled model"):
+        GooseDiscreteSourceRuntime(tmp_path/"robot.xml", path)
+
+
+def test_native_discrete_real_tick_matches_native_map_without_extra_solve(tmp_path, monkeypatch):
+    import mujoco
+    from bevy_microduck_tools.goose.native_discrete_runtime import ENGINE_VERSION
+    if mujoco.__version__ != ENGINE_VERSION:
+        pytest.skip("Native discrete conformance uses the isolated 3.13.0 engine")
+    controller, _ = fixture_runtime(tmp_path, native_discrete=True)
+    initial_qpos = controller.data.qpos.copy()
+    initial_qvel = controller.data.qvel.copy()
+    calls = {"step": 0, "forward": 0}
+    native_step, native_forward = mujoco.mj_step, mujoco.mj_forward
+
+    def counted_step(model, data):
+        calls["step"] += 1
+        native_step(model, data)
+
+    def counted_forward(model, data):
+        calls["forward"] += 1
+        native_forward(model, data)
+
+    monkeypatch.setattr(mujoco, "mj_step", counted_step)
+    monkeypatch.setattr(mujoco, "mj_forward", counted_forward)
+    obs, state = controller.step(np.ones(18))
+    assert calls == {"step": 1, "forward": 0}
+    assert state["controller_updates"] == state["physics_integrations"] == 1
+    assert controller.data.time == pytest.approx(.02)
+    assert obs.shape == (65,)
+    np.testing.assert_allclose(controller.target, .02)
+    np.testing.assert_allclose(controller.data.qacc,
+                               (controller.data.qvel-initial_qvel)/DT, atol=1e-12)
+    reference = mujoco.MjData(controller.model)
+    reference.qpos[:] = initial_qpos
+    reference.qvel[:] = initial_qvel
+    reference.ctrl[:] = controller.last_tau
+    native_step(controller.model, reference)
+    np.testing.assert_array_equal(controller.data.qpos, reference.qpos)
+    np.testing.assert_array_equal(controller.data.qvel, reference.qvel)
+    assert not any(w.number for w in controller.data.warning)
+
+
+def test_native_discrete_rejects_python_outside_project_contract(tmp_path, monkeypatch):
+    import mujoco
+    from bevy_microduck_tools.goose import native_discrete_runtime as native
+    if mujoco.__version__ != native.ENGINE_VERSION:
+        pytest.skip("Python guard conformance uses the isolated 3.13.0 engine")
+    monkeypatch.setattr(native.sys, "version_info", (3, 13, 15))
+    with pytest.raises(ValueError, match="project Python 3.12"):
+        native.GooseDiscreteSourceRuntime(tmp_path/"absent.xml", tmp_path/"absent.json")

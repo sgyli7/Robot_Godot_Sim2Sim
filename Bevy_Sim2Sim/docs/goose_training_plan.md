@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前停留在 M0，GPU／优化器使用为零。共同压缩 v4 已通过左右脚的 16 个无摩擦载荷／释放／冲击程序，原结构源端、凝聚源端和 Rapier 各完成 2,400 次积分。原机构与凝聚模型的卸载飞行位置差约 0.939 mm，摩擦、接触方向及整机耦合仍未准入；旧失败保留。最新执行入口为 [左右足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_full_foot_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前停留在 M0，GPU／优化器使用为零。新增原 33 体的 MuJoCo 3.13 `discrete` 显式候选，在项目 Python 3.12 下完成 9,600 次脚垫及 2,000 次整机冷重置积分；静态压缩和数值检查通过，但脚垫行程与接触仍未准入，不能启动训练。最新入口为 [原生 discrete 检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_discrete313_checkpoint.json)。共同压缩 v4 的左右无摩擦足底证据保持有效，作为另一条未完成的实验路线。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -37,6 +37,8 @@ MD 经验落实为：先核本体、实际驱动和观测时效，再调奖励�
 4. 两份均失败时记录 M0 未通过，禁止长训；继续围绕已定位的物理阻断推进，不以增加训练预算掩盖问题。
 
 物理诊断另有 `goose_460_full50_be_v2`：保留原 33 体及物理 K/C/A，在一次原生约束求解内使用 `M+hC+h²K` 的线性弹簧后向欧拉离散、双端预测限位和真实嘴销。它是显式版本化的 **CPU 实验**，非线性速度力仍显式计算，尚未替代本计划的源训练积分路线。整机接触、跨引擎、GPU 兼容和物理准入未通过前，不授予训练资格；原 v1 模型及失败收据保持冻结。
+
+另有 `goose_460_full50_discrete_v3`：由冻结 full50 v1 派生，仅选择 MuJoCo **3.13.0** 的原生 `discrete` 并关闭异常自动重置，保留原 33 体、物理参数和 65／18 驱动接口。开发运行时显式锁定项目 **Python 3.12**，默认旧运行时拒绝其合同。此 CPU 候选的脚垫行程和接触检查失败；尚无 Rapier、Warp 或训练资格。新求解器的数值含义与既有 CPU 实验分别记录，不替换批准的训练链路。
 
 Rapier 的 `num_solver_iterations=1`、每体 `additional_solver_iterations=0`、`max_ccd_substeps=1`。只能调整内部 PGS 收敛轮数（预定 4/8/16/32），不能增加实际积分子步。弹簧采用 ForceBased SI 单位，碰撞体不重复增加质量。
 
@@ -342,3 +344,18 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 最新入口为 [左右足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_full_foot_checkpoint.json)，状态为 `FRICTIONLESS_FOOT_MATRIX_ONLY`；[234 文件执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/shared_full_foot_corrected_executed_code/verified_snapshot.json)保存实际源码、模型、依赖、协议、比较器和二进制。[控制结果](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/shared_full_foot_final_control.json)确认最终二进制的默认 500 帧全部字段与原失败轨迹一致；源端只补初态元数据，原结构和凝聚各 2,400 帧物理字段与首批完全一致。发布构建、格式、Git 空白及 **543 项结构检查**通过；本轮未修改原生物理核心或 Actor 合同。
 
 **下一批实施摩擦及接触方向耦合，再接入整机关节／嘴销／限位。** 当前仍是分开的六自由度无摩擦足体，不能表达任意倒地接触或移动物体对侧，也不能通过删除守卫直接装入 21 体。**M0 未通过，PPO／GPU／优化器使用为零。**
+
+
+### MuJoCo 3.13 原生 discrete 源端检查点
+
+MuJoCo **3.13.0** 新增原生 `discrete`，让线性刚度、阻尼与约束在同一个有效惯量度量中求解，值得用原结构做一次有界对照；它仍有自己的接触、限位和非线性数值含义。依据 [固定版本更新说明](https://mujoco.readthedocs.io/en/3.13.0/changelog.html)和 [计算说明](https://mujoco.readthedocs.io/en/3.13.0/computation/index.html)，不由“支持积分器”推断物理或 GPU 准入。
+
+源码位于 [native_discrete_runtime.py](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/dev_tools/python/src/bevy_microduck_tools/goose/native_discrete_runtime.py)。新候选 `goose_460_full50_discrete_v3` 保持原 33 体、18 主动轴、14 被动坐标、10.430762603 kg、全部 K/C/armature、四杆几何、摩擦和碰撞过滤。模型 SHA 为 `1de4fb3b98d04dae6b1788b571bfa14dfa93ca9c0a7a3befdb11a9c9ed68e606`，合同 SHA 为 `857be912c635df35f93a87615ff235c0b8d0300034dae9fcfb9ca37b67a507b9`；模型、依赖、轨迹和脚本全部在备份目录。新旧引擎之间 **55 组编译物理输入与 qpos0 FK** 数组哈希完全一致，身体、关节和电机名称及顺序一致。
+
+[项目 Python 3.12 的独立评价](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/native_discrete313_py312_evaluation_v1.json)核对 **96 个脚垫程序、9,600 次积分**和 **20 次名义冷重置、2,000 次整机积分**。每 Tick 只有一次真实 20 ms 积分，整机同时只有一次力矩更新；没有 Actor、优化器、初始化后的坐标改写或自动重置。5／10／20／30 N 的静态压缩相对误差最大 **1.27e−16**，无数值警告。但孤立端点程序最大越界 **1.713 mm**，整机脚垫最大越界 **2.411 mm**，均超过原行程要求；继承既有端点容差，没有放宽门槛。因此 **源端物理未通过，M0 未通过**。
+
+整机嘴销最大距离 **0.4782 mm**。运行时记录的接触属于积分前时间边界；另在独立数据实例中重放六个已保存的完成姿态，只重算运动学和碰撞，没有添加积分或改动原轨迹。最大的 **28.571 mm** 是颈部壳体与头部上壳代理之间的自碰撞；对应来源方法为 `source_convex_hull` 与 `local_surface_clusters_5mm_approximate`。须核对原 CAD 的空腔及真实干涉面，不扩大排除名单。采样姿态的地面接触穿透和自碰撞分别保留。全 CAD 的源端物理加控制器 P95 约 **27.70 ms**，仅为此 CPU 诊断的描述，不外推 Bevy 或策略性能；2 秒、重复同一名义出生也不授予站立或随机恢复资格。
+
+首批隔离环境误用了 Python 3.13.15，与项目 `>=3.12,<3.13` 不兼容，记录及实际执行源码保留。最终锁定 **Python 3.12.14、MuJoCo 3.13.0、NumPy 2.5.3** 后复跑，**116 份 JSONL 物理轨迹哈希与首批完全一致**。运行时增加 Python 与引擎版本检查。旧引擎回归 **69 项通过、3 项新引擎专属检查跳过**；正确环境的新版本检查 **4 项通过、1 项旧引擎专属检查跳过**。首个新环境宽范围测试触发 3 项旧 MuJoCo 3.10 ABI 的主动拒绝，日志保留，未取消旧版本锁或宣称跨版本兼容。
+
+当前权威入口为 [原生 discrete 检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_discrete313_checkpoint.json)，状态为 `SOURCE_NATIVE_DISCRETE_LIMITS_CONTACT_UNQUALIFIED`。下一批先对 **原生限位激活／约束参数**做一次版本化短对照，并检查已定位碰撞代理的来源及真实表面；保留原物理 K/C、质量和完整惯量，不重复精度、PGS 或局部嘴部扫描。共同压缩路线的摩擦与任意接触方向仍是未通过项，保留其守卫。源／目标同版本整机物理准入、真实 GPU 小批量和 PPO 更新之前，训练链路继续锁定。**GPU、PPO、优化器更新为零，长期目标尚未完成。**
