@@ -547,6 +547,18 @@ enum CaptureMode {
     MobileTargetApproach,
 }
 
+impl CaptureMode {
+    fn assisted_tick_limit(self) -> Option<u32> {
+        match self {
+            Self::MobileAssist => Some(2050),
+            Self::MobileScan => Some(1050),
+            Self::MobileTargetView => Some(1300),
+            Self::MobileTargetApproach => Some(3150),
+            Self::Camera | Self::TaskLab | Self::MobileCarry => None,
+        }
+    }
+}
+
 /// Interactive development entry; it never advertises unqualified execution.
 pub fn run_task_lab_from_file(
     path: &Path,
@@ -1162,16 +1174,7 @@ fn run_capture_owner(
     }
     if assisted_carry
         && (!cfg!(feature = "g1_constraint_diagnostic")
-            || options.ticks
-                != if visual_approach {
-                    3150
-                } else if target_view {
-                    1300
-                } else if scan_only {
-                    1050
-                } else {
-                    2050
-                }
+            || options.ticks != mode.assisted_tick_limit().unwrap_or(0)
             || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::MobileBox)
             || config
                 .task_objects()
@@ -1338,14 +1341,8 @@ fn run_capture_owner(
             }
         })
         .transpose()?;
-    let tick_limit = if assisted_carry {
-        if target_view {
-            1300
-        } else if scan_only {
-            1050
-        } else {
-            2050
-        }
+    let tick_limit = if let Some(limit) = mode.assisted_tick_limit() {
+        limit
     } else if mobile_carry {
         1500
     } else if matches!(config, CaptureRunnerConfig::Task(_)) {
@@ -1676,6 +1673,29 @@ fn run_capture_owner(
             .unwrap_or_else(|| "native camera capture did not finish".into()));
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::CaptureMode;
+    #[test]
+    fn both_startup_guards_share_the_explicit_stage_budget() {
+        for (mode, budget) in [
+            (CaptureMode::MobileAssist, 2050),
+            (CaptureMode::MobileScan, 1050),
+            (CaptureMode::MobileTargetView, 1300),
+            (CaptureMode::MobileTargetApproach, 3150),
+        ] {
+            assert_eq!(mode.assisted_tick_limit(), Some(budget));
+        }
+        for mode in [
+            CaptureMode::Camera,
+            CaptureMode::TaskLab,
+            CaptureMode::MobileCarry,
+        ] {
+            assert_eq!(mode.assisted_tick_limit(), None);
+        }
+    }
 }
 
 #[derive(Resource)]

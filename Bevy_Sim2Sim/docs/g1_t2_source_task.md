@@ -1123,3 +1123,11 @@ The pinned definition gets a finite32MiB read ceiling; its SHA256 identity is
 unchanged. Actual saved RGB worker roundtrip0200 then loads the original file,
 detects21/22 and verifies the bound reply in0.45seconds, with zero model calls
 or physics steps. This tests the worker contract only, not fresh execution.
+
+
+Entry0201 exposes a second pre-integration guard still using the1300Tick
+view ceiling for the new3150Tick approach mode; zero model calls or native
+steps occur and the owned service closes. Both guards now read one explicit
+per-mode budget. A focused regression verifies2050/1050/1300/3150 separately
+and confirms ordinary modes have no assisted budget. No physics/action limit
+or prior scene budget is increased.
