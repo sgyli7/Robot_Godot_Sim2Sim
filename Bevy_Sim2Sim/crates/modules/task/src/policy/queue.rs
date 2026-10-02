@@ -107,6 +107,22 @@ impl PolicyActionQueue {
         chunk: PolicyActionChunk,
         now_sim_ns: u64,
     ) -> Result<PolicyActionAdmission, PolicyActionError> {
+        let admission = self.validate_admission(&chunk, now_sim_ns)?;
+        self.last_sequence = Some(chunk.sequence_id);
+        self.last_observation = Some((chunk.observation.frame_id, chunk.observation.sim_time_ns));
+        self.chunk = Some(AdmittedChunk { chunk, admission });
+        self.last_emitted_index = None;
+        self.last_tick_ns = Some(now_sim_ns);
+        Ok(admission)
+    }
+
+    /// Check a bounded future replacement without changing the current action
+    /// timeline, sequence or emission index. Actual admission must recheck.
+    pub fn validate_admission(
+        &self,
+        chunk: &PolicyActionChunk,
+        now_sim_ns: u64,
+    ) -> Result<PolicyActionAdmission, PolicyActionError> {
         if self.stopped {
             return Err(PolicyActionError::Stopped);
         }
@@ -162,18 +178,12 @@ impl PolicyActionQueue {
         for action in &chunk.frames {
             action.validate(&self.limits)?;
         }
-        self.last_sequence = Some(chunk.sequence_id);
-        self.last_observation = Some((chunk.observation.frame_id, chunk.observation.sim_time_ns));
-        let admission = PolicyActionAdmission {
+        Ok(PolicyActionAdmission {
             observation: chunk.observation,
             execution_start_sim_ns: now_sim_ns,
             execution_end_sim_ns,
             observation_age_at_admission_ns: age,
-        };
-        self.chunk = Some(AdmittedChunk { chunk, admission });
-        self.last_emitted_index = None;
-        self.last_tick_ns = Some(now_sim_ns);
-        Ok(admission)
+        })
     }
 
     /// Advance using simulation time; skipped old frames are discarded, not replayed.

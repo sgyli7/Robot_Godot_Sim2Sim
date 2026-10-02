@@ -220,3 +220,47 @@ touch, out-of-target geometry, unsupported queries and missing-Tick negative
 controls reject release/success. Active physics ratio was 0.98919, with four
 missed boundaries and no remaining Tick debt; camera/inference pauses are
 explicitly excluded and continuous 1× task operation remains unqualified.
+
+The optional static-only `policy.prefetch_after_ticks: 10` is a separate finite
+asynchronous scheduling diagnostic, requiring 2..=8 whole original chunks.
+Initial model/camera preparation is paused. During execution, a new real
+RGB/self-state request starts after ten current-chunk Ticks while the owner
+continues every original frame. One pending replacement may be admitted at the
+exact 40-frame predecessor end; neither observation timestamps nor predicted
+actions are rewritten. Whole-chunk limits and freshness are checked before
+pending admission and again at the exact boundary. Late replies, mutated
+sequences/schedules and unsupported future observations fail explicitly.
+Normal immediate admission and ordinary physics factory defaults are unchanged.
+
+Render extraction independently requires matching robot, prop and camera Tick
+identities. A correctly stamped image completed before the requested boundary
+is discarded and recaptured, never restamped or submitted to inference. This
+also applies to the final paused capture. Retries are bounded to sixteen in the
+receipt; continuous model/physical deadlines are not extended by retries.
+`continuous_boundary_*_seconds` measures first-to-last actual integration
+boundaries and therefore includes any intervening pause. It supplements the
+existing active-interval ratio rather than silently excluding model waits.
+
+The first continuous eight-call run executed all 320 actual WBC updates,
+integrations and original action frames with zero evidence drops and no fall.
+Its active ratio was 0.99948, and its raw 319-boundary ratio was 1.00152, with
+seven missed boundaries and no remaining Tick debt. Nevertheless, it failed
+placement: the apple was pushed away from the plate and the independent
+successful-placement window was zero. Observation ages at replacement start
+were approximately 0.58--0.60 seconds. The original final image arrived from
+Tick 319 rather than 320 and correctly failed capture; that evidence is retained.
+After adding the bounded final-image retry, a separate two-call/80-Tick real
+model smoke passed exact final Tick 80 RGB/state identity, all 80 owner records,
+zero missed/pending Ticks and two actual VLA calls. It only verifies the capture
+fix, not a successful continuous task.
+
+A fixed-input CUDA I/O-binding comparison retained the same five ONNX graphs,
+three actual RGB/self-state inputs and original sequence seeds. All decoded
+40-frame actions agreed with the ordinary path and archived actions at
+`rtol=atol=1e-5`. Nine timed calls per path measured median 143.83 ms with CPU
+intermediates and 142.85 ms with CUDA intermediates, without active rendering.
+This failed the predeclared 20% speed improvement gate; the alternative was
+not installed into the service. Online rendering runs measured roughly
+277--305 ms of graph execution. The performance comparison does not establish
+the cause of that difference or task success, and does not change precision,
+inference steps, action timing, model identity or physics frequency.

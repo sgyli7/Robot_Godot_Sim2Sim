@@ -552,6 +552,8 @@ fn extract_frame(
     frame_count: Extract<Res<FrameCount>>,
     cameras: Extract<Query<(&RenderEntity, &Camera, &GlobalTransform), With<G1EgoCamera>>>,
     visual: Extract<Option<Res<crate::g1_visual::G1VisualStatus>>>,
+    task_input: Extract<Option<Res<crate::g1_task_visual::G1TaskVisualInput>>>,
+    task_visual: Extract<Option<Res<crate::g1_task_visual::G1TaskVisualStatus>>>,
 ) {
     extracted.0 = None;
     let (Some(source), Some(image)) = (&input.0, image.as_ref()) else {
@@ -572,6 +574,19 @@ fn extract_frame(
         })
     {
         return;
+    }
+    if let Some(task) = task_input.as_ref().and_then(|input| input.0.as_ref()) {
+        if task.episode_id != source.episode_id
+            || task.source_tick != source.source_ticks[0]
+            || task_visual.as_ref().is_none_or(|status| {
+                status.error.is_some()
+                    || status.episode_id != Some(task.episode_id)
+                    || status.source_tick != Some(task.source_tick)
+                    || status.visible_objects != task.poses.len()
+            })
+        {
+            return;
+        }
     }
     let actual = global.compute_transform();
     if (actual.translation - source.world_from_camera.translation).length() > 0.00001

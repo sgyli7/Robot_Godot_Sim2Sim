@@ -33,7 +33,7 @@ use rendering_minigame::{
     },
     g1_camera::{
         CameraPoseSource, G1BodyObservationInput, G1CameraJointState, G1CameraNativeState,
-        G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1ObservationPlugin,
+        G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1CapturedRgb, G1ObservationPlugin,
     },
     g1_task_visual::{
         G1TaskVisualFrame, G1TaskVisualInput, G1TaskVisualModel, G1TaskVisualPlugin,
@@ -116,6 +116,8 @@ struct LivePolicyConfiguration {
     endpoint: String,
     max_calls: u32,
     timeout_ms: u64,
+    #[serde(default)]
+    prefetch_after_ticks: Option<u32>,
 }
 
 struct LivePolicyRuntime {
@@ -126,6 +128,7 @@ struct LivePolicyRuntime {
     submitted_chunks: u32,
     max_calls: u32,
     next_boundary_tick: u64,
+    prefetch_after_ticks: Option<u32>,
 }
 
 // Distinct complete startup schemas and typed workers; no action conversion.
@@ -368,6 +371,10 @@ pub struct G1CaptureReceipt {
     pub owner_step_records: u64,
     pub owner_step_trace_dropped: u64,
     pub owner_step_trace_complete: bool,
+    pub diagnostic_prefetch_after_ticks: Option<u32>,
+    pub prefetch_discarded_image_stamps: Vec<serde_json::Value>,
+    pub continuous_boundary_sim_seconds: f64,
+    pub continuous_boundary_wall_seconds: f64,
     pub active_wall_seconds: f64,
     pub active_sim_seconds: f64,
     pub control_deadlines_missed: u64,
@@ -482,6 +489,10 @@ impl G1CaptureReceipt {
             owner_step_records: 0,
             owner_step_trace_dropped: 0,
             owner_step_trace_complete: false,
+            diagnostic_prefetch_after_ticks: None,
+            prefetch_discarded_image_stamps: Vec::new(),
+            continuous_boundary_sim_seconds: 0.,
+            continuous_boundary_wall_seconds: 0.,
             active_wall_seconds: 0.,
             active_sim_seconds: 0.,
             control_deadlines_missed: 0,
@@ -584,6 +595,7 @@ struct OwnerEvidence {
     trace: OwnerStepTrace<ArenaTaskStep>,
     output: BufWriter<fs::File>,
     records: u64,
+    first_boundary_wall_ms: Option<f64>,
 }
 
 impl OwnerEvidence {
@@ -602,6 +614,8 @@ impl OwnerEvidence {
                 "active_sim_seconds": record.timing.active_sim_seconds,
                 "pending_ticks": record.timing.pending_ticks,
                 "control_deadlines_missed": record.timing.control_deadlines_missed,
+                "last_boundary_wall_ms": record.timing.last_boundary_wall_ms,
+                "last_boundary_duration_ms": record.timing.last_boundary_duration_ms,
                 "execution": record.step.execution,
                 "body": record.step.body,
                 "scope": "independent_actual_owner_step_truth_never_model_input",
@@ -609,6 +623,12 @@ impl OwnerEvidence {
             serde_json::to_writer(&mut self.output, &value).map_err(|e| e.to_string())?;
             self.output.write_all(b"\n").map_err(|e| e.to_string())?;
             self.records += 1;
+            let first = *self
+                .first_boundary_wall_ms
+                .get_or_insert(record.timing.last_boundary_wall_ms);
+            receipt.continuous_boundary_sim_seconds = self.records.saturating_sub(1) as f64 * 0.02;
+            receipt.continuous_boundary_wall_seconds =
+                (record.timing.last_boundary_wall_ms - first) / 1000.;
         }
         self.output.flush().map_err(|e| e.to_string())?;
         receipt.owner_step_records = self.records;
@@ -750,6 +770,9 @@ fn run_capture_owner(
                 || policy.timeout_ms > 20_000
                 || config.max_observation_wall_age_ms == 0
                 || config.max_observation_wall_age_ms > 20_000
+                || policy.prefetch_after_ticks.is_some_and(|tick| {
+                    profile != TaskProfile::StaticApple || tick != 10 || policy.max_calls < 2
+                })
             {
                 return Err("live diagnostic requires 1..=8 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
             }
@@ -775,6 +798,7 @@ fn run_capture_owner(
                 submitted_chunks: 0,
                 max_calls: policy.max_calls,
                 next_boundary_tick: 0,
+                prefetch_after_ticks: policy.prefetch_after_ticks,
             })
         }
         (_, None) => None,
@@ -818,7 +842,10 @@ fn run_capture_owner(
     if live_policy.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
-        receipt.pauses_for_camera_and_policy = true;
+        receipt.diagnostic_prefetch_after_ticks = live_policy
+            .as_ref()
+            .and_then(|live| live.prefetch_after_ticks);
+        receipt.pauses_for_camera_and_policy = receipt.diagnostic_prefetch_after_ticks.is_none();
     }
     let worker = config.spawn(predictive_limit_diagnostic, diagnostic_constraint_sweeps)?;
     let owner_evidence = match &worker {
@@ -832,6 +859,7 @@ fn run_capture_owner(
                     .map_err(|e| e.to_string())?,
             ),
             records: 0,
+            first_boundary_wall_ms: None,
         }),
         CaptureWorker::Mobile(_) | CaptureWorker::Static { .. } => None,
     };
@@ -1009,13 +1037,80 @@ fn observation(snapshot: &CaptureSnapshot) -> Result<Option<Arc<G1CameraNativeSt
     Ok(Some(native))
 }
 
-/// Diagnostic pauses are explicit: rendering/inference never advances physics,
-/// and each reply resumes the existing owner without a scene reset or restamp.
+/// Common real RGB/self-state preparation. No admission clock is changed here.
+fn submit_live_observation(
+    live: &mut LivePolicyRuntime,
+    frame: G1CapturedRgb,
+    output: &Path,
+) -> Result<(), String> {
+    let native = frame
+        .stamp
+        .native_state
+        .as_ref()
+        .ok_or("live RGB lacks measured self state")?;
+    native.validate()?;
+    let names = robot_minigame::g1::contract::JOINT_NAMES.map(str::to_owned);
+    let observation = PolicyObservation {
+        stamp: ObservationStamp {
+            episode_id: frame.stamp.episode_id,
+            frame_id: frame.stamp.capture_sequence,
+            sim_time_ns: frame.stamp.sim_time_ns,
+            captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
+        },
+        measured_joint_positions_rad: map_measured_joints(
+            &names,
+            &native.measured_joints.positions,
+        )
+        .map_err(|e| format!("live measured joints: {e:?}"))?,
+        camera_width: frame.width,
+        camera_height: frame.height,
+        camera_rgb: frame.rgb,
+    };
+    observation
+        .validate()
+        .map_err(|e| format!("live RGB/self state: {e:?}"))?;
+    let camera = task_minigame::decision::CameraRgb::from_rgb(
+        "native_ego",
+        observation.camera_width,
+        observation.camera_height,
+        observation.camera_rgb.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        output.join(format!("live_ego_{:04}.png", live.next_sequence)),
+        camera.png(),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        output.join(format!("live_stamp_{:04}.json", live.next_sequence)),
+        serde_json::to_vec(&frame.stamp).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let stamp = observation.stamp;
+    live.worker
+        .submit_latest(PolicyInferenceRequest {
+            profile: live.profile,
+            sequence_id: live.next_sequence,
+            observation,
+        })
+        .map_err(|e| format!("live policy submission: {e:?}"))?;
+    live.pending = Some(stamp);
+    live.next_sequence += 1;
+    Ok(())
+}
+
 fn drive_live_policy(
     runtime: &mut CaptureRuntime,
     outcome: &CaptureOutcome,
     port: &G1CameraPort,
 ) -> Result<bool, String> {
+    if runtime
+        .live_policy
+        .as_ref()
+        .is_some_and(|live| live.prefetch_after_ticks.is_some())
+    {
+        return drive_prefetched_policy(runtime, outcome, port);
+    }
     let latest = runtime
         .latest
         .as_ref()
@@ -1066,6 +1161,7 @@ fn drive_live_policy(
                     + Duration::from_nanos(horizon * ARENA_ACTION_PERIOD_NS)
                     + Duration::from_secs(1),
                 command: ArenaTaskCommand {
+                    scheduled_start_sim_ns: None,
                     chunk: Arc::new(chunk),
                 },
             })
@@ -1127,65 +1223,172 @@ fn drive_live_policy(
         {
             return Err("live RGB was rendered from a different physical boundary".into());
         }
-        let native = frame
-            .stamp
-            .native_state
-            .as_ref()
-            .ok_or("live RGB lacks measured self state")?;
-        native.validate()?;
-        let names = robot_minigame::g1::contract::JOINT_NAMES.map(str::to_owned);
-        let observation = PolicyObservation {
-            stamp: ObservationStamp {
-                episode_id: frame.stamp.episode_id,
-                frame_id: frame.stamp.capture_sequence,
-                sim_time_ns: frame.stamp.sim_time_ns,
-                captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
-            },
-            measured_joint_positions_rad: map_measured_joints(
-                &names,
-                &native.measured_joints.positions,
-            )
-            .map_err(|e| format!("live measured joints: {e:?}"))?,
-            camera_width: frame.width,
-            camera_height: frame.height,
-            camera_rgb: frame.rgb,
+        submit_live_observation(live, frame, &runtime.options.output)?;
+        runtime.requested = false;
+        outcome.0.lock().unwrap().live_policy_inference_calls += 1;
+    }
+    Ok(false)
+}
+
+/// One pending model request/replacement while all current original frames run.
+/// Initial loading is paused; after the first real step a missed replacement
+/// fails explicitly instead of keeping an expired target or rebasing a chunk.
+fn drive_prefetched_policy(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("missing prefetch owner snapshot")?;
+    let live = runtime
+        .live_policy
+        .as_mut()
+        .ok_or("missing prefetch model worker")?;
+    let tick = latest.timing.episode_integrations;
+    let horizon = profile_contract(live.profile).action_horizon as u64;
+    if latest.phase == G1WorkerPhase::Failed {
+        return Err(latest
+            .reason
+            .clone()
+            .unwrap_or("prefetch physical owner failed".into()));
+    }
+    if tick > 0 && latest.phase == G1WorkerPhase::Paused {
+        if live.submitted_chunks == live.max_calls && tick == u64::from(runtime.options.ticks) {
+            let step = latest
+                .task_step
+                .as_ref()
+                .ok_or("completed prefetch budget has no actual step")?;
+            if step.execution.admitted_chunks != u64::from(live.max_calls)
+                || step.execution.frame_index + 1 != horizon as usize
+            {
+                return Err(
+                    "prefetch admitted/frame counters disagree with actual final boundary".into(),
+                );
+            }
+            return Ok(true);
+        }
+        return Err("prefetch replacement deadline missed; owner explicitly paused without expired actuation".into());
+    }
+    if let Some(reply) = live.worker.try_take_reply() {
+        let start_tick = live.next_boundary_tick;
+        let initial = live.submitted_chunks == 0;
+        if live.pending.take() != Some(reply.observation)
+            || reply.profile != live.profile
+            || reply.sequence_id + 1 != live.next_sequence
+            || (initial && (tick != 0 || latest.phase != G1WorkerPhase::Paused))
+            || (!initial && tick >= start_tick)
+        {
+            return Err(
+                "prefetch reply is stale, foreign or missed its fixed start; no rebasing".into(),
+            );
+        }
+        let chunk = reply
+            .result
+            .map_err(|e| format!("prefetch policy: {e:?}"))?;
+        if chunk.frames.len() as u64 != horizon {
+            return Err("prefetch changed original model horizon".into());
+        }
+        let end_tick = start_tick
+            .checked_add(horizon)
+            .ok_or("prefetch tick overflow")?;
+        let CaptureWorker::Task(owner) = &runtime.worker else {
+            return Err("prefetch lost its sole physical owner".into());
         };
-        observation
-            .validate()
-            .map_err(|e| format!("live RGB/self state: {e:?}"))?;
-        let camera = task_minigame::decision::CameraRgb::from_rgb(
-            "native_ego",
-            observation.camera_width,
-            observation.camera_height,
-            observation.camera_rgb.clone(),
-        )
-        .map_err(|e| e.to_string())?;
         fs::write(
             runtime
                 .options
                 .output
-                .join(format!("live_ego_{:04}.png", live.next_sequence)),
-            camera.png(),
+                .join(format!("live_reply_{:04}.json", reply.sequence_id)),
+            serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        fs::write(
-            runtime
-                .options
-                .output
-                .join(format!("live_stamp_{:04}.json", live.next_sequence)),
-            serde_json::to_vec(&frame.stamp).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        let stamp = observation.stamp;
-        live.worker
-            .submit_latest(PolicyInferenceRequest {
-                profile: live.profile,
-                sequence_id: live.next_sequence,
-                observation,
+        owner
+            .submit(TimedArenaTaskCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: end_tick
+                    .checked_mul(ARENA_ACTION_PERIOD_NS)
+                    .ok_or("prefetch time overflow")?,
+                valid_until_wall: Instant::now()
+                    + Duration::from_nanos((end_tick - tick) * ARENA_ACTION_PERIOD_NS)
+                    + Duration::from_secs(1),
+                command: ArenaTaskCommand {
+                    chunk: Arc::new(chunk),
+                    scheduled_start_sim_ns: Some(start_tick * ARENA_ACTION_PERIOD_NS),
+                },
             })
-            .map_err(|e| format!("live policy submission: {e:?}"))?;
-        live.pending = Some(stamp);
-        live.next_sequence += 1;
+            .map_err(|e| e.to_string())?;
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.live_policy_successes += 1;
+        receipt.live_action_chunks.push(serde_json::json!({
+            "sequence_id": reply.sequence_id, "observation": reply.observation,
+            "inference_ms": reply.elapsed.as_millis(), "start_tick": start_tick,
+            "end_tick_exclusive": end_tick, "frame_count": horizon,
+            "arrival_display_tick": tick, "scheduled_exact_start": true,
+            "observation_restamped": false, "same_owner_world": true,
+            "task_qualified": false,
+        }));
+        live.next_boundary_tick = end_tick;
+        live.submitted_chunks += 1;
+        return Ok(false);
+    }
+    if live.pending.is_some() || live.submitted_chunks == live.max_calls {
+        return Ok(false);
+    }
+    let initial = live.submitted_chunks == 0;
+    let trigger_tick = if initial {
+        0
+    } else {
+        live.next_boundary_tick - horizon + u64::from(live.prefetch_after_ticks.unwrap())
+    };
+    if tick < trigger_tick {
+        return Ok(false);
+    }
+    if !initial && tick >= live.next_boundary_tick {
+        return Err("prefetch image missed replacement window; explicit pause required".into());
+    }
+    if !runtime.requested {
+        port.request()?;
+        runtime.requested = true;
+        return Ok(false);
+    }
+    if let Some(frame) = port.take() {
+        let frame = frame?;
+        let frame_tick = frame.stamp.source_ticks[0];
+        if frame.stamp.source != CameraPoseSource::PhysicsBody
+            || frame.stamp.episode_id != runtime.episode_id
+            || frame.stamp.source_ticks != [frame_tick; 2]
+            || frame.stamp.sim_time_ns != frame_tick * ARENA_ACTION_PERIOD_NS
+            || (initial && frame_tick != 0)
+            || (!initial && frame_tick >= live.next_boundary_tick)
+        {
+            return Err(
+                "prefetch image/self-state is outside the actual fixed scheduling window".into(),
+            );
+        }
+        if frame_tick < trigger_tick {
+            // Main/render pipelining can finish an older, correctly stamped
+            // image after a request. Discard it, never restamp it or infer on it.
+            let mut receipt = outcome.0.lock().unwrap();
+            if receipt.prefetch_discarded_image_stamps.len() >= 16 {
+                return Err(
+                    "bounded prefetch image retries exhausted; explicit pause required".into(),
+                );
+            }
+            receipt
+                .prefetch_discarded_image_stamps
+                .push(serde_json::json!({
+                    "episode_id": frame.stamp.episode_id,
+                    "capture_sequence": frame.stamp.capture_sequence,
+                    "actual_image_tick": frame_tick, "minimum_prefetch_tick": trigger_tick,
+                    "captured_at_unix_ms": frame.stamp.captured_at_unix_ms,
+                    "submitted_to_model": false,
+                }));
+            runtime.requested = false;
+            return Ok(false);
+        }
+        submit_live_observation(live, frame, &runtime.options.output)?;
         runtime.requested = false;
         outcome.0.lock().unwrap().live_policy_inference_calls += 1;
     }
@@ -1329,7 +1532,13 @@ fn drive_capture(
                         && s.visible_objects > 0
                 })
             });
-        if !render_ready {
+        // Continuous extraction independently checks actual robot, prop and
+        // camera Tick identities. A moving display may update before this
+        // Update-stage readiness read; do not wait for a stationary snapshot.
+        let prefetch_running = runtime.live_policy.as_ref().is_some_and(|live| {
+            live.prefetch_after_ticks.is_some() && latest.timing.episode_integrations > 0
+        });
+        if !render_ready && !prefetch_running {
             return Ok(());
         }
         if runtime.live_policy.is_some() && !drive_live_policy(&mut runtime, &outcome, &port)? {
@@ -1388,6 +1597,32 @@ fn drive_capture(
         }
         if let Some(frame) = port.take() {
             let frame = frame?;
+            if frame.stamp.source == CameraPoseSource::PhysicsBody
+                && frame.stamp.episode_id == runtime.episode_id
+                && frame.stamp.source_ticks[0] == frame.stamp.source_ticks[1]
+                && frame.stamp.source_ticks[0] < latest.timing.episode_integrations
+                && frame.stamp.native_state.as_ref().is_some_and(|native| {
+                    native.validate().is_ok()
+                        && native.body_frame.source_tick == frame.stamp.source_ticks[0]
+                        && native.body_frame.episode_id == runtime.episode_id
+                })
+            {
+                let mut receipt = outcome.0.lock().unwrap();
+                if receipt.prefetch_discarded_image_stamps.len() >= 16 {
+                    return Err("bounded final-image retries exhausted".into());
+                }
+                receipt
+                    .prefetch_discarded_image_stamps
+                    .push(serde_json::json!({
+                        "phase": "final_capture", "episode_id": frame.stamp.episode_id,
+                        "capture_sequence": frame.stamp.capture_sequence,
+                        "actual_image_tick": frame.stamp.source_ticks[0],
+                        "required_final_tick": latest.timing.episode_integrations,
+                        "submitted_to_model": false,
+                    }));
+                runtime.requested = false;
+                return Ok(());
+            }
             if frame.stamp.source != CameraPoseSource::PhysicsBody
                 || frame.stamp.native_state.is_none()
                 || frame.stamp.episode_id != runtime.episode_id

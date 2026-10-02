@@ -198,6 +198,7 @@ fn main() -> Result<(), String> {
                             valid_until_sim_ns: next_boundary_tick * ARENA_ACTION_PERIOD_NS,
                             valid_until_wall: Instant::now() + Duration::from_secs(5),
                             command: ArenaTaskCommand {
+                                scheduled_start_sim_ns: None,
                                 chunk: Arc::new(chunk.clone()),
                             },
                         })

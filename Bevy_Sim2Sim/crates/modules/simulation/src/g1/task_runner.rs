@@ -89,13 +89,19 @@ pub struct ArenaTaskRunnerConfig {
 #[derive(Clone, Debug)]
 pub struct ArenaTaskCommand {
     pub chunk: Arc<PolicyActionChunk>,
+    /// Owner-side scheduling only; no model stamp/action is rewritten. Some
+    /// means exact next-chunk boundary, never immediate or late rebasing.
+    pub scheduled_start_sim_ns: Option<u64>,
 }
 
 impl ArenaTaskCommand {
     pub(crate) fn validate(&self) -> Result<(), RobotError> {
         let chunk = &self.chunk;
         let contract = profile_contract(chunk.profile);
-        if chunk.observation.episode_id == 0
+        if self
+            .scheduled_start_sim_ns
+            .is_some_and(|time| time % ARENA_ACTION_PERIOD_NS != 0)
+            || chunk.observation.episode_id == 0
             || chunk.sequence_id == 0
             || chunk.model_revision != contract.revision
             || chunk.action_period_ns != ARENA_ACTION_PERIOD_NS
@@ -152,6 +158,10 @@ struct TaskChunkExecutor {
     limits: ActionLimits,
     queue: PolicyActionQueue,
     accepted: Option<Arc<PolicyActionChunk>>,
+    accepted_schedule: Option<u64>,
+    current_end_sim_ns: Option<u64>,
+    /// At most one prefetched replacement; it has no physical emission clock.
+    pending: Option<ArenaTaskCommand>,
     admitted_chunks: u64,
     max_observation_wall_age_ms: u64,
 }
@@ -170,6 +180,9 @@ impl TaskChunkExecutor {
             )
             .map_err(error)?,
             accepted: None,
+            accepted_schedule: None,
+            current_end_sim_ns: None,
+            pending: None,
             admitted_chunks: 0,
             max_observation_wall_age_ms: config.max_observation_wall_age_ms,
         })
@@ -182,21 +195,77 @@ impl TaskChunkExecutor {
         now_wall_ms: u64,
     ) -> Result<(ArenaControllerCommand, ArenaTaskExecution), RobotError> {
         command.validate()?;
-        if self.accepted.as_deref() != Some(command.chunk.as_ref()) {
+        if self.accepted.as_deref() == Some(command.chunk.as_ref()) {
+            if self.accepted_schedule != command.scheduled_start_sim_ns || self.pending.is_some() {
+                return Err(error(
+                    "accepted schedule changed or an old chunk tried to withdraw pending work",
+                ));
+            }
+        } else {
+            if command.chunk.observation.sim_time_ns > sim_ns {
+                return Err(error(
+                    "scheduled observation is from the future current-world clock",
+                ));
+            }
             let wall_age = now_wall_ms
                 .checked_sub(command.chunk.observation.captured_at_unix_ms)
                 .ok_or_else(|| error("task observation is from a future wall clock"))?;
             if wall_age > self.max_observation_wall_age_ms {
                 return Err(error("task observation expired before owner admission"));
             }
+            if let Some(pending) = &self.pending {
+                if command.chunk.sequence_id < pending.chunk.sequence_id
+                    || (command.chunk.sequence_id == pending.chunk.sequence_id
+                        && (command.chunk != pending.chunk
+                            || command.scheduled_start_sim_ns != pending.scheduled_start_sim_ns))
+                {
+                    return Err(error(
+                        "pending chunk is stale or mutated under the same sequence",
+                    ));
+                }
+            }
+            if let Some(start) = command.scheduled_start_sim_ns {
+                if start < sim_ns {
+                    return Err(error(
+                        "scheduled chunk missed its exact physical start; no rebasing",
+                    ));
+                }
+                if self.current_end_sim_ns.is_some_and(|end| end != start) {
+                    return Err(error(
+                        "scheduled replacement must start at the current chunk end",
+                    ));
+                }
+                self.queue
+                    .validate_admission(&command.chunk, start)
+                    .map_err(error)?;
+                if start > sim_ns {
+                    if self.accepted.is_none() {
+                        return Err(error("future chunk has no active predecessor"));
+                    }
+                    self.pending = Some(command.clone());
+                    return self.emit(sim_ns, now_wall_ms);
+                }
+            }
             // Same-sequence mutation and all stale/profile/limit failures are
             // rejected by whole-chunk admission before replacement.
-            self.queue
+            let admission = self
+                .queue
                 .accept((*command.chunk).clone(), sim_ns)
                 .map_err(error)?;
             self.admitted_chunks += 1;
             self.accepted = Some(command.chunk.clone());
+            self.accepted_schedule = command.scheduled_start_sim_ns;
+            self.current_end_sim_ns = Some(admission.execution_end_sim_ns);
+            self.pending = None;
         }
+        self.emit(sim_ns, now_wall_ms)
+    }
+
+    fn emit(
+        &mut self,
+        sim_ns: u64,
+        now_wall_ms: u64,
+    ) -> Result<(ArenaControllerCommand, ArenaTaskExecution), RobotError> {
         let PolicyTick::Action {
             sequence_id,
             frame_index,
@@ -421,6 +490,9 @@ mod tests {
             .unwrap(),
             limits,
             accepted: None,
+            accepted_schedule: None,
+            current_end_sim_ns: None,
+            pending: None,
             admitted_chunks: 0,
             max_observation_wall_age_ms: 1000,
         }
@@ -428,6 +500,7 @@ mod tests {
 
     fn command() -> ArenaTaskCommand {
         ArenaTaskCommand {
+            scheduled_start_sim_ns: None,
             chunk: Arc::new(PolicyActionChunk {
                 profile: TaskProfile::StaticApple,
                 observation: ObservationStamp {
@@ -452,6 +525,125 @@ mod tests {
                     .collect(),
             }),
         }
+    }
+
+    #[test]
+    fn future_chunk_preserves_all_predecessor_frames_and_observation_age() {
+        let mut owner = executor();
+        let current = command();
+        for tick in 0..20 {
+            let (_, step) = owner
+                .next(&current, tick * ARENA_ACTION_PERIOD_NS, 500)
+                .unwrap();
+            assert_eq!(step.frame_index, tick as usize);
+        }
+        let mut chunk = (*current.chunk).clone();
+        chunk.sequence_id = 2;
+        chunk.observation.frame_id = 2;
+        chunk.observation.sim_time_ns = 20 * ARENA_ACTION_PERIOD_NS;
+        let future = ArenaTaskCommand {
+            chunk: Arc::new(chunk),
+            scheduled_start_sim_ns: Some(40 * ARENA_ACTION_PERIOD_NS),
+        };
+        for tick in 20..40 {
+            let (_, step) = owner
+                .next(&future, tick * ARENA_ACTION_PERIOD_NS, 500)
+                .unwrap();
+            assert_eq!(
+                (step.sequence_id, step.frame_index, step.admitted_chunks),
+                (1, tick as usize, 1)
+            );
+        }
+        let (_, step) = owner
+            .next(&future, 40 * ARENA_ACTION_PERIOD_NS, 500)
+            .unwrap();
+        assert_eq!(
+            (step.sequence_id, step.frame_index, step.admitted_chunks),
+            (2, 0, 2)
+        );
+        assert_eq!(step.execution_start_sim_ns, 40 * ARENA_ACTION_PERIOD_NS);
+        assert_eq!(step.observation.sim_time_ns, 20 * ARENA_ACTION_PERIOD_NS);
+        assert_eq!(step.observation_age_ns, 20 * ARENA_ACTION_PERIOD_NS);
+        assert!(owner.pending.is_none());
+        let (_, step) = owner
+            .next(&future, 41 * ARENA_ACTION_PERIOD_NS, 500)
+            .unwrap();
+        assert_eq!(step.frame_index, 1);
+    }
+
+    #[test]
+    fn future_chunk_cannot_rebase_or_mutate_its_pending_schedule() {
+        let mut owner = executor();
+        let current = command();
+        owner.next(&current, 0, 500).unwrap();
+        let mut chunk = (*current.chunk).clone();
+        chunk.sequence_id = 2;
+        chunk.observation.frame_id = 2;
+        let mut future = ArenaTaskCommand {
+            chunk: Arc::new(chunk),
+            scheduled_start_sim_ns: Some(40 * ARENA_ACTION_PERIOD_NS),
+        };
+        owner.next(&future, ARENA_ACTION_PERIOD_NS, 500).unwrap();
+        future.scheduled_start_sim_ns = Some(41 * ARENA_ACTION_PERIOD_NS);
+        assert!(
+            owner
+                .next(&future, 2 * ARENA_ACTION_PERIOD_NS, 500)
+                .is_err()
+        );
+        future.scheduled_start_sim_ns = Some(40 * ARENA_ACTION_PERIOD_NS);
+        let mut mutation = (*future.chunk).clone();
+        mutation.frames[0].left_arm[0] += 0.01;
+        let original = future.chunk.clone();
+        future.chunk = Arc::new(mutation);
+        assert!(
+            owner
+                .next(&future, 2 * ARENA_ACTION_PERIOD_NS, 500)
+                .is_err()
+        );
+        future.chunk = original;
+        assert!(
+            owner
+                .next(&future, 41 * ARENA_ACTION_PERIOD_NS, 500)
+                .is_err()
+        );
+        assert_eq!(owner.admitted_chunks, 1);
+    }
+
+    #[test]
+    fn invalid_future_action_is_rejected_before_replacing_current_chunk() {
+        let mut owner = executor();
+        let current = command();
+        owner.next(&current, 0, 500).unwrap();
+        let mut chunk = (*current.chunk).clone();
+        chunk.sequence_id = 2;
+        chunk.observation.frame_id = 2;
+        chunk.frames[39].left_arm[0] = 4.;
+        let future = ArenaTaskCommand {
+            chunk: Arc::new(chunk),
+            scheduled_start_sim_ns: Some(40 * ARENA_ACTION_PERIOD_NS),
+        };
+        assert!(owner.next(&future, ARENA_ACTION_PERIOD_NS, 500).is_err());
+        assert!(owner.pending.is_none());
+        assert_eq!(owner.admitted_chunks, 1);
+        let (_, step) = owner.next(&current, ARENA_ACTION_PERIOD_NS, 500).unwrap();
+        assert_eq!((step.sequence_id, step.frame_index), (1, 1));
+        let mut from_future = (*current.chunk).clone();
+        from_future.sequence_id = 2;
+        from_future.observation.frame_id = 2;
+        from_future.observation.sim_time_ns = 3 * ARENA_ACTION_PERIOD_NS;
+        assert!(
+            owner
+                .next(
+                    &ArenaTaskCommand {
+                        chunk: Arc::new(from_future),
+                        scheduled_start_sim_ns: Some(40 * ARENA_ACTION_PERIOD_NS),
+                    },
+                    2 * ARENA_ACTION_PERIOD_NS,
+                    500
+                )
+                .is_err()
+        );
+        assert!(owner.pending.is_none());
     }
 
     #[test]
@@ -485,6 +677,7 @@ mod tests {
             owner
                 .next(
                     &ArenaTaskCommand {
+                        scheduled_start_sim_ns: None,
                         chunk: Arc::new(changed)
                     },
                     20_000_000,
@@ -503,6 +696,7 @@ mod tests {
             owner
                 .next(
                     &ArenaTaskCommand {
+                        scheduled_start_sim_ns: None,
                         chunk: Arc::new(changed)
                     },
                     40_000_000,
@@ -530,6 +724,7 @@ mod tests {
             owner
                 .next(
                     &ArenaTaskCommand {
+                        scheduled_start_sim_ns: None,
                         chunk: Arc::new(future)
                     },
                     20_000_000,
@@ -659,6 +854,7 @@ mod tests {
                     let chunk = &sequence.chunks[((tick - 1) / 40) as usize];
                     let step = owner.step_with_guard(
                         &ArenaTaskCommand {
+                            scheduled_start_sim_ns: None,
                             chunk: Arc::new(chunk.clone()),
                         },
                         &mut || Ok(()),
