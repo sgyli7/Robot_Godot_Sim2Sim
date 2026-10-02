@@ -50,8 +50,8 @@ def main():
                 with urllib.request.urlopen(urllib.request.Request(url, method='HEAD'), timeout=30) as head:
                     etag = head.headers.get('ETag')
                     size = int(head.headers['Content-Length'])
-                if not etag or not 0 < size <= 64 * 1024 * 1024:
-                    raise ValueError('Missing identity or dependency exceeds 64 MiB')
+                if not etag or not 0 < size <= 128 * 1024 * 1024:
+                    raise ValueError('Missing identity or dependency exceeds 128 MiB')
                 with urllib.request.urlopen(urllib.request.Request(url, headers={'If-Match': etag}), timeout=45) as reply:
                     if reply.headers.get('ETag') != etag:
                         raise ValueError('HEAD/GET identity mismatch')
@@ -87,8 +87,8 @@ def main():
                 visited.add(result['url'])
                 results.append(result)
                 total += result.get('bytes', 0)
-                if total > 1024 * 1024 * 1024:
-                    raise ValueError('Dependency cache exceeds 1 GiB')
+                if total > 2 * 1024 * 1024 * 1024:
+                    raise ValueError('Dependency cache exceeds 2 GiB')
                 pending.update(children)
                 print(json.dumps({'event': 'asset', 'url': result['url'], 'bytes': result.get('bytes'), 'error': result.get('error')}), flush=True)
             receipt = {'schema': 'g1_source_material_cache_v1', 'qualified': False,

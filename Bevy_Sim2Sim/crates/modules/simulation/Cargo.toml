@@ -16,6 +16,7 @@ sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "rapier3d/sim2sim-sourc
 [dependencies]
 common_minigame.workspace = true
 robot_minigame.workspace = true
+task_minigame.workspace = true
 bevy_ecs.workspace = true
 rapier3d.workspace = true
 serde.workspace = true
