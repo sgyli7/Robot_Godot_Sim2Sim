@@ -3,6 +3,7 @@
 //! Runtime visual plugins consume immutable scene and robot display inputs.
 //! All physical body transforms come from the unique simulation backend.
 //! Development window orchestration and capture live in dev_tools.
+pub mod g1_background_visual;
 pub mod g1_camera;
 pub mod g1_task_visual;
 pub mod g1_visual;

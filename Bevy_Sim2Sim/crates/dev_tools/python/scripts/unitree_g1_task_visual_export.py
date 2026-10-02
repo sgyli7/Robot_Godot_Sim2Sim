@@ -80,7 +80,7 @@ def at(values, interpolation, vertex, corner, face, expected):
     return values[{"constant": 0, "uniform": face, "vertex": vertex, "varying": vertex, "faceVarying": corner}[interpolation]]
 
 
-def geometry(prim, matrix):
+def geometry(prim, matrix, selected_faces=None):
     fallback_vertices = 0
     if prim.IsA(UsdGeom.Cube):
         half = float(UsdGeom.Cube(prim).GetSizeAttr().Get()) / 2
@@ -144,9 +144,16 @@ def geometry(prim, matrix):
         fallback_vertices = len(bad)
     normal_matrix = matrix.GetInverse().GetTranspose()
     expected = (len(counts), len(points), len(indices))
+    if selected_faces is not None:
+        selected_faces = set(selected_faces)
+        if not selected_faces or any(i < 0 or i >= len(counts) for i in selected_faces):
+            raise ValueError("Invalid original material face subset")
     vertices, out_normals, out_uvs, triangles, unique = [], [], [], [], {}
     offset = 0
     for face, count in enumerate(counts):
+        if selected_faces is not None and face not in selected_faces:
+            offset += count
+            continue
         corners = []
         for c in range(offset, offset + count):
             vertex = indices[c]

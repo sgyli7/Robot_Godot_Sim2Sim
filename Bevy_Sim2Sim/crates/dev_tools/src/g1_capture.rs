@@ -27,6 +27,9 @@ use bevy::{
 };
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
+    g1_background_visual::{
+        G1BackgroundVisualModel, G1BackgroundVisualPlugin, G1BackgroundVisualStatus,
+    },
     g1_camera::{
         CameraPoseSource, G1BodyObservationInput, G1CameraJointState, G1CameraNativeState,
         G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1ObservationPlugin,
@@ -83,6 +86,15 @@ struct CaptureConfiguration {
     exposure_ev100: Option<f32>,
     #[serde(default)]
     predictive_limit_diagnostic: bool,
+    #[serde(default)]
+    background_visual: Option<BackgroundVisualConfiguration>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BackgroundVisualConfiguration {
+    path: PathBuf,
+    sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -276,6 +288,7 @@ pub fn run_capture_from_file(
         config.policy,
         config.exposure_ev100,
         config.predictive_limit_diagnostic,
+        config.background_visual,
     )
 }
 
@@ -332,6 +345,7 @@ pub struct G1CaptureReceipt {
     pub pauses_for_camera_and_policy: bool,
     pub camera_exposure_ev100: f32,
     pub factory_verified_predictive_limit_joints: usize,
+    pub background_visual_status: Option<G1BackgroundVisualStatus>,
     pub unqualified: Vec<&'static str>,
 }
 
@@ -437,6 +451,7 @@ impl G1CaptureReceipt {
             pauses_for_camera_and_policy: false,
             camera_exposure_ev100: Exposure::default().ev100,
             factory_verified_predictive_limit_joints: 0,
+            background_visual_status: None,
             unqualified: vec![
                 "standing_stability",
                 "science_station_contact_geometry",
@@ -523,6 +538,7 @@ pub fn run_capture(
         None,
         None,
         false,
+        None,
     )
 }
 
@@ -535,11 +551,22 @@ fn run_capture_owner(
     policy: Option<LivePolicyConfiguration>,
     exposure_ev100: Option<f32>,
     predictive_limit_diagnostic: bool,
+    background_visual: Option<BackgroundVisualConfiguration>,
 ) -> Result<G1CaptureReceipt, String> {
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
         return Err("diagnostic exposure must be finite EV100 in 0..=20".into());
     }
+    let background_model = background_visual
+        .map(|background| {
+            let translation = config
+                .task_objects()
+                .and_then(|c| c.source_t1_shelf.as_ref())
+                .ok_or("original background needs the frozen source static shelf profile")?
+                .environment_translation_source;
+            G1BackgroundVisualModel::load(&background.path, &background.sha256, translation)
+        })
+        .transpose()?;
     let tick_limit = if matches!(config, CaptureRunnerConfig::Task(_)) {
         200
     } else {
@@ -685,6 +712,10 @@ fn run_capture_owner(
     if let Some(model) = task_model {
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
     }
+    if let Some(model) = background_model {
+        app.insert_resource(model)
+            .add_plugins(G1BackgroundVisualPlugin);
+    }
     if episode_id > 0 {
         app.world()
             .resource::<G1CameraPort>()
@@ -718,6 +749,7 @@ fn setup_floor_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    background: Option<Res<G1BackgroundVisualModel>>,
 ) {
     commands.spawn((
         Name::new("g1_runner_actual_floor"),
@@ -728,6 +760,11 @@ fn setup_floor_scene(
             ..default()
         })),
         Transform::from_xyz(0., -0.25, 0.),
+        if background.is_some() {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        },
     ));
     commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
@@ -976,6 +1013,8 @@ fn drive_capture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut shelf_visual: Query<&mut Transform, With<SourceShelfVisual>>,
+    background_model: Option<Res<G1BackgroundVisualModel>>,
+    background_status: Option<Res<G1BackgroundVisualStatus>>,
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
@@ -988,12 +1027,16 @@ fn drive_capture(
         if let Some(error) = task_status.as_ref().and_then(|s| s.error.as_ref()) {
             return Err(error.clone());
         }
+        if let Some(error) = background_status.as_ref().and_then(|s| s.error.as_ref()) {
+            return Err(error.clone());
+        }
         if let Some(snapshot) = runtime.worker.take_latest() {
             input.0 = observation(&snapshot)?;
-            if let Some(shelf) = snapshot
-                .task_objects
-                .as_ref()
-                .and_then(|frame| frame.source_t1_shelf.as_ref())
+            if background_model.is_none()
+                && let Some(shelf) = snapshot
+                    .task_objects
+                    .as_ref()
+                    .and_then(|frame| frame.source_t1_shelf.as_ref())
             {
                 let transform = Transform {
                     translation: Vec3::from_array(shelf.translation_engine),
@@ -1136,6 +1179,7 @@ fn drive_capture(
             );
             let mut receipt = outcome.0.lock().unwrap();
             receipt.task_visual_status = task_status.as_deref().cloned();
+            receipt.background_visual_status = background_status.as_deref().cloned();
             if latest.phase != G1WorkerPhase::Failed {
                 receipt.physics_outcome = if runtime.options.ticks == 0 {
                     "native_initialization_zero_integrations"
