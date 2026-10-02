@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import socket
 import sys
 import time
 import urllib.request
@@ -35,6 +36,37 @@ HAND = ('index_0', 'index_1', 'middle_0', 'middle_1', 'thumb_0', 'thumb_1', 'thu
 GROUP_NAMES = {f'{side}_arm': [f'{side}_{suffix}_joint' for suffix in ARM] for side in ('left', 'right')}
 GROUP_NAMES.update({f'{side}_hand': [f'{side}_hand_{suffix}_joint' for suffix in HAND] for side in ('left', 'right')})
 GROUP_NAMES['waist'] = ['waist_yaw_joint', 'waist_roll_joint', 'waist_pitch_joint']
+SOURCE_PROFILES = {
+    'development_0_3': (ARENA_REV, LAB_REV, '6.1.0.0'),
+    'release_0_2_1': ('8b4a3a47fc53de23e8205089d71109a2e2348acd',
+                      'e57379c634b42db5a0fe9f754341be6e2a7c7c43',
+                      '6.0.0-rc.22+release.33481.407f3ea1.gl'),
+}
+
+
+def verify_source_receipt(path, expected_sha, roots, profile):
+    """Verify a host-frozen source tree inside a read-only container mount."""
+    if digest(path) != expected_sha:
+        raise ValueError('T2 source-tree receipt identity changed')
+    data = json.loads(path.read_text())
+    arena_rev, lab_rev, _ = SOURCE_PROFILES[profile]
+    if (data.get('schema') != 'g1_t2_source_tree_v1' or data.get('source_profile') != profile
+            or data.get('commits') != {'arena': arena_rev, 'lab': lab_rev}):
+        raise ValueError('T2 source-tree receipt belongs to another source stack')
+    seen = set()
+    for item in data['files']:
+        root = roots.get(item['root'])
+        relative = Path(item['path'])
+        key = (item['root'], item['path'])
+        if root is None or relative.is_absolute() or '..' in relative.parts or key in seen:
+            raise ValueError('Invalid or duplicate T2 source-tree path')
+        local = root / relative
+        if not local.resolve().is_relative_to(root.resolve()) or digest(local) != item['sha256']:
+            raise ValueError(f'T2 source-tree file changed: {key}')
+        seen.add(key)
+    if any(not any(key[0] == name for key in seen) for name in roots):
+        raise ValueError('T2 source-tree receipt omitted a source root')
+    return len(seen)
 
 
 def validate_reply(request, reply):
@@ -73,16 +105,26 @@ def validate_reply(request, reply):
     return frames
 
 
-def policy_reply(port, request):
+def policy_reply(port, request, socket_path=None):
     data = json.dumps(request, allow_nan=False).encode()
     if len(data) > 2_097_152:
         raise ValueError('T2 observation exceeds request bound')
-    wire = urllib.request.Request(f'http://127.0.0.1:{port}/infer', data=data,
-                                  headers={'Content-Type': 'application/json'})
-    # A process-local opener has no proxy, so RGB/self-state cannot leave loopback.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(wire, timeout=30) as response:
-        payload = response.read(1_048_577)
+    if socket_path:
+        from unitree_g1_source_http_bridge import exact
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(35); connection.connect(str(socket_path))
+            connection.sendall(len(data).to_bytes(4, 'big') + data)
+            size = int.from_bytes(exact(connection, 4), 'big')
+            if not 0 < size <= 1_048_576:
+                raise ValueError('T2 Unix transport reply exceeds bounded size')
+            payload = exact(connection, size)
+    else:
+        wire = urllib.request.Request(f'http://127.0.0.1:{port}/infer', data=data,
+                                      headers={'Content-Type': 'application/json'})
+        # A process-local opener has no proxy, so RGB/self-state cannot leave loopback.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(wire, timeout=30) as response:
+            payload = response.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError('T2 reply exceeds bounded size')
     result = json.loads(payload)
@@ -93,7 +135,16 @@ def policy_reply(port, request):
 def run_source(args, receipt, save, task_paths, mesh_assets):
     from isaaclab_arena.cli.isaaclab_arena_cli import get_isaaclab_arena_cli_parser
     from isaaclab_arena.utils.isaaclab_utils.simulation_app import SimulationAppContext
-    launch = get_isaaclab_arena_cli_parser().parse_args(['--enable_cameras'])
+    release_source = args.source_profile == 'release_0_2_1'
+    parser = get_isaaclab_arena_cli_parser()
+    if release_source:
+        from isaaclab_arena_environments.galileo_g1_locomanip_pick_and_place_environment import GalileoG1LocomanipPickAndPlaceEnvironment
+        GalileoG1LocomanipPickAndPlaceEnvironment.add_cli_args(parser)
+        launch = parser.parse_args(['--headless', '--enable_cameras', '--no-solve-relations',
+                                   '--embodiment', 'g1_wbc_joint', '--object', 'brown_box'])
+        launch.seed = args.seed
+    else:
+        launch = parser.parse_args(['--enable_cameras'])
     sys.argv = [sys.argv[0]]
     if args.startup_trace:
         import faulthandler
@@ -113,9 +164,10 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
             from isaaclab_arena.assets.background_library import GalileoLocomanipBackground
             from isaaclab_arena.assets.object_library import BrownBox, BlueSortingBin
             from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
-            from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
-            from isaaclab_arena_environments.galileo_g1_locomanip_pick_and_place_environment import (
-                GalileoG1LocomanipPickAndPlaceEnvironment, GalileoG1LocomanipPickAndPlaceEnvironmentCfg)
+            from isaaclab_arena_environments.galileo_g1_locomanip_pick_and_place_environment import GalileoG1LocomanipPickAndPlaceEnvironment
+            if not release_source:
+                from isaaclab_arena.environments.arena_env_builder_cfg import ArenaEnvBuilderCfg
+                from isaaclab_arena_environments.galileo_g1_locomanip_pick_and_place_environment import GalileoG1LocomanipPickAndPlaceEnvironmentCfg
             import isaaclab_arena_g1.g1_env.mdp.actions.g1_decoupled_wbc_joint_action as action_module
             import isaaclab_arena_g1.g1_whole_body_controller.wbc_policy.utils.g1 as model_module
             import isaaclab
@@ -150,12 +202,24 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
             GalileoLocomanipBackground.usd_path = str(task_paths['background'])
             BrownBox.usd_path = str(task_paths['box'])
             BlueSortingBin.usd_path = str(task_paths['bin'])
-            description = GalileoG1LocomanipPickAndPlaceEnvironment().build(
-                GalileoG1LocomanipPickAndPlaceEnvironmentCfg(enable_cameras=True, embodiment='g1_wbc_joint'))
+            if release_source:
+                description = GalileoG1LocomanipPickAndPlaceEnvironment().get_env(launch)
+            else:
+                description = GalileoG1LocomanipPickAndPlaceEnvironment().build(
+                    GalileoG1LocomanipPickAndPlaceEnvironmentCfg(enable_cameras=True, embodiment='g1_wbc_joint'))
             if description.task.task_description != PROFILE['reference_instruction']:
                 raise ValueError('Original T2 language instruction changed')
             description.embodiment.scene_config.robot.spawn.usd_path = str(args.homie_assets / 'g1_29dof_with_hand_rev_1_0.usd')
-            env = ArenaEnvBuilder(description, ArenaEnvBuilderCfg(seed=args.seed, solve_relations=False)).make_registered()
+            if args.scene_overlap_audit:
+                original_cfg_callback = description.env_cfg_callback
+                def query_cfg_callback(cfg):
+                    cfg = original_cfg_callback(cfg)
+                    cfg.sim.enable_scene_query_support = True
+                    cfg.sim.physics.enable_scene_query_support = True
+                    return cfg
+                description.env_cfg_callback = query_cfg_callback
+            builder_cfg = launch if release_source else ArenaEnvBuilderCfg(seed=args.seed, solve_relations=False)
+            env = ArenaEnvBuilder(description, builder_cfg).make_registered()
             raw = env.unwrapped
             if raw.cfg.sim.dt != .005 or raw.cfg.decimation != 4 or raw.cfg.episode_length_s != 30.0:
                 raise ValueError('Original T2 frequency/episode contract changed')
@@ -163,7 +227,16 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
             term = raw.action_manager.get_term('g1_action')
             names = list(robot.joint_names)
             indices = {key: [names.index(name) for name in joints] for key, joints in GROUP_NAMES.items()}
-            receipt.update(runtime_versions={key: importlib.metadata.version(key) for key in ('isaacsim', 'torch', 'warp-lang')},
+            runtime_versions = {key: importlib.metadata.version(key) for key in ('torch', 'warp-lang')}
+            if release_source:
+                runtime_versions['isaacsim_standalone_build'] = Path('/isaac-sim/VERSION').read_text().strip()
+                if runtime_versions['isaacsim_standalone_build'] != SOURCE_PROFILES[args.source_profile][2]:
+                    raise ValueError('Released T2 source SDK build changed')
+            else:
+                runtime_versions['isaacsim'] = importlib.metadata.version('isaacsim')
+                if runtime_versions['isaacsim'] != SOURCE_PROFILES[args.source_profile][2]:
+                    raise ValueError('Development T2 source SDK build changed')
+            receipt.update(runtime_versions=runtime_versions,
                            joint_names=names, policy_joint_groups=GROUP_NAMES,
                            camera_config=camera.cfg.to_dict(), action_shape=list(env.action_space.shape))
             if tuple(env.action_space.shape) != (1, 50):
@@ -197,6 +270,39 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                 raise ValueError('T2 render refresh changed physical state or counters')
             reset_counter = int(raw._sim_step_counter)
             captures = args.output.with_suffix('.captures'); captures.mkdir()
+            if args.scene_overlap_audit:
+                from omni.physx import get_physx_scene_query_interface
+                box_pose = measured(raw.scene['brown_box'].data.root_link_pose_w).tolist()
+                before_overlap = physical_state()
+                overlap_hits = []
+                def hit_report(hit):
+                    overlap_hits.append({'collision': str(hit.collision), 'rigid_body': str(hit.rigid_body)})
+                    return True
+                hit_count = get_physx_scene_query_interface().overlap_box(
+                    (.0999, .0999, .0999), tuple(box_pose[:3]), tuple(box_pose[3:]), hit_report, False)
+                after_overlap = physical_state()
+                if any(not np.array_equal(value, after_overlap[key]) for key, value in before_overlap.items()):
+                    raise ValueError('Scene overlap read changed physical state')
+                receipt['actual_scene_overlap_query'] = {'box_half_extent_m': [.0999]*3, 'box_pose_xyzw': box_pose,
+                    'count': int(hit_count), 'hits': overlap_hits, 'query_support_only_enabled': True,
+                    'physics_state_changed': False, 'sdk_counters': [int(raw._sim_step_counter), int(raw.sim._physics_step_count)]}
+                save()
+            if args.initial_collision_audit:
+                from unitree_g1_initial_collision_query import query_initial_collisions
+                before_query = physical_state()
+                before_body_poses = measured(robot.data.body_link_pose_w).copy()
+                before_query_counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                receipt['initial_collision_query'] = query_initial_collisions(
+                    raw, measured, captures / 'initial_collision_geometry.json')
+                after_query = physical_state()
+                query_error = max(float(np.abs(after_query[key] - value).max()) for key, value in before_query.items())
+                query_error = max(query_error, float(np.abs(measured(robot.data.body_link_pose_w) - before_body_poses).max()))
+                after_query_counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                receipt['initial_collision_query'].update(physical_state_max_abs_change=query_error,
+                    before_sdk_counters=before_query_counters, after_sdk_counters=after_query_counters)
+                if query_error != 0 or before_query_counters != after_query_counters:
+                    raise ValueError('Initial collision query changed physics state/counters')
+                save()
             contact_events = []; contact_subscription = None
             if args.reset_contact_audit:
                 from omni.physx import get_physx_simulation_interface
@@ -206,9 +312,11 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                 actors = [prim for prim in stage.Traverse()
                           if str(prim.GetPath()).startswith('/World/envs/env_0/brown_box')
                           and prim.HasAPI(UsdPhysics.RigidBodyAPI)]
-                if not actors or not all(prim.HasAPI(PhysxSchema.PhysxContactReportAPI) for prim in actors):
+                existing_report_api = bool(actors) and all(prim.HasAPI(PhysxSchema.PhysxContactReportAPI) for prim in actors)
+                if not existing_report_api and not release_source:
                     raise ValueError('Original T2 box has no existing contact report API; no schema is added')
                 receipt['observed_contact_report_actors'] = [str(prim.GetPath()) for prim in actors]
+                receipt['original_contact_report_api_available'] = existing_report_api
                 receipt['contact_report_schema_writes'] = 0
                 receipt['contact_report_overflow'] = False
                 def contacts(headers, data):
@@ -229,7 +337,8 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                         contact_events.append({**paths, 'event': str(header.type),
                             'sdk_physics_count_at_callback': int(raw.sim._physics_step_count),
                             'env_counter_at_callback': int(raw._sim_step_counter), 'points': values})
-                contact_subscription = get_physx_simulation_interface().subscribe_contact_report_events(contacts)
+                if existing_report_api:
+                    contact_subscription = get_physx_simulation_interface().subscribe_contact_report_events(contacts)
             action = torch.zeros(env.action_space.shape, device=raw.device)
             frames = []; frame_index = 0; sequence = 0; last_sha = None
             with args.output.with_suffix('.jsonl').open('x') as trace:
@@ -249,6 +358,12 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                         'acceptance_truth_only': {name: {'pose': measured(raw.scene[name].data.root_pose_w).tolist(),
                             'velocity': measured(raw.scene[name].data.root_vel_w).tolist()}
                             for name in ('brown_box', 'blue_sorting_bin')}}
+                    if args.reset_contact_audit and 'contact_sensor_brown_box' in raw.scene.sensors:
+                        sensor = raw.scene['contact_sensor_brown_box']
+                        sample['acceptance_truth_only']['existing_box_contact_sensor'] = {
+                            'net_forces_w': measured(sensor.data.net_forces_w).tolist(),
+                            'force_matrix_w': measured(sensor.data.force_matrix_w).tolist(),
+                            'filter_prim_paths_expr': sensor.cfg.filter_prim_paths_expr}
                     trace.write(json.dumps(sample, allow_nan=False) + '\n'); trace.flush()
                     receipt['last_state'] = sample; receipt['completed_control_ticks'] = tick
                     receipt['actual_sdk_integrations'] = actual_steps
@@ -267,8 +382,8 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                         (captures / f'request_{tick:04}.json').write_text(json.dumps(request, allow_nan=False))
                         np.savez_compressed(captures / f'observation_{tick:04}.npz', ego_view=rgb[None],
                                             **{key: np.asarray(values, dtype=np.float32)[None] for key, values in groups.items()})
-                        if tick < args.ticks and args.policy_port:
-                            started = time.monotonic(); reply = policy_reply(args.policy_port, request)
+                        if tick < args.ticks and (args.policy_port or args.policy_socket):
+                            started = time.monotonic(); reply = policy_reply(args.policy_port, request, args.policy_socket)
                             (captures / f'reply_{tick:04}.json').write_text(json.dumps(reply, allow_nan=False))
                             frames = reply['frames']; frame_index = 0; sequence += 1
                             receipt['policy_calls'] += 1
@@ -326,22 +441,45 @@ def main():
     parser.add_argument('--lab-source', type=Path, required=True)
     parser.add_argument('--homie-assets', type=Path, required=True)
     parser.add_argument('--task-assets', type=Path, required=True, help='Frozen Assets/Isaac/6.1/Isaac/IsaacLab directory')
+    parser.add_argument('--source-profile', choices=SOURCE_PROFILES, default='development_0_3',
+                        help='Independently pinned source stack; both profiles keep original T2 N1.6/Homie only')
+    parser.add_argument('--source-tree-receipt', type=Path,
+                        help='Optional hash-frozen host-verified source tree for read-only container mounts without accessible Git metadata')
+    parser.add_argument('--source-tree-sha256')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--run-source', action='store_true')
     parser.add_argument('--ticks', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--episode-id', type=int, required=True)
     parser.add_argument('--policy-port', type=int)
+    parser.add_argument('--policy-socket', type=Path, help='Private byte-preserving transport to the original local HTTP model owner')
     parser.add_argument('--startup-trace', action='store_true', help='Finite startup stack/log diagnostic only')
     parser.add_argument('--reset-contact-audit', action='store_true',
                         help='Ten original source controls with fixed reset self-state targets; no VLA or native fallback')
+    parser.add_argument('--initial-collision-audit', action='store_true',
+                        help='Read original SDK cooking with actual reset body poses; only zero-tick or ten-control no-VLA diagnostic')
+    parser.add_argument('--scene-overlap-audit', action='store_true',
+                        help='Explicit source query-support diagnostic; original ten controls, no VLA or qualification')
     args = parser.parse_args()
     if (not 0 <= args.ticks <= 1500 or args.episode_id < 1 or not 0 <= args.seed < 2**32
             or (args.policy_port is not None and not 1 <= args.policy_port <= 65535)
-            or (args.ticks > 0 and not args.policy_port and not args.reset_contact_audit)
-            or (args.reset_contact_audit and (args.ticks != 10 or args.policy_port is not None))):
+            or (args.policy_port is not None and args.policy_socket is not None)
+            or (args.ticks > 0 and not args.policy_port and not args.policy_socket and not args.reset_contact_audit)
+            or (args.reset_contact_audit and (args.ticks != 10 or args.policy_port is not None or args.policy_socket is not None))):
         parser.error('Use0..1500 controls, positive episode and valid seed/loopback port; motion requires N1.6 service or explicit ten-control contact audit')
-    source_check(args.arena_source, ARENA_REV); source_check(args.lab_source, LAB_REV)
+    if args.initial_collision_audit and (not args.run_source or args.policy_port or args.policy_socket or (args.ticks != 0 and not args.reset_contact_audit)):
+        parser.error('Initial collision reading requires zero ticks or the original ten-control no-VLA diagnostic')
+    if args.scene_overlap_audit and (not args.run_source or not args.reset_contact_audit or args.source_profile != 'development_0_3'):
+        parser.error('Scene overlap diagnostic requires the original ten-control no-VLA fixture')
+    arena_rev, lab_rev, expected_runtime = SOURCE_PROFILES[args.source_profile]
+    if bool(args.source_tree_receipt) != bool(args.source_tree_sha256):
+        parser.error('Source-tree receipt and its frozen SHA256 must be provided together')
+    verified_source_files = None
+    if args.source_tree_receipt:
+        verified_source_files = verify_source_receipt(args.source_tree_receipt, args.source_tree_sha256,
+            {'arena': args.arena_source, 'lab': args.lab_source}, args.source_profile)
+    else:
+        source_check(args.arena_source, arena_rev); source_check(args.lab_source, lab_rev)
     for name, expected in FROZEN_ASSETS.items():
         if digest(args.homie_assets / name) != expected:
             raise ValueError(f'Frozen T2 body/controller changed: {name}')
@@ -371,7 +509,9 @@ def main():
         raise ValueError('Original T2 policy joint order changed')
     receipt = {'schema': 'g1_t2_original_source_task_v1', 'qualified': False,
         'source_scene_rollout_completed': False, 'source_vla_executed': False, 'task_success_verified': False,
-        'arena_commit': ARENA_REV, 'lab_commit': LAB_REV, 'model_revision': PROFILE['revision'],
+        'arena_commit': arena_rev, 'lab_commit': lab_rev, 'source_profile': args.source_profile,
+        'expected_source_runtime': expected_runtime, 'model_revision': PROFILE['revision'],
+        'source_tree_sha256': args.source_tree_sha256, 'verified_source_tree_files': verified_source_files,
         'body_backend': 'homie_v2', 'action_horizon': 50, 'action_period_ns': 20_000_000,
         'source_physics_hz': 200, 'source_control_hz': 50, 'source_inference_pauses': True,
         'formal_native_frequency_changed': False, 'harness_sha256': digest(Path(__file__)),

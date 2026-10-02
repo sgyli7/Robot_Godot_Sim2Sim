@@ -1,8 +1,12 @@
 """Original mobile contract admission guards; no simulator or model is loaded."""
 import copy
+import hashlib
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
-from unitree_g1_t2_source_task import GROUP_NAMES, PROFILE, validate_reply
+from unitree_g1_t2_source_task import GROUP_NAMES, PROFILE, SOURCE_PROFILES, validate_reply, verify_source_receipt
 
 
 class MobileSourceGuards(unittest.TestCase):
@@ -25,6 +29,7 @@ class MobileSourceGuards(unittest.TestCase):
             changed = copy.deepcopy(self.reply); changed[field] = value
             with self.subTest(field=field), self.assertRaises(ValueError):
                 validate_reply(self.request, changed)
+
         changed = copy.deepcopy(self.reply); changed['observation']['episode_id'] += 1
         with self.assertRaises(ValueError):
             validate_reply(self.request, changed)
@@ -42,6 +47,60 @@ class MobileSourceGuards(unittest.TestCase):
             changed = copy.deepcopy(self.reply); changed['frames'][0][group] = value
             with self.subTest(group=group), self.assertRaises(ValueError):
                 validate_reply(self.request, changed)
+
+
+class MobileSourceIdentityGuards(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        base = Path(self.temporary.name)
+        self.roots = {name: base / name for name in ('arena', 'lab')}
+        self.profile = 'release_0_2_1'
+        revisions = SOURCE_PROFILES[self.profile]
+        self.receipt = base / 'receipt.json'
+        self.data = {'schema': 'g1_t2_source_tree_v1', 'source_profile': self.profile,
+                     'commits': {'arena': revisions[0], 'lab': revisions[1]}, 'files': []}
+        for name, root in self.roots.items():
+            root.mkdir()
+            file = root / 'module.py'; file.write_text(name)
+            self.data['files'].append({'root': name, 'path': 'module.py',
+                                      'sha256': hashlib.sha256(file.read_bytes()).hexdigest()})
+
+    def verify(self):
+        self.receipt.write_text(json.dumps(self.data))
+        sha = hashlib.sha256(self.receipt.read_bytes()).hexdigest()
+        return verify_source_receipt(self.receipt, sha, self.roots, self.profile)
+
+    def test_mounted_source_bytes_must_match_even_with_unavailable_git(self):
+        self.assertEqual(self.verify(), 2)
+        (self.roots['lab'] / 'module.py').write_text('different source')
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_other_revision_or_omitted_root_is_rejected(self):
+        original = copy.deepcopy(self.data)
+        self.data['commits']['arena'] = SOURCE_PROFILES['development_0_3'][0]
+        with self.assertRaises(ValueError):
+            self.verify()
+        self.data = original; self.data['files'] = self.data['files'][:1]
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_external_symlink_or_traversal_cannot_supply_source(self):
+        outside = Path(self.temporary.name) / 'external.py'; outside.write_text('arena')
+        module = self.roots['arena'] / 'module.py'; module.unlink(); module.symlink_to(outside)
+        with self.assertRaises(ValueError):
+            self.verify()
+        self.data['files'][0]['path'] = '../external.py'
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_duplicate_paths_and_changed_receipt_are_rejected(self):
+        self.data['files'].append(copy.deepcopy(self.data['files'][0]))
+        with self.assertRaises(ValueError):
+            self.verify()
+        with self.assertRaises(ValueError):
+            verify_source_receipt(self.receipt, '0'*64, self.roots, self.profile)
 
 
 if __name__ == '__main__':

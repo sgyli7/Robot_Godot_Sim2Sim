@@ -15,6 +15,15 @@ actions and extra object-truth groups are rejected. Only RGB and measured named
 joints enter the policy request. The separate trace's `acceptance_truth_only`
 object poses and velocities never enter the request.
 
+Two source stacks are separately pinned by `--source-profile`. The existing
+`development_0_3` path uses Arena `7d75c959`, Lab `ae37b028` and SDK 6.1.0.0.
+The selected published-stack path, `release_0_2_1`, uses Arena `8b4a3a47`,
+Lab `e57379c6` and the original Docker SDK build
+`6.0.0-rc.22+release.33481.407f3ea1.gl`. Both retain T2 Homie v2 and the same
+N1.6 checkpoint, fifty-frame decoder, joint groups and instruction. Loading
+that SDK does not load T1's AGILE/N1.7 policy. The released task's original
+success term is a proximity check; it cannot establish formal placement.
+
 The source diagnostic keeps 200 Hz physics, 50 Hz control, the original
 thirty-second episode, task placement/randomization and scale. Inference pauses
 source physics. It does not change native Rapier's required 50 Hz single
@@ -57,6 +66,17 @@ Use a bounded parent timeout; `--startup-trace` records one 45-second startup
 stack and enables SDK startup logs without changing dynamics. A cold camera
 startup timeout and the missing-dependency failures remain separate evidence.
 
+For the published source stack, select `--source-profile release_0_2_1` and
+the corresponding frozen source roots and 6.0 asset paths. In a source container
+whose editable packages are installed from `/workspace/Arena` and
+`/workspace/IsaacLab`, use those actual import roots. Their Git worktree metadata
+may refer to host-only paths. `--source-tree-receipt PATH --source-tree-sha256 SHA`
+then verifies a host-frozen manifest against every listed source byte, its
+profile and both revision identities. The current manifest covers 3205 files.
+Host preparation must check both original Git revisions and a clean tracked
+tree before producing it; freeze its hash outside the container command. Wrong
+revisions, changed bytes, omitted roots, duplicates and escaping paths fail.
+
 For actual motion, first start one original model owner in the matched isolated
 N1.6 environment:
 
@@ -77,6 +97,25 @@ run. The initial model instruction remains the published fixed brown-box task;
 this is not arbitrary-target language generalization. Every run needs a fresh
 episode and output directory, so source reset faults cannot contaminate a
 second episode in the same SDK process.
+
+For a bridge-network source container, retain the HTTP owner at
+`127.0.0.1:5558` and use `unitree_g1_source_http_bridge.py` in the host:
+
+```bash
+python3 crates/dev_tools/python/scripts/unitree_g1_source_http_bridge.py \
+  --socket /absolute/private/mount/pEPISODE.sock --port 5558 \
+  --max-calls 30 --output .scratch/NEW_CASE/transport.json
+```
+
+The source command receives `--policy-socket /evidence/pEPISODE.sock` instead
+of `--policy-port`. This finite transport loads no model, creates no network
+listener and forwards request/reply bytes unchanged, with bounded sizes and
+timeouts. It records byte hashes separately from actual model inference counts.
+Its socket must live in the private evidence mount shared with that container;
+host and original image UIDs differ, so only that socket uses mode 0666. After
+an early source termination send the framed `{"stop":true}` control request, or
+close the owned transport process. Close the model owner separately. Never
+reuse an earlier episode's socket, output or model counters.
 
 ## Reset-camera result
 
@@ -124,4 +163,40 @@ callback route is uninformative in this run. Contact geometry/cooking still
 needs an independent inspection. No timestep, asset geometry, gains, masses,
 initial poses, success thresholds or model weights were changed.
 
+## Actual geometry and source-stack comparison
+
+`--initial-collision-audit` reads the actual SDK stage at reset, with measured
+poses for all 53 robot bodies, the box/bin and the original background's dynamic
+tabletop and drill. It uses the [official synchronous cooking API][cooking]
+without enabling query support, writing USD schemas or taking a physics step.
+The initial query covered 305 enabled colliders and exported 171 convex hulls.
+Independent convex/box SAT found only six rack hull overlaps, approximately
+0.044 mm deep. Robot convex hulls were disjoint; analytic robot shapes were
+excluded by disjoint bounds. The ground plane and triangle surfaces remain
+explicit limitations, and geometric overlap is not live contact attribution.
+The entire ten-control trajectory remained identical to the previous fixture.
+
+The separate `--scene-overlap-audit --reset-contact-audit --ticks 10` explicitly
+enables only source scene-query support and reads an inset .0999 m half-extent
+box at reset. It hits only the box itself and preserves the same ten-control
+trajectory. This excludes a large initial overlap through that query, not all
+possible later contacts. Existing sensor forces at control boundaries are zero
+and do not exclude a transient substep impulse.
+
+The published-stack ten-control fixture used exactly the same measured initial
+robot joints, root, box and bin state. It retained zero VLA calls and 40 original
+source integrations. The box moved at most 0.00175927 m, with first-control
+vertical velocity -0.0000832623 m/s. The development stack's corresponding
+values were 0.550429 m and +4.70143 m/s. Thus the initial launch is sensitive to
+the composite source stack. SDK, Lab, Arena, Torch and Warp versions differ;
+this does not identify one SDK bug or isolate a single causal change. The
+selected next task run uses the published stack rather than tuning around that
+launch. No controller, task geometry, reset pose, frequency or model was tuned.
+
+The audit also retains two failed geometry-reader assumptions (unmeasured
+dynamic background and lowercase robot path) and a failed released-stack import
+root check. The latter was resolved by verifying the actual installed copied
+source roots against all 3205 frozen source files, not by relaxing byte checks.
+
 [contact_reports]: https://docs.omniverse.nvidia.com/dev-guide/latest/programmer_ref/physics/rb_physics.html
+[cooking]: https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/extensions/runtime/source/omni.physx/docs/api/python.html
