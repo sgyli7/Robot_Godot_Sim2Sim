@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前仍在 M0-S／M0-T，GPU／优化器使用为零。按用户确认，主线是 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。成熟栈的原生模型接线已完成，下一项是可复核的任务碰撞模型；[短几何筛选](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_proxy_pilot_checkpoint.json)只保留脚饰件局部候选，没有晋升全身模型。Bevy 性能子 agent 的缓冲改动经[独立对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle02_review.json)将相同短程序的物理步均值约从 **157 ms 降到 53 ms**，尚未达到持续 50 Hz。已有自定义 CPU 接触／离散分支已收口为历史诊断，不再作为默认训练内核扩展。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前仍在 M0-S／M0-T，GPU／优化器使用为零。按用户确认，主线是 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。成熟栈的原生模型接线已完成；当前[模型整理检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_geometry_checkpoint.json)关闭了收益不足的包含删除和崩溃的整脚分解，修正了源／目标凸包导出的真实差异，尚未晋升任务本体。下一项按连通分量复用成熟几何工具，冻结可复核的任务 MJCF。Bevy 性能子 agent 的缓冲改动经[独立对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle02_review.json)将相同短程序的物理步均值约从 **157 ms 降到 53 ms**，尚未达到持续 50 Hz；第三周期在修正的导出上重新测量。已有自定义 CPU 接触／离散分支已收口为历史诊断，不再作为默认训练内核扩展。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -423,3 +423,15 @@ v6 冷重置地面穿透 **2.504 mm**、源 CPU 物理加控制器 P95 **180.17 
 前后、计时开／关、重复程序的实际关节、身体、力矩及接触字段一致；只按唯一 body 名规范化无序几何读出。20 Tick 的真实法向／摩擦冲量、热启动及力臂 SHA 签名完全一致，每 Tick 有 30–74 个非零冲量点。默认 simulation 回归 **28 项通过**（22 单元、2 armature、4 预测限位），10 项依赖外部冻结夹具的既有检查未运行；工程结构 **564 项通过**。七次配对与重复试验共 **140 次实际积分**，完整证据见[周期报告](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_bevy_performance_001/cycle_02/cycle_02_report.md)及[核验收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_bevy_performance_001/cycle_02/cycle_02_audit.json)。这是性能改动回归，不授予原候选物理资格。没有 Actor、PPO 或 GPU，仍未达到 16 ms／持续 50 Hz 门槛。
 
 本周期到此收口，不继续追逐下一条内核热点。下一次性能周期根据新碰撞候选或新的可检验瓶颈派工，保留固定基线、真实物理结果对照与默认功能回归；无安全收益时不采用改动。
+
+### 任务几何整理与原生凸包导出修正
+
+同一刚体、相同接触参数下，仅删除全部顶点被保留凸包包含的碰撞体，15,715→15,585 块，减少 **130 块**。[独立核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_containment_001/conformance/receipt.json)确认 24 组物理数组、15,670 个保留命名几何及 130 个包含关系；质量和驱动不变，脚垫和夹持面保持。父模型与候选各完成 100 次真实积分／力矩更新，无警告，但两者的零动作程序均未站稳；2 秒短程序的 P95 几乎没有改善。几何占据集合相同也不授予接触力或长轨迹等价资格。此候选只归档，不作为主要优化路线。
+
+右脚刚体的 1,049 个既有源凸包通过 Manifold `Mesh64` 合并耗时约 **0.24 秒**，六个足底区域未参与合并。对全部合并网格直接运行 CoACD 后在约 **279 秒**发生原生崩溃（退出码 −11），无分解或模型晋升。[拓扑审查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_body_union_001/topology_audit.json)发现 **186 个连通分量、128 个凸分量**。此轮关闭，不原样重跑；下一轮采用工具支持的逐连通分量流程，只做一个有界可检验筛选，保留空腔和任务接触见证。合并对象是既有碰撞包络，不能代替原 CAD 忠实度审查。
+
+[native_geometry.py](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/dev_tools/python/src/bevy_microduck_tools/goose/native_geometry.py)修正了迁移导出：MuJoCo 3.10 的网格保留原顶点，但碰撞支持点按编译凸包图选择；`maxhullvert` 会限制凸包，少于 10 顶点时仍使用原顶点。依据[固定版本原生实现](https://github.com/google-deepmind/mujoco/blob/3.10.0/src/engine/engine_collision_convex.c)，导出只采用实际支持点，保留原顶点顺序和编译后坐标变换，显式锁定引擎和导出版本。真实 64→8 顶点夹具的原生距离查询确认：旧全顶点导出会在源端仍分离的位置产生碰撞；新导出与源查询一致，同时覆盖不限顶点及小网格回退。
+
+新的[冻结导出](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_support_export_002/receipt.json)仍有 **15,727** 个碰撞体；1,398 个网格减少支持顶点，另有 337 个网格的原顶点超出源凸包超过 20 nm，最大平面距离约 **2.976 mm**，其余为冗余顶点删除。导出 SHA `c470d10e4349d3f27e5f9d7e469e72bd112c4d3f1653d709dd143f23771448d8`；质量、关节、物理系数、摩擦、过滤和坐标变换不变。原始 XML、合同、旧导出和历史对照保持冻结。旧目标性能结果继续属于旧导出，不能继承为新导出的物理资格；目标端必须按新哈希复核。该修正也不解释全部既有穿透。
+
+最终 **81 项 Goose 回归通过、11 项新引擎专项跳过，570 项结构检查通过**。本轮源端共 200 次真实积分，没有 Actor／PPO／GPU；M0-S／M0-T 仍未通过。性能子 agent 第三周期仅在新导出上做有界计时与物理结果回归；主线继续任务 MJCF，不扩展自定义求解器或继续扫描整脚分解参数。

@@ -195,6 +195,9 @@ def _condense_pads(root: ET.Element, contract: dict) -> None:
 def export_rapier_plant(bundle: dict, destination: Path) -> dict:
     """Export compiled collision frames and complete rigid tensors, never visuals."""
     import mujoco
+    from .native_geometry import (
+        ENGINE_VERSION, EXPORT_REVISION, collision_mesh_vertices, require_supported_engine)
+    require_supported_engine()
     contract_path = Path(bundle["contract_path"])
     contract = json.loads(contract_path.read_text())
     experimental = contract.get("candidate") == "goose_460_full50_be_v2"
@@ -252,6 +255,7 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
     patches = {p["name"]: p for p in contract["passive_contacts"]}
     collider_names = {g["name"] for g in contract["collision_geometries"]} | set(patches)
     colliders = []
+    reduced_mesh_count = 0
     max_frame_error = 0.
     world_lower, world_upper = np.full(3, np.inf), np.full(3, -np.inf)
     for gid in range(model.ngeom):
@@ -266,9 +270,10 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
                   "solref": model.geom_solref[gid].tolist(), "solimp": model.geom_solimp[gid].tolist()}
         if model.geom_type[gid] == int(mujoco.mjtGeom.mjGEOM_MESH):
             mesh_id = int(model.geom_dataid[gid])
-            address, count = int(model.mesh_vertadr[mesh_id]), int(model.mesh_vertnum[mesh_id])
-            vertices = model.mesh_vert[address:address + count].astype(float)
-            record.update(kind="convex_mesh", vertices_local_m=vertices.tolist())
+            vertices, support = collision_mesh_vertices(model, mesh_id)
+            reduced_mesh_count += support["support_vertex_count"] < support["raw_vertex_count"]
+            record.update(kind="convex_mesh", vertices_local_m=vertices.tolist(),
+                          native_support=support)
         elif model.geom_type[gid] == int(mujoco.mjtGeom.mjGEOM_BOX):
             extent = model.geom_size[gid]
             vertices = np.array([[x, y, z] for x in (-extent[0], extent[0]) for y in (-extent[1], extent[1]) for z in (-extent[2], extent[2])])
@@ -304,7 +309,9 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
              "exclusions": exclusions, "adjacent_body_filter": "MuJoCo excludes parent-child except parent=world",
              "jaw_loop": {"parent_body": "head_roll", "rotor_body": "beak_input_rotor", "coupler_body": "beak_coupler_link", "jaw_body": "beak_hinge",
                           "output_pin_world_m": pin.tolist(), "rotation_axis_world": [0., 1., 0.]},
-             "geometry_export": {"authority": "compiled MuJoCo collision mesh vertices + compiled geom local transforms",
+             "geometry_export": {"authority": "native MuJoCo collision support points + compiled geom local transforms",
+                                 "revision": EXPORT_REVISION, "engine_version": ENGINE_VERSION,
+                                 "reduced_mesh_count": reduced_mesh_count,
                                  "visual_meshes_included": False, "collider_count": len(colliders),
                                  "world_bounds_m": [world_lower.tolist(), world_upper.tolist()],
                                  "vertices_are_compiler_centered": True, "mesh_scale_baked_by_compiler": True,
