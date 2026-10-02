@@ -4,9 +4,14 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
+use dev_tools_minigame::goose_contact_diagnostic::FreshContactDispatcher;
 use rapier3d::prelude::*;
 use robot_minigame::goose::plant::GoosePlant;
 use serde_json::{Value, json};
@@ -71,6 +76,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !["default", "off"].contains(&ccd) {
         return Err("diagnostic CCD mode must be default or off".into());
     }
+    let manifold_cache = option("--manifold-cache")
+        .map(String::as_str)
+        .unwrap_or("default");
+    if !["default", "fresh"].contains(&manifold_cache) {
+        return Err("diagnostic manifold cache must be default or fresh".into());
+    }
     if ticks == 0 || ticks > 100 || resets == 0 || resets > 20 || ![4, 8, 16, 32].contains(&pgs) {
         return Err("bounded M0 requires ticks1..100, cold-resets1..20, PGS4/8/16/32".into());
     }
@@ -85,6 +96,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "crates/modules/simulation/src/lib.rs",
         "crates/modules/simulation/src/fixed_step_runtime.rs",
         "crates/dev_tools/src/bin/goose_m0_probe.rs",
+        "crates/dev_tools/src/goose_contact_diagnostic.rs",
+        "crates/dev_tools/src/lib.rs",
         "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody.rs",
         "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody_joint.rs",
         "third_party/rapier3d/src/dynamics/joint/multibody_joint/unit_multibody_joint.rs",
@@ -135,17 +148,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     receipt["diagnostic_contact_recycling"] = json!(recycling);
     receipt["diagnostic_prediction_mode"] = json!(prediction);
     receipt["diagnostic_ccd_mode"] = json!(ccd);
+    receipt["diagnostic_manifold_cache"] = json!(manifold_cache);
+    receipt["fresh_cache_scope"] = json!(
+        "raw geometric manifolds and Parry workspace cleared per native query; raw warmstart data discarded; later Rapier cluster matching unchanged"
+    );
     receipt["numerical_contract_override"] = json!(
         stop_scope != "all"
             || recycling != "default"
             || prediction != "default"
             || ccd != "default"
+            || manifold_cache != "default"
     );
     let mut trace = Vec::new();
     let mut times = Vec::new();
     let mut failures = Vec::new();
     for reset in 0..resets {
         let mut simulation = SimulationWorld::new_with_profile(PhysicsClockProfile::Goose50);
+        let fresh_queries = Arc::new(AtomicU64::new(0));
+        if manifold_cache == "fresh" {
+            simulation.world.narrow_phase = NarrowPhase::with_query_dispatcher(
+                FreshContactDispatcher::new(fresh_queries.clone()),
+            );
+            simulation.world.integration_parameters.contact_recycling = false;
+        }
         simulation
             .world
             .integration_parameters
@@ -362,6 +387,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             trace.push(json!({"reset":reset,"tick":tick,"snapshot":snapshot,"q_rad":state.joint_position_rad,
                 "qd_rad_s":state.joint_velocity_rad_s,"jaw_pin_error_m":pin_error,
                 "native_contact_pairs_pre_integration":contact_pairs,
+                "actual_fresh_manifold_calls":fresh_queries.load(Ordering::Relaxed),
                 "body_link_geometry_post_integration":link_geometry,
                 "pad_ground_geometry_post_integration":pad_ground_geometry,
                 "physics_wall_ms":physics_wall_ms}));
@@ -450,7 +476,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     times.sort_by(f64::total_cmp);
     let actual_resets = receipt["resets"].as_array().map_or(0, Vec::len);
     let finished = failures.is_empty() && actual_resets == resets && trace.len() == resets * ticks;
-    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" && ccd=="default" {"passed"} else if finished {"partial"} else {"failed"},
+    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" && ccd=="default" && manifold_cache=="default" {"passed"} else if finished {"partial"} else {"failed"},
         "measurement_passed":finished,"scope":"fresh_world_reinitialization; same-world scene retention/handle cleanup not tested",
         "reset_count":actual_resets,"requested_resets":resets,"requested_ticks_per_reset":ticks,
         "completed_integrations":trace.len(),"failures":failures,

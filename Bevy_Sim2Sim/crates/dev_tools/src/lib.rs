@@ -1,5 +1,6 @@
 //! Optional development verification; never called by a release game by default.
 
+pub mod goose_contact_diagnostic;
 pub mod legacy_cpu_actor;
 #[cfg(feature = "live_render_profile")]
 pub mod render_profile;

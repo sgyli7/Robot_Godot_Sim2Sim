@@ -222,3 +222,13 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 [源端](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_predictive_source/receipt.json)与 [目标端](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_predictive_target/receipt.json)各完成 7 个程序、700 次积分。源端四档静载已不穿过有限厚度地面；末 25 Tick 的逐脚垫压缩差小于 **0.000005 mm**，稳态总载荷曲线误差小于 **0.00003%**。加载瞬态的压缩差仍达 **1.26 mm**，冲击首 Tick 仍有约 **69.35 mm** 穿透；不得用稳态成绩代替动态、冲击或整机准入。首 Tick 法向约束新增三档载荷回归，确认实际间隙、单次原生积分和未改写坐标；Goose Python **33 项通过**。
 
 证据、实际执行源码及未通过项集中在 [预测法向接触检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/predictive_normal_checkpoint.json)。下一主线转回任务碰撞代理与复合体持久流形的一致性，保留空腔、脚嘴关键表面和原自碰撞过滤，不再做局部嘴部或 PGS 扫描。**M0 未通过，未启动 PPO／GPU，也未晋升新运行候选。**
+
+### 流形重建与占用覆盖代理检查点
+
+开发探针新增 `--manifold-cache fresh`，使用原生 Parry 查询接口逐次重建原始流形及工作区，实际记录 **20,669 次**查询。此模式同时丢弃原始流形的热启动数据；后续 Rapier 接触聚类与匹配保留，不能将结果解释成单一缓存机制的隔离证明。默认运行行为未改变，全部几何、质量、惯量、弹簧和原碰撞过滤保留。
+
+[重建流形的 100 Tick 整机对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_fresh_manifolds/receipt.json)中，最大报告负距离从约 **27.09 mm** 降至 **17.90 mm**，但最大嘴销误差从 **0.233 mm** 增至 **0.290 mm**，脚垫实际地面穿透从 **4.43 mm** 增至 **6.91 mm**。[同代码、关闭接触复用的缓存控制组](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/full50_fresh_manifolds_cached_control/receipt.json)与前一轮控制状态完全相同。流形重建未解决 M0 问题，不晋升这个模式，也不继续重复该扫描。执行源码、二进制及实际 Parry 依赖源码均已冻结；原生复合体回归确认旧负距离被丢弃，新查询与独立查询一致。
+
+[严格占用覆盖代理 pilot](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/convex_union_proxy_pilot_verified/receipt.json)针对同一躯干前左壳体的 **547 个**原始凸块，在 **45.62 秒**内仅合并 **1 对**，得到 **546 个**凸块。合并先做占用见证与体积拒绝，再对所有原始面组合求线性规划，检查合并凸包中是否存在同时位于两块之外的区域；记录归一化平面深度的数值容差，不宣称欧氏 Hausdorff 或完整 CAD 资格。来源成员、碰撞掩码和摩擦保留，几何试验未装入运行候选。该严格简化路线的收益不足，停止扩大相同搜索；首个脚本因类型守卫与实际 `convex_mesh` 命名不符，在处理前失败，原脚本和失效说明另行保留。
+
+权威入口为 [流形与代理检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/manifold_proxy_checkpoint.json)。下一受控问题是同一 multibody 内两侧接触的有效逆质量：用实际的有符号 J／WJ 和同一隐式矩阵核对两侧求和与合并行的差别，再决定是否改求解器。目前只是待验证假设，不是已证实根因。停止局部嘴部、PGS、流形缓存和严格几何合并的重复扫描。**M0 仍未通过，PPO／GPU 使用为零。**
