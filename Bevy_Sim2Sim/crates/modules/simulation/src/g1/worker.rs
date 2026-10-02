@@ -5,6 +5,8 @@
 //! A cancelled in-flight inference requires reset because its history may have
 //! advanced. Pausing is not a qualified physical standing stop.
 
+#[cfg(feature = "g1_constraint_diagnostic")]
+use super::mobile_assist::{MobileAssistCommand, MobileAssistRunner, MobileAssistStep};
 use super::{
     agile_runner::{AgileRunner, AgileRunnerConfig, AgileStep},
     runner::{G1Measurement, G1ProgressCounts, G1Runner, G1RunnerConfig, G1Step},
@@ -32,6 +34,8 @@ use std::{
 pub type G1Worker = PhysicsWorker<G1Command, G1Step>;
 pub type AgileWorker = PhysicsWorker<AgileCommand, AgileStep>;
 pub type ArenaTaskWorker = PhysicsWorker<ArenaTaskCommand, ArenaTaskStep>;
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub type MobileAssistWorker = PhysicsWorker<MobileAssistCommand, MobileAssistStep>;
 pub type TimedG1Command = TimedCommand<G1Command>;
 pub type TimedAgileCommand = TimedCommand<AgileCommand>;
 pub type TimedArenaTaskCommand = TimedCommand<ArenaTaskCommand>;
@@ -89,7 +93,7 @@ pub enum G1WorkerPhase {
     Stopped,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct G1WorkerTiming {
     /// Lifetime counters include real integrations even when the boundary fails
     /// after integration, and include worlds discarded by an in-flight reset.
@@ -527,6 +531,76 @@ trait BoundaryRunner: Send {
         guard: &mut dyn FnMut() -> Result<(), RobotError>,
     ) -> Result<Option<Self::Step>, RobotError>;
     fn progress_counts(&self) -> G1ProgressCounts;
+    fn pause_after_completed_step(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl PhysicsWorker<MobileAssistCommand, MobileAssistStep> {
+    pub fn spawn_mobile_assist(config: ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        Self::spawn_owner(
+            config.body.episode_id(),
+            move |episode_id| {
+                MobileAssistRunner::load(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl BoundaryRunner for MobileAssistRunner {
+    type Command = MobileAssistCommand;
+    type Step = MobileAssistStep;
+    fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
+        MobileAssistRunner::initial_frame(self).map(Some)
+    }
+    fn initial_measurement(&self) -> Result<Option<G1Measurement>, RobotError> {
+        self.measurement().map(Some)
+    }
+    fn task_objects(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.task_object_frame()
+    }
+    fn step(
+        &mut self,
+        command: &Self::Command,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<Option<Self::Step>, RobotError> {
+        self.step_with_guard(command, guard).map(Some)
+    }
+    fn progress_counts(&self) -> G1ProgressCounts {
+        MobileAssistRunner::progress_counts(self)
+    }
+    fn pause_after_completed_step(&self) -> bool {
+        self.completed_carry()
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl BoundaryCommand for MobileAssistCommand {
+    fn validate(&self) -> Result<(), RobotError> {
+        MobileAssistCommand::validate(self)
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl BoundaryStep for MobileAssistStep {
+    fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
+        match &self.body {
+            ArenaBodyStep::StaticAgile(step) => step.parts(),
+            ArenaBodyStep::MobileHomieV2(step) => step.parts(),
+        }
+    }
+    fn task_objects(&self) -> Option<&TaskObjectFrame> {
+        match &self.body {
+            ArenaBodyStep::StaticAgile(step) => step.task_objects(),
+            ArenaBodyStep::MobileHomieV2(step) => step.task_objects(),
+        }
+    }
 }
 
 impl BoundaryRunner for G1Runner {
@@ -1109,6 +1183,12 @@ fn run_owner<R, F, C>(
                             );
                             continue 'reload;
                         }
+                        // A finite owner-side skill finishes on this real
+                        // completed boundary. Invalidate its command before
+                        // any catch-up tick can issue another integration.
+                        if runner.pause_after_completed_step() {
+                            shared.pause();
+                        }
                         // A reset after the previous check is rejected again by
                         // publication/consumption. Pause during non-cancellable
                         // integration never emits Running for that old barrier,
@@ -1233,6 +1313,7 @@ mod tests {
         plans: Mutex<VecDeque<BoundaryPlan>>,
         loads: Mutex<Vec<u64>>,
         commands: Mutex<Vec<(u64, f32)>>,
+        pause_after_integrations: AtomicU64,
     }
 
     /// This runner exercises the production owner and guard call order while
@@ -1246,6 +1327,13 @@ mod tests {
     impl BoundaryRunner for TestRunner {
         type Command = G1Command;
         type Step = G1Step;
+        fn pause_after_completed_step(&self) -> bool {
+            let target = self
+                .control
+                .pause_after_integrations
+                .load(Ordering::Relaxed);
+            target != 0 && self.counts.integration_count >= target
+        }
         fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
             Ok(None)
         }
@@ -1596,6 +1684,29 @@ mod tests {
         assert_eq!(reset.timing.total_inference_attempts, 1);
         assert_eq!(reset.timing.episode_inference_attempts, 0);
         assert!(!reset.timing.episode_halted);
+    }
+
+    #[test]
+    fn finite_owner_completion_pauses_before_any_remaining_catchup_tick() {
+        let harness = Harness::new();
+        harness
+            .control
+            .pause_after_integrations
+            .store(1, Ordering::Relaxed);
+        harness.resume_current();
+        harness.poll(Duration::from_millis(80));
+        let completed = harness.latest();
+        assert_eq!(completed.phase, G1WorkerPhase::Paused);
+        assert_eq!(completed.timing.total_integrations, 1);
+        assert_eq!(completed.timing.total_inference_attempts, 1);
+        assert!(!completed.timing.episode_halted);
+        assert!(completed.timing.pending_ticks > 0);
+        harness.poll(Duration::from_millis(200));
+        assert_eq!(harness.control.commands.lock().unwrap().len(), 1);
+        assert_eq!(
+            harness.worker.shared.pause_revision.load(Ordering::Acquire),
+            1
+        );
     }
 
     #[test]

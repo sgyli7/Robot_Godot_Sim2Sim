@@ -340,14 +340,26 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
         } else {
             None
         };
-    if refresh_contacts && upper_override.is_some() {
+    let self_state_calibration =
+        match std::env::var("G1_MOBILE_GRIP_SELF_STATE_CALIBRATION").as_deref() {
+            Ok("source_gap_v1") => true,
+            Err(_) => false,
+            _ => return Err(error("unsupported runtime grip calibration")),
+        };
+    if self_state_calibration && upper_override.is_some() {
+        return Err(error(
+            "runtime grip calibration cannot load fixed fixture upper targets",
+        ));
+    }
+    let calibrated_grip = upper_override.is_some() || self_state_calibration;
+    if refresh_contacts && calibrated_grip {
         return Err(error(
             "grip comparison cannot change contacts and targets together",
         ));
     }
     let full_grip_stage = match std::env::var("G1_MOBILE_GRIP_TARGET_PHASE").as_deref() {
         Ok("full_body_carry_2050")
-            if upper_override.is_some() && feedback_navigation && !refresh_contacts =>
+            if calibrated_grip && feedback_navigation && !refresh_contacts =>
         {
             true
         }
@@ -358,7 +370,7 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
             ));
         }
     };
-    let retention_only = (refresh_contacts || upper_override.is_some()) && !full_grip_stage;
+    let retention_only = (refresh_contacts || calibrated_grip) && !full_grip_stage;
     let tick_budget = if retention_only {
         600
     } else if feedback_navigation {
@@ -415,6 +427,15 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
         .open(output.with_extension("jsonl"))
         .map_err(error)?;
     let mut owner = ArenaTaskRunner::load_mobile_constraint_diagnostic(&config)?;
+    let runtime_calibration = if self_state_calibration {
+        let (path, hash) = config.body.definition_identity();
+        Some(super::super::mobile_grip::MobileGripCalibration::new(
+            &G1Definition::load(path, hash)?,
+        )?)
+    } else {
+        None
+    };
+    let mut runtime_grip_receipt = None;
     let initial = owner
         .task_object_frame()?
         .ok_or_else(|| error("missing task scene"))?;
@@ -462,6 +483,14 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
                 };
                 if refresh_contacts && tick == 201 {
                     body.diagnostic_refresh_contacts_after_grasp()?;
+                }
+                if tick == 201 {
+                    if let Some(calibration) = &runtime_calibration {
+                        let correction =
+                            calibration.correct(&body.measurement()?, &held_command)?;
+                        held_command = correction.command;
+                        runtime_grip_receipt = Some(correction.receipt);
+                    }
                 }
                 let phase = if feedback_navigation {
                     let own_state = body.measurement()?;
@@ -640,6 +669,7 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
         "odometry_goal_m":2.05,"independent_physical_displacement_requirement_m":2.,
         "turn_stand_entry_error_rad":0.03,"turn_resume_error_rad":0.06,
         "turn_acceptance_error_rad":0.06,"turn_acceptance_consecutive_ticks":20,
+        "runtime_grip_correction":runtime_grip_receipt,
     });
     serde_json::to_writer_pretty(&mut file,&serde_json::json!({
         "schema":"g1_fixed_grip_body_carry_diagnostic_v1","qualified":false,
@@ -647,7 +677,7 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
         "actual_vla_inferences":0,"code_commit":std::env::var("G1_CODE_COMMIT").map_err(error)?,
         "source_actions_sha256":std::env::var("G1_MOBILE_REPLAY_ACTIONS_SHA256").map_err(error)?,
         "config_sha256":std::env::var("G1_MOBILE_REPLAY_CONFIG_SHA256").map_err(error)?,
-        "original_upper_targets_unchanged_after_grasp":upper_override.is_none(),
+        "original_upper_targets_unchanged_after_grasp":!calibrated_grip,
         "classical_upper_target_override_sha256":std::env::var("G1_MOBILE_GRIP_UPPER_TARGETS_SHA256").ok(),"no_runtime_pose_or_object_writes":true,
         "feedback_navigation":feedback_navigation,"navigation_mode":navigation_mode,
         "full_calibrated_grip_body_stage":full_grip_stage,

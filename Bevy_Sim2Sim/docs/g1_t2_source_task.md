@@ -910,3 +910,47 @@ toward the source bin, release, formal8/10, science-station/Qwen execution,
 terrain or1x timing. All cases retain one integration/Tick,50Hz, original
 masses, force gains, friction, default contact caching and the same4PGS
 nonintegrating diagnostic setting. No training or further live VLA is run.
+
+`mobile_grip` now computes this bounded correction directly from the original
+G1 joint frames, measured lower-joint positions and an admitted mobile VLA
+upper command. It takes no scene/root-position/object/contact input. Original
+lower/finger targets, navigation and pelvis semantics remain unchanged;
+unreachable, nonfinite, incoherent-clock or out-of-limit inputs fail before
+actuation. Cross-language frozen real-grasp check0182 differs from the
+independent offline candidate by at most5.96e-8rad, with five negative-input
+checks passing and zero inference/integration.
+
+`mobile_navigation` holds an explicit observation-stamped goal and consumes
+one current-episode quaternion/velocity measurement per50Hz boundary. It
+rejects repeated/skipped/foreign states and has finite750/1000/100Tick phases.
+`mobile_assist` provides distinct `OriginalVla` and `ClassicalCarry` commands
+and execution receipts. It owns the existing `ArenaTaskRunner`, preserving
+the same Rapier world, models, bounds and all original VLA bytes. Handoff must
+follow a complete original chunk and a fresh observation of the current
+physical boundary. Goal mutation, expiry or failed correction halts; reset
+rebuilds all histories. None of these components is included by default or
+advertised as a qualified UI skill.
+
+A finite owner now requests pause on its real completed boundary, invalidating
+its command before remaining catch-up Ticks. The scheduler regression checks
+an80ms debt, one actual transport-fixture boundary, retained debt, no second
+integration and no resumed work from that old command. Existing owners retain
+the default behavior. The timing ledger can be serialized without altering
+clock accounting.
+
+Actual runtime-calculated grip0183 and the typed owner0184 both complete1524
+native steps, walking2.037898m and settling2.019864m. All692walk/stop samples
+have only positive original hand contacts, no scene support and upright at
+least0.993010. The actual background worker0185 reproduces all1524body states
+bit-exactly, including the200Tick original native grasp. It records every
+completed Tick, drops zero trace records, misses zero control deadlines,
+auto-pauses at completion, and adds zero Ticks during the following second.
+Active simulation/wall time is30.48/30.499902s (ratio0.999347). Initial load,
+chunk-boundary pauses and the final observation second remain disclosed.
+This is a scheduler/mechanical result with0new VLA, not a rendered continuous
+1x task or autonomous qualification. Its physical trace SHA256 is
+`eda1930073a3a12bc91308c3dfc27f1a70ed43b10445083df2be4f714bb22530`.
+The first background-test compilation lacked timing serialization; that
+zero-step failure log is preserved. Final checks0186 pass62simulation checks
+with the explicit diagnostic feature (33ignored real-fixture checks), and
+56default checks (25ignored); no default assist or physical setting changes.

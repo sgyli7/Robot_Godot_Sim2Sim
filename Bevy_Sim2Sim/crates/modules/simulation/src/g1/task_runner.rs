@@ -306,6 +306,58 @@ pub struct ArenaTaskRunner {
 }
 
 impl ArenaTaskRunner {
+    /// Explicit development-only traditional commands share this existing
+    /// world/controller. The original accepted VLA bytes remain untouched.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_mobile_assist_with_guard(
+        &mut self,
+        command: &robot_minigame::g1::contract::G1Command,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<G1Step, RobotError> {
+        if self.halted {
+            return Err(error("task owner is halted; reset required"));
+        }
+        let result = (|| {
+            guard()?;
+            command.validate()?;
+            let accepted = self
+                .executor
+                .accepted
+                .as_ref()
+                .ok_or_else(|| error("classical carry requires a matched accepted grasp"))?;
+            if accepted.profile != TaskProfile::MobileBox || command.torso_rpy != [0.; 3] {
+                return Err(error(
+                    "classical carry requires original mobile body semantics",
+                ));
+            }
+            let mut frame = accepted.frames.last().unwrap().clone();
+            frame
+                .left_arm
+                .copy_from_slice(&command.upper_positions[..7]);
+            frame
+                .left_hand
+                .copy_from_slice(&command.upper_positions[7..14]);
+            frame
+                .right_arm
+                .copy_from_slice(&command.upper_positions[14..21]);
+            frame
+                .right_hand
+                .copy_from_slice(&command.upper_positions[21..28]);
+            frame.base_height_m = command.pelvis_height;
+            frame.navigate_mps_rps = command.navigation;
+            frame.validate(&self.executor.limits).map_err(error)?;
+            let ArenaBodyRunner::MobileHomieV2(body) = &mut self.body else {
+                return Err(error("classical carry cannot select the static body"));
+            };
+            body.step_with_guard(command, guard)
+        })();
+        if result.is_err() {
+            self.halted = true;
+            self.executor.queue.stop();
+        }
+        result
+    }
+
     /// Static-only, fresh-world predictive hard-limit comparison. The normal
     /// constructor retains the original reactive constraint implementation.
     #[cfg(feature = "g1_constraint_diagnostic")]

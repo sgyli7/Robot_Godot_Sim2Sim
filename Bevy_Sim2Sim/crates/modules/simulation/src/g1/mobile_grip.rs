@@ -1,0 +1,409 @@
+//! Source-calibrated traditional grip correction from G1 self state and an
+//! already admitted mobile VLA command. No world/object/contact input is used.
+//! This opt-in development component grants no task qualification.
+
+use rapier3d::na::{
+    Isometry3, Matrix3, Quaternion, SMatrix, SVector, Translation3, UnitQuaternion, Vector3,
+};
+use robot_minigame::{
+    RobotError,
+    g1::{
+        contract::{G1Command, JOINT_COUNT, JOINT_NAMES, LOWER_COUNT},
+        definition::{G1Definition, JointKind, SourcePose},
+    },
+};
+use serde::Serialize;
+
+use super::runner::G1Measurement;
+
+/// Desired palm separation measured from the matched source grasp (case0174),
+/// not a fitted friction/force parameter. Both original palm poses stay centered.
+pub const SOURCE_PALM_GAP_M: f64 = 0.156_042_580_477_048_72;
+const PALMS: [usize; 2] = [28, 45];
+const ARMS: [[usize; 7]; 2] = [[15, 16, 17, 18, 19, 20, 21], [29, 30, 31, 32, 33, 34, 35]];
+
+struct KinematicJoint {
+    parent: usize,
+    child: usize,
+    frame_parent: Isometry3<f64>,
+    frame_child_inverse: Isometry3<f64>,
+    axis: Vector3<f64>,
+    slot: Option<usize>,
+}
+
+/// Immutable original joint frames/limits; independent of the physical world.
+pub struct MobileGripCalibration {
+    joints: Vec<KinematicJoint>,
+    limits: [[f64; 2]; JOINT_COUNT],
+}
+
+/// Explicit provenance stays alongside the corrected controller command.
+#[derive(Clone, Debug, Serialize)]
+pub struct MobileGripReceipt {
+    pub schema: &'static str,
+    pub episode_id: u64,
+    pub source_tick: u64,
+    pub original_vla_output: bool,
+    pub task_qualified: bool,
+    pub original_palm_gap_m: f64,
+    pub calibrated_palm_gap_m: f64,
+    pub maximum_joint_target_change_rad: f64,
+    pub maximum_palm_position_residual_m: f64,
+    pub maximum_palm_rotation_residual: f64,
+    pub solve_iterations: [usize; 2],
+}
+
+pub struct MobileGripCorrection {
+    pub command: G1Command,
+    pub receipt: MobileGripReceipt,
+}
+
+impl MobileGripCalibration {
+    pub fn new(definition: &G1Definition) -> Result<Self, RobotError> {
+        let model = definition.model();
+        if model.bodies.len() != 53
+            || model.bodies[28].name != "left_hand_palm_link"
+            || model.bodies[45].name != "right_hand_palm_link"
+        {
+            return Err(invalid(
+                "grip calibration requires original G1 hand identities",
+            ));
+        }
+        let mut remaining: Vec<_> = model.joints.iter().collect();
+        let mut ready = [false; 53];
+        ready[0] = true;
+        let mut joints = Vec::with_capacity(52);
+        let mut limits = [[0.; 2]; JOINT_COUNT];
+        while !remaining.is_empty() {
+            let Some(i) = remaining.iter().position(|j| ready[j.parent]) else {
+                return Err(invalid("grip kinematic tree is disconnected"));
+            };
+            let joint = remaining.remove(i);
+            let slot = if joint.kind == JointKind::Revolute {
+                let slot = JOINT_NAMES
+                    .iter()
+                    .position(|&name| name == joint.name)
+                    .ok_or_else(|| invalid("grip tree contains foreign driven joint"))?;
+                limits[slot] = joint.limits;
+                Some(slot)
+            } else {
+                None
+            };
+            let axis = match joint.axis.as_str() {
+                "X" => Vector3::x(),
+                "Y" => Vector3::y(),
+                "Z" => Vector3::z(),
+                _ if slot.is_none() => Vector3::zeros(),
+                _ => return Err(invalid("grip tree has unknown driven axis")),
+            };
+            joints.push(KinematicJoint {
+                parent: joint.parent,
+                child: joint.child,
+                frame_parent: pose(&joint.frame_parent),
+                frame_child_inverse: pose(&joint.frame_child).inverse(),
+                axis,
+                slot,
+            });
+            ready[joint.child] = true;
+        }
+        Ok(Self { joints, limits })
+    }
+
+    /// Pure correction. On a failed/bounded solve the owner receives an error,
+    /// never clipped model bytes or an unvalidated motor command.
+    pub fn correct(
+        &self,
+        state: &G1Measurement,
+        original: &G1Command,
+    ) -> Result<MobileGripCorrection, RobotError> {
+        validate_self_state(state)?;
+        original.validate()?;
+        let mut q = [0.; JOINT_COUNT];
+        for (i, target) in q.iter_mut().enumerate() {
+            *target = f64::from(if i < LOWER_COUNT {
+                state.joint_positions[i]
+            } else {
+                original.upper_positions[i - LOWER_COUNT]
+            });
+            if i >= LOWER_COUNT && (*target < self.limits[i][0] || *target > self.limits[i][1]) {
+                return Err(invalid(
+                    "original mobile upper target outside original joint limit",
+                ));
+            }
+        }
+        let initial_q = q;
+        let initial = self.forward(&q);
+        let midpoint = (initial[28].translation.vector + initial[45].translation.vector) * 0.5;
+        let delta = initial[28].translation.vector - initial[45].translation.vector;
+        let original_gap = delta.norm();
+        if original_gap < 1e-4 {
+            return Err(invalid(
+                "coincident palm goals cannot define grip direction",
+            ));
+        }
+        let direction = delta / original_gap;
+        let mut goals = [initial[28], initial[45]];
+        goals[0].translation.vector = midpoint + direction * (SOURCE_PALM_GAP_M * 0.5);
+        goals[1].translation.vector = midpoint - direction * (SOURCE_PALM_GAP_M * 0.5);
+        let mut iterations = [0; 2];
+        for arm in 0..2 {
+            let mut converged = false;
+            for iteration in 0..60 {
+                let current = self.forward(&q)[PALMS[arm]];
+                let error = pose_error(&goals[arm], &current);
+                iterations[arm] = iteration;
+                if error.fixed_rows::<3>(0).norm() < 1e-7 && error.fixed_rows::<3>(3).norm() < 1e-7
+                {
+                    converged = true;
+                    break;
+                }
+                let mut jacobian = SMatrix::<f64, 6, 7>::zeros();
+                for (column, &slot) in ARMS[arm].iter().enumerate() {
+                    let mut perturbed = q;
+                    perturbed[slot] += 1e-5;
+                    let derivative =
+                        pose_error(&self.forward(&perturbed)[PALMS[arm]], &current) / 1e-5;
+                    jacobian.set_column(column, &derivative);
+                }
+                let system =
+                    jacobian * jacobian.transpose() + SMatrix::<f64, 6, 6>::identity() * 1e-6;
+                let solved = system
+                    .lu()
+                    .solve(&error)
+                    .ok_or_else(|| invalid("bounded grip Jacobian solve failed"))?;
+                let delta = jacobian.transpose() * solved;
+                for (&slot, &step) in ARMS[arm].iter().zip(delta.iter()) {
+                    q[slot] = (q[slot] + step.clamp(-0.05, 0.05))
+                        .clamp(self.limits[slot][0], self.limits[slot][1]);
+                }
+            }
+            if !converged {
+                return Err(invalid("bounded grip solver did not converge"));
+            }
+        }
+        let maximum_change = q
+            .iter()
+            .zip(initial_q)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0., f64::max);
+        if maximum_change > 0.1 || !q.iter().all(|value| value.is_finite()) {
+            return Err(invalid("grip correction exceeds bounded target change"));
+        }
+        let mut command = original.clone();
+        for i in LOWER_COUNT..JOINT_COUNT {
+            command.upper_positions[i - LOWER_COUNT] = q[i] as f32;
+            q[i] = f64::from(command.upper_positions[i - LOWER_COUNT]);
+        }
+        let final_poses = self.forward(&q);
+        let position_residual = (0..2)
+            .map(|i| {
+                (goals[i].translation.vector - final_poses[PALMS[i]].translation.vector).norm()
+            })
+            .fold(0., f64::max);
+        let rotation_residual = (0..2)
+            .map(|i| {
+                (goals[i].rotation.to_rotation_matrix().matrix()
+                    - final_poses[PALMS[i]].rotation.to_rotation_matrix().matrix())
+                .abs()
+                .max()
+            })
+            .fold(0., f64::max);
+        if position_residual > 1e-6 || rotation_residual > 1e-6 {
+            return Err(invalid(
+                "rounded grip correction fails geometric residual bounds",
+            ));
+        }
+        Ok(MobileGripCorrection {
+            command,
+            receipt: MobileGripReceipt {
+                schema: "g1_mobile_source_gap_assist_v1",
+                episode_id: state.episode_id,
+                source_tick: state.source_tick,
+                original_vla_output: false,
+                task_qualified: false,
+                original_palm_gap_m: original_gap,
+                calibrated_palm_gap_m: (final_poses[28].translation.vector
+                    - final_poses[45].translation.vector)
+                    .norm(),
+                maximum_joint_target_change_rad: maximum_change,
+                maximum_palm_position_residual_m: position_residual,
+                maximum_palm_rotation_residual: rotation_residual,
+                solve_iterations: iterations,
+            },
+        })
+    }
+
+    fn forward(&self, q: &[f64; JOINT_COUNT]) -> [Isometry3<f64>; 53] {
+        let mut poses = [Isometry3::identity(); 53];
+        for joint in &self.joints {
+            let angle = joint.slot.map_or(0., |slot| q[slot]);
+            let turn = Isometry3::from_parts(
+                Translation3::identity(),
+                UnitQuaternion::from_scaled_axis(joint.axis * angle),
+            );
+            poses[joint.child] =
+                poses[joint.parent] * joint.frame_parent * turn * joint.frame_child_inverse;
+        }
+        poses
+    }
+}
+
+fn pose(source: &SourcePose) -> Isometry3<f64> {
+    let [w, x, y, z] = source.rotation_wxyz;
+    Isometry3::from_parts(
+        Translation3::from(Vector3::from(source.position)),
+        UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z)),
+    )
+}
+
+fn vee(rotation: Matrix3<f64>) -> Vector3<f64> {
+    Vector3::new(
+        rotation[(2, 1)] - rotation[(1, 2)],
+        rotation[(0, 2)] - rotation[(2, 0)],
+        rotation[(1, 0)] - rotation[(0, 1)],
+    ) * 0.5
+}
+
+fn pose_error(goal: &Isometry3<f64>, current: &Isometry3<f64>) -> SVector<f64, 6> {
+    let position = goal.translation.vector - current.translation.vector;
+    let rotation = vee((goal.rotation * current.rotation.inverse())
+        .to_rotation_matrix()
+        .into_inner());
+    SVector::<f64, 6>::new(
+        position.x, position.y, position.z, rotation.x, rotation.y, rotation.z,
+    )
+}
+
+fn validate_self_state(state: &G1Measurement) -> Result<(), RobotError> {
+    if state.joint_positions.len() != JOINT_COUNT
+        || !state.joint_positions.iter().all(|q| q.is_finite())
+        || state.source_tick.checked_mul(20_000_000) != Some(state.sim_time_ns)
+    {
+        return Err(invalid(
+            "grip correction requires coherent original43joint/50Hz self state",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid(message: impl Into<String>) -> RobotError {
+    RobotError::Contract(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robot_minigame::g1::policy::bound_bytes;
+    use serde::Deserialize;
+    use std::{fs, path::Path};
+
+    #[derive(Deserialize)]
+    struct Fixture {
+        state: serde_json::Value,
+        original_command: G1Command,
+        expected_upper_positions: [f32; 28],
+    }
+
+    fn measurement(v: serde_json::Value) -> Result<G1Measurement, serde_json::Error> {
+        Ok(G1Measurement {
+            episode_id: serde_json::from_value(v["episode_id"].clone())?,
+            source_tick: serde_json::from_value(v["source_tick"].clone())?,
+            sim_time_ns: serde_json::from_value(v["sim_time_ns"].clone())?,
+            joint_positions: serde_json::from_value(v["joint_positions"].clone())?,
+            joint_velocities: serde_json::from_value(v["joint_velocities"].clone())?,
+            root_rotation_wxyz: serde_json::from_value(v["root_rotation_wxyz"].clone())?,
+            root_angular_velocity_body: serde_json::from_value(
+                v["root_angular_velocity_body"].clone(),
+            )?,
+            root_velocity_source: serde_json::from_value(v["root_velocity_source"].clone())?,
+        })
+    }
+
+    /// Cross-language numerical comparison to the independent offline FK/IK
+    /// fixture. It opens no model session and integrates no physical world.
+    #[test]
+    #[ignore = "requires frozen G1 definition/real-grasp fixture hashes and a new output path"]
+    fn real_mobile_grip_calibration_equivalence() -> Result<(), RobotError> {
+        let env = |name| std::env::var(name).map_err(|e| invalid(format!("{name}: {e}")));
+        let definition = G1Definition::load(
+            Path::new(&env("G1_GRIP_DEFINITION")?),
+            &env("G1_GRIP_DEFINITION_SHA256")?,
+        )?;
+        let bytes = bound_bytes(
+            Path::new(&env("G1_GRIP_FIXTURE")?),
+            &env("G1_GRIP_FIXTURE_SHA256")?,
+        )?;
+        let fixture: Fixture =
+            serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+        let state = measurement(fixture.state).map_err(|e| invalid(e.to_string()))?;
+        let calibration = MobileGripCalibration::new(&definition)?;
+        let correction = calibration.correct(&state, &fixture.original_command)?;
+        let maximum_golden_difference = correction
+            .command
+            .upper_positions
+            .iter()
+            .zip(fixture.expected_upper_positions)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0., f32::max);
+        assert!(maximum_golden_difference < 2e-6);
+        assert_eq!(
+            correction.command.upper_positions[7..14],
+            fixture.original_command.upper_positions[7..14]
+        );
+        assert_eq!(
+            correction.command.upper_positions[21..28],
+            fixture.original_command.upper_positions[21..28]
+        );
+        assert_eq!(
+            correction.command.navigation,
+            fixture.original_command.navigation
+        );
+        assert_eq!(
+            correction.command.torso_rpy,
+            fixture.original_command.torso_rpy
+        );
+        assert_eq!(
+            correction.command.pelvis_height,
+            fixture.original_command.pelvis_height
+        );
+        let mut malformed = state.clone();
+        malformed.joint_positions.pop();
+        assert!(
+            calibration
+                .correct(&malformed, &fixture.original_command)
+                .is_err()
+        );
+        malformed = state.clone();
+        malformed.joint_positions[0] = f32::NAN;
+        assert!(
+            calibration
+                .correct(&malformed, &fixture.original_command)
+                .is_err()
+        );
+        malformed = state.clone();
+        malformed.sim_time_ns += 1;
+        assert!(
+            calibration
+                .correct(&malformed, &fixture.original_command)
+                .is_err()
+        );
+        let mut unsafe_command = fixture.original_command.clone();
+        unsafe_command.upper_positions[0] = f32::NAN;
+        assert!(calibration.correct(&state, &unsafe_command).is_err());
+        unsafe_command = fixture.original_command;
+        unsafe_command.upper_positions[0] = 100.;
+        assert!(calibration.correct(&state, &unsafe_command).is_err());
+        let output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(env("G1_GRIP_OUTPUT")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(output, &serde_json::json!({
+            "receipt":correction.receipt,"corrected_command":correction.command,
+            "maximum_independent_golden_target_difference_rad":maximum_golden_difference,
+            "negative_input_guards_passed":5,"actual_vla_or_body_inferences":0,"actual_integrations":0,
+            "qualified":false,"autonomous_execution":false,
+        })).map_err(|e| invalid(e.to_string()))?;
+        Ok(())
+    }
+}
