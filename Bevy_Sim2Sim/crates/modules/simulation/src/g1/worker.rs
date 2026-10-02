@@ -293,6 +293,24 @@ impl PhysicsWorker<AgileCommand, AgileStep> {
 }
 
 impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
+    /// Opt-in isolated convergence probe; no normal runtime/config fallback.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn spawn_static_constraint_diagnostic(
+        config: ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        let episode = config.body.episode_id();
+        Self::spawn_owner(
+            episode,
+            move |episode_id| {
+                ArenaTaskRunner::load_static_constraint_diagnostic(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+
     /// Model transport remains outside physics. Whole chunks are admitted and
     /// indexed on this same thread as WBC, motors, contacts and integration.
     pub fn spawn(config: ArenaTaskRunnerConfig) -> Result<Self, RobotError> {

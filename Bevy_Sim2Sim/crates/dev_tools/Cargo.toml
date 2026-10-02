@@ -7,6 +7,7 @@ license.workspace = true
 
 [features]
 default = []
+g1_constraint_diagnostic = ["simulation_minigame/g1_constraint_diagnostic"]
 sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_limit_row_trace"]
 sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]

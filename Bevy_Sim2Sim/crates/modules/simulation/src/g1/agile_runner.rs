@@ -348,6 +348,22 @@ impl AgileRunner {
     pub fn configuration(&self) -> StepConfiguration {
         self.simulation.configuration()
     }
+
+    /// One isolated convergence comparison, with unchanged temporal cadence.
+    /// This is absent from normal builds and cannot change a running episode.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn set_diagnostic_constraint_sweeps(&mut self) -> Result<(), RobotError> {
+        if self.simulation.integration_count != 0 || self.policy.inference_count() != 0 {
+            return Err(error(
+                "constraint diagnostic requires a fresh zero-Tick owner",
+            ));
+        }
+        self.simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = 16;
+        validate_clock(self.configuration())
+    }
     pub fn motor_update_count(&self) -> u64 {
         self.motor_update_count
     }
@@ -531,7 +547,9 @@ fn validate_clock(config: StepConfiguration) -> Result<(), RobotError> {
     if config.physics_hz != 50
         || config.dt != 0.02
         || config.num_solver_iterations != 1
-        || !matches!(config.num_internal_pgs_iterations, 1 | 4)
+        || !(matches!(config.num_internal_pgs_iterations, 1 | 4)
+            || (cfg!(feature = "g1_constraint_diagnostic")
+                && config.num_internal_pgs_iterations == 16))
         || config.max_ccd_substeps != 1
         || config.additional_solver_iterations_max != 0
     {

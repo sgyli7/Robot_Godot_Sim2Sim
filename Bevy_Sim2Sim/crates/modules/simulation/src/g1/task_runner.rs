@@ -237,6 +237,22 @@ pub struct ArenaTaskRunner {
 }
 
 impl ArenaTaskRunner {
+    /// Explicit static-only development comparison; normal loading stays at 4.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn load_static_constraint_diagnostic(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        if config.body.profile() != TaskProfile::StaticApple {
+            return Err(error("isolated constraint comparison is static-only"));
+        }
+        let mut owner = Self::load(config)?;
+        let ArenaBodyRunner::StaticAgile(body) = &mut owner.body else {
+            return Err(error("constraint diagnostic body mismatch"));
+        };
+        body.set_diagnostic_constraint_sweeps()?;
+        Ok(owner)
+    }
+
     pub fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
         config.limits.validate().map_err(error)?;
         let (path, hash) = config.body.definition_identity();

@@ -44,7 +44,10 @@ fn bounded_read(path: &Path, max: u64) -> Result<Vec<u8>, String> {
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 4 || args[3] != "--offline-diagnostic" {
+    if !matches!(args.len(), 4 | 6)
+        || args[3] != "--offline-diagnostic"
+        || (args.len() == 6 && (args[4] != "--constraint-sweeps" || args[5] != "16"))
+    {
         return Err("usage: g1_task_chunk_probe CONFIG.json UNCHANGED_CHUNK.json NEW_RECEIPT.json --offline-diagnostic".into());
     }
     let output = Path::new(&args[2]);
@@ -102,7 +105,22 @@ fn main() -> Result<(), String> {
         receipt["input_observations"] =
             json!(chunks.iter().map(|c| c.observation).collect::<Vec<_>>());
         receipt["expected_ticks"] = json!(expected_ticks);
-        let owner = ArenaTaskWorker::spawn(config).map_err(|e| e.to_string())?;
+        let owner = if args.len() == 6 {
+            receipt["isolated_nonintegrating_constraint_sweeps"] = json!(16);
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            {
+                ArenaTaskWorker::spawn_static_constraint_diagnostic(config)
+                    .map_err(|e| e.to_string())?
+            }
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
+            {
+                return Err(
+                    "constraint comparison requires its explicit development feature".into(),
+                );
+            }
+        } else {
+            ArenaTaskWorker::spawn(config).map_err(|e| e.to_string())?
+        };
         let start = Instant::now();
         let deadline = start + Duration::from_secs(30);
         let mut submitted_chunks = 0;
