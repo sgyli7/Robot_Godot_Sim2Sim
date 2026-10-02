@@ -7,6 +7,7 @@ This finite development tool proposes navigation; it never actuates a world.
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import cv2
@@ -25,6 +26,7 @@ JOINT_NAMES = tuple(
 )
 DEFINITION_SHA256 = "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8f13bd"
 MARKER_SIZES = {21: 0.16, 22: 0.10}
+TASK_GEOMETRY_SHA256 = "19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0"
 
 
 def sha(path):
@@ -72,7 +74,49 @@ def root_from_camera(definition, positions):
     return frames[19] @ mount
 
 
-def localize(image_path, observation_path, definition_path):
+def clearance_from_visible_markers(detections, observation, geometry_path):
+    """Public immutable geometry and actual RGB poses, never world coordinates."""
+    if Path(geometry_path).stat().st_size > 1024 * 1024 or sha(geometry_path) != TASK_GEOMETRY_SHA256:
+        raise ValueError("original public task geometry identity mismatch")
+    objects = json.loads(Path(geometry_path).read_text())["objects"]
+    by_id = {d["marker_id"]: d for d in detections}
+    if set(by_id) != {21, 22}:
+        raise ValueError("clearance requires both current visible markers")
+    root_rotation = rotation(observation["measured_joints"]["root_rotation_wxyz"])
+    bounds = {}
+    for kind, marker_id, position, mount_rotation in (
+        ("t2_bin", 21, [0.008351, 0.0113635, 0.0045], np.eye(3)),
+        ("t2_box", 22, [0.1005, 0., 0.], rotation([2**-.5, 0., 2**-.5, 0.])),
+    ):
+        marker = by_id[marker_id]
+        if marker["minimum_edge_px"] < 8 or marker["reprojection_rms_px"] > 1:
+            raise ValueError("clearance marker quality failed")
+        pose = np.asarray(marker["root_from_marker"], dtype=np.float64)
+        if pose.shape != (4, 4) or not np.isfinite(pose).all():
+            raise ValueError("nonfinite marker transform")
+        mount = np.eye(4)
+        mount[:3, :3] = mount_rotation
+        mount[:3, 3] = position
+        root_from_object = pose @ np.linalg.inv(mount)
+        vertices = np.concatenate([np.asarray(part["points"], dtype=np.float64)
+                                   for part in next(o for o in objects if o["kind"] == kind)["convex_parts"]])
+        gravity_points = (vertices @ root_from_object[:3, :3].T + root_from_object[:3, 3]) @ root_rotation.T
+        bounds[kind] = {"minimum": gravity_points.min(axis=0).tolist(),
+                        "maximum": gravity_points.max(axis=0).tolist()}
+    rise = float(bounds["t2_bin"]["maximum"][2] + .1 - bounds["t2_box"]["minimum"][2])
+    duration = max(50, math.ceil(rise / .001))
+    admitted = .01 <= rise <= .18 and duration <= 200
+    return {"schema": "g1_visible_marker_clearance_v1", "observation": observation["stamp"],
+            "source_geometry_sha256": TASK_GEOMETRY_SHA256,
+            "source": "actual_rgb_marker_pose_and_public_original_collision_geometry",
+            "world_or_contact_truth_input": False, "task_qualified": False,
+            "bounds_relative_to_robot_in_gravity_frame": bounds,
+            "minimum_desired_rim_clearance_m": .1, "required_raise_m": rise,
+            "raise_goal": {"observation": observation["stamp"], "distance_m": rise,
+                           "duration_ticks": duration} if admitted else None}
+
+
+def localize(image_path, observation_path, definition_path, geometry_path=None):
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
         raise ValueError("vision input exceeds finite image/self-state byte budget")
     observation = json.loads(Path(observation_path).read_text())
@@ -156,7 +200,7 @@ def localize(image_path, observation_path, definition_path):
         proposal = {"observation": stamp, "heading_yaw_source_rad": heading,
                     "relative_distance_m": distance, "source": "actual_rgb_marker_pnp_and_original_self_fk",
                     "target_identity": 21, "task_qualified": False, "automatically_executed": False}
-    return {"schema":"g1_mobile_actual_marker_localization_v1", "observation":stamp,
+    result = {"schema":"g1_mobile_actual_marker_localization_v1", "observation":stamp,
             "image_sha256":sha(image_path), "input_sha256":sha(observation_path),
             "robot_definition_sha256":DEFINITION_SHA256, "opencv_version":cv2.__version__,
             "actual_rgb_only_object_measurement":True, "world_or_contact_truth_input":False,
@@ -164,6 +208,9 @@ def localize(image_path, observation_path, definition_path):
             "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
             "target_bin_detected":21 in by_id, "carried_box_detected":22 in by_id,
             "task_qualified":False}
+    if geometry_path is not None:
+        result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path)
+    return result
 
 
 def main():
@@ -172,8 +219,9 @@ def main():
     parser.add_argument("--observation", required=True, type=Path)
     parser.add_argument("--definition", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--geometry", type=Path)
     args = parser.parse_args()
-    result = localize(args.image, args.observation, args.definition)
+    result = localize(args.image, args.observation, args.definition, args.geometry)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

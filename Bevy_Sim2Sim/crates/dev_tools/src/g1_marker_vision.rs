@@ -17,6 +17,15 @@ pub(super) struct MarkerVisionConfiguration {
     pub script_sha256: String,
     pub definition_path: PathBuf,
     pub definition_sha256: String,
+    #[serde(default)]
+    pub task_geometry: Option<MarkerTaskGeometry>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MarkerTaskGeometry {
+    pub path: PathBuf,
+    pub sha256: String,
 }
 
 fn digest(path: &Path, maximum: u64) -> Result<String, String> {
@@ -48,6 +57,14 @@ impl MarkerVisionConfiguration {
         ] {
             if !path.is_absolute() || digest(path, maximum)? != *hash {
                 return Err("marker worker path/hash mismatch".into());
+            }
+        }
+        if let Some(geometry) = &self.task_geometry {
+            if geometry.sha256 != "19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0"
+                || !geometry.path.is_absolute()
+                || digest(&geometry.path, 1024 * 1024)? != geometry.sha256
+            {
+                return Err("marker clearance requires the pinned public task geometry".into());
             }
         }
         Ok(())
@@ -107,7 +124,8 @@ mod worker {
                             .create_new(true)
                             .open(directory.join("worker.log"))
                             .map_err(|e| e.to_string())?;
-                        let mut child = Command::new(&config.python_path)
+                        let mut command = Command::new(&config.python_path);
+                        command
                             .arg(&config.script_path)
                             .args(["--image"])
                             .arg(&image)
@@ -116,7 +134,11 @@ mod worker {
                             .args(["--definition"])
                             .arg(&config.definition_path)
                             .args(["--output"])
-                            .arg(&output)
+                            .arg(&output);
+                        if let Some(geometry) = &config.task_geometry {
+                            command.arg("--geometry").arg(&geometry.path);
+                        }
+                        let mut child = command
                             .stdin(Stdio::null())
                             .stdout(log.try_clone().map_err(|e| e.to_string())?)
                             .stderr(log)
@@ -163,6 +185,11 @@ mod worker {
                             &input_hash,
                             &config.definition_sha256,
                         )?;
+                        if let Some(geometry) = &config.task_geometry {
+                            validate_clearance_reply(&reply, observation, &geometry.sha256)?;
+                        } else if !reply["clearance_proposal"].is_null() {
+                            return Err("unrequested public-geometry clearance reply".into());
+                        }
                         Ok(reply)
                     })();
                     let _ = sender.send(result);
@@ -269,6 +296,41 @@ mod worker {
         Ok(())
     }
 
+    fn validate_clearance_reply(
+        reply: &serde_json::Value,
+        observation: ObservationStamp,
+        geometry_hash: &str,
+    ) -> Result<(), String> {
+        let proposal = &reply["clearance_proposal"];
+        let stamp: ObservationStamp =
+            serde_json::from_value(proposal["observation"].clone()).map_err(|e| e.to_string())?;
+        let rise = proposal["required_raise_m"]
+            .as_f64()
+            .ok_or("clearance rise absent")?;
+        if stamp != observation
+            || proposal["schema"] != "g1_visible_marker_clearance_v1"
+            || proposal["source_geometry_sha256"] != geometry_hash
+            || proposal["source"] != "actual_rgb_marker_pose_and_public_original_collision_geometry"
+            || proposal["world_or_contact_truth_input"] != false
+            || proposal["task_qualified"] != false
+            || proposal["minimum_desired_rim_clearance_m"] != 0.1
+            || !rise.is_finite()
+            || !(-5. ..=5.).contains(&rise)
+        {
+            return Err("foreign/unbound public-geometry clearance reply".into());
+        }
+        if !proposal["raise_goal"].is_null() {
+            let goal: simulation_minigame::g1::mobile_raise::MobileRaiseGoal =
+                serde_json::from_value(proposal["raise_goal"].clone())
+                    .map_err(|e| e.to_string())?;
+            goal.validate().map_err(|e| e.to_string())?;
+            if goal.observation != observation || (f64::from(goal.distance_m) - rise).abs() > 1e-7 {
+                return Err("raise goal detached from actual clearance observation".into());
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -371,6 +433,29 @@ mod worker {
                     _ => bad["navigation_proposal"]["relative_distance_m"] = 3.0.into(),
                 }
                 assert!(validate_reply(&bad, stamp, "image", "input", "definition").is_err());
+            }
+        }
+
+        #[test]
+        fn clearance_rejects_old_frame_foreign_geometry_and_unbound_raise() {
+            let (mut reply, stamp) = fixture();
+            reply["clearance_proposal"] = serde_json::json!({
+                "schema":"g1_visible_marker_clearance_v1", "observation":stamp,
+                "source_geometry_sha256":"geometry", "source":"actual_rgb_marker_pose_and_public_original_collision_geometry",
+                "world_or_contact_truth_input":false,"task_qualified":false,
+                "minimum_desired_rim_clearance_m":0.1,"required_raise_m":0.13,
+                "raise_goal":{"observation":stamp,"distance_m":0.13,"duration_ticks":130},
+            });
+            assert!(validate_clearance_reply(&reply, stamp, "geometry").is_ok());
+            for mutation in 0..4 {
+                let mut bad = reply.clone();
+                match mutation {
+                    0 => bad["clearance_proposal"]["observation"]["frame_id"] = 2.into(),
+                    1 => bad["clearance_proposal"]["source_geometry_sha256"] = "other".into(),
+                    2 => bad["clearance_proposal"]["raise_goal"]["distance_m"] = 0.18.into(),
+                    _ => bad["clearance_proposal"]["world_or_contact_truth_input"] = true.into(),
+                }
+                assert!(validate_clearance_reply(&bad, stamp, "geometry").is_err());
             }
         }
     }

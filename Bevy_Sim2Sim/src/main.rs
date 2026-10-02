@@ -50,6 +50,7 @@ fn run() -> Result<(), String> {
                 | "g1_mobile_scan_diagnostic"
                 | "g1_mobile_target_view_diagnostic"
                 | "g1_mobile_target_approach_diagnostic"
+                | "g1_mobile_target_raise_view_diagnostic"
         )
     ) {
         if arguments.robot.as_deref() != Some("g1")
@@ -171,6 +172,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     let mobile_target_view = arguments.scene.as_deref() == Some("g1_mobile_target_view_diagnostic");
     let mobile_target_approach =
         arguments.scene.as_deref() == Some("g1_mobile_target_approach_diagnostic");
+    let mobile_target_raise_view =
+        arguments.scene.as_deref() == Some("g1_mobile_target_raise_view_diagnostic");
     if interactive && arguments.g1_ticks.is_some() {
         return Err(
             "g1_task_lab admits UI intentions; --g1-ticks automatic execution is forbidden".into(),
@@ -189,6 +192,7 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
                 || mobile_scan
                 || mobile_target_view
                 || mobile_target_approach
+                || mobile_target_raise_view
             {
                 120
             } else {
@@ -200,6 +204,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
     } else if mobile_carry {
         dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
+    } else if mobile_target_raise_view {
+        dev_tools_minigame::g1_capture::run_mobile_target_raise_view_from_file(&path, options)
     } else if mobile_target_approach {
         dev_tools_minigame::g1_capture::run_mobile_target_approach_from_file(&path, options)
     } else if mobile_target_view {
@@ -314,7 +320,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic or g1_mobile_target_approach_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
@@ -379,7 +385,10 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
         if options.g1_ticks != Some(1050) {
             return Err("mobile scan scene requires --g1-ticks1050 as its finite maximum".into());
         }
-    } else if options.scene.as_deref() == Some("g1_mobile_target_approach_diagnostic") {
+    } else if matches!(
+        options.scene.as_deref(),
+        Some("g1_mobile_target_approach_diagnostic" | "g1_mobile_target_raise_view_diagnostic")
+    ) {
         if options.g1_ticks != Some(3150) {
             return Err(
                 "mobile target approach requires --g1-ticks3150 as its finite maximum".into(),
@@ -399,6 +408,37 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raised_camera_scene_has_only_its_explicit_bounded_budget() {
+        for ticks in ["1300", "2050", "3151"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_mobile_target_raise_view_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            super::parse_arguments(
+                [
+                    "--scene",
+                    "g1_mobile_target_raise_view_diagnostic",
+                    "--g1-ticks",
+                    "3150"
+                ]
+                .into_iter()
+                .map(str::to_owned)
+            )
+            .is_ok()
+        );
+    }
     #[test]
     fn visual_approach_budget_does_not_widen_other_scenes() {
         for args in [

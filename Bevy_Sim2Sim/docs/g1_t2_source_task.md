@@ -1206,3 +1206,22 @@ release; fresh raised RGB and controlled retention/placement remain required.
 Checks0213:68simulation checks pass/35real-asset trials explicitly ignored;
 both development-feature and default entry compile. Contact auditing is
 test-only and reads the last solve without refreshing contacts or integrating.
+
+`g1_mobile_target_raise_view_diagnostic` retains the3150Tick/four-original-grasp
+budget and matched source profile. At the completed coarse waypoint, a **new
+actual near image** feeds the bounded marker worker. Optional
+`mobile_scan.vision.task_geometry` pins the public source collision file to
+`19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0`;
+the worker reads vertex geometry only, never runtime poses. Original marker
+mounts and self quaternion yield gravity-aligned box minimum/bin maximum and
+a disclosed10cm clearance. The admitted bounded raise carries that exact
+current image stamp, executes on the sole native owner, stands100Ticks and
+captures a new actual raised image. Other scenes reject the geometry option.
+This mode does not fine-walk, release or advertise qualified execution.
+
+Worker0214 consumes the saved actual near RGB in385ms and exactly reproduces
+the independently calculated0206goal0.130138m/131Ticks, with zero physics/model
+work. Admission rejects old frames, foreign public geometry, detached raise
+distance and truth claims. Checks0215:36development-library checks pass/two
+real-asset checks ignored; seven CLI checks pass; default entry compiles.
+Fresh raised-view execution is a separate required test.
