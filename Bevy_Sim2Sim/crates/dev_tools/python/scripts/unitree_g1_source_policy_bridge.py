@@ -8,7 +8,9 @@ accessible to inference. This is a source reproduction tool, not a game service.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
+import os
 from pathlib import Path
 import socket
 import time
@@ -37,6 +39,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--max-calls', type=int, default=8)
     args = parser.parse_args()
+    args.socket = args.socket.resolve()
     if not 1 <= args.max_calls <= 8 or args.socket.exists():
         parser.error('Use 1..8 calls and a fresh socket identity')
     args.capture_dir.mkdir(parents=True, exist_ok=False)
@@ -44,13 +47,18 @@ def main():
         'successful_inferences': 0, 'failed_inferences': 0, 'owned_model_closed': False,
         'device': 'cuda', 'model_receipt': str(args.receipt), 'source_rollout_verified': False}
     with args.output.open('x') as output:
+        policy = None
         try:
             started = time.monotonic()
             policy = StaticAppleOnnx(verify_receipt(args.receipt), 'cuda', small_only=False)
             require_full_policy(policy)
             result['load_seconds'] = time.monotonic() - started
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-                server.bind(str(args.socket))
+                # sockaddr_un has a small byte limit. Bind the filename from
+                # its private mount directory, retaining the absolute identity
+                # in receipts and cleanup; the container uses /evidence/name.
+                os.chdir(args.socket.parent)
+                server.bind(args.socket.name)
                 # This exact socket is in the container's private evidence mount;
                 # host UID 1000 and original Isaac container UID 1234 differ.
                 args.socket.chmod(0o666)
@@ -86,12 +94,15 @@ def main():
                             raise ValueError('Source reply exceeds finite bound')
                         connection.sendall(len(encoded).to_bytes(4, 'big') + encoded)
                     output.seek(0); output.truncate(); json.dump(result, output, indent=2); output.flush()
-            del policy
-            result['owned_model_closed'] = True
         except BaseException as error:
             result['error'] = repr(error)
             raise
         finally:
+            if policy is not None:
+                policy.sessions.clear()
+                del policy
+                gc.collect()
+                result['owned_model_closed'] = True
             if args.socket.exists():
                 args.socket.unlink()
             output.seek(0); output.truncate(); json.dump(result, output, indent=2); output.write('\n'); output.flush()
