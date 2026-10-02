@@ -985,3 +985,19 @@ The additional `mobile_assist` configuration holds only
 entry). Observation/episode/frame/time identities are supplied by the actual
 native camera handoff, never fabricated in configuration. The independent
 physics ledger records actual completion Ticks, which may be below2050.
+
+Real Bevy trial0188 passes the independently checked mechanical stage with
+four fresh native RGB N1.6 grasp inferences and1524actual Homie/torque/physics
+updates. Each saved RGB pixel array equals its actual model input; only RGB
+and the original named self-state arrays enter inference. No saved grasp or
+fixed upper-target fixture is loaded. Actual walking displacement is2.037898m,
+settled displacement2.019864m; all692walking/stopping boundaries have positive
+hand-only support, no scene support and upright at least0.993010. All1524owner
+records are present, with zero control deadlines missed/pending Ticks. Active
+simulation/wall ratio is0.999323; inference pauses remain explicit, so this
+does not qualify a continuous rendered1x task. The original bin's independent
+stable-placement result is zero seconds: this manual clear-aisle goal still
+holds the box and is not bin placement. The owned model closes after its four
+successful inferences. Formal T2, Qwen goal selection and8/10 remain open.
+Raw native trace SHA256:
+`35e82f10084d448f77caac9b884a191fde56a954f1284dbcdd6e780f93104858`.
