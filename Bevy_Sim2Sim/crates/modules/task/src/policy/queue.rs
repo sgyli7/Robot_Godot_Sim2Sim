@@ -2,7 +2,22 @@ use super::{
     ARENA_ACTION_PERIOD_NS, ActionLimits, PolicyActionChunk, PolicyActionError, PolicyActionFrame,
     profile_contract,
 };
+use crate::types::ObservationStamp;
 use crate::types::TaskProfile;
+
+/// Owner-side admission metadata; the model never supplies its execution clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PolicyActionAdmission {
+    pub observation: ObservationStamp,
+    pub execution_start_sim_ns: u64,
+    pub execution_end_sim_ns: u64,
+    pub observation_age_at_admission_ns: u64,
+}
+
+struct AdmittedChunk {
+    chunk: PolicyActionChunk,
+    admission: PolicyActionAdmission,
+}
 
 /// A single latest chunk: inference replies never form an accumulating backlog.
 pub struct PolicyActionQueue {
@@ -13,7 +28,7 @@ pub struct PolicyActionQueue {
     last_sequence: Option<u64>,
     last_observation: Option<(u64, u64)>,
     last_tick_ns: Option<u64>,
-    chunk: Option<PolicyActionChunk>,
+    chunk: Option<AdmittedChunk>,
     last_emitted_index: Option<usize>,
     stopped: bool,
 }
@@ -25,6 +40,9 @@ pub enum PolicyTick {
         sequence_id: u64,
         frame_index: usize,
         action: PolicyActionFrame,
+        observation: ObservationStamp,
+        execution_start_sim_ns: u64,
+        observation_age_ns: u64,
     },
     /// This frame was already emitted; no new target should be submitted.
     AlreadyEmitted,
@@ -81,12 +99,14 @@ impl PolicyActionQueue {
         self.stopped = true;
     }
 
-    /// Validate the complete chunk before replacing the currently active one.
+    /// Admit a whole chunk at a physical-owner control boundary. Frame zero
+    /// starts here, matching Arena's post-inference execution order. This does
+    /// not refresh the observation stamp or relax its independent age limit.
     pub fn accept(
         &mut self,
         chunk: PolicyActionChunk,
         now_sim_ns: u64,
-    ) -> Result<(), PolicyActionError> {
+    ) -> Result<PolicyActionAdmission, PolicyActionError> {
         if self.stopped {
             return Err(PolicyActionError::Stopped);
         }
@@ -130,14 +150,9 @@ impl PolicyActionQueue {
             .action_period_ns
             .checked_mul(chunk.frames.len() as u64)
             .ok_or(PolicyActionError::TimestampOverflow)?;
-        chunk
-            .observation
-            .sim_time_ns
+        let execution_end_sim_ns = now_sim_ns
             .checked_add(duration)
             .ok_or(PolicyActionError::TimestampOverflow)?;
-        if age >= duration {
-            return Err(PolicyActionError::Expired);
-        }
         if self
             .last_tick_ns
             .is_some_and(|previous| now_sim_ns < previous)
@@ -149,9 +164,16 @@ impl PolicyActionQueue {
         }
         self.last_sequence = Some(chunk.sequence_id);
         self.last_observation = Some((chunk.observation.frame_id, chunk.observation.sim_time_ns));
-        self.chunk = Some(chunk);
+        let admission = PolicyActionAdmission {
+            observation: chunk.observation,
+            execution_start_sim_ns: now_sim_ns,
+            execution_end_sim_ns,
+            observation_age_at_admission_ns: age,
+        };
+        self.chunk = Some(AdmittedChunk { chunk, admission });
         self.last_emitted_index = None;
-        Ok(())
+        self.last_tick_ns = Some(now_sim_ns);
+        Ok(admission)
     }
 
     /// Advance using simulation time; skipped old frames are discarded, not replayed.
@@ -164,14 +186,16 @@ impl PolicyActionQueue {
             return Err(PolicyActionError::TimeWentBackwards);
         }
         self.last_tick_ns = Some(now_sim_ns);
-        let Some(chunk) = &self.chunk else {
+        let Some(admitted) = &self.chunk else {
             return Ok(PolicyTick::Unavailable);
         };
-        let Some(age) = now_sim_ns.checked_sub(chunk.observation.sim_time_ns) else {
+        let Some(elapsed) = now_sim_ns.checked_sub(admitted.admission.execution_start_sim_ns)
+        else {
             self.stop();
-            return Err(PolicyActionError::FutureObservation);
+            return Err(PolicyActionError::TimeWentBackwards);
         };
-        let index = (age / chunk.action_period_ns) as usize;
+        let chunk = &admitted.chunk;
+        let index = (elapsed / chunk.action_period_ns) as usize;
         if index >= chunk.frames.len() {
             self.chunk = None;
             self.last_emitted_index = None;
@@ -185,6 +209,9 @@ impl PolicyActionQueue {
             sequence_id: chunk.sequence_id,
             frame_index: index,
             action: chunk.frames[index].clone(),
+            observation: chunk.observation,
+            execution_start_sim_ns: admitted.admission.execution_start_sim_ns,
+            observation_age_ns: now_sim_ns - chunk.observation.sim_time_ns,
         })
     }
 }
@@ -238,22 +265,94 @@ mod tests {
     }
 
     #[test]
-    fn skips_late_frames_and_expires_without_replay() {
+    fn delayed_inference_starts_at_zero_and_preserves_actual_observation_age() {
         let mut q = queue();
-        q.accept(chunk(), 60_000_000).unwrap();
+        let admission = q.accept(chunk(), 604_000_000).unwrap();
+        assert_eq!(admission.observation.sim_time_ns, 0);
+        assert_eq!(admission.observation_age_at_admission_ns, 604_000_000);
+        assert_eq!(admission.execution_end_sim_ns, 1_404_000_000);
         assert!(matches!(
-            q.tick(60_000_000).unwrap(),
-            PolicyTick::Action { frame_index: 3, .. }
+            q.tick(604_000_000).unwrap(),
+            PolicyTick::Action {
+                frame_index: 0,
+                observation_age_ns: 604_000_000,
+                ..
+            }
         ));
-        assert_eq!(q.tick(60_000_001).unwrap(), PolicyTick::AlreadyEmitted);
+        assert_eq!(q.tick(604_000_001).unwrap(), PolicyTick::AlreadyEmitted);
         assert!(matches!(
-            q.tick(780_000_000).unwrap(),
+            q.tick(1_384_000_000).unwrap(),
             PolicyTick::Action {
                 frame_index: 39,
                 ..
             }
         ));
-        assert_eq!(q.tick(800_000_000).unwrap(), PolicyTick::Unavailable);
+        assert_eq!(q.tick(1_404_000_000).unwrap(), PolicyTick::Unavailable);
+    }
+
+    #[test]
+    fn complete_horizon_survives_inference_longer_than_the_horizon() {
+        let mut q = queue();
+        let mut reply = chunk();
+        for (i, frame) in reply.frames.iter_mut().enumerate() {
+            frame.left_arm[0] = i as f32 * 0.01;
+        }
+        q.accept(reply, 900_000_000).unwrap();
+        for i in 0..40 {
+            let tick = q.tick(900_000_000 + i * ARENA_ACTION_PERIOD_NS).unwrap();
+            match tick {
+                PolicyTick::Action {
+                    frame_index,
+                    action,
+                    observation,
+                    ..
+                } => {
+                    assert_eq!(frame_index, i as usize);
+                    assert_eq!(action.left_arm[0], i as f32 * 0.01);
+                    assert_eq!(observation.sim_time_ns, 0);
+                }
+                other => panic!("Missing source action {i}: {other:?}"),
+            }
+        }
+        assert_eq!(q.tick(1_700_000_000).unwrap(), PolicyTick::Unavailable);
+    }
+
+    #[test]
+    fn owner_stall_discards_elapsed_execution_frames() {
+        let mut q = queue();
+        q.accept(chunk(), 100_000_000).unwrap();
+        q.tick(100_000_000).unwrap();
+        assert!(matches!(
+            q.tick(180_000_000).unwrap(),
+            PolicyTick::Action { frame_index: 4, .. }
+        ));
+        assert_eq!(q.tick(900_000_000).unwrap(), PolicyTick::Unavailable);
+    }
+
+    #[test]
+    fn admission_clock_and_execution_end_are_checked_before_replacement() {
+        let mut q = queue();
+        q.accept(chunk(), 100_000_000).unwrap();
+        let mut newer = chunk();
+        newer.sequence_id = 2;
+        newer.observation.frame_id = 2;
+        assert_eq!(
+            q.accept(newer, 80_000_000),
+            Err(PolicyActionError::TimeWentBackwards)
+        );
+        assert!(matches!(
+            q.tick(100_000_000).unwrap(),
+            PolicyTick::Action { sequence_id: 1, .. }
+        ));
+        q.reset(2, TaskProfile::StaticApple).unwrap();
+        let mut overflow = chunk();
+        overflow.observation.episode_id = 2;
+        overflow.observation.sim_time_ns = u64::MAX - 10;
+        assert_eq!(
+            q.accept(overflow, u64::MAX - 10),
+            Err(PolicyActionError::TimestampOverflow)
+        );
+        assert_eq!(q.tick(u64::MAX - 10).unwrap(), PolicyTick::Unavailable);
     }
 
     #[test]
@@ -296,8 +395,8 @@ mod tests {
         wrong.action_period_ns = 33_333_333;
         assert_eq!(q.accept(wrong, 0), Err(PolicyActionError::WrongPeriod));
         assert_eq!(
-            q.accept(chunk(), 800_000_000),
-            Err(PolicyActionError::Expired)
+            q.accept(chunk(), 1_000_000_001),
+            Err(PolicyActionError::StaleObservation)
         );
     }
 

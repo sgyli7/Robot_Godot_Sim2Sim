@@ -185,8 +185,9 @@ impl ActionLimits {
 }
 
 /// An inference reply bound to the observation and episode that produced it.
-/// Frame zero is scheduled at `observation.sim_time_ns`; late replies are never
-/// rebased to the arrival time to make stale predictions appear current.
+/// The observation stamp remains unchanged during admission. The matched Arena
+/// interface executes frame zero after inference returns; the physical owner
+/// separately records that execution start and enforces observation age limits.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyActionChunk {
