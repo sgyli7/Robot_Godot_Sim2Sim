@@ -479,3 +479,49 @@ the saved native PNG bytes; only the named joint self state is included alongsid
 RGB. One integration/20msTick and distinct VLA/body-policy counts are verified.
 Final source-material/PBR Rust library checks passed172tests/34ignored, the app
 CLI check passed1test, and the source/contact Python checks passed26tests.
+
+Case0139 is the finite mechanical control prompted by0137: the first four
+**original** source replies at0/50/100/150 were copied with SHA256 identities,
+validated through the matched task action contract and executed in a fresh native
+T2 world. Their action values, source episode and simulation timeline are
+unchanged. A test-only copy explicitly replaces the old wall admission stamp;
+this is disclosed in every chunk receipt and never enters runtime execution.
+The fixture SHA256 is
+`61868bb49efb02c0e297ae15d04e298bafeb5649656428a4f8f0e349eecd9b88`.
+
+This mechanical control **passes** the frozen held-lift rule. All200 actual
+Homie calls/control updates/integrations complete at the unchanged50Hz/one-step,
+4PGS diagnostic settings. There are0 new VLA calls. Box hand impulses occur at
+85Ticks; positive shelf support ends at177. At182–200 (19 consecutive samples)
+the box is at least50mm above reset height, has real hand impulse, has no positive
+shelf support impulse and the robot remains upright. Maximum rise is80.35mm,
+minimum upright cosine0.99524; the final box is still held above the shelf.
+The test is free-running (0.715s wall time for4s simulated time), so it proves
+neither autonomous execution, continuous1×, stable final placement nor carrying.
+It cannot count toward either formal10-episode task acceptance.
+
+Reproduce this exact mechanical comparison using fresh output paths and the
+frozen runner/action files:
+
+```bash
+G1_CODE_COMMIT=$(git rev-parse HEAD) \
+G1_MOBILE_REPLAY_CONFIG=.scratch/g1/t2_native_original_source_grasp_20261002_0139/runner.json \
+G1_MOBILE_REPLAY_CONFIG_SHA256=08bc9d2932dc50186cdc65ec41e7214c249f7a183f61c299aed4a4e22b4fdfe7 \
+G1_MOBILE_REPLAY_ACTIONS=.scratch/g1/t2_native_original_source_grasp_20261002_0139/actions.json \
+G1_MOBILE_REPLAY_ACTIONS_SHA256=61868bb49efb02c0e297ae15d04e298bafeb5649656428a4f8f0e349eecd9b88 \
+G1_MOBILE_REPLAY_OUTPUT=.scratch/g1/NEW_MOBILE_MECHANICAL_RECEIPT.json \
+CARGO_BUILD_JOBS=2 \
+CARGO_TARGET_DIR=/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target \
+flock /tmp/sai-g1-cargo.lock cargo test -p simulation_minigame \
+  --features g1_constraint_diagnostic --lib \
+  real_mobile_source_grasp_window_diagnostic -- --ignored --nocapture --test-threads=1
+```
+
+The reset input comparison independently finds all five source/native self-state
+arrays **exactly equal** (all zero), with the same shapes/dtypes and fixed
+instruction. The RGB differs, and the two first decoded arm chunks differ by
+up to0.2243rad/0.1973rad. This prioritizes a finite paired real-model image
+comparison with identical random-generator state, rather than another physical
+parameter or longer-rollout sweep. Successful source actions establish that
+this native grasp window is mechanically possible; they do not establish the
+whole2m carry, or rule out tracking/contact limitations later in that task.

@@ -481,6 +481,10 @@ fn error(value: impl std::fmt::Debug) -> RobotError {
     RobotError::Contract(format!("Arena task owner: {value:?}"))
 }
 
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+#[path = "mobile_source_diagnostic.rs"]
+mod mobile_source_diagnostic;
+
 #[cfg(test)]
 mod tests {
     use super::*;
