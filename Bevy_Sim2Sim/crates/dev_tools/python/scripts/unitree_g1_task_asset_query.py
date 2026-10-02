@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import math
 from pathlib import Path
@@ -79,7 +80,11 @@ def query(args, receipt, output):
         receipt["runtime_build"] = version.read_text().strip()
         receipt['t1_matching_runtime_verified'] = (
             receipt['runtime_build'] == '6.0.0-rc.22+release.33481.407f3ea1.gl')
-        receipt["isaacsim_package_version"] = importlib.metadata.version("isaacsim")
+        try:
+            receipt["isaacsim_package_version"] = importlib.metadata.version("isaacsim")
+        except importlib.metadata.PackageNotFoundError:
+            receipt["isaacsim_package_version"] = None
+            receipt["runtime_distribution"] = "standalone_image; exact VERSION build retained"
         receipt["openusd_version"] = list(Usd.GetVersion())
 
         for item in receipt["assets"]:
@@ -173,8 +178,19 @@ def query(args, receipt, output):
         # No replicator or running timeline exists in this process. The installed
         # Kit build's graceful viewport teardown asserts on a busy task group.
         # Use its documented immediate exit and preserve diagnostic failure status.
-        app.close(wait_for_replicator=False, skip_cleanup=True,
-                  exit_code=0 if receipt.get("all_asset_queries_succeeded") and "error" not in receipt else 1)
+        exit_code = 0 if receipt.get("all_asset_queries_succeeded") and "error" not in receipt else 1
+        supports_exit_code = 'exit_code' in inspect.signature(app.close).parameters
+        receipt['shutdown_exit_code_parameter_supported'] = supports_exit_code
+        receipt['requested_exit_code'] = exit_code
+        save(output, receipt)
+        if supports_exit_code:
+            app.close(wait_for_replicator=False, skip_cleanup=True, exit_code=exit_code)
+        else:
+            # Pinned 6.0's public close has no exit_code keyword. Preserve the
+            # flushed outcome and use its supported shutdown signature.
+            app.close(wait_for_replicator=False, skip_cleanup=True)
+            if exit_code:
+                raise SystemExit(exit_code)
 
 
 def main():
