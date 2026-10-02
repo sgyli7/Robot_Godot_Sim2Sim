@@ -87,6 +87,10 @@ struct CaptureConfiguration {
     #[serde(default)]
     directional_shadow_maps: Option<bool>,
     #[serde(default)]
+    diagnostic_ambient_brightness: Option<f32>,
+    #[serde(default)]
+    diagnostic_directional_illuminance: Option<f32>,
+    #[serde(default)]
     predictive_limit_diagnostic: bool,
     #[serde(default)]
     diagnostic_constraint_sweeps: Option<u32>,
@@ -312,6 +316,8 @@ pub fn run_capture_from_file(
         config.policy,
         config.exposure_ev100,
         config.directional_shadow_maps,
+        config.diagnostic_ambient_brightness,
+        config.diagnostic_directional_illuminance,
         config.predictive_limit_diagnostic,
         config.diagnostic_constraint_sweeps,
         config.background_visual,
@@ -372,6 +378,8 @@ pub struct G1CaptureReceipt {
     pub pauses_for_camera_and_policy: bool,
     pub camera_exposure_ev100: f32,
     pub diagnostic_directional_shadow_maps: bool,
+    pub camera_ambient_brightness: f32,
+    pub camera_directional_illuminance: f32,
     pub factory_verified_predictive_limit_joints: usize,
     pub factory_verified_diagnostic_constraint_sweeps: Option<u32>,
     pub background_visual_status: Option<G1BackgroundVisualStatus>,
@@ -481,6 +489,8 @@ impl G1CaptureReceipt {
             pauses_for_camera_and_policy: false,
             camera_exposure_ev100: Exposure::default().ev100,
             diagnostic_directional_shadow_maps: true,
+            camera_ambient_brightness: 450.,
+            camera_directional_illuminance: 15_000.,
             factory_verified_predictive_limit_joints: 0,
             factory_verified_diagnostic_constraint_sweeps: None,
             background_visual_status: None,
@@ -521,6 +531,11 @@ struct SourceShelfVisual;
 
 #[derive(Resource)]
 struct DiagnosticExposure(f32);
+#[derive(Resource)]
+struct DiagnosticIllumination {
+    ambient_brightness: f32,
+    directional_illuminance: f32,
+}
 
 #[derive(Resource)]
 struct DiagnosticDirectionalShadows(bool);
@@ -574,6 +589,8 @@ pub fn run_capture(
         None,
         None,
         None,
+        None,
+        None,
         false,
         None,
         None,
@@ -590,6 +607,8 @@ fn run_capture_owner(
     policy: Option<LivePolicyConfiguration>,
     exposure_ev100: Option<f32>,
     directional_shadow_maps: Option<bool>,
+    diagnostic_ambient_brightness: Option<f32>,
+    diagnostic_directional_illuminance: Option<f32>,
     predictive_limit_diagnostic: bool,
     diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
@@ -597,6 +616,18 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
+    let ambient_brightness = diagnostic_ambient_brightness.unwrap_or(450.);
+    let directional_illuminance = diagnostic_directional_illuminance.unwrap_or(15_000.);
+    if !ambient_brightness.is_finite()
+        || !(0.0..=20_000.).contains(&ambient_brightness)
+        || !directional_illuminance.is_finite()
+        || !(0.0..=50_000.).contains(&directional_illuminance)
+        || ((diagnostic_ambient_brightness.is_some()
+            || diagnostic_directional_illuminance.is_some())
+            && background_visual.is_none())
+    {
+        return Err("diffuse-light calibration needs the original background and finite bounded ambient/directional energies".into());
+    }
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
         return Err("diagnostic exposure must be finite EV100 in 0..=20".into());
     }
@@ -724,6 +755,8 @@ fn run_capture_owner(
         task_model.as_ref().map(|m| m.file_sha256.clone());
     outcome.0.lock().unwrap().camera_exposure_ev100 = exposure_ev100;
     outcome.0.lock().unwrap().diagnostic_directional_shadow_maps = directional_shadow_maps;
+    outcome.0.lock().unwrap().camera_ambient_brightness = ambient_brightness;
+    outcome.0.lock().unwrap().camera_directional_illuminance = directional_illuminance;
     if render_only_environment_translation.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "external_measured_pose_initialized_zero_tick_renderer_comparison";
@@ -753,6 +786,10 @@ fn run_capture_owner(
     app.insert_resource(scene)
         .insert_resource(DiagnosticExposure(exposure_ev100))
         .insert_resource(DiagnosticDirectionalShadows(directional_shadow_maps))
+        .insert_resource(DiagnosticIllumination {
+            ambient_brightness,
+            directional_illuminance,
+        })
         .insert_resource(model)
         .insert_resource(outcome.clone())
         .init_resource::<G1TaskVisualInput>()
@@ -838,6 +875,7 @@ fn setup_floor_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     background: Option<Res<G1BackgroundVisualModel>>,
     shadows: Res<DiagnosticDirectionalShadows>,
+    illumination: Res<DiagnosticIllumination>,
 ) {
     commands.spawn((
         Name::new("g1_runner_actual_floor"),
@@ -856,12 +894,12 @@ fn setup_floor_scene(
     ));
     commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
-        brightness: 450.,
+        brightness: illumination.ambient_brightness,
         ..default()
     });
     commands.spawn((
         DirectionalLight {
-            illuminance: 15_000.,
+            illuminance: illumination.directional_illuminance,
             shadow_maps_enabled: shadows.0,
             ..default()
         },

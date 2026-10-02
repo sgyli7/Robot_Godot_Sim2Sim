@@ -10,7 +10,10 @@ use bevy::{
         CompressedImageFormats, ImageAddressMode, ImageSampler, ImageSamplerDescriptor, ImageType,
     },
     math::Affine2,
+    pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -68,6 +71,8 @@ struct Material {
     source_material: String,
     base_color: [f32; 3],
     base_color_space: String,
+    #[serde(default)]
+    albedo_add: f32,
     roughness: f32,
     metallic: f32,
     albedo: Option<Texture>,
@@ -76,6 +81,22 @@ struct Material {
     uv_scale: [f32; 2],
     normal_flip_tangent_v: bool,
     authored_shader_inputs: HashMap<String, String>,
+}
+
+type BackgroundMaterial = ExtendedMaterial<StandardMaterial, BackgroundAlbedo>;
+
+/// Original OmniPBR adds the scalar to the linear texture lookup before tint
+/// and lighting. StandardMaterial alone can only multiply its texture lookup.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+struct BackgroundAlbedo {
+    #[uniform(100)]
+    tint_and_add: Vec4,
+}
+
+impl MaterialExtension for BackgroundAlbedo {
+    fn fragment_shader() -> ShaderRef {
+        "game/shaders/g1_background_albedo.wgsl".into()
+    }
 }
 
 #[derive(Resource)]
@@ -178,6 +199,9 @@ impl G1BackgroundVisualModel {
             let material = &mesh.material;
             if material.source_material.is_empty()
                 || material.base_color_space != "linear_rec709"
+                || !material.albedo_add.is_finite()
+                || !(-1.0..=1.0).contains(&material.albedo_add)
+                || (material.albedo.is_none() && material.albedo_add != 0.)
                 || material
                     .base_color
                     .iter()
@@ -243,7 +267,8 @@ pub struct G1BackgroundVisualStatus {
 pub struct G1BackgroundVisualPlugin;
 impl Plugin for G1BackgroundVisualPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<G1BackgroundVisualStatus>()
+        app.add_plugins(MaterialPlugin::<BackgroundMaterial>::default())
+            .init_resource::<G1BackgroundVisualStatus>()
             .add_systems(Startup, spawn);
     }
 }
@@ -252,7 +277,7 @@ fn spawn(
     mut commands: Commands,
     model: Res<G1BackgroundVisualModel>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<BackgroundMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut status: ResMut<G1BackgroundVisualStatus>,
 ) {
@@ -326,17 +351,38 @@ fn spawn(
                     .ok_or_else(|| "background texture was not decoded".to_string())
             };
             let orm = m.orm.as_ref().map(|t| texture(t, false)).transpose()?;
-            let material = materials.add(StandardMaterial {
-                base_color: Color::linear_rgb(m.base_color[0], m.base_color[1], m.base_color[2]),
-                base_color_texture: m.albedo.as_ref().map(|t| texture(t, true)).transpose()?,
-                normal_map_texture: m.normal.as_ref().map(|t| texture(t, false)).transpose()?,
-                flip_normal_map_y: m.normal_flip_tangent_v,
-                metallic: if orm.is_some() { 1. } else { m.metallic },
-                perceptual_roughness: if orm.is_some() { 1. } else { m.roughness },
-                occlusion_texture: orm.clone(),
-                metallic_roughness_texture: orm,
-                uv_transform: Affine2::from_scale(Vec2::from_array(m.uv_scale)),
-                ..default()
+            let material = materials.add(BackgroundMaterial {
+                base: StandardMaterial {
+                    base_color: Color::linear_rgb(
+                        m.base_color[0],
+                        m.base_color[1],
+                        m.base_color[2],
+                    ),
+                    // An unbound Gprim authors diffuse displayColor only. Do
+                    // not add a specular material to these restored surfaces.
+                    reflectance: if m.source_material.starts_with("usd_displayColor:") {
+                        0.
+                    } else {
+                        0.5
+                    },
+                    base_color_texture: m.albedo.as_ref().map(|t| texture(t, true)).transpose()?,
+                    normal_map_texture: m.normal.as_ref().map(|t| texture(t, false)).transpose()?,
+                    flip_normal_map_y: m.normal_flip_tangent_v,
+                    metallic: if orm.is_some() { 1. } else { m.metallic },
+                    perceptual_roughness: if orm.is_some() { 1. } else { m.roughness },
+                    occlusion_texture: orm.clone(),
+                    metallic_roughness_texture: orm,
+                    uv_transform: Affine2::from_scale(Vec2::from_array(m.uv_scale)),
+                    ..default()
+                },
+                extension: BackgroundAlbedo {
+                    tint_and_add: Vec4::new(
+                        m.base_color[0],
+                        m.base_color[1],
+                        m.base_color[2],
+                        m.albedo_add,
+                    ),
+                },
             });
             commands.spawn((
                 Name::new(source.path.clone()),

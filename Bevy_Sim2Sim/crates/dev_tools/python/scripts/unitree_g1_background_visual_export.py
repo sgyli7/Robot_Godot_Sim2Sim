@@ -53,6 +53,7 @@ def display_color_surface(prim):
         raise ValueError('Translucent unbound displayOpacity is unsupported')
     return {'source_material': 'usd_displayColor:' + str(prim.GetPath()),
             'base_color': list(first), 'base_color_space': 'linear_rec709',
+            'albedo_add': 0.,
             'roughness': .5, 'metallic': 0., 'albedo': None, 'normal': None, 'orm': None,
             'uv_scale': [1., 1.], 'normal_flip_tangent_v': False,
             'authored_shader_inputs': {'source_fallback': 'authored uniform Gprim displayColor; no bound material',
@@ -91,6 +92,12 @@ def surface(prim, usd, geometry_prim=None):
     if value("enable_opacity", False) or value("enable_emission", False):
         raise ValueError("Active background opacity/emission needs a separate mapping")
     albedo = texture("diffuse_texture")
+    if (float(value('albedo_brightness', 1.)) != 1.
+            or float(value('albedo_desaturation', 0.)) != 0.):
+        raise ValueError('Nondefault albedo brightness/desaturation needs a separate mapping')
+    albedo_add = float(value('albedo_add', 0.)) if albedo else 0.
+    if not -1. <= albedo_add <= 1.:
+        raise ValueError('Authored albedo_add exceeds its finite mapping bound')
     color = value("diffuse_tint", (1., 1., 1.)) if albedo else value("diffuse_color_constant", value("diffuse_tint", (.5, .5, .5)))
     color_input = shader.GetInput("diffuse_tint" if albedo or not shader.GetInput("diffuse_color_constant") else "diffuse_color_constant")
     color_space = Usd.ColorSpaceAPI.ComputeColorSpaceName(color_input.GetAttr(), None) if color_input else ""
@@ -99,6 +106,7 @@ def surface(prim, usd, geometry_prim=None):
     return {
         "source_material": str(bound.GetPath()), "base_color": list(map(float, color)),
         "base_color_space": "linear_rec709",
+        "albedo_add": albedo_add,
         "roughness": float(value("reflection_roughness_constant", .5)),
         "metallic": float(value("metallic_constant", 0.)), "albedo": albedo,
         "normal": texture("normalmap_texture"),

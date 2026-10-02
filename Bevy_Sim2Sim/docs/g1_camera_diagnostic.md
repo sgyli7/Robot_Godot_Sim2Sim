@@ -167,3 +167,21 @@ unsupported color spaces remain rejected. This restores three complete black
 box meshes and four black face subsets previously omitted; all existing sixteen
 mesh/material/UV/normal records are exactly unchanged. Procedural MDL wall UVs
 and unbound-surface shading parity remain disclosed limitations.
+
+The background material also maps the original authored `albedo_add` before
+linear color tint and PBR lighting, using a G1-specific material extension.
+Old exports default to zero. Nondefault brightness/desaturation remains
+unsupported. The source 6.0 OmniPBR/ClearCoat implementations were inspected;
+the parameter is described in the [NVIDIA OmniPBR reference](https://docs.omniverse.nvidia.com/materials-and-rendering/latest/templates/OmniPBR.html).
+Unbound Gprim displayColor is rendered as diffuse color without an invented
+specular material. Other MDL defaults/effects remain outside the parity claim.
+
+`diagnostic_ambient_brightness` and `diagnostic_directional_illuminance` are
+explicit finite camera-scene controls requiring the original background. Their
+defaults remain 450 and 15000, and both actual values enter receipts. A bounded
+calibration used two fixed shared background patches and actual zero-Tick
+captures to solve two linear light coefficients: ambient 2328.264 and
+directional 981.363 at unchanged EV11.7. It used no policy inference or task
+success data. This is an approximate rendered-light calibration, not original
+area-light/RTX/global-illumination parity. The science-station lighting is
+unaffected, and native task performance remains unqualified.

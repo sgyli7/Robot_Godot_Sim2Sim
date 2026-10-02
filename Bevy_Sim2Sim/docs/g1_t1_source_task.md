@@ -231,3 +231,9 @@ The original-RTX camera control was also rerun with the current harness: it
 again succeeded with four actual policy calls, at 146 controls / 584 source
 integrations. This supports the image-domain comparison against a current
 reference, while retaining the original auto-reset/termination limitations.
+Restoring the black-box geometry/displayColor alone also failed the bounded
+source task: eight calls, 300 controls / 1200 integrations, with an initial
+apple height of -0.00790 m and maximum 0.00906 m. The model contacted/moved the
+object but the original success term remained false. All same-pose and blocked-
+state checks passed. This repair is retained as source-asset fidelity work;
+it is not reported as task success.
