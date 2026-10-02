@@ -568,7 +568,7 @@ fn run_capture_owner(
         })
         .transpose()?;
     let tick_limit = if matches!(config, CaptureRunnerConfig::Task(_)) {
-        200
+        400
     } else {
         150
     };
@@ -585,14 +585,14 @@ fn run_capture_owner(
             let profile = config.body.profile();
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
-                || policy.max_calls > 4
+                || policy.max_calls > 8
                 || options.ticks != policy.max_calls * horizon
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
                 || config.max_observation_wall_age_ms == 0
                 || config.max_observation_wall_age_ms > 20_000
             {
-                return Err("live diagnostic requires 1..=4 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
+                return Err("live diagnostic requires 1..=8 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
             }
             let timeout = Duration::from_millis(policy.timeout_ms);
             let worker = match profile {
