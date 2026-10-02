@@ -1257,3 +1257,24 @@ acceptance-only target error is1.74mm, with no physics/model work. Its proposed
 heading−1.592415rad/distance0.525429m is not executed. Seven focused worker checks
 cover actual roundtrip, old/reset/expired memory, unbound reply and missing
 current-box input. Fresh runtime target-memory admission remains a separate test.
+
+Fresh runtime0219 completes1597single50Hz integrations/four original actual
+RGB grasp calls. The current near RGB1360 admits0.136479m/137Tick raising plus
+100standing Ticks, all237with hand-only support. At the new actual raised
+camera1597, bin21 is occluded and box22 is visible. The bounded worker uses
+exactly the owner's original velocity integral and4.74sim seconds/5801ms
+target-image age. Its independent target error is7.35mm; navigation proposal
+heading−1.566022rad/distance0.653836m remains **unexecuted**. Active sim/wall
+0.998837, zero missed/pending Ticks; owned model closes. No saved grasp or
+synthetic camera enters this runtime. Checks0218:38development checks/eight
+CLI checks/68simulation checks pass; default entry compiles. Trace SHA256:
+`763fe92c04bef1f6dc7a97136f12ff0ccd3921ba7be2596be41605ed373b9607`.
+
+The proposed off-center printed target board is **not adopted**. Zero-world
+geometric analysis0220 rejects full-board visibility: both the20cm board and a
+smaller10cm black tag on the original floor retain occluded corners. No GPU
+rollout, integration or model call is spent on that candidate. Rejected source
+and projection evidence are retained outside Git, and the four owned candidate
+files return to the prior committed center-marker implementation. The next
+observation action must use actual robot/camera motion and preserve grip;
+marker relocation does not solve the final-view requirement in this scene.
