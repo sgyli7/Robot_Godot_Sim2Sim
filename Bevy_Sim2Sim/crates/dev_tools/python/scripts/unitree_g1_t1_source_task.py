@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded original T1 scene/camera rollout; optional local VLA socket bridge.
+"""Bounded original T1 scene/camera rollout; optional VLA or expert diagnostic.
 
 Keeps the original task layout, six-second episode, reset events, 200/50 Hz
 PhysX/WBC configuration and AGILE implementation. Only cached asset paths are
@@ -17,6 +17,7 @@ import sys
 import time
 
 from unitree_g1_t1_source_shelf import ARENA_REV, LAB_REV, USD_SHA, URDF_SHA, AGILE_SHA
+from unitree_g1_source_expert import load_sequence
 
 
 BACKGROUND_SHA = '7e14dcfd948591b8fdae61d41b412097b39490022dfc25aab9b90b6884509051'
@@ -125,6 +126,19 @@ def run(args, receipt, output):
                 joint_names=names, camera_config=camera.cfg.to_dict(),
                 task_assets=list(description.scene.assets), action_shape=list(env.action_space.shape))
             env.reset(seed=args.seed)
+            physics_counter_at_reset = int(raw._sim_step_counter)
+            expert = load_sequence(args.expert_sequence, args.expert_sha256) if args.expert_sequence else None
+            if expert:
+                actual_initial = measured(robot.data.joint_pos)
+                initial_error = max(abs(float(actual_initial[names.index(name)]) - target)
+                    for name, target in zip(expert['joint_names'], expert['initial_joint_positions']))
+                receipt.update(expert_sequence_sha256=args.expert_sha256,
+                    expert_dataset_revision=expert['dataset_revision'], expert_frames=len(expert['frames']),
+                    expert_initial_joint_max_error_rad=initial_error,
+                    expert_object_initial_pose_available=False,
+                    expert_after_sequence=expert['after_sequence'])
+                if initial_error > 1e-3:
+                    raise ValueError('Expert diagnostic initial robot pose does not match original reset')
             action = torch.zeros(env.action_space.shape, device=raw.device)
             action[:, :43] = tensor(robot.data.default_joint_pos)
             action[:, -4] = .75
@@ -141,11 +155,13 @@ def run(args, receipt, output):
                     gravity = measured(robot.data.projected_gravity_b)
                     if not all(np.isfinite(x).all() for x in (q, root, gravity)):
                         raise ValueError(f'Nonfinite original T1 state at {tick}')
-                    sample = {'control_tick': tick, 'physics_steps_since_reset': tick * 4,
+                    sample = {'control_tick': tick,
+                        'physics_steps_since_reset': int(raw._sim_step_counter) - physics_counter_at_reset,
                         'root_link_pose_w': root.tolist(), 'joint_positions': q.tolist(),
                         'processed_joint_targets': term.processed_actions[0].detach().cpu().tolist(),
                         'upright': float(-gravity[2]), 'policy_sequence': sequence,
-                        'last_action_frame': frame_index - 1 if frames else None,
+                        'last_action_frame': min(tick - 1, len(expert['frames']) - 1) if expert and tick else
+                            (frame_index - 1 if frames else None),
                         'acceptance_truth_only': {name: {
                             'pose': measured(raw.scene[name].data.root_pose_w).tolist(),
                             'velocity': measured(raw.scene[name].data.root_vel_w).tolist()}
@@ -180,8 +196,8 @@ def run(args, receipt, output):
                         print(f'G1_T1_TASK tick={tick} policy_calls={receipt["policy_calls"]} root_z={root[2]:.6f}', flush=True)
                     if tick == args.ticks:
                         break
-                    if frames:
-                        frame = frames[frame_index]
+                    if frames or expert:
+                        frame = expert['frames'][min(tick, len(expert['frames']) - 1)] if expert else frames[frame_index]
                         # Original remap_policy_joints_to_sim_joints_np starts
                         # with zero for unpredicted leg joint targets; WBC then
                         # fills those joints from the lower-body policy.
@@ -194,8 +210,13 @@ def run(args, receipt, output):
                         action[0, 43:46] = torch.as_tensor(frame['navigate_mps_rps'], device=raw.device)
                         action[0, 46] = frame['base_height_m']
                         action[0, 47:50] = 0  # Original GR00T does not emit torso RPY.
-                        frame_index += 1
+                        if not expert:
+                            frame_index += 1
                     _, _, terminated, truncated, info = env.step(action)
+                    receipt['completed_control_ticks'] = tick + 1
+                    receipt['measured_physics_steps_since_reset'] = int(raw._sim_step_counter) - physics_counter_at_reset
+                    if receipt['measured_physics_steps_since_reset'] != (tick + 1) * 4:
+                        raise ValueError('SDK physical integration counter diverged from original decimation')
                     if bool(terminated.any()) or bool(truncated.any()):
                         receipt['episode_termination'] = {'tick': tick + 1,
                             'terminated': bool(terminated.any()), 'truncated': bool(truncated.any()),
@@ -206,6 +227,7 @@ def run(args, receipt, output):
                         break
             receipt['source_scene_rollout_completed'] = True
             receipt['source_vla_executed'] = receipt['policy_calls'] > 0
+            receipt['source_expert_executed'] = expert is not None
             receipt['trace_sha256'] = digest(trace)
             env.close()
         except BaseException as error:
@@ -223,17 +245,24 @@ def main():
     parser.add_argument('--ticks', type=int, default=40)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--episode-id', type=int, required=True)
-    parser.add_argument('--policy-socket', type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--policy-socket', type=Path)
+    mode.add_argument('--expert-sequence', type=Path)
+    parser.add_argument('--expert-sha256')
     args = parser.parse_args()
     if not 1 <= args.ticks <= 300 or args.episode_id < 1:
         parser.error('Use 1..300 ticks within the original six-second episode and a positive episode identity')
+    if bool(args.expert_sequence) != bool(args.expert_sha256):
+        parser.error('Expert diagnostics require both sequence and its SHA-256 identity')
+    if args.expert_sequence:
+        load_sequence(args.expert_sequence, args.expert_sha256)
     receipt = {'schema': 'g1_t1_original_source_task_v1', 'qualified': False,
         'arena_commit': ARENA_REV, 'lab_commit': LAB_REV, 'harness_sha256': digest(__file__),
-        'source_scene_rollout_completed': False, 'source_vla_executed': False,
+        'source_scene_rollout_completed': False, 'source_vla_executed': False, 'source_expert_executed': False,
         'task_success_verified': False, 'rendered_materials_verified': False,
         'policy_calls': 0, 'requested_control_ticks': args.ticks, 'seed': args.seed,
         'episode_id': args.episode_id, 'environment_translation': [0, 0, 0],
-        'scope': 'original full T1 scene and camera; optional frozen local ONNX export; no native qualification'}
+        'scope': 'original full T1 scene/camera; optional local ONNX or expert diagnostic; no native qualification'}
     with args.output.open('x') as output:
         for name, expected in [('usd', USD_SHA), ('urdf', URDF_SHA), ('agile', AGILE_SHA),
                 ('background', BACKGROUND_SHA), ('apple', APPLE_SHA), ('plate', PLATE_SHA)]:
