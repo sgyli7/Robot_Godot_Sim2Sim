@@ -248,3 +248,28 @@ candidate in the actual native owner completed eight image-policy calls and
 nearly stationary, with the robot standing. Full per-Tick containment/release
 verification is recorded separately. These paused camera/inference diagnostics
 are not continuous 1× operation or the required ten-episode acceptance suite.
+
+## Finite grasp wait controls
+
+The ignored tests `real_static_grasp_target_hold_diagnostic` and
+`real_static_measured_arm_grasp_hold_diagnostic` use the same byte-bound
+`G1_STATIC_RELEASE_CONFIG`, `G1_STATIC_RELEASE_ACTIONS`, corresponding SHA256
+variables, `G1_STATIC_RELEASE_OUTPUT` and `G1_CODE_COMMIT` as the existing release
+diagnostic. They execute exactly 100 unchanged saved source frames, then 25 real
+50 Hz WBC/motor/integration steps in the same free-root world, with no new VLA
+calls. This is a separately labelled explicit test-private wait, never a chunk
+extension, action restamp or installed runtime fallback.
+
+The frozen grasp-wait rule requires all 25 samples to retain robot support
+impulse above 1e-6 N·s and standing, apple height at least 0.8371 m (initial
+height plus 0.05 m), and maximum displacement 0.025 m. Retaining the last full
+target kept support/standing throughout but displaced the apple 0.03351 m,
+so the rule failed. Replacing only arm targets by measured self-state, with
+zero navigation and unchanged finger preload, displaced it 0.05526 m and
+lowered it to 0.81035 m; the same rule failed. No object truth selected either
+controller target. These outcomes reject both candidates for precise grasp
+waiting; success after empty-hand release cannot establish grasp-wait safety.
+Further wait-target searching is not selected. The next timing comparison will
+prefetch inference during an existing unexpired chunk while preserving every
+original action frame and explicitly measuring observation age; a missed
+replacement deadline must pause rather than retain expired targets.

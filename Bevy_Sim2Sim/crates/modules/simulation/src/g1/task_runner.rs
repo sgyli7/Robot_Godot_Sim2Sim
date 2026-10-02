@@ -546,6 +546,31 @@ mod tests {
     #[test]
     #[ignore = "requires frozen source chunks and matched assets; 360 real 50 Hz steps"]
     fn real_static_source_action_release_window_diagnostic() -> Result<(), RobotError> {
+        finite_source_target_hold_diagnostic(160, 200, false)
+    }
+
+    /// A finite grasp-phase wait experiment, not a runtime fallback or approval
+    /// to retain expired VLA actions. Every step still calls the real WBC/motor.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    #[ignore = "requires frozen source chunks and matched assets; 100 original + 25 finite hold steps"]
+    fn real_static_grasp_target_hold_diagnostic() -> Result<(), RobotError> {
+        finite_source_target_hold_diagnostic(100, 25, false)
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    #[ignore = "requires frozen source chunks and matched assets; compares a self-state arm wait against the same finite grasp rule"]
+    fn real_static_measured_arm_grasp_hold_diagnostic() -> Result<(), RobotError> {
+        finite_source_target_hold_diagnostic(100, 25, true)
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn finite_source_target_hold_diagnostic(
+        source_action_ticks: u64,
+        explicit_hold_ticks: u64,
+        measured_arm_hold: bool,
+    ) -> Result<(), RobotError> {
         use super::super::task_objects::TaskObjectKind;
         use robot_minigame::g1::policy::bound_bytes;
         use std::{
@@ -590,8 +615,9 @@ mod tests {
                 return Err(error("source chunks changed world/profile/timeline"));
             }
         }
-        let final_frame = sequence.chunks.last().unwrap().frames.last().unwrap();
-        let ArenaControllerCommand::StaticAgile(hold) =
+        let final_frame = &sequence.chunks[((source_action_ticks - 1) / 40) as usize].frames
+            [((source_action_ticks - 1) % 40) as usize];
+        let ArenaControllerCommand::StaticAgile(mut hold) =
             controller_command(TaskProfile::StaticApple, final_frame, &config.limits)
                 .map_err(error)?
                 .controller
@@ -616,15 +642,20 @@ mod tests {
         let mut maximum_stable_suffix_ticks = 0_u64;
         let mut final_objects = None;
         let mut missed_deadlines = 0;
+        let mut hold_initial_position: Option<[f32; 3]> = None;
+        let mut max_hold_displacement_m = 0.0_f32;
+        let mut minimum_hold_height_m = f32::INFINITY;
+        let mut hold_grasp_supported_samples = 0_u64;
+        let mut hold_standing_samples = 0_u64;
         let result = (|| -> Result<(), RobotError> {
-            for tick in 1..=360_u64 {
+            for tick in 1..=source_action_ticks + explicit_hold_ticks {
                 let deadline = start + Duration::from_millis((tick - 1) * 20);
                 if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
                     thread::sleep(delay);
                 } else if Instant::now().duration_since(deadline) > Duration::from_millis(20) {
                     missed_deadlines += 1;
                 }
-                let (phase, body, execution) = if tick <= 160 {
+                let (phase, body, execution) = if tick <= source_action_ticks {
                     let chunk = &sequence.chunks[((tick - 1) / 40) as usize];
                     let step = owner.step_with_guard(
                         &ArenaTaskCommand {
@@ -668,6 +699,34 @@ mod tests {
                     .find(|o| o.kind == TaskObjectKind::Apple)
                     .ok_or_else(|| error("missing release apple"))?;
                 let norm = |values: [f32; 3]| values.into_iter().map(|v| v * v).sum::<f32>().sqrt();
+                if tick == source_action_ticks {
+                    hold_initial_position = Some(apple.position_source);
+                    if measured_arm_hold {
+                        // A distinct explicit wait experiment: stop arm tracking
+                        // at measured self-state while retaining finger preload.
+                        // No object truth chooses any actuator target here.
+                        let q = &body.measurement.joint_positions;
+                        hold.upper_positions[..7].copy_from_slice(&q[15..22]);
+                        hold.upper_positions[14..21].copy_from_slice(&q[29..36]);
+                        hold.navigation = [0.; 3];
+                    }
+                } else if tick > source_action_ticks {
+                    let initial = hold_initial_position.unwrap();
+                    max_hold_displacement_m =
+                        max_hold_displacement_m.max(norm(std::array::from_fn(|i| {
+                            apple.position_source[i] - initial[i]
+                        })));
+                    minimum_hold_height_m = minimum_hold_height_m.min(apple.position_source[2]);
+                    if apple.last_solve_contacts.iter().any(|contact| {
+                        contact.other_robot_body_index.is_some()
+                            && contact.normal_impulse_n_s > 1e-6
+                    }) {
+                        hold_grasp_supported_samples += 1;
+                    }
+                    if body.root_upright_cosine > 0.95 && body.root_position_source[2] >= 0.35 {
+                        hold_standing_samples += 1;
+                    }
+                }
                 let released = !apple
                     .last_solve_contacts
                     .iter()
@@ -707,13 +766,33 @@ mod tests {
             "task_qualified": false, "task_success_verified": false,
             "completed": result.is_ok(), "error": result.as_ref().err().map(ToString::to_string),
             "physics_hz": 50, "integrations_per_tick": 1,
-            "saved_source_action_ticks": 160, "bounded_post_sequence_target_hold_ticks": 200,
+            "saved_source_action_ticks": source_action_ticks,
+            "bounded_post_sequence_target_hold_ticks": explicit_hold_ticks,
             "actual_vla_inferences": 0, "actual_integrations": counts.integration_count,
             "actual_body_inference_attempts": counts.inference_attempt_count,
             "active_wall_seconds": start.elapsed().as_secs_f64(), "missed_deadlines": missed_deadlines,
             "max_released_supported_slow_suffix_seconds": maximum_stable_suffix_ticks.saturating_sub(1) as f64 / 50.,
             "final_released_supported_slow_suffix_seconds": stable_suffix_ticks.saturating_sub(1) as f64 / 50.,
             "whole_object_containment_verified": false, "last_task_object_frame": final_objects,
+            "finite_grasp_hold_rule": {
+                "source_prefix_ticks": 100, "finite_wait_ticks": 25,
+                "all_wait_ticks_robot_support_impulse_above_n_s": 1e-6,
+                "minimum_apple_source_height_m": 0.8371,
+                "maximum_apple_displacement_m": 0.025,
+                "all_wait_ticks_standing": true,
+                "frozen_before_grasp_wait_run": true,
+            },
+            "hold_initial_apple_position_source": hold_initial_position,
+            "measured_arm_hold": measured_arm_hold,
+            "explicit_wait_upper_targets_rad": hold.upper_positions.to_vec(),
+            "maximum_hold_apple_displacement_m": max_hold_displacement_m,
+            "minimum_hold_apple_height_m": minimum_hold_height_m,
+            "hold_grasp_supported_samples": hold_grasp_supported_samples,
+            "hold_standing_samples": hold_standing_samples,
+            "finite_grasp_hold_rule_passed": source_action_ticks == 100
+                && explicit_hold_ticks == 25
+                && hold_grasp_supported_samples == 25 && hold_standing_samples == 25
+                && minimum_hold_height_m >= 0.8371 && max_hold_displacement_m <= 0.025,
             "scope": "same native world; saved actions then explicit last target hold; no runtime fallback, pose write, action restamp or task qualification",
         });
         serde_json::to_writer_pretty(&mut receipt_file, &receipt).map_err(error)?;
