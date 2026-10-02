@@ -13,6 +13,7 @@ from .artifacts import DT
 from .condensed_contact import ContactMaterial
 
 REVISION = "goose_free_condensed_contact_v2"
+BE_METRIC_REVISION = "goose_free_condensed_be_contact_v3"
 
 
 def free_step(model, data, materials: tuple[ContactMaterial, ...]) -> list[dict]:
@@ -21,11 +22,27 @@ def free_step(model, data, materials: tuple[ContactMaterial, ...]) -> list[dict]
     This diagnostic retains the free joint and full physical inertia. Contact
     force and moment qualification against the original moving pads is separate.
     """
+    return _free_step(model, data, materials, int(mujoco.mjtIntegrator.mjINT_IMPLICIT))
+
+
+def free_step_be_metric(model, data, materials: tuple[ContactMaterial, ...]) -> list[dict]:
+    """Implicit physical K/C rows with explicit nonlinear velocity forces.
+
+    This matches the declared linear BE metric experiment's integration order.
+    It avoids a second velocity-dependent mass solve after the contact solve;
+    it remains an unqualified CPU fixture, with no whole-body or GPU admission.
+    """
+    if not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP):
+        raise ValueError("BE metric diagnostic requires explicit eulerdamp disable")
+    return _free_step(model, data, materials, int(mujoco.mjtIntegrator.mjINT_EULER))
+
+
+def _free_step(model, data, materials, integrator):
     if (mujoco.__version__ != "3.10.0" or model.opt.timestep != DT
             or model.opt.solver != int(mujoco.mjtSolver.mjSOL_NEWTON)
-            or model.opt.integrator != int(mujoco.mjtIntegrator.mjINT_IMPLICIT)
+            or model.opt.integrator != integrator
             or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)):
-        raise ValueError("Frozen 3.10 CPU implicit/Newton 20ms ABI required")
+        raise ValueError("Frozen 3.10 CPU declared integrator/Newton 20ms ABI required")
     if (model.nv != 6 or model.nq != 7 or model.njnt != 1 or model.nbody != 2
             or model.jnt_type[0] != int(mujoco.mjtJoint.mjJNT_FREE)
             or np.any(model.dof_damping) or np.any(model.dof_armature)):

@@ -1,7 +1,7 @@
 // Local modification: feature-gated read-only capture of existing bias operands and guard flags.
-use super::multibody_link::{MultibodyLink, MultibodyLinkVec};
 #[cfg(feature = "sim2sim-observation")]
 use super::MultibodyObservation;
+use super::multibody_link::{MultibodyLink, MultibodyLinkVec};
 use super::multibody_workspace::MultibodyWorkspace;
 use crate::alloc_prelude::*;
 use crate::dynamics::integration_parameters::SpringCoefficients;
@@ -164,14 +164,20 @@ impl Multibody {
     /// Phase A returns None when the Rapier parallel backend is enabled.
     #[cfg(feature = "sim2sim-observation")]
     pub fn sim2sim_observation(&self) -> Option<&MultibodyObservation> {
-        self.sim2sim_observation.valid.then_some(&self.sim2sim_observation)
+        self.sim2sim_observation
+            .valid
+            .then_some(&self.sim2sim_observation)
     }
 
     /// Epoch, phase-A validity, and contact coverage without exposing missing data as zero.
     #[cfg(feature = "sim2sim-observation")]
     pub fn sim2sim_observation_status(&self) -> (u64, bool, bool) {
         let observation = &self.sim2sim_observation;
-        (observation.epoch, observation.valid, observation.contact_coverage)
+        (
+            observation.epoch,
+            observation.valid,
+            observation.contact_coverage,
+        )
     }
 
     /// Select the plain articulated mass matrix for a one-step causal probe.
@@ -385,6 +391,13 @@ impl Multibody {
     #[cfg(feature = "sim2sim-limit-row-trace")]
     pub fn sim2sim_constraint_mass_matrix(&self) -> &DMatrix<Real> {
         &self.augmented_mass
+    }
+
+    /// Read the separately assembled velocity-dependent acceleration matrix.
+    /// Does not refactor, solve, mutate state or replace the physical mass ledger.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub fn sim2sim_acceleration_mass_matrix(&self) -> &DMatrix<Real> {
+        &self.acc_augmented_mass
     }
 
     /// The first link of this multibody.
@@ -634,14 +647,17 @@ impl Multibody {
             );
             #[cfg(feature = "sim2sim-observation")]
             {
-                let inertial = Force::new(rb_mass * acc.linvel, gyroscopic + rb_inertia * acc.angvel);
-                let gravity = Force::new(rb.forces.force - rb.forces.user_force, Default::default());
+                let inertial =
+                    Force::new(rb_mass * acc.linvel, gyroscopic + rb_inertia * acc.angvel);
+                let gravity =
+                    Force::new(rb.forces.force - rb.forces.user_force, Default::default());
                 let user = Force::new(rb.forces.user_force, rb.forces.user_torque);
                 let projected_inertial = self.body_jacobians[i].transpose() * inertial.as_vector();
                 let projected_gravity = self.body_jacobians[i].transpose() * gravity.as_vector();
                 let projected_user = self.body_jacobians[i].transpose() * user.as_vector();
                 for index in 0..self.ndofs {
-                    self.sim2sim_observation.inertial_projection[index] += projected_inertial[index];
+                    self.sim2sim_observation.inertial_projection[index] +=
+                        projected_inertial[index];
                     self.sim2sim_observation.gravity_projection[index] += projected_gravity[index];
                     self.sim2sim_observation.user_force_projection[index] += projected_user[index];
                 }
@@ -714,7 +730,9 @@ impl Multibody {
             self.free_velocity_energy_guard(dt, &gen_forces, &pos_forces);
         }
         #[cfg(feature = "sim2sim-observation")]
-        { self.sim2sim_observation.bias_recorded = true; }
+        {
+            self.sim2sim_observation.bias_recorded = true;
+        }
     }
 
     // If the semi-implicit coriolis solve introduces more energy than the external
@@ -767,7 +785,9 @@ impl Multibody {
             Some(excess) if excess <= 0.0 => (), // Implicit update didn’t introduce too much extra energy.
             _ => {
                 #[cfg(feature = "sim2sim-observation")]
-                { self.sim2sim_observation.energy_guard_fallback = true; }
+                {
+                    self.sim2sim_observation.energy_guard_fallback = true;
+                }
                 // The implicit solve injected energy (or produced non-finite
                 // values): fall back to the plain mass matrix.
                 self.accelerations.copy_from(gen_forces);
@@ -783,7 +803,9 @@ impl Multibody {
                 // sane result in a close timestep.
                 if !self.accelerations.iter().all(|x| x.is_finite()) {
                     #[cfg(feature = "sim2sim-observation")]
-                    { self.sim2sim_observation.energy_guard_acceleration_cleared = true; }
+                    {
+                        self.sim2sim_observation.energy_guard_acceleration_cleared = true;
+                    }
                     self.accelerations.fill(0.0);
                 }
             }

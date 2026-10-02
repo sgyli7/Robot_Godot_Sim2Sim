@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前停留在 M0，GPU／优化器使用为零。导向凝聚足底的源／目标物理载荷已配对通过；新六自由度足底的静态合力／力矩平衡通过，倾斜瞬态与单位旋转检查未通过，未晋升整机候选。最新执行入口为 [六自由度足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_free_contact_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前停留在 M0，GPU／优化器使用为零。六自由度右脚 v3 的五组源／目标对照通过原定压缩、静载和单位旋转门槛；额外的目标端接触力重建精度检查未通过。旧 v2 失败保留，未晋升整机候选。最新执行入口为 [BE 足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_free_be_contact_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -113,7 +113,7 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 当前M0实施中，尚未启动PPO。原始产物归档 `/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/`；本页为唯一计划和状态入口。最终交付冻结策略、本体/合同、Bevy包、复现命令、三主线报告及未通过清单。制造/电气/实物载荷仍由机器人工程侧维护；仿真资格不自动等于实物资格。
 
-当前下一项是凝聚足底的源端载荷—压缩准入：先测已有 21 体候选中未校准的接触参数，按真实 K/C 与 1.5 mm 行程判断，再建立同版目标实现。原 33 体的接触行合并实验已停止扩大，结果见最新检查点；未改变 M0 门槛或启动 PPO。
+当前下一项是凝聚接触的整机准入：先确定原共享滑动脚垫与新接触表达的合力／力矩误差及行程、摩擦合同，再建立同版 21 体源／目标候选。局部六自由度求解器不能直接绕过拓扑守卫装入整机。已有嘴部、PGS、缓存与代理失败不再重复扫描；未改变 M0 门槛或启动 PPO。
 
 ## 6. 实施检查点：M0 未通过
 
@@ -286,3 +286,19 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 [独立比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_free_comparison_v2.json)覆盖平放、±3° pitch、±3° roll，共每引擎 **500 次积分**。五组稳态载荷相对误差 ≤**3.73e−7**，目标力矩平衡残差 ≤**1.85e−6 N·m**，未越过 1.5 mm 行程；平放全程压缩差约 **0.00034 mm**。倾斜全程最大压缩差分别 **0.1024／0.1296／0.1085／0.1085 mm**，超过这批预先保留的 0.05 mm 局部门槛。动态合力差最大 **0.6543 N**，力矩差最大 **0.01106 N·m**，分别报告，不用稳态成绩覆盖瞬态。两条侧倾轨迹的平方四元数范数误差约 **2.265e−6／2.205e−6**，超出现有接口的 2e−6 容差；开发轨迹保存原值，没有绕过 Actor 合同或归一化物理状态。**拒绝本次局部动态晋升，M0 未通过，GPU／优化器为零。**
 
 执行代码、二进制与比较器见 [17 文件执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_free_v2_executed_code/verified_snapshot.json)。Python **55 项通过**，原生关节 **29 项通过**，simulation **25 项通过、10 项外部夹具未运行**。下一受控问题只隔离偏心 COM 自由体的惯性响应：以同一物理角速度比较无接触初态与第二个 Tick，再决定接触或积分公式是否需要调整；单位旋转保持须在原生积分表示内处理，禁止积分后搬正身体。不继续扫描 PGS，不重复导向载荷，不把这份右脚夹具当作摩擦、左脚、背衬 CAD 或整机资格。
+
+### 六自由度 BE 接触顺序检查点
+
+[无接触惯量与接触矩阵审查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/free_inertia_contact_metric_audit.json)排除了偏心 COM 响应不一致的假设。五个程序各两次真实积分，完成后的 COM 速度最大差 **7.12e−8 m/s**，目标未触发能量回退；同一初态、同一坐标基下的物理质量矩阵和速度相关加速度矩阵最大绝对差均为 **1.89e−8**。居中 COM 两组仅作声明的诊断控制，没有改写候选质量或惯量。
+
+五个冻结接触初态的单 Tick 对照确认：源端 v2 接触力满足隐式更新前的 Euler 质量度量，逐点残差 ≤**1.51e−13 N**；用实际完成的隐式速度核对相同 K/C，倾斜四组残差达 **0.620–0.760 N**。实际速度与原生隐式矩阵重建误差 ≤**4.72e−16 m/s**。这是该夹具接触求解和后续速度更新的边界不一致，不能据此推断所有整机失败的根因。
+
+新版本 `goose_free_condensed_be_contact_v3` 延续既有 BE 实验：物理 K/C 接触行隐式求解，非线性速度力显式计算，关闭原生 Euler 的二次阻尼处理，每 Tick 一次原生 20 ms 积分。目标通过显式 `free_block_plain` 选择既有物理质量矩阵控制；默认 v2、游戏和训练路线未采用此选择。它仍是 **CPU 局部实验**，没有替代计划中的源端隐式／GPU 准入。原 6DOF 所有者、零摩擦、固定对侧等求解守卫保持不变。
+
+[v3 独立比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_free_comparison_be_v3.json)覆盖平放和 ±3° pitch／roll，每引擎 **500 次积分**，五组通过原定 0.05 mm 压缩差、10% 静载曲线及 2e−6 平方四元数范数门槛。最大压缩差 **0.000023 mm**，合力差 **3.53e−5 N**，力矩差 **3.95e−6 N·m**；静载相对误差 ≤**2.99e−7**，单位旋转误差 ≤**1.20e−7**，行程无越界。完整质量、COM、惯量和原六盒输入保留。相同代码运行默认 v2 的 **500 帧全部字段与旧失败轨迹完全相同**。
+
+[额外接触力精度检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/free_be_completed_force_law_v3.json)独立重建了各 12,000 条柔顺接触行。源端实际完成速度的 K/C 力残差 ≤**2.27e−14 N**；目标端由原始流形几何与完成速度重建的残差最大 **1.45e−4 N**，超过该检查事先设定的 **1e−4 N**。失败保留，未提高门槛，未确认其成因；原始流形距离与实际求解行的精度还需区分。这项失败不改写已完成的压缩／静载配对结果，也不授予逐点精确力律或整机资格。
+
+权威入口为 [BE 足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_free_be_contact_checkpoint.json)，执行代码、依赖、二进制与比较器见 [29 文件快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_free_be_v3_executed_code/verified_snapshot.json)。Python **60 项**、原生关节 **29 项**、默认 simulation **22 项**通过；10 项外部夹具未运行。[537 项工程结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_free_be_checkpoint.json)、Rust 格式及 Git 空白检查通过。开发代码遵循 `crates/dev_tools/` 落点，临时脚本、模型、日志和快照全部位于项目备份目录。
+
+**下一批转回凝聚整机 M0 接入**：先冻结原共享滑动脚垫的合力／力矩映射误差、摩擦与行程合同，再建立同版本 21 体源／目标候选并做冷重置、驱动、嘴约束检查。右脚无摩擦夹具没有左脚、背衬 CAD、原滑动脚垫动态等价或整机资格，不绕过自由度守卫；停止继续扫导向夹具、PGS 或局部微小精度。**M0 未通过，GPU／PPO／优化器使用为零。**

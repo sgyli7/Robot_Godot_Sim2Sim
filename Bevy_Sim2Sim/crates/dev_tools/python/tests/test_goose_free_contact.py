@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from bevy_microduck_tools.goose.condensed_contact import ContactMaterial
-from bevy_microduck_tools.goose.condensed_free_contact import free_step
+from bevy_microduck_tools.goose.condensed_free_contact import free_step, free_step_be_metric
 
 
 @pytest.fixture(autouse=True)
@@ -75,4 +75,36 @@ def test_guided_or_whole_body_topology_rejected_without_integrating():
     model.jnt_type[0] = int(mujoco.mjtJoint.mjJNT_SLIDE)
     with pytest.raises(ValueError,match='physical free foot'):
         free_step(model,data,materials)
+    assert data.time == 0.
+
+
+@pytest.mark.parametrize('axis', [3,4])
+@pytest.mark.parametrize('angular_speed', [-2.5,2.5])
+def test_be_metric_contact_force_uses_completed_velocity_with_offset_com(axis, angular_speed):
+    model,data,materials = fixture()
+    # Declared analytical fixture modification, not a candidate mass edit.
+    model.body_ipos[1] = [.01,0.,-.005]
+    model.opt.integrator = int(mujoco.mjtIntegrator.mjINT_EULER)
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
+    data.qvel[axis] = angular_speed
+    data.qvel[2] = -.02
+    data.xfrc_applied[1,:3] = [0.,0.,-30.]
+    rows = free_step_be_metric(model,data,materials)
+    jacobian = np.asarray(data.efc_J).reshape(data.nefc,6)
+    for row in rows:
+        if row['travel_stop']:
+            continue
+        velocity = float(jacobian[row['row']]@data.qvel)
+        expected = max(0.,-row['point_stiffness_n_m']*(row['gap_m']+.02*velocity)
+                           -row['point_damping_n_s_m']*velocity)
+        assert data.efc_force[row['row']] == pytest.approx(expected,abs=2e-10)
+    assert data.time == pytest.approx(.02)
+    assert not any(w.number for w in data.warning)
+
+
+def test_be_metric_rejects_undeclared_second_damping_solve():
+    model,data,materials = fixture()
+    model.opt.integrator = int(mujoco.mjtIntegrator.mjINT_EULER)
+    with pytest.raises(ValueError,match='eulerdamp disable'):
+        free_step_be_metric(model,data,materials)
     assert data.time == 0.
