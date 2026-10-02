@@ -1,8 +1,8 @@
 # Goose V0.1｜Bevy Sim2Sim 长期训练计划
 
-版本：2026-10-02。实施分支：`codex/goose50_training`。
+版本：2026-10-03。实施分支：`codex/goose50_training`。
 
-当前仍在 M0-S／M0-T，GPU／优化器使用为零。按用户确认，主线是 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。成熟栈原生模型接线及碰撞导出修正已完成。当前[源端检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_mature_source_checkpoint.json)关闭收益不足的整脚合并分解，转回原生 XML 足底校准；平地夹具得到有限的静载证据，下一项核验真实脚体的倾斜、变化接触、冲击和行程末端，再冻结任务 MJCF，不继续分解参数扫描。Bevy 性能子 agent 已完成三个有界周期：[修正输入的独立对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle03_review.json)中原生步均值约 **51.48 ms**，尚未达到持续 50 Hz；无明确安全收益时保留测量并闲置。已有自定义 CPU 接触／离散分支已收口为历史诊断，不再作为默认训练内核扩展。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前仍在 M0-S／M0-T，GPU／优化器使用为零。按用户确认，主线是 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。成熟栈原生模型接线及碰撞导出修正已完成。原始目标输入为 **33 刚体、32 树关节（18 主动／14 被动）、另 1 个嘴部闭环销，15,727 个碰撞子形状**。新[无碰撞消融核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle04_review.json)保留同一二进制、刚体、关节和力矩程序，仅去除机器人碰撞几何，原生步从 **51.48 ms** 降到 **0.506／0.199 ms**；这定位了复杂碰撞、CCD 和接触组装成本，不授予物理等价或游戏性能资格。用户已授权把来源 CAD 净空及简洁碰撞代理专项交给「Goose Robot 硬件工程」，对方已开始核查；Sai_Lab 维护导入、50 Hz 映射、控制、训练和性能验证，不修改 Sai_Rotbots 源资产。原生 XML 足底夹具的静载成绩未通过真实脚参数及变化接触泛化，保持未发布，不追加自定义内核分支。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -453,3 +453,17 @@ v6 冷重置地面穿透 **2.504 mm**、源 CPU 物理加控制器 P95 **180.17 
 主线[独立审查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle03_review.json)核对同一 release 二进制、源码及输入哈希，计时开／关的所有物理字段一致，包括身体状态、实际外力矩、接触及逐位冲量／热启动／力臂签名；每 Tick 的积分、力矩更新和时间增量相符，非零冲量点 **27–70**。只按唯一 body 名规范化无序几何读出。默认 simulation **28 项回归**及 **570 项结构检查**通过。
 
 本周期只增加开发探针 `--contact-impulse-trace`，使关闭计时时也能核验实际冲量；默认不开启读取。没有修改引擎热路径或物理配置，未授予新输入物理资格。CCD 已有固定几何缓存，没有发现可在本周期安全删除的明显重复工作，子 agent 保留为 idle，下一次按明确的模型或瓶颈派工。
+
+### 刚体成本消融、来源工程交接与足底泛化检查点
+
+用户指出 33 刚体不应被当成 51 ms 的充分解释，因此用同一 release 二进制做了两次有界消融。原 33 刚体、32 树关节、12 被动弹簧及嘴部闭环销、质量与完整惯量、20 ms 步长、PGS、CCD 和力矩程序保持；只在备份输入清空机器人碰撞几何，地面仍在。两次共 **40 次真实积分**，原生步均值 **0.506／0.199 ms**，所有物理字段在重复运行间一致；主线[独立核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle04_review.json)核对输入、源码、二进制哈希和逐 Tick 时间／积分／力矩计数。无碰撞会改变接触和轨迹，这不是可部署优化，也没有通过 M0 或持续 50 Hz 验收。
+
+原输入的 15,727 个子形状虽然打包为 33 个 compound，仍产生每 Tick **27,994–62,325 个源流形容器、2,460–4,971 个预测求解接触点**。容器可为空，预测点也不等于承载或穿透点；实际非零冲量仅 27–70 点。原生 step 的 51.48 ms 中，检测约 20.00 ms、CCD/TOI 19.41 ms、约束组装 11.07 ms、迭代解算 0.95 ms。[消融报告](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_bevy_performance_001/cycle_04_diagnostic/report.md)明确成本归因及短试验限制。实际预测距离为 **20 mm**；bundled Rapier 初始化代码明确为薄壁提前预测选择了该值，字段注释仍写 2 mm。这里只记录不一致，没有改共享默认或认定 2 mm 更正确；后续如比较，只用既有开发探针的显式 `--prediction-mode two_mm`，完整保留碰撞、CCD 及穿透证据，不能直接晋升。
+
+当前目标短程序中，重新建立同姿态原生叶子流形确认五组动态代理重叠：下嘴壳／躯干壳 **7.219 mm**、左右踝桥／髋前载板 **2.409／1.870 mm**、两处足部 **1.136／0.603 mm**。九条负距离报告未被同姿态新查询确认，不能列为真实重叠。[时间边界核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/current_bevy_self_overlap_audit_002.json)和[专项核查包](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/source_geometry_review_packet_001/review.md)保存来源哈希及积分前位姿。此程序无 Actor，仅规定转子力矩；原包只有初始 0.2 秒自碰撞零候选的证据，不能推断连续动作通过，也不能由动态代理重叠直接判定真实 CAD 初始干涉。嘴壳及躯干壳的来源是 `local_surface_clusters_5mm_approximate`，原清单明确没有全局净空保证，`collision_release=false`。
+
+按用户直接授权，已向「Goose Robot 硬件工程」（本地聊天 `01a0e3e2-76cc-7410-86d0-b128d874d715`）发送具体专项，对方已开始读取核查包。**Sai_Rotbots 负责真实 CAD 净空、来源代理简化及新版本交付；Sai_Lab 负责导入、50 Hz 数值／控制、训练和性能。** 不并行修改源 CAD、碰撞资产或对方运行时代码，不转移整个训练任务，也不扩大为全面硬件重设计。交付须保留脚底、嘴部、外壳、关键运动净空及来源映射，分离工程／显示细节与任务碰撞表示；禁止填实空腔或扩大排除名单凑结果。原 ZIP 和合同身份保留，必要工程变更明确版本化。此专项不使用 GPU；通过既有低频跟进读取交付，避免反复跨聊天问状态。
+
+原生 XML 的真实脚参数夹具完成 **15 组、3,000 次积分**，[收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_xml_real_foot_001/receipt.json)无非有限值和原生警告，但**未通过物理准入**。夹具包含真实足体质量、COM、完整惯量与六个底部 patch，没有硬后衬、外壳或摩擦。导向平地四档载荷压缩曲线误差约 **67%**，倾斜／冲击也超过行程；不能把这类不完整夹具的失效归责真实硬件脚。原参数沿用的 `A=1/m` 假设在该导向模型中与编译原生归一化不符：实测 `body_invweight0` 和 `efc_diagA` 为 **1/(3m)**，自由足模型则为 **1/m**，见[只读核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_xml_real_foot_001/native_reference_mass_audit.json)。上一孤立四点夹具成绩不继承为真实足体资格；源端下一项只校正已定位的原生模型归一化并补完整支撑，接入新版碰撞模型后再测整机，不继续内核或分解参数扫描。
+
+本检查点没有改运行时代码或共享物理设置，Bevy 性能子 agent 已完成测量并闲置。**源／目标资格、PPO、GPU 和优化器更新仍为零／未通过。**
