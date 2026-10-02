@@ -125,3 +125,35 @@ consistent with that release helper. Current-main preprocessing must not be
 substituted for the matched release. The optional root PyTorch checkpoint has
 been hash-verified in the shared cache; its gated base processor is not needed
 to run the already validated complete ONNX source path.
+
+## Native hand-limit diagnosis
+
+The same four unchanged chunks from the successful source run were executed by
+one native owner. The original four PGS sweeps and an isolated sixteen-sweep
+control both stopped at Tick 157: the left index proximal joint crossed its
+original zero upper bound by 0.00554 and 0.00497 radians respectively. The
+0.001-radian protection threshold was retained. Source traces and the 154-frame
+published episode have no measured limit excursions above 0.0001 radians.
+
+The bundled reduced-coordinate limit row activates only after the coordinate
+has crossed the bound. Increasing convergence iterations does not prevent the
+first 20 ms crossing. An explicit development feature compares two unilateral
+velocity constraints that enforce `lower <= q + dt*v <= upper` before the same
+integration. It changes no coordinates, source ranges, gains, action data or
+root constraints. The ordinary constructor still uses its original limits;
+this comparison is not silently enabled in normal builds.
+
+The predictive comparison completed all 160 original frames, WBC calls, torque
+updates and integrations with four PGS sweeps, one 20 ms integration per Tick,
+and a free six-DoF root. The apple physically rose about 9 cm and moved toward
+the plate, but the final release drifted outside the target and did not meet
+the velocity/stability gate. Native live RGB inference also completed four
+actual VLA calls and 160 physical Ticks without the former limit failure; its
+grasp remained unsuccessful. Neither result qualifies T1.
+
+`TaskObjectFrame` now includes aggregated last-solve contact counterparts,
+distances and normal impulses, annotated in the frozen 53-body order. These are
+independent evidence only and remain absent from the model wire. A second
+160-Tick run produced identical mechanical state/action rows after excluding
+the new evidence fields and naturally different wall-clock observation ages.
+Speculative positive-distance pairs do not by themselves prove a grasp.

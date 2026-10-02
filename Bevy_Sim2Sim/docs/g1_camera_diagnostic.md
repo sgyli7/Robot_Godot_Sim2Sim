@@ -89,3 +89,25 @@ excluded. Matching RGB/self-state/action receipts and completed boundaries at
 Ticks 40/80/120 were retained. G1 stayed upright, but the apple was not lifted.
 This closes the live input-to-actuation seam only. All T1/T2 acceptance gates
 remain open. `live_policy_*` counts are separate from WBC inference counts.
+
+`exposure_ev100` optionally selects a finite diagnostic exposure in 0..=20.
+At 11.7 the formerly clipped plate texture becomes visible; the three-call
+comparison physically lifted the apple about 2.5 cm without completing placement.
+The four-call original-limit run stopped at Tick 139 on the same index joint
+limit guard found in the independent source-action replay.
+
+For the isolated predictive-limit comparison, build with
+`--features dev_tools,dev_tools_minigame/g1_constraint_diagnostic` and explicitly
+set `predictive_limit_diagnostic: true` in the capture configuration. This
+selects only a fresh static task owner and records factory-verified coverage of
+43 original angular joints. Builds without the feature reject the option.
+The native four-call comparison completed 160 real Ticks with no limit failure,
+but still failed the grasp. Its active simulation/wall ratio was 0.9898, with
+two missed deadlines and zero pending Ticks; camera/inference pauses remain
+excluded and full continuous task execution remains unqualified.
+
+The source procedural support is invisible. Its original visible shelf and
+background are separate USD geometry. The disclosed visible diagnostic cuboid
+therefore does not establish source image parity, even with matching object
+meshes, UVs and camera calibration. This remaining input disparity must be
+assessed alongside physical grasp/release contacts.
