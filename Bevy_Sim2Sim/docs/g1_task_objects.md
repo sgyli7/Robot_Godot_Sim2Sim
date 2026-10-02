@@ -208,3 +208,39 @@ VLA are absent. Initialization can advance the source simulator; recorded
 physics-step counts start after reset. These source diagnostics do not change
 the native formal 50 Hz frequency or prove full T0, T1 grasp/release, or T2
 walking while carrying.
+
+## Matched T1 collision query
+
+The isolated original 6.0.0-dev2 image now completed the same stopped-timeline,
+zero-integration asset query in its actual build
+`6.0.0-rc.22+release.33481.407f3ea1.gl` / OpenUSD 25.11. All query outcomes are
+checked separately from process exit status. The standalone image has no pip
+`isaacsim` distribution metadata and its public `SimulationApp.close` lacks the
+6.1 `exit_code` parameter; both are handled explicitly. The first incompatible
+query and its error receipt remain preserved.
+
+This matching T1 build produces 253 apple convex pieces and mass
+0.09702564776 kg; the earlier 6.1 data had 256 pieces and mass 0.09897653013 kg.
+Apple extrema and COM also differ. The plate still has 256 pieces / 0.5 kg.
+The new alternate diagnostic definition is
+`native_task_objects_t1_60_diagnostic_v2.json`, SHA-256
+`19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0`.
+Original USD/weights and the prior object definition are unchanged. Only T1
+objects are instantiated with this alternate definition; T2 is not switched to
+the 6.0 query's box/bin data and its matching runtime remains unverified.
+
+With unchanged source action chunks, predictive limits and sixteen sweeps, the
+matched T1 objects completed all 160 native integrations. The apple was lifted
+and released onto the plate, but its final linear/angular speed was
+0.07430 m/s / 2.92203 rad/s. Matching the source cooking therefore does not by
+itself establish released-object stability or autonomous grasping.
+
+Independent contact samples also identify `other_task_kind` from actual
+owner-local body handles. This read-only annotation distinguishes the plate
+from the shelf without assuming handle indices and never enters model input.
+The ignored `real_static_source_action_release_window_diagnostic` runs the
+unchanged 160 saved action frames, then a separately labelled, finite 200-Tick
+body-target hold in that same physical world. It performs no new VLA inference,
+coordinate write, expired-chunk extension or observation restamp. It reports
+release/support/velocity windows but does not verify whole-object containment
+or grant task/runtime safe-hold qualification.

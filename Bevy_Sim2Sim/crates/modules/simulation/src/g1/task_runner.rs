@@ -539,4 +539,185 @@ mod tests {
         );
         assert_eq!(owner.admitted_chunks, 1);
     }
+
+    /// Saved actions and a separately labelled finite hold in one real world.
+    /// This never extends/re-stamps a VLA chunk or installs a runtime fallback.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    #[ignore = "requires frozen source chunks and matched assets; 360 real 50 Hz steps"]
+    fn real_static_source_action_release_window_diagnostic() -> Result<(), RobotError> {
+        use super::super::task_objects::TaskObjectKind;
+        use robot_minigame::g1::policy::bound_bytes;
+        use std::{
+            fs,
+            io::Write,
+            thread,
+            time::{Duration, Instant},
+        };
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Sequence {
+            schema: String,
+            chunks: Vec<PolicyActionChunk>,
+        }
+        let read = |name: &str| -> Result<Vec<u8>, RobotError> {
+            let expected = std::env::var(format!("{name}_SHA256")).map_err(error)?;
+            let path = std::env::var(name).map_err(error)?;
+            let bytes = bound_bytes(Path::new(&path), &expected)?;
+            if bytes.len() > 1_048_576 {
+                return Err(error("release diagnostic input identity/bound changed"));
+            }
+            Ok(bytes)
+        };
+        let config_bytes = read("G1_STATIC_RELEASE_CONFIG")?;
+        let action_bytes = read("G1_STATIC_RELEASE_ACTIONS")?;
+        let config: ArenaTaskRunnerConfig = serde_json::from_slice(&config_bytes).map_err(error)?;
+        let sequence: Sequence = serde_json::from_slice(&action_bytes).map_err(error)?;
+        if sequence.schema != "g1_saved_action_sequence_v1"
+            || sequence.chunks.len() != 4
+            || sequence.chunks.iter().any(|c| c.frames.len() != 40)
+        {
+            return Err(error(
+                "release diagnostic needs four complete original T1 chunks",
+            ));
+        }
+        for (index, chunk) in sequence.chunks.iter().enumerate() {
+            if chunk.profile != TaskProfile::StaticApple
+                || chunk.observation.episode_id != config.body.episode_id()
+                || chunk.observation.sim_time_ns != index as u64 * 40 * ARENA_ACTION_PERIOD_NS
+            {
+                return Err(error("source chunks changed world/profile/timeline"));
+            }
+        }
+        let final_frame = sequence.chunks.last().unwrap().frames.last().unwrap();
+        let ArenaControllerCommand::StaticAgile(hold) =
+            controller_command(TaskProfile::StaticApple, final_frame, &config.limits)
+                .map_err(error)?
+                .controller
+        else {
+            return Err(error("release diagnostic changed controller"));
+        };
+        let output =
+            std::path::PathBuf::from(std::env::var("G1_STATIC_RELEASE_OUTPUT").map_err(error)?);
+        let mut receipt_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .map_err(error)?;
+        let mut log = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output.with_extension("jsonl"))
+            .map_err(error)?;
+        let mut owner = ArenaTaskRunner::load_static_predictive_constraint_diagnostic(&config)?;
+        let start = Instant::now();
+        let mut stable_suffix_ticks = 0_u64;
+        let mut maximum_stable_suffix_ticks = 0_u64;
+        let mut final_objects = None;
+        let mut missed_deadlines = 0;
+        let result = (|| -> Result<(), RobotError> {
+            for tick in 1..=360_u64 {
+                let deadline = start + Duration::from_millis((tick - 1) * 20);
+                if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+                    thread::sleep(delay);
+                } else if Instant::now().duration_since(deadline) > Duration::from_millis(20) {
+                    missed_deadlines += 1;
+                }
+                let (phase, body, execution) = if tick <= 160 {
+                    let chunk = &sequence.chunks[((tick - 1) / 40) as usize];
+                    let step = owner.step_with_guard(
+                        &ArenaTaskCommand {
+                            chunk: Arc::new(chunk.clone()),
+                        },
+                        &mut || Ok(()),
+                    )?;
+                    let ArenaBodyStep::StaticAgile(body) = step.body else {
+                        return Err(error("release diagnostic changed body step"));
+                    };
+                    ("unchanged_saved_source_action", body, Some(step.execution))
+                } else {
+                    // Test-private access. The normal queue/worker still pauses
+                    // at expiry and has no implicit holding behavior.
+                    owner.executor.queue.stop();
+                    let ArenaBodyRunner::StaticAgile(body) = &mut owner.body else {
+                        return Err(error("post-sequence phase requires AGILE"));
+                    };
+                    (
+                        "explicit_finite_post_sequence_target_hold",
+                        Box::new(body.step(&hold)?),
+                        None,
+                    )
+                };
+                if body.integration_count != tick
+                    || body.motor_update_count != tick
+                    || body.torque_update_count != tick
+                    || body.inference.inference_count != tick
+                    || body.step_configuration.dt != 0.02
+                    || body.step_configuration.num_internal_pgs_iterations != 16
+                {
+                    return Err(error("release diagnostic physical/control count changed"));
+                }
+                let objects = body
+                    .task_objects
+                    .as_ref()
+                    .ok_or_else(|| error("missing release objects"))?;
+                let apple = objects
+                    .objects
+                    .iter()
+                    .find(|o| o.kind == TaskObjectKind::Apple)
+                    .ok_or_else(|| error("missing release apple"))?;
+                let norm = |values: [f32; 3]| values.into_iter().map(|v| v * v).sum::<f32>().sqrt();
+                let released = !apple
+                    .last_solve_contacts
+                    .iter()
+                    .any(|c| c.other_robot_body_index.is_some());
+                let plate_support = apple.last_solve_contacts.iter().any(|c| {
+                    c.other_task_kind == Some(TaskObjectKind::Plate) && c.normal_impulse_n_s > 1e-6
+                });
+                let ready = released
+                    && plate_support
+                    && norm(apple.linear_velocity_source) < 0.02
+                    && norm(apple.angular_velocity_source) < 0.1
+                    && body.root_upright_cosine > 0.95;
+                stable_suffix_ticks = if ready { stable_suffix_ticks + 1 } else { 0 };
+                maximum_stable_suffix_ticks = maximum_stable_suffix_ticks.max(stable_suffix_ticks);
+                final_objects = Some(objects.clone());
+                serde_json::to_writer(
+                    &mut log,
+                    &serde_json::json!({
+                        "phase": phase, "original_execution": execution, "body": body,
+                        "released_and_plate_supported_and_slow": ready,
+                        "stable_suffix_ticks": stable_suffix_ticks,
+                        "whole_object_containment_verified": false,
+                    }),
+                )
+                .map_err(error)?;
+                writeln!(log).map_err(error)?;
+            }
+            Ok(())
+        })();
+        log.flush().map_err(error)?;
+        let counts = owner.progress_counts();
+        let receipt = serde_json::json!({
+            "schema": "g1_native_static_post_sequence_release_diagnostic_v1",
+            "source_head": std::env::var("G1_CODE_COMMIT").map_err(error)?,
+            "config_sha256": std::env::var("G1_STATIC_RELEASE_CONFIG_SHA256").map_err(error)?,
+            "action_sha256": std::env::var("G1_STATIC_RELEASE_ACTIONS_SHA256").map_err(error)?,
+            "task_qualified": false, "task_success_verified": false,
+            "completed": result.is_ok(), "error": result.as_ref().err().map(ToString::to_string),
+            "physics_hz": 50, "integrations_per_tick": 1,
+            "saved_source_action_ticks": 160, "bounded_post_sequence_target_hold_ticks": 200,
+            "actual_vla_inferences": 0, "actual_integrations": counts.integration_count,
+            "actual_body_inference_attempts": counts.inference_attempt_count,
+            "active_wall_seconds": start.elapsed().as_secs_f64(), "missed_deadlines": missed_deadlines,
+            "max_released_supported_slow_suffix_seconds": maximum_stable_suffix_ticks.saturating_sub(1) as f64 / 50.,
+            "final_released_supported_slow_suffix_seconds": stable_suffix_ticks.saturating_sub(1) as f64 / 50.,
+            "whole_object_containment_verified": false, "last_task_object_frame": final_objects,
+            "scope": "same native world; saved actions then explicit last target hold; no runtime fallback, pose write, action restamp or task qualification",
+        });
+        serde_json::to_writer_pretty(&mut receipt_file, &receipt).map_err(error)?;
+        writeln!(receipt_file).map_err(error)?;
+        result
+    }
 }

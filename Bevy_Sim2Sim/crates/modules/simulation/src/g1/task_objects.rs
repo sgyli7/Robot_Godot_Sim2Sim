@@ -276,6 +276,7 @@ enum ConvexRepresentation {
 pub struct TaskObjectContactSample {
     pub other_body_handle: Option<[u32; 2]>,
     pub other_robot_body_index: Option<usize>,
+    pub other_task_kind: Option<TaskObjectKind>,
     pub manifold_count: usize,
     pub solver_points: usize,
     pub min_solver_distance_m: Option<f32>,
@@ -489,6 +490,13 @@ impl TaskObjectScene {
                     TaskObjectContactSample {
                         other_body_handle,
                         other_robot_body_index: None,
+                        other_task_kind: self
+                            .instances
+                            .iter()
+                            .find(|instance| {
+                                world.world.colliders[other].parent() == Some(instance.body)
+                            })
+                            .map(|instance| instance.kind),
                         manifold_count: pair.manifolds.len(),
                         solver_points,
                         min_solver_distance_m: minimum,

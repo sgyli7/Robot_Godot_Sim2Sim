@@ -135,3 +135,18 @@ and requires `predictive_limit_diagnostic: true`. No other count is accepted.
 It selects the fresh static diagnostic factory and records its selection in
 the receipt. These sweeps solve constraints without another temporal
 integration. Normal configuration and loading remain unchanged at four sweeps.
+
+The eight-call sixteen-sweep live run also completed 320 Ticks without a fall,
+limit failure, missed deadline or accumulated Tick. Active simulation/wall ratio
+was approximately 0.9928. It did not complete grasping, despite the improved
+independent source-action release result. Local model ownership was closed
+after the run.
+
+`directional_shadow_maps: false` permits one disclosed camera-lighting control.
+Default remains true, and light energy, exposure, geometry, materials and
+physics are unchanged by this flag. A zero-integration capture visibly removed
+the hard box shadow across the plate. The same bounded eight-call/320-Tick live
+comparison still did not grasp; its active ratio was 0.9944 with no pending
+Tick. Removing that shadow is therefore insufficient to resolve the task.
+Neither flag changes the existing science-station lighting or establishes
+equivalence to the original eight rectangular ceiling lights.
