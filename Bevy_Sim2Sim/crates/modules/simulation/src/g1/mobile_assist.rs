@@ -36,6 +36,7 @@ pub enum MobileAssistCommand {
     OriginalVla(ArenaTaskCommand),
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
+    ClassicalReobserve(MobileScanGoal),
     ClassicalLower(MobileLowerGoal),
     ClassicalRaise(MobileRaiseGoal),
     ClassicalRelease(MobileReleaseGoal),
@@ -53,6 +54,7 @@ impl MobileAssistCommand {
             }
             Self::ClassicalCarry(goal) => goal.validate(),
             Self::ClassicalScan(goal) => goal.validate(),
+            Self::ClassicalReobserve(goal) => goal.validate(),
             Self::ClassicalLower(goal) => goal.validate(),
             Self::ClassicalRaise(goal) => goal.validate(),
             Self::ClassicalRelease(goal) => goal.validate(),
@@ -71,6 +73,12 @@ pub enum MobileAssistExecution {
         command: G1Command,
     },
     ClassicalScan {
+        goal: MobileScanGoal,
+        grip: MobileGripReceipt,
+        navigation: MobileNavigationStep,
+        command: G1Command,
+    },
+    ClassicalReobserve {
         goal: MobileScanGoal,
         grip: MobileGripReceipt,
         navigation: MobileNavigationStep,
@@ -106,6 +114,7 @@ pub struct MobileAssistRunner {
     last_vla_command: Option<G1Command>,
     carry: Option<CarryState>,
     scan: Option<ScanState>,
+    reobserve: Option<ScanState>,
     lower: Option<MobileGripLowering>,
     raise: Option<MobileGripRaising>,
     release: Option<MobileGripRelease>,
@@ -141,6 +150,7 @@ impl MobileAssistRunner {
             last_vla_command: None,
             carry: None,
             scan: None,
+            reobserve: None,
             lower: None,
             raise: None,
             release: None,
@@ -170,6 +180,8 @@ impl MobileAssistRunner {
     pub fn completed_skill(&self) -> bool {
         if let Some(release) = &self.release {
             release.completed()
+        } else if let Some(reobserve) = &self.reobserve {
+            reobserve.navigator.completed()
         } else if let Some(raise) = &self.raise {
             raise.completed()
         } else if let Some(lower) = &self.lower {
@@ -184,6 +196,13 @@ impl MobileAssistRunner {
         observation: &task_minigame::types::ObservationStamp,
         state: &G1Measurement,
     ) -> Result<(G1Command, MobileGripReceipt), RobotError> {
+        if self
+            .reobserve
+            .as_ref()
+            .is_some_and(|r| !r.navigator.completed())
+        {
+            return Err(invalid("cannot replace active visual reobservation turn"));
+        }
         let previous = self
             .last_vla_execution
             .as_ref()
@@ -274,6 +293,10 @@ impl MobileAssistRunner {
                         .release
                         .as_ref()
                         .is_some_and(|release| !release.completed())
+                    || self
+                        .reobserve
+                        .as_ref()
+                        .is_some_and(|r| !r.navigator.completed())
                 {
                     return Err(invalid(
                         "cannot replace active classical carry with a VLA chunk",
@@ -293,6 +316,7 @@ impl MobileAssistRunner {
                 self.last_vla_execution = Some(step.execution.clone());
                 self.carry = None;
                 self.scan = None;
+                self.reobserve = None;
                 self.lower = None;
                 self.raise = None;
                 self.release = None;
@@ -324,6 +348,7 @@ impl MobileAssistRunner {
                     self.scan = None;
                     self.lower = None;
                     self.raise = None;
+                    self.reobserve = None;
                 }
                 let carry = self.carry.as_mut().unwrap();
                 if carry.navigator.goal() != goal {
@@ -342,6 +367,56 @@ impl MobileAssistRunner {
                         grip: carry.grip.clone(),
                         navigation,
                         command: carry.command.clone(),
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalReobserve(goal) => {
+                if self.release.is_some() {
+                    return Err(invalid("reobserve after opening requires new grasp/reset"));
+                }
+                let state = self.owner.measurement()?;
+                if self.reobserve.is_none() {
+                    let Some(raise) = &self.raise else {
+                        return Err(invalid("reobserve requires matched completed raising"));
+                    };
+                    if !raise.completed()
+                        || self.carry.as_ref().is_none_or(|c| !c.navigator.completed())
+                        || goal.observation.frame_id <= raise.goal().observation.frame_id
+                    {
+                        return Err(invalid(
+                            "reobserve requires a newer current raised RGB boundary",
+                        ));
+                    }
+                    let [w, x, y, z] = state.root_rotation_wxyz;
+                    let yaw = (2. * (w * z + x * y)).atan2(1. - 2. * (y * y + z * z));
+                    let offset = goal.heading_yaw_source_rad - yaw;
+                    if offset.sin().atan2(offset.cos()).abs() > 0.6 {
+                        return Err(invalid("raised reobservation turn exceeds0.6rad"));
+                    }
+                    let navigator = MobileScanNavigator::new(goal.clone(), &state)?;
+                    let (command, grip) = self.prepare_classical(&goal.observation, &state)?;
+                    self.reobserve = Some(ScanState {
+                        navigator,
+                        command,
+                        grip,
+                    });
+                }
+                let reobserve = self.reobserve.as_mut().unwrap();
+                if reobserve.navigator.goal() != goal {
+                    return Err(invalid("reobserve goal changed while executing"));
+                }
+                let navigation = reobserve.navigator.update(&state)?;
+                reobserve.command.navigation = navigation.navigation;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&reobserve.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalReobserve {
+                        goal: goal.clone(),
+                        grip: reobserve.grip.clone(),
+                        navigation,
+                        command: reobserve.command.clone(),
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
@@ -501,6 +576,7 @@ mod tests {
         carry: Option<MobileCarryGoal>,
         fine_carry: Option<MobileCarryGoal>,
         raise: Option<MobileRaiseGoal>,
+        reobserve: Option<MobileScanGoal>,
         release: Option<MobileReleaseGoal>,
     }
 
@@ -540,6 +616,7 @@ mod tests {
         let mut fine_started = false;
         let mut fine_completed = false;
         let mut raise_started = false;
+        let mut reobserve_started = false;
         let mut release_started = false;
         let maximum_ticks = if goals.carry.is_some() { 3150 } else { 1300 };
         let mut actual_ticks = 0;
@@ -581,6 +658,14 @@ mod tests {
                     goal.observation.captured_at_unix_ms = now();
                     current = Some(MobileAssistCommand::ClassicalRaise(goal.clone()));
                     raise_started = true;
+                } else if raise_started
+                    && !reobserve_started
+                    && owner.completed_skill()
+                    && let Some(goal) = &mut goals.reobserve
+                {
+                    goal.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalReobserve(goal.clone()));
+                    reobserve_started = true;
                 } else if carry_started
                     && !fine_started
                     && owner.completed_skill()
@@ -624,6 +709,7 @@ mod tests {
                     && owner.completed_skill()
                     && (goals.carry.is_none() || carry_started)
                     && (goals.fine_carry.is_none() || fine_started)
+                    && (goals.reobserve.is_none() || reobserve_started)
                     && (goals.release.is_none() || release_started)
                 {
                     return Ok(());
@@ -641,6 +727,7 @@ mod tests {
             "actual_integrations":actual_ticks,"lower_started":lower_started,"carry_started":carry_started,
             "fine_carry_started":fine_started,"completed_fine_carry":fine_completed,
             "raise_started":raise_started,
+            "reobserve_started":reobserve_started,
             "release_started":release_started,"completed_release":release_started && result.is_ok(),
             "completed_lowering":lower_completed,"completed_carry":coarse_completed,
             "completed_selected_sequence":result.is_ok(),"failure":result.as_ref().err().map(ToString::to_string),
@@ -735,6 +822,7 @@ mod tests {
                 let (phase, command) = match &step.execution {
                     MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
                     MobileAssistExecution::ClassicalScan { .. }
+                    | MobileAssistExecution::ClassicalReobserve { .. }
                     | MobileAssistExecution::ClassicalLower { .. }
                     | MobileAssistExecution::ClassicalRaise { .. }
                     | MobileAssistExecution::ClassicalRelease { .. } => {
@@ -863,6 +951,7 @@ mod worker_diagnostic {
                     let (phase, command) = match &record.step.execution {
                         MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
                         MobileAssistExecution::ClassicalScan { .. }
+                        | MobileAssistExecution::ClassicalReobserve { .. }
                         | MobileAssistExecution::ClassicalLower { .. }
                         | MobileAssistExecution::ClassicalRaise { .. }
                         | MobileAssistExecution::ClassicalRelease { .. } => {

@@ -1278,3 +1278,24 @@ and projection evidence are retained outside Git, and the four owned candidate
 files return to the prior committed center-marker implementation. The next
 observation action must use actual robot/camera motion and preserve grip;
 marker relocation does not solve the final-view requirement in this scene.
+
+Actual raised RGB/self sensors/public cube geometry predict a bounded standing
+view turn0221:−0.33rad exposes the complete original target marker with37.6px
+minimum edge and16px image margins under a rigid-grip prediction. This is a
+zero-world geometric plan; hand-mesh occlusion still needs new actual RGB.
+The explicit `ClassicalReobserve` owner command requires completed raising,
+a newer current raised camera stamp and≤0.6rad turn, retains current upper/finger
+targets and rejects active-stage replacement. It does not relax the initial
+scan entry or enter walking.
+
+Saved-prefix physical trial0222 reproduces all1597body states from fresh0219,
+then performs276turn/standing Ticks on the same world. It completes1873single
+50Hz integrations, upright≥0.994917 and without any non-floor robot contact.
+However, hand-only box support first disappears at1710. This is **not** a safe
+grip-preserving observation action and does not authorize the online turn. It
+narrows the failure beyond final walking/table contact: raised carrying posture
+also loses grip during a standing turn. No new model call occurs. Trace SHA256:
+`7abdec20e2075885290c0bc387bc9acf86591fe238ed7b70ed8a993f5e6a30df`.
+The next bounded comparison must restore the independently validated original
+calibrated transport posture before body motion; friction/gain/force sweeps and
+longer failed walk deadlines are not adopted remedies.
