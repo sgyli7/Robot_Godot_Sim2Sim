@@ -86,6 +86,7 @@ fn station_gpu_ego_rgb_and_full_resolution_main_view() {
             interpolation_alpha: 0.0,
             sim_time_ns: 0,
             source: CameraPoseSource::StationFixture,
+            mount_profile: Default::default(),
             world_from_camera: pose,
             native_state: None,
         })))

@@ -67,6 +67,25 @@ pub enum CameraPoseSource {
     StationFixture,
 }
 
+/// The learned profiles always use ArenaEgo. AuxiliaryGripOverview is a
+/// disclosed passive head-mounted sensor for traditional task perception.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum G1CameraMountProfile {
+    #[default]
+    ArenaEgo,
+    AuxiliaryGripOverview,
+}
+
+impl G1CameraMountProfile {
+    fn is_arena(&self) -> bool {
+        *self == Self::ArenaEgo
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct G1ActiveCameraMount(pub G1CameraMountProfile);
+
 /// Native measurements from the completed physics boundary, in Arena's 43-joint
 /// order. They are not inferred from the visible meshes or inverse kinematics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +166,7 @@ pub struct G1CameraSourceFrame {
     pub interpolation_alpha: f32,
     pub sim_time_ns: u64,
     pub source: CameraPoseSource,
+    pub mount_profile: G1CameraMountProfile,
     pub world_from_camera: Transform,
     /// Frozen at scene extraction, not looked up when GPU mapping completes.
     pub native_state: Option<Arc<G1CameraNativeState>>,
@@ -178,7 +198,7 @@ impl G1CameraSourceFrame {
             {
                 return Err("camera and native state belong to different boundaries".into());
             }
-            let expected = arena_head_camera(body)?.world_from_camera;
+            let expected = native_head_camera(body, self.mount_profile)?.world_from_camera;
             if (transform.translation - expected.translation).length() > 0.00001
                 || !rotations_agree(transform.rotation, expected.rotation, 0.0001)
             {
@@ -205,6 +225,13 @@ fn rotations_agree(a: Quat, b: Quat, maximum_angle: f32) -> bool {
 /// head_link camera. The body pose has already undergone C R C^-1; local USD
 /// coordinates still need C, and ROS camera +Z/-Y becomes Bevy -Z/+Y.
 pub fn arena_head_camera(frame: &G1BodyFrame) -> Result<G1CameraSourceFrame, String> {
+    native_head_camera(frame, G1CameraMountProfile::ArenaEgo)
+}
+
+pub fn native_head_camera(
+    frame: &G1BodyFrame,
+    mount_profile: G1CameraMountProfile,
+) -> Result<G1CameraSourceFrame, String> {
     frame.validate().map_err(|error| error.to_string())?;
     if frame.sim_time * 1_000_000_000.0 > u64::MAX as f64 {
         return Err("camera simulation time exceeds timestamp range".into());
@@ -217,11 +244,22 @@ pub fn arena_head_camera(frame: &G1BodyFrame) -> Result<G1CameraSourceFrame, Str
     let world_from_head = Quat::from_array(head.rotation_xyzw);
     let source_to_engine = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let head_from_ros_camera = Quat::from_xyzw(-0.62721, 0.62721, -0.32651, 0.32651).normalize();
+    let (vertical_offset, optical_upward) = match mount_profile {
+        G1CameraMountProfile::ArenaEgo => (0., Quat::IDENTITY),
+        G1CameraMountProfile::AuxiliaryGripOverview => {
+            (0.15, Quat::from_rotation_x(std::f32::consts::PI / 12.))
+        }
+    };
     let ros_from_bevy_camera = Quat::from_rotation_x(std::f32::consts::PI);
     let transform = Transform {
         translation: Vec3::from_array(head.translation)
-            + world_from_head * (source_to_engine * Vec3::new(0.04485, 0.0, 0.35325)),
-        rotation: world_from_head * source_to_engine * head_from_ros_camera * ros_from_bevy_camera,
+            + world_from_head
+                * (source_to_engine * Vec3::new(0.04485, 0.0, 0.35325 + vertical_offset)),
+        rotation: world_from_head
+            * source_to_engine
+            * head_from_ros_camera
+            * optical_upward
+            * ros_from_bevy_camera,
         scale: Vec3::ONE,
     };
     let source = G1CameraSourceFrame {
@@ -230,6 +268,7 @@ pub fn arena_head_camera(frame: &G1BodyFrame) -> Result<G1CameraSourceFrame, Str
         interpolation_alpha: 0.0,
         sim_time_ns: (frame.sim_time * 1_000_000_000.0).round() as u64,
         source: CameraPoseSource::PhysicsBody,
+        mount_profile,
         world_from_camera: transform,
         native_state: None,
     };
@@ -251,6 +290,8 @@ pub struct G1CaptureStamp {
     pub interpolation_alpha: f32,
     pub sim_time_ns: u64,
     pub source: CameraPoseSource,
+    #[serde(default, skip_serializing_if = "G1CameraMountProfile::is_arena")]
+    pub mount_profile: G1CameraMountProfile,
     /// CPU scene snapshot acquisition; this is the observation's wall time.
     pub captured_at_unix_ms: u64,
     /// Time at which the copy command was encoded, not a GPU hardware timestamp.
@@ -364,6 +405,7 @@ impl G1CameraPort {
             interpolation_alpha: frame.source.interpolation_alpha,
             sim_time_ns: frame.source.sim_time_ns,
             source: frame.source.source,
+            mount_profile: frame.source.mount_profile,
             captured_at_unix_ms: frame.captured_at_unix_ms,
             copy_encoded_at_unix_ms: unix_ms(),
             readback_completed_at_unix_ms: 0,
@@ -412,23 +454,26 @@ pub struct G1ObservationPlugin;
 
 impl Plugin for G1ObservationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<G1BodyObservationInput>().add_systems(
-            PostUpdate,
-            sync_body_observation
-                .in_set(G1CameraSystems::SyncObservation)
-                .before(G1CameraSystems::UpdatePose)
-                .before(crate::g1_visual::G1VisualSystems::SyncPose),
-        );
+        app.init_resource::<G1BodyObservationInput>()
+            .init_resource::<G1ActiveCameraMount>()
+            .add_systems(
+                PostUpdate,
+                sync_body_observation
+                    .in_set(G1CameraSystems::SyncObservation)
+                    .before(G1CameraSystems::UpdatePose)
+                    .before(crate::g1_visual::G1VisualSystems::SyncPose),
+            );
     }
 }
 
 fn sync_body_observation(
     input: Res<G1BodyObservationInput>,
+    mount: Res<G1ActiveCameraMount>,
     mut camera: ResMut<G1CameraInput>,
     mut visual: ResMut<crate::g1_visual::G1VisualInput>,
     mut status: ResMut<crate::g1_visual::G1VisualStatus>,
 ) {
-    if !input.is_changed() {
+    if !input.is_changed() && !mount.is_changed() {
         return;
     }
     camera.0 = None;
@@ -437,7 +482,7 @@ fn sync_body_observation(
         return;
     };
     let result = native.validate().and_then(|()| {
-        let mut source = arena_head_camera(&native.body_frame)?;
+        let mut source = native_head_camera(&native.body_frame, mount.0)?;
         source.native_state = Some(native.clone());
         source.validate()?;
         Ok(source)
@@ -710,6 +755,7 @@ mod tests {
                 interpolation_alpha: 0.0,
                 sim_time_ns: 200_000_000,
                 source: CameraPoseSource::StationFixture,
+                mount_profile: G1CameraMountProfile::ArenaEgo,
                 world_from_camera: Transform::IDENTITY,
                 native_state: None,
             },
@@ -890,6 +936,56 @@ mod tests {
                 .resource::<crate::g1_visual::G1VisualInput>()
                 .0
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn auxiliary_mount_changes_only_camera_and_retains_the_same_native_boundary() {
+        let state = native(1, 0);
+        let original = arena_head_camera(&state.body_frame).unwrap();
+        let mut auxiliary = native_head_camera(
+            &state.body_frame,
+            G1CameraMountProfile::AuxiliaryGripOverview,
+        )
+        .unwrap();
+        auxiliary.native_state = Some(state.clone());
+        auxiliary.validate().unwrap();
+        assert_eq!(auxiliary.source_ticks, original.source_ticks);
+        assert_eq!(auxiliary.sim_time_ns, original.sim_time_ns);
+        assert!(
+            ((auxiliary.world_from_camera.translation - original.world_from_camera.translation)
+                .length()
+                - 0.15)
+                .abs()
+                < 1e-6
+        );
+        let mut mislabeled = auxiliary.clone();
+        mislabeled.mount_profile = G1CameraMountProfile::ArenaEgo;
+        assert!(mislabeled.validate().is_err());
+        let mut app = App::new();
+        app.init_resource::<G1CameraInput>()
+            .init_resource::<crate::g1_visual::G1VisualInput>()
+            .init_resource::<crate::g1_visual::G1VisualStatus>()
+            .add_plugins(G1ObservationPlugin);
+        app.world_mut().resource_mut::<G1BodyObservationInput>().0 = Some(state);
+        app.update();
+        app.world_mut().resource_mut::<G1ActiveCameraMount>().0 =
+            G1CameraMountProfile::AuxiliaryGripOverview;
+        app.update();
+        let camera = app.world().resource::<G1CameraInput>().0.as_ref().unwrap();
+        assert_eq!(
+            camera.mount_profile,
+            G1CameraMountProfile::AuxiliaryGripOverview
+        );
+        assert_eq!(camera.source_ticks, [0, 0]);
+        assert_eq!(
+            app.world()
+                .resource::<crate::g1_visual::G1VisualInput>()
+                .0
+                .as_ref()
+                .unwrap()
+                .source_tick,
+            0
         );
     }
 

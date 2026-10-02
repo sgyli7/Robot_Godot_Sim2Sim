@@ -71,12 +71,17 @@ def original_self_body_frames(definition, positions):
     return frames
 
 
-def root_from_camera(definition, positions):
+def root_from_camera(definition, positions, camera_profile="arena_ego"):
     """Original FK in root coordinates, followed by the published ROS camera mount."""
     frames = original_self_body_frames(definition, positions)
     mount_q = np.array([0.32651, -0.62721, 0.62721, -0.32651])
     mount_q /= np.linalg.norm(mount_q)
     mount = transform({"position": [0.04485, 0., 0.35325], "rotation_wxyz": mount_q})
+    if camera_profile == "auxiliary_grip_overview":
+        mount[:3, 3] += np.array([0., 0., .15])
+        mount[:3, :3] = mount[:3, :3] @ cv2.Rodrigues(np.array([np.pi/12, 0., 0.]))[0]
+    elif camera_profile != "arena_ego":
+        raise ValueError("unknown fixed head camera mount")
     return frames[19] @ mount
 
 
@@ -120,7 +125,33 @@ def propagate_target_memory(memory_path, observation):
             "root_from_marker": result.tolist(), "task_qualified": False}
 
 
-def clearance_from_visible_markers(detections, observation, geometry_path):
+def fixed_marker_layout(path, camera_profile):
+    sizes = MARKER_SIZES.copy()
+    mounts = {21: transform({"position": [.008351, .0113635, .0045], "rotation_wxyz": [1., 0., 0., 0.]}),
+              22: transform({"position": [.1005, 0., 0.], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})}
+    digest = None
+    layout = "original_arena"
+    if path is not None:
+        if Path(path).stat().st_size > 16*1024:
+            raise ValueError("public fiducial document exceeds byte budget")
+        doc = json.loads(Path(path).read_text())
+        fields = {"schema", "dictionary", "png_paths", "png_sha256"}
+        if set(doc) not in (fields, fields | {"layout_profile"}) or doc["schema"] != "g1_task_fiducials_v1" or doc["dictionary"] != "DICT_4X4_50":
+            raise ValueError("foreign fixed public marker layout")
+        layout = doc.get("layout_profile", "original_arena")
+        digest = sha(path)
+    if layout == "auxiliary_grip_targets":
+        if camera_profile != "auxiliary_grip_overview":
+            raise ValueError("auxiliary labels require their explicitly declared sensor")
+        sizes[22] = .06
+        mounts[21] = transform({"position": [0., .18, .60], "rotation_wxyz": [2**-.5, 2**-.5, 0., 0.]})
+        mounts[22] = transform({"position": [.1005, 0., -.04], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})
+    elif layout != "original_arena" or camera_profile != "arena_ego":
+        raise ValueError("unbound auxiliary sensor or unsupported marker layout")
+    return sizes, mounts, layout, digest
+
+
+def clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts=None):
     """Public immutable geometry and actual RGB poses, never world coordinates."""
     if Path(geometry_path).stat().st_size > 1024 * 1024 or sha(geometry_path) != TASK_GEOMETRY_SHA256:
         raise ValueError("original public task geometry identity mismatch")
@@ -143,7 +174,7 @@ def clearance_from_visible_markers(detections, observation, geometry_path):
         mount = np.eye(4)
         mount[:3, :3] = mount_rotation
         mount[:3, 3] = position
-        root_from_object = pose @ np.linalg.inv(mount)
+        root_from_object = pose @ np.linalg.inv(mount if marker_mounts is None else marker_mounts[marker_id])
         vertices = np.concatenate([np.asarray(part["points"], dtype=np.float64)
                                    for part in next(o for o in objects if o["kind"] == kind)["convex_parts"]])
         gravity_points = (vertices @ root_from_object[:3, :3].T + root_from_object[:3, 3]) @ root_rotation.T
@@ -162,13 +193,14 @@ def clearance_from_visible_markers(detections, observation, geometry_path):
                            "duration_ticks": duration} if admitted else None}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None):
     if box_view_only and (geometry_path is not None or memory_path is not None):
         raise ValueError("current box view cannot request navigation geometry or target memory")
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
         raise ValueError("vision input exceeds finite image/self-state byte budget")
     observation = json.loads(Path(observation_path).read_text())
-    if set(observation) != {"schema", "stamp", "camera", "measured_joints"} or observation["schema"] != "g1_mobile_marker_observation_v1":
+    allowed = {"schema", "stamp", "camera", "measured_joints"}
+    if set(observation) not in (allowed, allowed | {"camera_mount_profile"}) or observation["schema"] != "g1_mobile_marker_observation_v1":
         raise ValueError("vision accepts only whitelisted RGB calibration and self sensors")
     stamp = observation["stamp"]
     if set(stamp) != {"episode_id", "frame_id", "sim_time_ns", "captured_at_unix_ms"} or any(stamp[k] <= 0 for k in stamp) or stamp["sim_time_ns"] % 20_000_000:
@@ -184,7 +216,9 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     if sha(definition_path) != DEFINITION_SHA256:
         raise ValueError("original robot definition identity mismatch")
     definition = json.loads(Path(definition_path).read_text())
-    camera_in_root = root_from_camera(definition, state["positions"])
+    camera_profile = observation.get("camera_mount_profile", "arena_ego")
+    marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile)
+    camera_in_root = root_from_camera(definition, state["positions"], camera_profile)
     root_rotation = rotation(state["root_rotation_wxyz"])
     c = observation["camera"]
     if set(c) != {"fx", "fy", "cx", "cy", "vertical_fov_radians", "near_m", "far_m"}:
@@ -202,11 +236,11 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     detections = []
     for marker_corners, marker_id in zip(corners, [] if ids is None else ids.flatten()):
         marker_id = int(marker_id)
-        if marker_id not in MARKER_SIZES:
+        if marker_id not in marker_sizes:
             continue
         pixels = marker_corners.reshape(4, 2).astype(np.float64)
         shortest_edge = float(np.linalg.norm(pixels-np.roll(pixels, -1, axis=0), axis=1).min())
-        h = MARKER_SIZES[marker_id] / 2
+        h = marker_sizes[marker_id] / 2
         object_points = np.array([[-h,h,0], [h,h,0], [h,-h,0], [-h,-h,0]])
         ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(object_points, pixels, intrinsics, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
         candidates = []
@@ -246,8 +280,14 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         else:
             by_id[21] = np.asarray(memory_estimate["root_from_marker"])
     if not box_view_only and 21 in by_id and 22 in by_id:
-        bin_p = by_id[21][:3, 3]
-        box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
+        if layout_profile == "original_arena":
+            bin_p = by_id[21][:3, 3]
+            box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
+        else:
+            # Recover object coordinates from the published attachment frames.
+            # The target point remains the original bin floor marker center.
+            bin_p = (by_id[21] @ np.linalg.inv(marker_mounts[21]) @ np.array([.008351, .0113635, .0045, 1.]))[:3]
+            box_p = (by_id[22] @ np.linalg.inv(marker_mounts[22]))[:3, 3]
         # Rotate relative vectors into the gravity/yaw-aligned source plane.
         bin_world = root_rotation @ bin_p
         box_world = root_rotation @ box_p
@@ -272,13 +312,17 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         if 22 in by_id:
             frames = original_self_body_frames(definition, state["positions"])
             midpoint = (frames[28][:3, 3] + frames[45][:3, 3]) * .5
-            center = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
+            center = (by_id[22] @ np.linalg.inv(marker_mounts[22]))[:3, 3]
             result["current_box_palm_center_distance_m"] = float(np.linalg.norm(center-midpoint))
+    if fiducial_path is not None:
+        result["fiducial_calibration_sha256"] = fiducial_hash
+        result["marker_layout_profile"] = layout_profile
+        result["camera_mount_profile"] = camera_profile
     if memory_estimate is not None:
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory
     if geometry_path is not None and not used_memory:
-        result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path)
+        result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts)
     return result
 
 
@@ -291,8 +335,9 @@ def main():
     parser.add_argument("--geometry", type=Path)
     parser.add_argument("--target-memory", type=Path)
     parser.add_argument("--box-view-only", action="store_true")
+    parser.add_argument("--fiducials", type=Path)
     args = parser.parse_args()
-    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only)
+    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

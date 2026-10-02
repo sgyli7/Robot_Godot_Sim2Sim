@@ -1359,3 +1359,18 @@ only a necessary guard, never proof of secure grip. The original GR00T camera,
 action contract, formal clock, gains and materials remain unchanged. Further
 body-motion trials require usable current grip observation; restoration alone
 is insufficient.
+
+The separate1050Tick `g1_mobile_auxiliary_view_diagnostic` entry keeps the
+four original unmarked learned grasp images and calibrated standing scan.
+It then captures a disclosed passive head sensor: original mount plus0.15m
+source Z and15degrees optical upward rotation, with the unchanged640x480
+pinhole. The original VLA rejects this sensor profile. Render-only public labels
+use bin21 at local[0,0.18,0.60], Rx90degrees, black0.16m; box22 at
+[0.1005,0,-0.04], Ry90degrees, black0.06m. PNG identities and200Tick activation
+remain unchanged. The perception worker binds the fixed layout document hash
+and camera profile to the actual image/self-sensor input. No object truth is
+available to it. Geometry control0236 predicts visibility; this prediction is
+not actual RGB evidence. This entry executes no lowering, raising, restoration,
+post-carry visibility turn, navigation proposal or release. It grants no task
+qualification. The formal50Hz clock and all original physical properties remain
+unchanged.

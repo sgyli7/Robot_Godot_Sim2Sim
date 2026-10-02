@@ -22,6 +22,18 @@ struct Document {
     dictionary: String,
     png_paths: [String; 2],
     png_sha256: [String; 2],
+    #[serde(default)]
+    layout_profile: G1FiducialLayoutProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum G1FiducialLayoutProfile {
+    #[default]
+    OriginalArena,
+    /// Fixed public layout validated in geometry control0236. These labels
+    /// and the auxiliary sensor never enter original learned grasp images.
+    AuxiliaryGripTargets,
 }
 
 /// Asset identities only. Marker dimensions/mounts are a public fixed contract.
@@ -33,6 +45,7 @@ pub struct G1TaskFiducialModel {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct G1TaskFiducialReceipt {
+    pub layout_profile: G1FiducialLayoutProfile,
     pub schema: &'static str,
     pub dictionary: &'static str,
     pub marker_ids: [u32; 2],
@@ -85,14 +98,36 @@ impl G1TaskFiducialModel {
         Ok(Self {
             pngs,
             receipt: G1TaskFiducialReceipt {
+                layout_profile: document.layout_profile,
                 schema: "g1_mobile_disclosed_printed_markers_v1",
                 dictionary: "DICT_4X4_50",
                 marker_ids: [21, 22],
-                printed_black_square_size_m: [0.16, 0.10],
-                white_margin_overall_size_m: [0.20, 0.125],
+                printed_black_square_size_m: match document.layout_profile {
+                    G1FiducialLayoutProfile::OriginalArena => [0.16, 0.10],
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.16, 0.06],
+                },
+                white_margin_overall_size_m: match document.layout_profile {
+                    G1FiducialLayoutProfile::OriginalArena => [0.20, 0.125],
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.20, 0.075],
+                },
                 object_kinds: ["t2_bin", "t2_box"],
-                object_local_center_source_m: [[0.008351, 0.0113635, 0.0045], [0.1005, 0., 0.]],
-                object_local_rotation_wxyz: [[1., 0., 0., 0.], [0.70710677, 0., 0.70710677, 0.]],
+                object_local_center_source_m: match document.layout_profile {
+                    G1FiducialLayoutProfile::OriginalArena => {
+                        [[0.008351, 0.0113635, 0.0045], [0.1005, 0., 0.]]
+                    }
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets => {
+                        [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
+                    }
+                },
+                object_local_rotation_wxyz: match document.layout_profile {
+                    G1FiducialLayoutProfile::OriginalArena => {
+                        [[1., 0., 0., 0.], [0.70710677, 0., 0.70710677, 0.]]
+                    }
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets => [
+                        [0.70710677, 0.70710677, 0., 0.],
+                        [0.70710677, 0., 0.70710677, 0.],
+                    ],
+                },
                 activation_tick: 200,
                 asset_sha256: sha256.into(),
                 physics_modified: false,
@@ -187,6 +222,10 @@ fn spawn(
                     translation: Vec3::new(x, z, -y),
                     rotation: if marker == 1 {
                         Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
+                    } else if model.receipt.layout_profile
+                        == G1FiducialLayoutProfile::AuxiliaryGripTargets
+                    {
+                        Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
                     } else {
                         Quat::IDENTITY
                     },

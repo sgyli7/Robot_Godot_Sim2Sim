@@ -34,9 +34,9 @@ use rendering_minigame::{
         G1BackgroundVisualPlugin, G1BackgroundVisualStatus,
     },
     g1_camera::{
-        CameraPoseSource, G1BodyObservationInput, G1CameraJointState, G1CameraNativeState,
-        G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1CapturedRgb, G1EgoCamera,
-        G1ObservationPlugin,
+        CameraPoseSource, G1ActiveCameraMount, G1BodyObservationInput, G1CameraJointState,
+        G1CameraMountProfile, G1CameraNativeState, G1CameraPlugin, G1CameraPort, G1CaptureStamp,
+        G1CapturedRgb, G1EgoCamera, G1ObservationPlugin,
     },
     g1_task_fiducial::{G1TaskFiducialModel, G1TaskFiducialPlugin, G1TaskFiducialReceipt},
     g1_task_visual::{
@@ -169,6 +169,9 @@ struct MobileAssistCaptureRuntime {
     raising_view: bool,
     memory_view: bool,
     restored_view: bool,
+    auxiliary_view: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    auxiliary_view_completed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     restore_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -202,6 +205,7 @@ impl MobileAssistCaptureRuntime {
         raising_view: bool,
         memory_view: bool,
         restored_view: bool,
+        auxiliary_view: bool,
     ) -> Self {
         let scan_only = matches!(&configuration, MobileAssistStage::Scan(_));
         let view_with_lowering =
@@ -217,6 +221,9 @@ impl MobileAssistCaptureRuntime {
             raising_view,
             memory_view,
             restored_view,
+            auxiliary_view,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            auxiliary_view_completed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             restore_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -602,6 +609,15 @@ pub fn run_mobile_target_restored_view_from_file(
     run_from_file(path, options, CaptureMode::MobileTargetRestoredView)
 }
 
+/// Original unmarked grasp and calibrated standing scan, followed by a fixed
+/// auxiliary sensor/public-label view. No visibility-driven arm motion.
+pub fn run_mobile_auxiliary_view_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileAuxiliaryView)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
@@ -614,13 +630,14 @@ enum CaptureMode {
     MobileTargetRaiseView,
     MobileTargetMemoryView,
     MobileTargetRestoredView,
+    MobileAuxiliaryView,
 }
 
 impl CaptureMode {
     fn assisted_tick_limit(self) -> Option<u32> {
         match self {
             Self::MobileAssist => Some(2050),
-            Self::MobileScan => Some(1050),
+            Self::MobileScan | Self::MobileAuxiliaryView => Some(1050),
             Self::MobileTargetView => Some(1300),
             Self::MobileTargetApproach
             | Self::MobileTargetRaiseView
@@ -1237,10 +1254,12 @@ fn run_capture_owner(
     let mobile_carry = mode == CaptureMode::MobileCarry;
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
+    let auxiliary_view = mode == CaptureMode::MobileAuxiliaryView;
     let raising_view = mode == CaptureMode::MobileTargetRaiseView || memory_view || restored_view;
-    let visual_approach = mode == CaptureMode::MobileTargetApproach || raising_view;
-    let target_view = mode == CaptureMode::MobileTargetView || visual_approach;
-    let scan_only = mode == CaptureMode::MobileScan || target_view;
+    let visual_approach =
+        mode == CaptureMode::MobileTargetApproach || raising_view || auxiliary_view;
+    let target_view = mode == CaptureMode::MobileTargetView || (visual_approach && !auxiliary_view);
+    let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only;
     if (mode == CaptureMode::MobileAssist) != mobile_assist.is_some()
         || scan_only != mobile_scan.is_some()
@@ -1290,6 +1309,37 @@ fn run_capture_owner(
         .as_ref()
         .map(|c| G1TaskFiducialModel::load(&c.fiducial_assets.path, &c.fiducial_assets.sha256))
         .transpose()?;
+    if let Some(model) = &fiducial_model {
+        let auxiliary_labels = model.receipt.layout_profile
+            == rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryGripTargets;
+        if auxiliary_labels != auxiliary_view {
+            return Err(
+                "auxiliary printed labels require their separate fixed-sensor view entry".into(),
+            );
+        }
+    }
+    if let Some(scan) = &mobile_scan {
+        if auxiliary_view
+            && scan
+                .vision
+                .as_ref()
+                .is_none_or(|v| v.fiducial_calibration.is_none())
+        {
+            return Err("auxiliary view requires the bound rendered marker calibration".into());
+        }
+        if scan
+            .vision
+            .as_ref()
+            .and_then(|v| v.fiducial_calibration.as_ref())
+            .is_some_and(|c| {
+                c.path != scan.fiducial_assets.path || c.sha256 != scan.fiducial_assets.sha256
+            })
+        {
+            return Err(
+                "perception calibration must identify the rendered printed-marker document".into(),
+            );
+        }
+    }
     let mobile_stage = mobile_assist
         .map(MobileAssistStage::Carry)
         .or_else(|| mobile_scan.map(MobileAssistStage::Scan));
@@ -1637,7 +1687,13 @@ fn run_capture_owner(
             #[cfg(feature = "g1_constraint_diagnostic")]
             assist_evidence,
             mobile_assist: mobile_stage.map(|c| {
-                MobileAssistCaptureRuntime::new(c, raising_view, memory_view, restored_view)
+                MobileAssistCaptureRuntime::new(
+                    c,
+                    raising_view,
+                    memory_view,
+                    restored_view,
+                    auxiliary_view,
+                )
             }),
             interactive,
         })
@@ -1768,6 +1824,7 @@ mod budget_tests {
             (CaptureMode::MobileTargetRaiseView, 3150),
             (CaptureMode::MobileTargetMemoryView, 3150),
             (CaptureMode::MobileTargetRestoredView, 3150),
+            (CaptureMode::MobileAuxiliaryView, 1050),
         ] {
             assert_eq!(mode.assisted_tick_limit(), Some(budget));
         }
@@ -1878,6 +1935,9 @@ fn submit_live_observation(
     frame: G1CapturedRgb,
     output: &Path,
 ) -> Result<(), String> {
+    if frame.stamp.mount_profile != rendering_minigame::g1_camera::G1CameraMountProfile::ArenaEgo {
+        return Err("original learned policy requires its unchanged Arena ego camera".into());
+    }
     let native = frame
         .stamp
         .native_state
@@ -2000,6 +2060,9 @@ fn drive_mobile_assist(
     if assist.submitted {
         let scan_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalScan { navigation, .. } if navigation.completed));
+        if assist.auxiliary_view && scan_complete && !assist.auxiliary_view_completed {
+            return drive_auxiliary_marker_view(runtime, outcome, port);
+        }
         if assist.view_with_lowering && !assist.lower_submitted && scan_complete {
             return drive_lower_view(runtime, outcome, port);
         }
@@ -2030,7 +2093,10 @@ fn drive_mobile_assist(
             return drive_visual_memory_view(runtime, outcome, port);
         }
         let completed = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref().is_some_and(|step| {
-            if assist.restored_view {
+            if assist.auxiliary_view {
+                assist.auxiliary_view_completed
+                    && matches!(&step.execution, MobileAssistExecution::ClassicalScan { navigation, .. } if navigation.completed)
+            } else if assist.restored_view {
                 assist.restored_view_completed
                     && matches!(&step.execution, MobileAssistExecution::ClassicalReobserve { navigation, .. } if navigation.completed)
             } else if assist.raising_view {
@@ -2067,6 +2133,16 @@ fn drive_mobile_assist(
     };
     let frame = frame?;
     if frame.stamp.source != CameraPoseSource::PhysicsBody
+        || frame.stamp.mount_profile
+            != if runtime
+                .mobile_assist
+                .as_ref()
+                .is_some_and(|a| a.auxiliary_view)
+            {
+                G1CameraMountProfile::AuxiliaryGripOverview
+            } else {
+                G1CameraMountProfile::ArenaEgo
+            }
         || frame.stamp.episode_id != runtime.episode_id
         || frame.stamp.source_ticks != [200; 2]
         || frame.stamp.sim_time_ns != 4_000_000_000
@@ -2149,6 +2225,57 @@ fn drive_mobile_assist(
     }));
     runtime.mobile_assist.as_mut().unwrap().submitted = true;
     runtime.requested = false;
+    Ok(false)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_auxiliary_marker_view(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("auxiliary view lacks owner")?;
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("auxiliary view stage absent")?;
+    if latest.phase != G1WorkerPhase::Paused || assist.auxiliary_view_completed {
+        return Err("auxiliary view requires its completed standing native scan".into());
+    }
+    if let Some(job) = &assist.vision_job {
+        let Some(reply) = job.try_take() else {
+            return Ok(false);
+        };
+        let reply = reply?;
+        if job.observation.episode_id != runtime.episode_id
+            || job.observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
+            || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+            || reply["marker_layout_profile"] != "auxiliary_grip_targets"
+        {
+            return Err("auxiliary view has a foreign camera/label/native boundary".into());
+        }
+        let mut receipt = outcome.0.lock().unwrap();
+        let handoff = receipt
+            .mobile_assist_handoff
+            .as_mut()
+            .ok_or("auxiliary view provenance absent")?;
+        handoff["actual_auxiliary_view"] = serde_json::json!({
+            "actual_current_localization":reply,"same_owner_boundary_tick":latest.timing.episode_integrations,
+            "localization_wall_ms":job.started.elapsed().as_secs_f64()*1000.,"physics_paused_during_localization":true,
+            "original_learned_camera_unchanged":true,"static_target_memory_used":false,
+            "lower_raise_restore_or_postcarry_view_turn_executed":false,"proposal_executed":false,
+            "object_truth_in_command":false,"task_qualified":false,
+        });
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        assist.vision_job.take();
+        assist.auxiliary_view_completed = true;
+        runtime.requested = false;
+        return Ok(false);
+    }
+    start_marker_job(runtime, port, "visual_auxiliary_view")?;
     Ok(false)
 }
 
@@ -2652,6 +2779,16 @@ fn capture_current_marker_frame(
     let frame = frame?;
     let tick = latest.timing.episode_integrations;
     if frame.stamp.source != CameraPoseSource::PhysicsBody
+        || frame.stamp.mount_profile
+            != if runtime
+                .mobile_assist
+                .as_ref()
+                .is_some_and(|a| a.auxiliary_view)
+            {
+                G1CameraMountProfile::AuxiliaryGripOverview
+            } else {
+                G1CameraMountProfile::ArenaEgo
+            }
         || frame.stamp.episode_id != runtime.episode_id
         || frame.stamp.source_ticks != [tick; 2]
         || frame.stamp.sim_time_ns != tick * 20_000_000
@@ -2775,13 +2912,17 @@ fn marker_observation(stamp: &G1CaptureStamp) -> Result<serde_json::Value, Strin
         .as_ref()
         .ok_or("marker image self state absent")?;
     state.validate()?;
-    Ok(serde_json::json!({
+    let mut observation = serde_json::json!({
         "schema":"g1_mobile_marker_observation_v1",
         "stamp":ObservationStamp {episode_id:stamp.episode_id,frame_id:stamp.capture_sequence,
             sim_time_ns:stamp.sim_time_ns,captured_at_unix_ms:stamp.captured_at_unix_ms},
         "camera":rendering_minigame::g1_camera::G1CameraCalibration::default(),
         "measured_joints":state.measured_joints,
-    }))
+    });
+    if stamp.mount_profile == G1CameraMountProfile::AuxiliaryGripOverview {
+        observation["camera_mount_profile"] = "auxiliary_grip_overview".into();
+    }
+    Ok(observation)
 }
 
 fn drive_live_policy(
@@ -3088,6 +3229,7 @@ fn drive_capture(
     task_status: Option<Res<G1TaskVisualStatus>>,
     mut task_input: ResMut<G1TaskVisualInput>,
     mut input: ResMut<G1BodyObservationInput>,
+    mut camera_mount: ResMut<G1ActiveCameraMount>,
     port: Res<G1CameraPort>,
     mut exit: MessageWriter<AppExit>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -3228,6 +3370,20 @@ fn drive_capture(
                 .clone()
                 .unwrap_or_else(|| "worker failed before publishing a native snapshot".into()));
         }
+        if runtime
+            .mobile_assist
+            .as_ref()
+            .is_some_and(|a| a.auxiliary_view)
+            && latest.timing.episode_integrations >= 200
+            && runtime
+                .live_policy
+                .as_ref()
+                .is_some_and(|p| p.submitted_chunks == 4)
+            && camera_mount.0 == G1CameraMountProfile::ArenaEgo
+        {
+            camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
+            return Ok(());
+        }
         let render_ready = runtime.render_frames > 30
             && health.snapshot().ready
             && input.0.is_some()
@@ -3309,7 +3465,7 @@ fn drive_capture(
                     .is_some_and(|assist| assist.completed)
                 {
                     if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
-                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.restored_view) { "bounded_actual_restored_grip_standing_turn_rgb_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.memory_view) { "bounded_actual_raised_rgb_static_target_memory_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.raising_view) { "bounded_actual_near_rgb_public_geometry_raise_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.visual_approach) { "bounded_actual_rgb_visual_coarse_approach_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
+                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.auxiliary_view) { "bounded_actual_auxiliary_rgb_two_marker_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.restored_view) { "bounded_actual_restored_grip_standing_turn_rgb_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.memory_view) { "bounded_actual_raised_rgb_static_target_memory_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.raising_view) { "bounded_actual_near_rgb_public_geometry_raise_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.visual_approach) { "bounded_actual_rgb_visual_coarse_approach_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
                     } else {
                         "bounded_classical_carry_skill_complete_not_task_qualified"
                     }
@@ -3350,6 +3506,16 @@ fn drive_capture(
                 return Ok(());
             }
             if frame.stamp.source != CameraPoseSource::PhysicsBody
+                || frame.stamp.mount_profile
+                    != if runtime
+                        .mobile_assist
+                        .as_ref()
+                        .is_some_and(|a| a.auxiliary_view)
+                    {
+                        G1CameraMountProfile::AuxiliaryGripOverview
+                    } else {
+                        G1CameraMountProfile::ArenaEgo
+                    }
                 || frame.stamp.native_state.is_none()
                 || frame.stamp.episode_id != runtime.episode_id
                 || frame.stamp.source_ticks[0] != latest.timing.episode_integrations

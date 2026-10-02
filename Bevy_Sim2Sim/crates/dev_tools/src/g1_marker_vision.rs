@@ -19,6 +19,8 @@ pub(super) struct MarkerVisionConfiguration {
     pub definition_sha256: String,
     #[serde(default)]
     pub task_geometry: Option<MarkerTaskGeometry>,
+    #[serde(default)]
+    pub fiducial_calibration: Option<MarkerTaskGeometry>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -65,6 +67,14 @@ impl MarkerVisionConfiguration {
                 || digest(&geometry.path, 1024 * 1024)? != geometry.sha256
             {
                 return Err("marker clearance requires the pinned public task geometry".into());
+            }
+        }
+        if let Some(calibration) = &self.fiducial_calibration {
+            if !calibration.path.is_absolute()
+                || calibration.sha256.len() != 64
+                || digest(&calibration.path, 16 * 1024)? != calibration.sha256
+            {
+                return Err("fixed marker calibration path/hash mismatch".into());
             }
         }
         Ok(())
@@ -261,6 +271,18 @@ mod worker {
                         }
                         let image_hash = digest(&image, 16 * 1024 * 1024)?;
                         let input_hash = digest(&input, 128 * 1024)?;
+                        let input_document: serde_json::Value =
+                            serde_json::from_slice(&fs::read(&input).map_err(|e| e.to_string())?)
+                                .map_err(|e| e.to_string())?;
+                        let camera_profile = input_document["camera_mount_profile"]
+                            .as_str()
+                            .unwrap_or("arena_ego");
+                        if !matches!(camera_profile, "arena_ego" | "auxiliary_grip_overview")
+                            || (camera_profile == "auxiliary_grip_overview"
+                                && config.fiducial_calibration.is_none())
+                        {
+                            return Err("unbound fixed observation camera profile".into());
+                        }
                         let memory_path = directory.join("target_memory.json");
                         let memory_hash = if let Some(memory) = &memory {
                             let mut file = fs::OpenOptions::new()
@@ -298,6 +320,9 @@ mod worker {
                         }
                         if box_view_only {
                             command.arg("--box-view-only");
+                        }
+                        if let Some(calibration) = &config.fiducial_calibration {
+                            command.arg("--fiducials").arg(&calibration.path);
                         }
                         let mut child = command
                             .stdin(Stdio::null())
@@ -348,6 +373,18 @@ mod worker {
                             memory.as_ref().zip(memory_hash.as_deref()),
                             box_view_only,
                         )?;
+                        if config
+                            .fiducial_calibration
+                            .as_ref()
+                            .is_some_and(|c| reply["fiducial_calibration_sha256"] != c.sha256)
+                            || (config.fiducial_calibration.is_some()
+                                && reply["camera_mount_profile"] != camera_profile)
+                            || (config.fiducial_calibration.is_none()
+                                && (!reply["fiducial_calibration_sha256"].is_null()
+                                    || reply["camera_mount_profile"] == "auxiliary_grip_overview"))
+                        {
+                            return Err("unbound fixed camera/marker calibration reply".into());
+                        }
                         if let Some(geometry) = &config.task_geometry {
                             if reply["target_memory_used"] != true {
                                 validate_clearance_reply(&reply, observation, &geometry.sha256)?;

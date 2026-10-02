@@ -394,6 +394,7 @@ pub fn snapshot_from_capture(
         interpolation_alpha: stamp.interpolation_alpha,
         sim_time_ns: stamp.sim_time_ns,
         source: stamp.source,
+        mount_profile: stamp.mount_profile,
         world_from_camera: Transform {
             translation: Vec3::from_array(stamp.camera_translation),
             rotation: Quat::from_array(stamp.camera_rotation_xyzw),
@@ -605,6 +606,7 @@ mod tests {
             interpolation_alpha: 0.,
             sim_time_ns: 340_000_000,
             source: CameraPoseSource::PhysicsBody,
+            mount_profile: Default::default(),
             captured_at_unix_ms: 1000,
             copy_encoded_at_unix_ms: 1001,
             readback_completed_at_unix_ms: 1002,
