@@ -7,6 +7,8 @@ use crate::math::{AngVector, DIM, DVector, MAX_MANIFOLD_POINTS, Real};
 use crate::utils::{self, AngularInertiaOps, CrossProduct, DotProduct};
 
 use super::{ContactConstraintNormalPart, ContactConstraintTangentPart};
+#[cfg(feature = "sim2sim-physical-normal-contact")]
+use crate::alloc_prelude::*;
 use crate::dynamics::solver::CoulombContactPointInfos;
 use crate::dynamics::solver::manifold_store::ManifoldStore;
 use crate::dynamics::solver::solver_body::SolverBodies;
@@ -55,6 +57,8 @@ pub(crate) struct GenericContactConstraintBuilder {
     infos: [CoulombContactPointInfos<Real>; MAX_MANIFOLD_POINTS],
     handle1: RigidBodyHandle,
     handle2: RigidBodyHandle,
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    normal_spring: Option<crate::geometry::ExperimentalNormalSpring>,
 }
 
 impl GenericContactConstraintBuilder {
@@ -63,6 +67,8 @@ impl GenericContactConstraintBuilder {
             infos: [CoulombContactPointInfos::default(); MAX_MANIFOLD_POINTS],
             handle1: RigidBodyHandle::invalid(),
             handle2: RigidBodyHandle::invalid(),
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            normal_spring: None,
         }
     }
 
@@ -163,6 +169,11 @@ impl GenericContactConstraintBuilder {
         let chunk_j_id = *jacobian_id;
 
         let manifold_points = &manifold.data.solver_contacts;
+        #[cfg(feature = "sim2sim-physical-normal-contact")]
+        {
+            out_builder.normal_spring = manifold.data.experimental_normal_spring;
+            out_constraint.physical_normal = out_builder.normal_spring.is_some();
+        }
         out_constraint.dir1 = force_dir1;
         out_constraint.im1 = if type1.is_dynamic_or_kinematic() {
             mprops1.effective_inv_mass
@@ -563,6 +574,23 @@ impl GenericContactConstraintBuilder {
 
                 normal_part.rhs_wo_bias = rhs_wo_bias;
                 normal_part.rhs = new_rhs;
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                if let Some(spring) = self.normal_spring {
+                    // Impulse units: alpha = 1/[h(hK+C)], beta = K/(hK+C).
+                    // The fixed point is lambda/h = -K(g+h*v_next)-C*v_next.
+                    let denominator = params.dt * spring.stiffness_n_m + spring.damping_n_s_m;
+                    let alpha = 1.0 / (params.dt * denominator);
+                    normal_part.cfm_factor = 1.0 / (1.0 + alpha * normal_part.r);
+                    normal_part.rhs = spring.stiffness_n_m / denominator * dist;
+                    // Physical restoring force must survive the unbiased relaxation pass.
+                    normal_part.rhs_wo_bias = normal_part.rhs;
+                }
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                if params.experimental_guided_normal_block && self.normal_spring.is_none() {
+                    // The guided fixture's declared backing row uses the actual gap.
+                    normal_part.rhs = dist * inv_dt;
+                    normal_part.rhs_wo_bias = normal_part.rhs;
+                }
                 // Bank the previous substep's impulse before the warm-start scaling (see the
                 // coulomb-friction `update`).
                 normal_part.impulse_accumulator += normal_part.impulse;
@@ -648,6 +676,8 @@ pub(crate) struct GenericContactConstraint {
     pub im1: Vector,
     pub im2: Vector,
     pub cfm_factor: Real,
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub physical_normal: bool,
     pub limit: Real,
     pub solver_vel1: u32,
     pub solver_vel2: u32,
@@ -659,6 +689,90 @@ pub(crate) struct GenericContactConstraint {
 }
 
 impl GenericContactConstraint {
+    /// Solve the original normal rows together on one guided degree of freedom.
+    /// This is a coupled impulse solve at the existing algebraic barrier, not a
+    /// coordinate correction or another integration. Each original point retains
+    /// its own physical coefficient, impulse and force attribution.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub fn solve_guided_physical_block(
+        constraints: &mut [Self],
+        jacobians: &DVector,
+        solver_vels: &mut DVector,
+    ) {
+        if constraints.is_empty() {
+            return;
+        }
+        let mut owner = None;
+        let mut rows = Vec::new();
+        for (ci, c) in constraints.iter().enumerate() {
+            assert!(
+                c.ndofs1 + c.ndofs2 == 1 && c.limit == 0.0,
+                "guided normal block requires one degree of freedom and zero friction"
+            );
+            let (slot, fixed) = if c.ndofs1 == 1 {
+                (c.solver_vel1, c.solver_vel2)
+            } else {
+                (c.solver_vel2, c.solver_vel1)
+            };
+            assert!(
+                fixed == u32::MAX && slot != u32::MAX,
+                "guided normal block requires a world-attached counterpart"
+            );
+            if let Some(expected) = owner {
+                assert_eq!(slot, expected, "mixed guided owners");
+            } else {
+                owner = Some(slot);
+            }
+            for pi in 0..c.num_contacts as usize {
+                let part = &c.normal_part[pi];
+                // Native contact chunks store the normal block first, then tangents.
+                let jid = c.j_id + pi * 2 * DIM;
+                let j = jacobians[jid] as f64;
+                let wj = jacobians[jid + 1] as f64;
+                assert!(
+                    (j - 1.0).abs() < 1e-5 && wj.is_finite() && wj > 0.0 && part.r > 0.0,
+                    "guided normal block requires parallel upward rows with finite response"
+                );
+                let alpha = if c.physical_normal {
+                    (1.0 / (part.cfm_factor as f64) - 1.0) / (part.r as f64)
+                } else {
+                    (1e-7 * j * wj).max(1e-12)
+                };
+                assert!(alpha.is_finite() && alpha > 0.0);
+                rows.push((ci, pi, j, wj, alpha, part.rhs as f64, part.impulse as f64));
+            }
+        }
+        let slot = owner.unwrap() as usize;
+        let free_velocity = solver_vels[slot] as f64 - rows.iter().map(|r| r.3 * r.6).sum::<f64>();
+        let mut low = free_velocity;
+        let mut high = rows
+            .iter()
+            .map(|r| -r.5 / r.2)
+            .fold(free_velocity, f64::max);
+        // A strictly increasing piecewise-linear complementarity residual.
+        // Bisection is bounded algebraic work, never a temporal substep.
+        for _ in 0..64 {
+            let middle = (low + high) * 0.5;
+            let response: f64 = rows
+                .iter()
+                .map(|r| r.3 * ((-r.2 * middle - r.5) / r.4).max(0.0))
+                .sum();
+            if middle - free_velocity - response < 0.0 {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        let velocity = (low + high) * 0.5;
+        assert!(velocity.is_finite());
+        for (ci, pi, j, _, alpha, rhs, _) in rows {
+            let impulse = ((-j * velocity - rhs) / alpha).max(0.0);
+            assert!(impulse.is_finite());
+            constraints[ci].normal_part[pi].impulse = impulse as Real;
+        }
+        solver_vels[slot] = velocity as Real;
+    }
+
     pub fn invalid() -> Self {
         Self {
             j_id: usize::MAX,
@@ -671,6 +785,8 @@ impl GenericContactConstraint {
             im1: Vector::ZERO,
             im2: Vector::ZERO,
             cfm_factor: 0.0,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            physical_normal: false,
             limit: 0.0,
             solver_vel1: u32::MAX,
             solver_vel2: u32::MAX,
@@ -760,6 +876,8 @@ impl GenericContactConstraint {
         let tangent_parts = &mut self.tangent_part[..self.num_contacts as usize];
         Self::generic_solve_group(
             self.cfm_factor,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            self.physical_normal,
             normal_parts,
             tangent_parts,
             jacobians,

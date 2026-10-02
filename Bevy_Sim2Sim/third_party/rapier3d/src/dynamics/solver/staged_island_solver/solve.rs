@@ -235,6 +235,14 @@ pub(super) unsafe fn solve_pass(
                     solve_friction,
                 );
             }
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            if params.experimental_guided_normal_block {
+                crate::dynamics::solver::GenericContactConstraint::solve_guided_physical_block(
+                    &mut contacts.generic_velocity_constraints,
+                    jac,
+                    &mut vs.generic_solver_vels,
+                );
+            }
         }
         sync.complete(stage, 1, 1);
     }

@@ -510,6 +510,7 @@ impl GenericContactConstraint {
     #[inline]
     pub fn generic_solve_group(
         cfm_factor: Real,
+        #[cfg(feature = "sim2sim-physical-normal-contact")] physical_normal: bool,
         normal_parts: &mut [ContactConstraintNormalPart<Real>],
         tangent_parts: &mut [ContactConstraintTangentPart<Real>],
         jacobians: &DVector,
@@ -537,6 +538,12 @@ impl GenericContactConstraint {
             let mut nrm_j_id = normal_j_id(j_id, ndofs1, ndofs2);
 
             for normal_part in &mut *normal_parts {
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                let cfm_factor = if physical_normal {
+                    normal_part.cfm_factor
+                } else {
+                    cfm_factor
+                };
                 normal_part.generic_solve(
                     cfm_factor,
                     nrm_j_id,

@@ -9,6 +9,208 @@
 use crate::alloc_prelude::*;
 use crate::prelude::*;
 
+#[cfg(all(feature = "dim3", feature = "sim2sim-physical-normal-contact"))]
+mod physical_normal_contact {
+    use super::*;
+    use crate::geometry::ExperimentalNormalSpring;
+    use crate::pipeline::ContactModificationContext;
+
+    struct Material {
+        enabled: bool,
+        single_point: bool,
+    }
+
+    impl PhysicsHooks for Material {
+        fn modify_solver_contacts(&self, context: &mut ContactModificationContext) {
+            if self.enabled && !context.solver_contacts.is_empty() {
+                if self.single_point {
+                    // One declared point isolates the coefficient from PGS coupling error.
+                    context.solver_contacts.truncate(1);
+                }
+                let count = context.solver_contacts.len() as Real;
+                *context.experimental_normal_spring = Some(ExperimentalNormalSpring {
+                    stiffness_n_m: 23357.0304 / count,
+                    damping_n_s_m: 2.0 / count,
+                });
+            }
+        }
+    }
+
+    fn fixture(mass: Real) -> (PhysicsWorld, RigidBodyHandle, MultibodyJointHandle) {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        world.integration_parameters.dt = 0.02;
+        world.integration_parameters.num_solver_iterations = 1;
+        world.integration_parameters.num_internal_pgs_iterations = 32;
+        world.integration_parameters.max_ccd_substeps = 0;
+        world.integration_parameters.contact_recycling = false;
+        world.integration_parameters.normalized_prediction_distance = 0.002;
+        world.insert(
+            RigidBodyBuilder::fixed().translation(Vector::new(0.0, -0.1, 0.0)),
+            ColliderBuilder::cuboid(1.0, 0.1, 1.0).friction(0.0),
+        );
+        let anchor = world.insert_body(RigidBodyBuilder::fixed());
+        let position = Vector::new(0.0, 0.0007, 0.0);
+        let (body, _) = world.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(position)
+                .can_sleep(false)
+                .additional_mass_properties(MassProperties::new(
+                    Vector::ZERO,
+                    mass,
+                    Vector::splat(0.001),
+                )),
+            ColliderBuilder::cuboid(0.01, 0.001, 0.01)
+                .density(0.0)
+                .friction(0.0)
+                .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS),
+        );
+        let rotation = Rotation::from_rotation_arc(Vector::X, Vector::Y);
+        let guide = world
+            .insert_multibody_joint(
+                anchor,
+                body,
+                GenericJointBuilder::new(JointAxesMask::LOCKED_PRISMATIC_AXES)
+                    .local_frame1(Pose::from_parts(position, rotation))
+                    .local_frame2(Pose::from_rotation(rotation))
+                    .contacts_enabled(false),
+            )
+            .unwrap();
+        let (mb, id) = world.multibody_joints.get_mut(guide).unwrap();
+        mb.forward_kinematics(&world.bodies, true);
+        let slot = mb.link(id).unwrap().assembly_id();
+        mb.generalized_velocity_mut()[slot] = -0.02;
+        (world, body, guide)
+    }
+
+    #[test]
+    fn one_point_normal_matches_backward_euler_and_keeps_force_in_relaxation() {
+        for mass in [0.292980652, 2.0, 10.0] {
+            for force in [5.0, 10.0, 20.0, 30.0] {
+                let (mut world, body, guide) = fixture(mass);
+                world.bodies[body].add_force(-Vector::Y * force, true);
+                world.step_with_events(
+                    &Material {
+                        enabled: true,
+                        single_point: true,
+                    },
+                    &(),
+                );
+                let (mb, id) = world.multibody_joints.get(guide).unwrap();
+                let v = mb.generalized_velocity()[mb.link(id).unwrap().assembly_id()];
+                let expected = (mass * (-0.02) - 0.02 * force - 0.02 * 23357.0304 * (-0.0003))
+                    / (mass + 0.02 * 2.0 + 0.02 * 0.02 * 23357.0304);
+                let contacts: Vec<_> = world
+                    .narrow_phase
+                    .contact_pairs()
+                    .flat_map(|p| p.solver_manifolds())
+                    .map(|m| {
+                        (
+                            m.points.iter().map(|p| p.dist).collect::<Vec<_>>(),
+                            m.data.experimental_normal_spring,
+                            m.data.normal,
+                        )
+                    })
+                    .collect();
+                assert!(
+                    (v - expected).abs() < 2e-6,
+                    "mass={mass} native_mass={} force={force} v={v} expected={expected} q={} contacts={contacts:?}",
+                    world.bodies[body].mass(),
+                    mb.link(id).unwrap().joint.coords()[0]
+                );
+                assert!((mb.link(id).unwrap().joint.coords()[0] - 0.02 * expected).abs() < 1e-7);
+                let observation = mb.sim2sim_observation().unwrap();
+                assert!(observation.single_temporal_step);
+                assert_eq!(observation.solver_assignment_count, 1);
+                assert!(world.quarantine().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn absent_experimental_material_preserves_native_contacts() {
+        let (mut a, body_a, guide_a) = fixture(0.292980652);
+        let (mut b, body_b, guide_b) = fixture(0.292980652);
+        for _ in 0..20 {
+            a.bodies[body_a].reset_forces(true);
+            b.bodies[body_b].reset_forces(true);
+            a.bodies[body_a].add_force(-Vector::Y * 10.0, true);
+            b.bodies[body_b].add_force(-Vector::Y * 10.0, true);
+            a.step();
+            b.step_with_events(
+                &Material {
+                    enabled: false,
+                    single_point: false,
+                },
+                &(),
+            );
+            let (ma, ia) = a.multibody_joints.get(guide_a).unwrap();
+            let (mb, ib) = b.multibody_joints.get(guide_b).unwrap();
+            assert_eq!(ma.generalized_velocity(), mb.generalized_velocity());
+            assert_eq!(
+                ma.link(ia).unwrap().joint.coords(),
+                mb.link(ib).unwrap().joint.coords()
+            );
+            assert_eq!(a.bodies[body_a].position(), b.bodies[body_b].position());
+        }
+    }
+
+    #[test]
+    fn four_point_static_load_uses_physical_stiffness() {
+        for force in [5.0, 10.0, 20.0, 30.0] {
+            let (mut world, body, guide) = fixture(0.292980652);
+            for _ in 0..100 {
+                world.bodies[body].reset_forces(true);
+                world.bodies[body].add_force(-Vector::Y * force, true);
+                world.step_with_events(
+                    &Material {
+                        enabled: true,
+                        single_point: false,
+                    },
+                    &(),
+                );
+            }
+            let (mb, id) = world.multibody_joints.get(guide).unwrap();
+            let compression = 0.0003 - mb.link(id).unwrap().joint.coords()[0];
+            assert!((compression - force / 23357.0304).abs() < 0.00005);
+            assert!(world.quarantine().is_empty());
+        }
+    }
+
+    #[test]
+    fn coupled_four_point_normal_matches_backward_euler_without_extra_integration() {
+        for mass in [0.292980652, 2.0, 10.0] {
+            for force in [5.0, 10.0, 20.0, 30.0] {
+                let (mut world, body, guide) = fixture(mass);
+                world
+                    .integration_parameters
+                    .experimental_guided_normal_block = true;
+                world.bodies[body].add_force(-Vector::Y * force, true);
+                world.step_with_events(
+                    &Material {
+                        enabled: true,
+                        single_point: false,
+                    },
+                    &(),
+                );
+                let (mb, id) = world.multibody_joints.get(guide).unwrap();
+                let expected = (mass * (-0.02) - 0.02 * force - 0.02 * 23357.0304 * (-0.0003))
+                    / (mass + 0.02 * 2.0 + 0.02 * 0.02 * 23357.0304);
+                let velocity = mb.generalized_velocity()[mb.link(id).unwrap().assembly_id()];
+                assert!(
+                    (velocity - expected).abs() < 2e-6,
+                    "mass={mass}, force={force}, velocity={velocity}, expected={expected}"
+                );
+                assert!((mb.link(id).unwrap().joint.coords()[0] - 0.02 * expected).abs() < 1e-7);
+                let observation = mb.sim2sim_observation().unwrap();
+                assert!(observation.single_temporal_step);
+                assert_eq!(observation.solver_assignment_count, 1);
+                assert!(world.quarantine().is_empty());
+            }
+        }
+    }
+}
+
 /// Regression test for <https://github.com/dimforge/rapier/issues/927> (Bug 1).
 ///
 /// Removing a joint that leaves one of its bodies as an isolated single-link

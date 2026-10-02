@@ -95,6 +95,7 @@ sim2sim-observation = []
 sim2sim-limit-row-trace = ["sim2sim-observation"]
 sim2sim-plain-mass-probe = ["sim2sim-observation"]
 sim2sim-source-limit-probe = ["sim2sim-limit-row-trace"]
+sim2sim-physical-normal-contact = ["sim2sim-observation"]
 std = [
     "alloc",
     "parry3d/std",

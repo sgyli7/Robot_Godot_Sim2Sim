@@ -516,12 +516,26 @@ impl ContactPair {
     }
 }
 
-#[derive(Clone, Debug)]
+/// Physical coefficients of one frictionless multibody contact point.
+///
+/// Experimental CPU normal-contact path only. The caller owns the patch-to-point
+/// force/moment mapping; these coefficients are already divided among its points.
+#[cfg(feature = "sim2sim-physical-normal-contact")]
 #[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug)]
+pub struct ExperimentalNormalSpring {
+    /// Stiffness of this point, in N/m.
+    pub stiffness_n_m: Real,
+    /// Damping of this point, in N s/m.
+    pub damping_n_s_m: Real,
+}
+
 /// A contact manifold between two colliders.
 ///
 /// A contact manifold describes a set of contacts between two colliders. All the contact
 /// part of the same contact manifold share the same contact normal and contact kinematics.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
 pub struct ContactManifoldData {
     // The following are set by the narrow-phase.
     /// The first rigid-body involved in this contact manifold.
@@ -579,6 +593,11 @@ pub struct ContactManifoldData {
     /// The effective restitution coefficient of this manifold's contacts.
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     pub restitution: Real,
+    /// Explicit physical normal law for experimental frictionless multibody contacts.
+    /// Absent by default; never changes the packed scalar/SIMD solver-contact layout.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    pub experimental_normal_spring: Option<ExperimentalNormalSpring>,
 }
 
 /// A single solver contact.
@@ -803,6 +822,8 @@ impl ContactManifoldData {
             user_data: 0,
             friction: 0.0,
             restitution: 0.0,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            experimental_normal_spring: None,
         }
     }
 

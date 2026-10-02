@@ -283,6 +283,11 @@ pub struct IntegrationParameters {
     /// null rows; this does not change contact detection or pair filtering.
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     pub combine_same_multibody_contacts: bool,
+    /// Experimental coupled normal solve for a single vertical guided multibody.
+    /// Rejects other topology, friction and nonparallel rows; no temporal subdivision.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    pub experimental_guided_normal_block: bool,
     /// If enabled, a contact pair whose relative pose moved less than [`Self::contact_recycle_distance`]
     /// since its last full narrow-phase update skips contact determination and keeps its existing points
     /// (default: `true`) — a large speed-up for quasi-static scenes. Trade-offs:
@@ -404,6 +409,8 @@ impl Default for IntegrationParameters {
             max_ccd_substeps: 1,
             contact_clustering: true,
             combine_same_multibody_contacts: false,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            experimental_guided_normal_block: false,
             contact_recycling: true,
             normalized_contact_recycle_distance: 0.05,
             friction_in_bias_pass: false,

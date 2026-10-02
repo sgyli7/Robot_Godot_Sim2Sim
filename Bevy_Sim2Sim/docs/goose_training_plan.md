@@ -260,3 +260,17 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 **下一批只实施同参数的 Rapier 法向行及八程序配对**，预先保留 0.05 mm 压缩差和 10% 静载曲线门槛，动态、冲击及背衬误差分别报告，再决定是否进入整机候选。M0 仍未通过，PPO／GPU 为零。权威入口为 [凝聚足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_contact_checkpoint.json)；[实际执行源码快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_source_physical_rows_code/verified_snapshot.json)共 26 个文件逐项哈希验证。
 
 新增开发代码和回归分别位于 `crates/dev_tools/python/src/bevy_microduck_tools/goose/` 与 `crates/dev_tools/python/tests/`；运行时合同继续位于 `crates/modules/robot/src/goose/contract.rs`。本检查点 **51 项 Goose Python 回归、525 项工程结构检查及 Git 空白检查通过**。提交前按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)复核；全部实验产物仍在项目备份目录。
+
+### 凝聚足底源／目标配对检查点
+
+开发工具 [goose_condensed_sole_probe.rs](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/dev_tools/src/bin/goose_condensed_sole_probe.rs)读取同一冻结凝聚本体的质量、COM、完整惯量、六盒几何与 K/C。原生后端新增显式 `sim2sim-physical-normal-contact` feature，默认为关闭；每接触点的物理柔顺系数和恢复力保留到代数松弛阶段，不改变紧凑的 scalar／SIMD 接触点布局。
+
+[原 PGS32 配对](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_native_contact_comparison.json)虽通过静载曲线门槛，加载瞬态压缩差仍达 **0.217–1.50 mm**，不晋升。单点解析回归确认物理系数正确；多点残差可由原有耦合行的 PGS 更新独立复现，未扩大迭代扫描。
+
+受限的 `guided_block` 对照用原生 J/WJ 同时求解原法向行的单调互补方程，保留逐点冲量和归属；64 次有界二分是既有求解阶段中的代数工作，仍只积分一次 20 ms。背衬使用实际 gap/h 和与源端相同的有限正则化。求解器拒绝多自由度、多所有者、摩擦和不平行法向，**不能接入整机**。首个实现取错切向块偏移，被行布局守卫拦截；[失败代码、二进制和终态](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_target_block_layout_failure/failure.json)保留，随后按原生 normal 行布局修正。
+
+[最终独立比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_guided_block_comparison.json)覆盖相同八程序、每引擎 **800 次积分**；固定 0.05 mm 压缩和 10% 静载门槛全部通过。全程最大压缩差 **0.000022 mm**，目标静载总力误差 ≤**0.00012%**，行程最大越界 **0.000018 mm**；释放后物理能量无增长。原生 epoch 连续 1–100，实际步长记录符合 50 Hz。目标局部夹具物理 P95 ≤**0.117 ms**，不外推整机性能。物理清单比较允许最多两个 f64 解析 ULP，原始输入文件 SHA256 完全相同。
+
+权威入口为 [目标端凝聚足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_contact_target_checkpoint.json)；[最终执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_target_guided_block_code/verified_snapshot.json) **159 文件**核对执行哈希和二进制。原生关节范围 **27 项通过**，simulation **25 项通过、10 项外部夹具未运行**；格式、空白及结构检查通过。原候选、失败收据和默认运行行为保留，GPU／优化器为零，**M0 未通过**。
+
+下一批转向**无导向足底的完整合力／力矩和倾斜接触**：建立新的实验版本，保留完整六自由度及惯量，先验证耦合法向行在名义半机重与 ±3° pitch／roll 初态下的响应；禁止把单自由度求解器套到整机或继续重复导向载荷实验。无导向、摩擦与几何背衬资格完成后，再接入同版本 21 体候选的冷重置、驱动和嘴部约束准入。

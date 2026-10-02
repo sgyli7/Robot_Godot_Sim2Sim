@@ -11,6 +11,7 @@ sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_limit_row_trace"]
 sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]
 sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "simulation_minigame/sim2sim_source_limit_probe"]
+sim2sim_physical_normal_contact = ["sim2sim_observation", "rapier3d/sim2sim-physical-normal-contact"]
 rendering_preview = ["dep:rendering_minigame", "dep:bevy"]
 live_physics_profile = ["rapier3d/profiler"]
 live_render_profile = ["rendering_preview", "dep:libc"]
@@ -71,3 +72,8 @@ required-features = ["sim2sim_observation"]
 name = "source_limit_continuous_probe"
 path = "src/bin/source_limit_continuous_probe.rs"
 required-features = ["sim2sim_source_limit_probe"]
+
+[[bin]]
+name = "goose_condensed_sole_probe"
+path = "src/bin/goose_condensed_sole_probe.rs"
+required-features = ["sim2sim_physical_normal_contact"]

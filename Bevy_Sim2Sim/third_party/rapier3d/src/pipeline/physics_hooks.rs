@@ -59,6 +59,10 @@ pub struct ContactModificationContext<'a> {
     /// The restitution coefficient applied to every solver contact of this manifold,
     /// that can be modified.
     pub restitution: &'a mut Real,
+    /// Optional physical K/C per point for the experimental generic contact solver.
+    /// Only frictionless, non-bouncy contacts involving a multibody are supported.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub experimental_normal_spring: &'a mut Option<crate::geometry::ExperimentalNormalSpring>,
     /// User-defined data attached to the manifold.
     // NOTE: we keep this a &'a mut u32 to emphasize the
     // fact that this can be modified.

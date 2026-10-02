@@ -409,6 +409,10 @@ pub(super) fn process_pair(
             manifold.data.solver_flags = solver_flags;
             manifold.data.friction = friction;
             manifold.data.restitution = restitution;
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            {
+                manifold.data.experimental_normal_spring = None;
+            }
             manifold.data.relative_dominance =
                 dominance1.effective_group(&rb_type1) - dominance2.effective_group(&rb_type2);
             manifold.data.normal = world_pos1.rotation * manifold.local_n1;
@@ -505,6 +509,8 @@ pub(super) fn process_pair(
                 let mut modifiable_normal = manifold.data.normal;
                 let mut modifiable_friction = manifold.data.friction;
                 let mut modifiable_restitution = manifold.data.restitution;
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                let mut modifiable_normal_spring = None;
 
                 let mut context = ContactModificationContext {
                     bodies,
@@ -518,6 +524,8 @@ pub(super) fn process_pair(
                     normal: &mut modifiable_normal,
                     friction: &mut modifiable_friction,
                     restitution: &mut modifiable_restitution,
+                    #[cfg(feature = "sim2sim-physical-normal-contact")]
+                    experimental_normal_spring: &mut modifiable_normal_spring,
                     user_data: &mut modifiable_user_data,
                 };
 
@@ -528,6 +536,29 @@ pub(super) fn process_pair(
                 manifold.data.friction = modifiable_friction;
                 manifold.data.restitution = modifiable_restitution;
                 manifold.data.user_data = modifiable_user_data;
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                {
+                    if let Some(spring) = modifiable_normal_spring {
+                        let has_multibody = [rb_handle1, rb_handle2]
+                            .into_iter()
+                            .flatten()
+                            .any(|h| multibody_joints.rigid_body_link(h).is_some());
+                        assert!(
+                            has_multibody
+                                && modifiable_friction == 0.0
+                                && modifiable_restitution == 0.0,
+                            "physical normal experiment requires frictionless non-bouncy multibody contact"
+                        );
+                        assert!(
+                            spring.stiffness_n_m.is_finite()
+                                && spring.stiffness_n_m > 0.0
+                                && spring.damping_n_s_m.is_finite()
+                                && spring.damping_n_s_m >= 0.0,
+                            "invalid physical normal coefficients"
+                        );
+                    }
+                    manifold.data.experimental_normal_spring = modifiable_normal_spring;
+                }
             }
 
             // Localize solver contacts: bake skins (and hook-written `dist`) into the anchors, then
