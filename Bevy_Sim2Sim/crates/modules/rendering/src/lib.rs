@@ -5,6 +5,7 @@
 //! Development window orchestration and capture live in dev_tools.
 pub mod g1_background_visual;
 pub mod g1_camera;
+pub mod g1_task_fiducial;
 pub mod g1_task_visual;
 pub mod g1_visual;
 pub mod geometry;

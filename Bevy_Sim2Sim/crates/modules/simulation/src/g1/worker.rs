@@ -576,7 +576,7 @@ impl BoundaryRunner for MobileAssistRunner {
         MobileAssistRunner::progress_counts(self)
     }
     fn pause_after_completed_step(&self) -> bool {
-        self.completed_carry()
+        self.completed_skill()
     }
 }
 

@@ -1001,3 +1001,35 @@ holds the box and is not bin placement. The owned model closes after its four
 successful inferences. Formal T2, Qwen goal selection and8/10 remain open.
 Raw native trace SHA256:
 `35e82f10084d448f77caac9b884a191fde56a954f1284dbcdd6e780f93104858`.
+
+The next separate `g1_mobile_scan_diagnostic` entry is a finite public-map
+search, not a walking/placement test. It admits exactly four fresh original
+unmarked RGB grasp calls, then only a measured-yaw turn and100standing Ticks,
+with1050maximum native Ticks. The same typed native owner computes the known
+grip correction; a completed scan auto-pauses and cannot enter walking.
+Fresh observation identity/age guards apply to every handoff. The old2m
+carry entry and all default physics/contracts retain their bounds.
+
+This opt-in scene mounts disclosed DICT_4X4_50 printed markers21on the bin
+floor (16cm black square) and22on the original box's top (10cm). Original box
+orientation makes its local-Z face the physical top; its published mount is
+explicitly flipped. Fixed white margins, metric mounts and PNG hashes are
+recorded. Marker visibility begins at actual Tick200, so the four original
+grasp images remain unmarked. Markers inherit displayed native object poses;
+they add no physics, light, constraint or object sensor.
+
+`unitree_g1_mobile_vision.py` accepts actual640x480PNG and a separately written
+whitelist of pinhole calibration and original joint/root self sensors. It
+rejects extra fields, foreign robot identity and duplicate markers, computes
+camera mounting from original FK, and bounds IPPE square reprojection/error
+and pixel support. Task/world/camera truth poses and contact evidence are
+excluded. Any approach proposal is derived from RGB marker poses and self
+orientation, explicitly classical and **not automatically executed**. Target
+visibility, original-bin approach and physical release remain separate gates.
+
+Entry checks0189 pass63simulation checks with33ignored real-fixture checks,
+four CLI guards and an ordinary-feature compile. Independent camera mounting
+from actual native self state agrees with the render camera within9.78e-8m
+and1.14e-7rotation-matrix elements; no world poses enter localization. These
+are zero-physics/zero-model calibration and entry checks, not a target-visibility
+or placement result.

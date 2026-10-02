@@ -259,7 +259,7 @@ pub struct G1TaskVisualStatus {
 }
 
 #[derive(Component)]
-struct ObjectRoot(usize);
+pub(crate) struct ObjectRoot(pub(crate) usize);
 
 pub struct G1TaskVisualPlugin;
 impl Plugin for G1TaskVisualPlugin {

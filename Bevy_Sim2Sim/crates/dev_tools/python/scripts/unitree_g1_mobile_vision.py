@@ -1,0 +1,184 @@
+"""Disclosed printed-marker localization from actual RGB and G1 self state.
+
+No task-object/world pose, contact, saved action or learned policy is accepted.
+This finite development tool proposes navigation; it never actuates a world.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+
+JOINT_NAMES = tuple(
+    [f"{side}_{name}_joint" for side in ("left", "right")
+     for name in ("hip_pitch", "hip_roll", "hip_yaw", "knee", "ankle_pitch", "ankle_roll")]
+    + [f"waist_{name}_joint" for name in ("yaw", "roll", "pitch")]
+    + [f"{side}_{name}_joint" for side in ("left", "right")
+       for name in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow",
+                    "wrist_roll", "wrist_pitch", "wrist_yaw", "hand_index_0",
+                    "hand_index_1", "hand_middle_0", "hand_middle_1",
+                    "hand_thumb_0", "hand_thumb_1", "hand_thumb_2")]
+)
+DEFINITION_SHA256 = "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8f13bd"
+MARKER_SIZES = {21: 0.16, 22: 0.10}
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def rotation(wxyz):
+    q = np.asarray(wxyz, dtype=np.float64)
+    if q.shape != (4,) or not np.isfinite(q).all() or abs(q @ q - 1) > 2e-5:
+        raise ValueError("invalid original quaternion")
+    w, x, y, z = q / np.linalg.norm(q)
+    return np.array([[1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+                     [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+                     [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]])
+
+
+def transform(pose):
+    result = np.eye(4)
+    result[:3, :3] = rotation(pose["rotation_wxyz"])
+    result[:3, 3] = pose["position"]
+    return result
+
+
+def root_from_camera(definition, positions):
+    """Original FK in root coordinates, followed by the published ROS camera mount."""
+    if len(positions) != 43 or not np.isfinite(positions).all():
+        raise ValueError("vision requires43original measured joint positions")
+    slots = dict(zip(JOINT_NAMES, positions))
+    frames = {0: np.eye(4)}
+    pending = list(definition["joints"])
+    while pending:
+        ready = next((j for j in pending if j["parent"] in frames), None)
+        if ready is None:
+            raise ValueError("disconnected original G1 kinematic tree")
+        pending.remove(ready)
+        motion = np.eye(4)
+        if ready["kind"] == "revolute":
+            axis = np.eye(3)["XYZ".index(ready["axis"])]
+            motion[:3, :3] = cv2.Rodrigues(axis * slots[ready["name"]])[0]
+        frames[ready["child"]] = (frames[ready["parent"]] @ transform(ready["frame_parent"])
+                                  @ motion @ np.linalg.inv(transform(ready["frame_child"])))
+    mount_q = np.array([0.32651, -0.62721, 0.62721, -0.32651])
+    mount_q /= np.linalg.norm(mount_q)
+    mount = transform({"position": [0.04485, 0., 0.35325], "rotation_wxyz": mount_q})
+    return frames[19] @ mount
+
+
+def localize(image_path, observation_path, definition_path):
+    if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
+        raise ValueError("vision input exceeds finite image/self-state byte budget")
+    observation = json.loads(Path(observation_path).read_text())
+    if set(observation) != {"schema", "stamp", "camera", "measured_joints"} or observation["schema"] != "g1_mobile_marker_observation_v1":
+        raise ValueError("vision accepts only whitelisted RGB calibration and self sensors")
+    stamp = observation["stamp"]
+    if set(stamp) != {"episode_id", "frame_id", "sim_time_ns", "captured_at_unix_ms"} or any(stamp[k] <= 0 for k in stamp) or stamp["sim_time_ns"] % 20_000_000:
+        raise ValueError("invalid current camera identity/time")
+    state = observation["measured_joints"]
+    if set(state) != {"positions", "velocities", "root_rotation_wxyz", "root_angular_velocity_body", "root_velocity_source"}:
+        raise ValueError("foreign self-state fields")
+    if len(state["velocities"]) != 43 or not np.isfinite(state["velocities"]).all():
+        raise ValueError("invalid original self velocities")
+    for key in ("root_angular_velocity_body", "root_velocity_source"):
+        if len(state[key]) != 3 or not np.isfinite(state[key]).all():
+            raise ValueError("invalid original self motion sensor")
+    if sha(definition_path) != DEFINITION_SHA256:
+        raise ValueError("original robot definition identity mismatch")
+    definition = json.loads(Path(definition_path).read_text())
+    camera_in_root = root_from_camera(definition, state["positions"])
+    root_rotation = rotation(state["root_rotation_wxyz"])
+    c = observation["camera"]
+    if set(c) != {"fx", "fy", "cx", "cy", "vertical_fov_radians", "near_m", "far_m"}:
+        raise ValueError("foreign camera calibration fields")
+    if not all(abs(c[k]-v) < 1e-6 for k, v in {"fx":458.1245526,"fy":458.1245526,"cx":320.,"cy":240.}.items()):
+        raise ValueError("original pinhole contract mismatch")
+    intrinsics = np.array([[c["fx"], 0, c["cx"]], [0, c["fy"], c["cy"]], [0, 0, 1.]])
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None or image.shape != (480, 640, 3):
+        raise ValueError("actual ego PNG requires640x480RGB")
+    parameters = cv2.aruco.DetectorParameters()
+    parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), parameters)
+    corners, ids, rejected = detector.detectMarkers(image)
+    detections = []
+    for marker_corners, marker_id in zip(corners, [] if ids is None else ids.flatten()):
+        marker_id = int(marker_id)
+        if marker_id not in MARKER_SIZES:
+            continue
+        pixels = marker_corners.reshape(4, 2).astype(np.float64)
+        shortest_edge = float(np.linalg.norm(pixels-np.roll(pixels, -1, axis=0), axis=1).min())
+        h = MARKER_SIZES[marker_id] / 2
+        object_points = np.array([[-h,h,0], [h,h,0], [h,-h,0], [-h,-h,0]])
+        ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(object_points, pixels, intrinsics, None, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        candidates = []
+        if ok:
+            for rvec, tvec in zip(rvecs, tvecs):
+                r = cv2.Rodrigues(rvec)[0]
+                t = tvec.reshape(3)
+                projected = cv2.projectPoints(object_points, rvec, tvec, intrinsics, None)[0].reshape(4, 2)
+                error = float(np.sqrt(np.mean(np.sum((projected-pixels)**2, axis=1))))
+                if 0.1 < t[2] < 5. and float(r[:, 2] @ t) < 0:
+                    camera_from_marker = np.eye(4)
+                    camera_from_marker[:3, :3] = r
+                    camera_from_marker[:3, 3] = t
+                    candidates.append((error, camera_from_marker))
+        if not candidates or shortest_edge < 8:
+            continue
+        error, camera_from_marker = min(candidates, key=lambda item: item[0])
+        if error > 1.0:
+            continue
+        marker_in_root = camera_in_root @ camera_from_marker
+        detections.append({"marker_id": marker_id, "kind": "target_bin" if marker_id == 21 else "carried_box",
+                           "corners_px": pixels.tolist(), "minimum_edge_px": shortest_edge,
+                           "reprojection_rms_px": error, "root_from_marker": marker_in_root.tolist(),
+                           "root_position_m": marker_in_root[:3, 3].tolist()})
+    if len({d["marker_id"] for d in detections}) != len(detections):
+        raise ValueError("duplicate identity in actual marker image")
+    proposal = None
+    by_id = {d["marker_id"]: np.array(d["root_from_marker"]) for d in detections}
+    if 21 in by_id and 22 in by_id:
+        bin_p = by_id[21][:3, 3]
+        box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
+        # Rotate relative vectors into the gravity/yaw-aligned source plane.
+        bin_world = root_rotation @ bin_p
+        box_world = root_rotation @ box_p
+        heading = float(np.arctan2(bin_world[1], bin_world[0]))
+        distance = float(np.linalg.norm(bin_world[:2])-np.linalg.norm(box_world[:2]))
+        if not (0.1 <= distance <= 2.5):
+            raise ValueError("visual approach lies outside bounded navigation envelope")
+        proposal = {"observation": stamp, "heading_yaw_source_rad": heading,
+                    "relative_distance_m": distance, "source": "actual_rgb_marker_pnp_and_original_self_fk",
+                    "target_identity": 21, "task_qualified": False, "automatically_executed": False}
+    return {"schema":"g1_mobile_actual_marker_localization_v1", "observation":stamp,
+            "image_sha256":sha(image_path), "input_sha256":sha(observation_path),
+            "robot_definition_sha256":DEFINITION_SHA256, "opencv_version":cv2.__version__,
+            "actual_rgb_only_object_measurement":True, "world_or_contact_truth_input":False,
+            "camera_in_root_source":camera_in_root.tolist(), "detections":detections,
+            "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
+            "target_bin_detected":21 in by_id, "carried_box_detected":22 in by_id,
+            "task_qualified":False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image", required=True, type=Path)
+    parser.add_argument("--observation", required=True, type=Path)
+    parser.add_argument("--definition", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    result = localize(args.image, args.observation, args.definition)
+    with args.output.open("x") as stream:
+        json.dump(result, stream, indent=2, allow_nan=False)
+        stream.write("\n")
+    print(json.dumps({k:result[k] for k in ("target_bin_detected", "carried_box_detected", "navigation_proposal", "task_qualified")}))
+
+
+if __name__ == "__main__":
+    main()

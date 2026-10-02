@@ -15,7 +15,10 @@ use task_minigame::{
 
 use super::{
     mobile_grip::{MobileGripCalibration, MobileGripReceipt},
-    mobile_navigation::{MobileCarryGoal, MobileCarryNavigator, MobileNavigationStep},
+    mobile_navigation::{
+        MobileCarryGoal, MobileCarryNavigator, MobileNavigationStep, MobileScanGoal,
+        MobileScanNavigator,
+    },
     runner::{G1Measurement, G1ProgressCounts},
     task_objects::TaskObjectFrame,
     task_policy::{ArenaControllerCommand, controller_command},
@@ -29,6 +32,7 @@ use super::{
 pub enum MobileAssistCommand {
     OriginalVla(ArenaTaskCommand),
     ClassicalCarry(MobileCarryGoal),
+    ClassicalScan(MobileScanGoal),
 }
 
 impl MobileAssistCommand {
@@ -42,6 +46,7 @@ impl MobileAssistCommand {
                 Ok(())
             }
             Self::ClassicalCarry(goal) => goal.validate(),
+            Self::ClassicalScan(goal) => goal.validate(),
         }
     }
 }
@@ -52,6 +57,12 @@ pub enum MobileAssistExecution {
     OriginalVla(ArenaTaskExecution),
     ClassicalCarry {
         goal: MobileCarryGoal,
+        grip: MobileGripReceipt,
+        navigation: MobileNavigationStep,
+        command: G1Command,
+    },
+    ClassicalScan {
+        goal: MobileScanGoal,
         grip: MobileGripReceipt,
         navigation: MobileNavigationStep,
         command: G1Command,
@@ -73,11 +84,18 @@ pub struct MobileAssistRunner {
     last_vla_execution: Option<ArenaTaskExecution>,
     last_vla_command: Option<G1Command>,
     carry: Option<CarryState>,
+    scan: Option<ScanState>,
     halted: bool,
 }
 
 struct CarryState {
     navigator: MobileCarryNavigator,
+    command: G1Command,
+    grip: MobileGripReceipt,
+}
+
+struct ScanState {
+    navigator: MobileScanNavigator,
     command: G1Command,
     grip: MobileGripReceipt,
 }
@@ -98,6 +116,7 @@ impl MobileAssistRunner {
             last_vla_execution: None,
             last_vla_command: None,
             carry: None,
+            scan: None,
             halted: false,
         })
     }
@@ -119,6 +138,50 @@ impl MobileAssistRunner {
         self.carry
             .as_ref()
             .is_some_and(|carry| carry.navigator.completed())
+    }
+
+    pub fn completed_skill(&self) -> bool {
+        self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
+    }
+
+    fn prepare_classical(
+        &self,
+        observation: &task_minigame::types::ObservationStamp,
+        state: &G1Measurement,
+    ) -> Result<(G1Command, MobileGripReceipt), RobotError> {
+        let previous = self
+            .last_vla_execution
+            .as_ref()
+            .ok_or_else(|| invalid("classical skill has no original VLA predecessor"))?;
+        if previous.frame_index + 1 != profile_contract(TaskProfile::MobileBox).action_horizon {
+            return Err(invalid(
+                "classical handoff requires an original complete VLA chunk",
+            ));
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| invalid(e.to_string()))?
+            .as_millis() as u64;
+        let age = now
+            .checked_sub(observation.captured_at_unix_ms)
+            .ok_or_else(|| invalid("classical observation is from a future wall clock"))?;
+        if age > self.maximum_observation_wall_age_ms {
+            return Err(invalid(
+                "classical observation expired before owner handoff",
+            ));
+        }
+        if let Some(scan) = &self.scan {
+            if !scan.navigator.completed() {
+                return Err(invalid("cannot replace an active scan"));
+            }
+            return Ok((scan.command.clone(), scan.grip.clone()));
+        }
+        let original = self
+            .last_vla_command
+            .as_ref()
+            .ok_or_else(|| invalid("classical handoff lost original upper command"))?;
+        let correction = self.calibration.correct(state, original)?;
+        Ok((correction.command, correction.receipt))
     }
 
     pub fn step_with_guard(
@@ -148,6 +211,10 @@ impl MobileAssistRunner {
                     .carry
                     .as_ref()
                     .is_some_and(|carry| !carry.navigator.completed())
+                    || self
+                        .scan
+                        .as_ref()
+                        .is_some_and(|scan| !scan.navigator.completed())
                 {
                     return Err(invalid(
                         "cannot replace active classical carry with a VLA chunk",
@@ -166,6 +233,7 @@ impl MobileAssistRunner {
                 self.last_vla_command = Some(original);
                 self.last_vla_execution = Some(step.execution.clone());
                 self.carry = None;
+                self.scan = None;
                 Ok(MobileAssistStep {
                     execution: MobileAssistExecution::OriginalVla(step.execution),
                     body: step.body,
@@ -174,38 +242,14 @@ impl MobileAssistRunner {
             MobileAssistCommand::ClassicalCarry(goal) => {
                 let state = self.owner.measurement()?;
                 if self.carry.is_none() {
-                    let previous = self
-                        .last_vla_execution
-                        .as_ref()
-                        .ok_or_else(|| invalid("carry has no original VLA predecessor"))?;
-                    if previous.frame_index + 1
-                        != profile_contract(TaskProfile::MobileBox).action_horizon
-                    {
-                        return Err(invalid(
-                            "carry handoff requires an original complete VLA chunk",
-                        ));
-                    }
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_err(|e| invalid(e.to_string()))?
-                        .as_millis() as u64;
-                    let age = now
-                        .checked_sub(goal.observation.captured_at_unix_ms)
-                        .ok_or_else(|| invalid("carry observation is from a future wall clock"))?;
-                    if age > self.maximum_observation_wall_age_ms {
-                        return Err(invalid("carry observation expired before owner handoff"));
-                    }
                     let navigator = MobileCarryNavigator::new(goal.clone(), &state)?;
-                    let original = self
-                        .last_vla_command
-                        .as_ref()
-                        .ok_or_else(|| invalid("carry lost its original upper command"))?;
-                    let correction = self.calibration.correct(&state, original)?;
+                    let (command, grip) = self.prepare_classical(&goal.observation, &state)?;
                     self.carry = Some(CarryState {
                         navigator,
-                        command: correction.command,
-                        grip: correction.receipt,
+                        command,
+                        grip,
                     });
+                    self.scan = None;
                 }
                 let carry = self.carry.as_mut().unwrap();
                 if carry.navigator.goal() != goal {
@@ -224,6 +268,41 @@ impl MobileAssistRunner {
                         grip: carry.grip.clone(),
                         navigation,
                         command: carry.command.clone(),
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalScan(goal) => {
+                let state = self.owner.measurement()?;
+                if self.carry.is_some() {
+                    return Err(invalid(
+                        "scan after carry requires a separately admitted next stage",
+                    ));
+                }
+                if self.scan.is_none() {
+                    let navigator = MobileScanNavigator::new(goal.clone(), &state)?;
+                    let (command, grip) = self.prepare_classical(&goal.observation, &state)?;
+                    self.scan = Some(ScanState {
+                        navigator,
+                        command,
+                        grip,
+                    });
+                }
+                let scan = self.scan.as_mut().unwrap();
+                if scan.navigator.goal() != goal {
+                    return Err(invalid("scan goal changed while executing; reset required"));
+                }
+                let navigation = scan.navigator.update(&state)?;
+                scan.command.navigation = navigation.navigation;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&scan.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalScan {
+                        goal: goal.clone(),
+                        grip: scan.grip.clone(),
+                        navigation,
+                        command: scan.command.clone(),
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
@@ -337,6 +416,9 @@ mod tests {
                 minimum_upright = minimum_upright.min(body.root_upright_cosine);
                 let (phase, command) = match &step.execution {
                     MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
+                    MobileAssistExecution::ClassicalScan { .. } => {
+                        return Err(invalid("unexpected scan in saved carry fixture"));
+                    }
                     MobileAssistExecution::ClassicalCarry {
                         navigation,
                         command,
@@ -459,6 +541,9 @@ mod worker_diagnostic {
                     observed_steps += 1;
                     let (phase, command) = match &record.step.execution {
                         MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
+                        MobileAssistExecution::ClassicalScan { .. } => {
+                            return Err(invalid("unexpected scan in saved carry fixture"));
+                        }
                         MobileAssistExecution::ClassicalCarry {
                             navigation,
                             command,

@@ -32,6 +32,57 @@ impl MobileCarryGoal {
     }
 }
 
+/// A bounded public-map search heading, followed by a stationary RGB boundary.
+/// It carries no object position, walking distance or task-world observation.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MobileScanGoal {
+    pub observation: ObservationStamp,
+    pub heading_yaw_source_rad: f32,
+}
+
+impl MobileScanGoal {
+    pub fn validate(&self) -> Result<(), RobotError> {
+        MobileCarryGoal {
+            observation: self.observation.clone(),
+            heading_yaw_source_rad: self.heading_yaw_source_rad,
+            relative_distance_m: 0.1,
+        }
+        .validate()
+    }
+}
+
+/// Shares the measured finite turn controller; never enters its walking phase.
+pub struct MobileScanNavigator {
+    goal: MobileScanGoal,
+    motion: MobileCarryNavigator,
+}
+
+impl MobileScanNavigator {
+    pub fn new(goal: MobileScanGoal, state: &G1Measurement) -> Result<Self, RobotError> {
+        goal.validate()?;
+        let mut motion = MobileCarryNavigator::new(
+            MobileCarryGoal {
+                observation: goal.observation.clone(),
+                heading_yaw_source_rad: goal.heading_yaw_source_rad,
+                relative_distance_m: 0.1,
+            },
+            state,
+        )?;
+        motion.scan_only = true;
+        Ok(Self { goal, motion })
+    }
+    pub fn goal(&self) -> &MobileScanGoal {
+        &self.goal
+    }
+    pub fn completed(&self) -> bool {
+        self.motion.completed()
+    }
+    pub fn update(&mut self, state: &G1Measurement) -> Result<MobileNavigationStep, RobotError> {
+        self.motion.update(state)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MobileNavigationPhase {
@@ -58,6 +109,7 @@ pub struct MobileCarryNavigator {
     settling: bool,
     odometry: [f32; 2],
     completed: bool,
+    scan_only: bool,
 }
 
 impl MobileCarryNavigator {
@@ -79,6 +131,7 @@ impl MobileCarryNavigator {
             settling: false,
             odometry: [0.; 2],
             completed: false,
+            scan_only: false,
         })
     }
 
@@ -121,7 +174,11 @@ impl MobileCarryNavigator {
                     0
                 };
                 if self.heading_ready_ticks >= 20 {
-                    self.phase = MobileNavigationPhase::Walk;
+                    self.phase = if self.scan_only {
+                        MobileNavigationPhase::Stop
+                    } else {
+                        MobileNavigationPhase::Walk
+                    };
                     self.phase_ticks = 0;
                 } else if self.phase_ticks >= 750 {
                     return Err(invalid("proprioceptive turn deadline missed"));
@@ -238,5 +295,24 @@ mod tests {
         let mut g = goal();
         g.heading_yaw_source_rad = f32::NAN;
         assert!(g.validate().is_err());
+    }
+
+    #[test]
+    fn scan_stops_at_a_real_observation_boundary_without_walking() {
+        let mut nav = MobileScanNavigator::new(
+            MobileScanGoal {
+                observation: goal().observation,
+                heading_yaw_source_rad: 0.,
+            },
+            &state(200),
+        )
+        .unwrap();
+        for tick in 200..320 {
+            let step = nav.update(&state(tick)).unwrap();
+            assert_ne!(step.phase, MobileNavigationPhase::Walk);
+            assert_eq!(step.navigation, [0.; 3]);
+            assert_eq!(step.completed, tick == 319);
+        }
+        assert!(nav.update(&state(320)).is_err());
     }
 }
