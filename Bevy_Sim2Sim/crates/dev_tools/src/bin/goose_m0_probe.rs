@@ -94,6 +94,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let performance_profile = arguments
         .iter()
         .any(|argument| argument == "--performance-profile");
+    let contact_impulse_trace = performance_profile
+        || arguments
+            .iter()
+            .any(|argument| argument == "--contact-impulse-trace");
     if performance_profile && !cfg!(feature = "live_physics_profile") {
         return Err("--performance-profile requires live_physics_profile".into());
     }
@@ -230,6 +234,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "combined is experimental: zero first block plus signed relative second block, one native implicit-mass response; existing relative-row cancellation guard; original detection/filtering unchanged"
     );
     receipt["native_trace_enabled"] = json!(cfg!(feature = "sim2sim_limit_row_trace"));
+    receipt["contact_impulse_trace_enabled"] = json!(contact_impulse_trace);
     if performance_profile {
         receipt["performance_profile"] = json!({
             "native_counters_enabled":true,
@@ -398,6 +403,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let state = assembly.state(&simulation)?;
             let state_wall_ms =
                 state_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
+            let impulse_signature =
+                contact_impulse_trace.then(|| contact_impulse_signature(&simulation));
             let performance_sample = if performance_profile {
                 let snapshot_started = Instant::now();
                 let reread_snapshot = simulation.snapshot();
@@ -420,7 +427,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "solver_writeback_ns":native.solver.velocity_writeback_time.time().as_nanos(),
                     "solver_contacts":native.solver.ncontacts,
                     "solver_constraints":native.solver.nconstraints,
-                    "contact_impulse_signature":contact_impulse_signature(&simulation)
+                    "contact_impulse_signature":impulse_signature.as_ref()
                 }))
             } else {
                 None
@@ -526,6 +533,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "physics_wall_ms":physics_wall_ms}));
             if let Some(performance_sample) = performance_sample {
                 trace.last_mut().unwrap()["performance"] = performance_sample;
+            }
+            if let Some(impulse_signature) = impulse_signature {
+                trace.last_mut().unwrap()["contact_impulse_signature"] = impulse_signature;
             }
             #[cfg(feature = "sim2sim_limit_row_trace")]
             {
