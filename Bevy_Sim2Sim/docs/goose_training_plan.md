@@ -248,3 +248,15 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 汇总与下一动作见 [共享接触检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/shared_contact_checkpoint.json)。下一周期回到本计划已规定的凝聚足底路线：先以原脚体质量与六接触区测 5/10/20/30 N 的真实压缩、释放及 1.5 mm 末端；已有源端直接格式 `solref` 明确未校准，不能把参数数值相同当作物理 K/C 等价。源端载荷证据先于目标接触实现，保持总质量、COM、完整惯量及合力／力矩映射，不授予高频动态等价。新实现须单独冻结版本，原 v1/v2 不覆写。
 
 本检查点原生关节范围 **23 项通过（含两项新增物理回归）**，simulation **25 项通过、10 项外部夹具检查未运行**；[519 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_shared_contact_checkpoint.json)、格式及空白检查通过。临时收据、轨迹、日志和冻结源码全部在项目备份目录。**M0 仍未通过，GPU／优化器使用为零。**
+
+### 凝聚足底源端物理载荷检查点
+
+[原生接触平衡检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_source_native_balance/receipt.json)确认：凝聚 v1 的直接格式 `solref` 不能当作 N/m 接触刚度。按 5／10／20／30 N 每区的 `load/K` 设置初始压缩后，实际平衡总载荷分别约为目标的 **70／94／301／352 倍**；每档另用独立冷启动验证平衡载荷。原模型和失败证据保留，不修改 v1。
+
+新的开发工具 `condensed_contact.py` 在 MuJoCo 3.10 的一次原生 20 ms 积分中设置物理法向行：每区 K/C 按实际接触点分配，`R=1/[h(h*Kp+Cp)]`，`aref=−v/h−Kp*gap/[h(h*Kp+Cp)]`，同步原生 island 行。使用实际距离，不改写积分后的坐标，不改变脚体质量、COM 或完整惯量。[源端 pilot](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_source_physical_rows/receipt.json)完成 **8 个程序、800 次积分**，无求解警告；5／10／20／30 N 的稳态压缩符合物理 K，40 N 超载的最大 1.5 mm 行程越界约 **5.93e−11 m**。释放与声明的冲击轨迹另存。
+
+此结果仅覆盖原凝聚右脚、六接触区和无摩擦竖直导向。六个移高 1.5 mm 的背衬盒只提供实验末端约束，尚无整机 CAD 碰撞资格；搜索带根据该夹具最大自由位移推导。冲击使用真实脚体质量和声明的外力，不代表完整机器人落地惯性；倾斜、摩擦、合力／力矩映射及高频等价均未授予资格。工具明确拒绝整机、多自由度和摩擦接触。
+
+**下一批只实施同参数的 Rapier 法向行及八程序配对**，预先保留 0.05 mm 压缩差和 10% 静载曲线门槛，动态、冲击及背衬误差分别报告，再决定是否进入整机候选。M0 仍未通过，PPO／GPU 为零。权威入口为 [凝聚足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_contact_checkpoint.json)；[实际执行源码快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_source_physical_rows_code/verified_snapshot.json)共 26 个文件逐项哈希验证。
+
+新增开发代码和回归分别位于 `crates/dev_tools/python/src/bevy_microduck_tools/goose/` 与 `crates/dev_tools/python/tests/`；运行时合同继续位于 `crates/modules/robot/src/goose/contract.rs`。本检查点 **51 项 Goose Python 回归、525 项工程结构检查及 Git 空白检查通过**。提交前按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)复核；全部实验产物仍在项目备份目录。
