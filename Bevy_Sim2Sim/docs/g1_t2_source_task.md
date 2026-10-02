@@ -1072,3 +1072,18 @@ lowering on the same typed owner. Original scan/carry budgets stay unchanged.
 The final actual RGB/self-sensor whitelist feeds classical marker localization;
 no target height, object pose, contact truth or saved action enters execution.
 This visibility pose is not bin approach, physical release or task acceptance.
+
+Fresh Bevy trial0196 completes913actual50HzT ticks after four unmarked RGB
+N1.6 calls; all913physical body states match the offline0194trial except the
+new episode identity. All250lower/stop Ticks retain hand-only support. Both
+markers decode from the actual final RGB. Independent audit measures horizontal
+position errors0.000650m for the box marker and0.003892m for the bin marker,
+with reprojection RMS0.342/0.560pixels. The strictly whitelisted perception
+input contains only camera calibration and original self sensors. Its visual
+navigation proposal is heading−1.614499rad and relative distance1.731257m;
+the proposal has **not** been executed. This trial records every physical
+boundary, no missed deadlines/pending debt, active sim/wall ratio0.998771,
+and closes the owned model after four successful inferences. It does not
+qualify original-bin placement, continuous unpaused1x or formal8/10.
+Raw trace SHA256:
+`ec9c9cd9cdf4a449f97c0cd26d08a14e76ff511f0ff02948fb02ff9f0065c2e9`.
