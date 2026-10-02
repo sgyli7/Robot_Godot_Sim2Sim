@@ -169,6 +169,53 @@ impl MobileGripCalibration {
         Ok((poses[28].translation.vector - poses[45].translation.vector).norm())
     }
 
+    /// Restore this episode's original calibrated transport pose through one
+    /// common bounded Cartesian shift. Inputs are commands and self joints only.
+    pub fn transport_restore_offset(
+        &self,
+        state: &G1Measurement,
+        current: &G1Command,
+        original: &G1Command,
+    ) -> Result<[f64; 3], RobotError> {
+        validate_self_state(state)?;
+        current.validate()?;
+        original.validate()?;
+        let frames = |command: &G1Command| {
+            let mut q = [0.; JOINT_COUNT];
+            for i in 0..JOINT_COUNT {
+                q[i] = f64::from(if i < LOWER_COUNT {
+                    state.joint_positions[i]
+                } else {
+                    command.upper_positions[i - LOWER_COUNT]
+                });
+            }
+            self.forward(&q)
+        };
+        let now = frames(current);
+        let target = frames(original);
+        let offsets = PALMS.map(|i| target[i].translation.vector - now[i].translation.vector);
+        let common = (offsets[0] + offsets[1]) * 0.5;
+        if current.navigation != [0.; 3]
+            || original.navigation != [0.; 3]
+            || common.norm() > 0.18
+            || (offsets[0] - offsets[1]).norm() > 2e-6
+            || PALMS.iter().any(|&i| {
+                (target[i].rotation.to_rotation_matrix().matrix()
+                    - now[i].rotation.to_rotation_matrix().matrix())
+                .norm()
+                    > 2e-5
+            })
+            || [7..14, 21..28].iter().any(|range| {
+                current.upper_positions[range.clone()] != original.upper_positions[range.clone()]
+            })
+        {
+            return Err(invalid(
+                "transport restoration is not a bounded common rigid-grip translation",
+            ));
+        }
+        Ok(common.into())
+    }
+
     /// Keep both original shoulder-to-wrist radii from increasing during a
     /// downward increment. One common inward shift keeps the box grip rigid.
     pub fn reach_preserving_offset(
@@ -458,6 +505,59 @@ mod tests {
         state: serde_json::Value,
         command: G1Command,
         goal: super::super::mobile_lowering::MobileLowerGoal,
+    }
+
+    #[derive(Deserialize)]
+    struct RestoreFixture {
+        state: serde_json::Value,
+        command: G1Command,
+        original_command: G1Command,
+        goal: super::super::mobile_restore::MobileRestoreGoal,
+    }
+    #[test]
+    #[ignore = "requires original definition and frozen raised self-state/commands;0world/model work"]
+    fn real_mobile_transport_restore_envelope() -> Result<(), RobotError> {
+        let env = |name| std::env::var(name).map_err(|e| invalid(format!("{name}: {e}")));
+        let definition = G1Definition::load(
+            Path::new(&env("G1_GRIP_DEFINITION")?),
+            &env("G1_GRIP_DEFINITION_SHA256")?,
+        )?;
+        let fixture: RestoreFixture = serde_json::from_slice(&bound_bytes(
+            Path::new(&env("G1_GRIP_FIXTURE")?),
+            &env("G1_GRIP_FIXTURE_SHA256")?,
+        )?)
+        .map_err(|e| invalid(e.to_string()))?;
+        let state = measurement(fixture.state).map_err(|e| invalid(e.to_string()))?;
+        let calibration = MobileGripCalibration::new(&definition)?;
+        let mut restoring = super::super::mobile_restore::MobileGripRestoring::new(
+            fixture.goal,
+            &state,
+            fixture.command,
+            &fixture.original_command,
+            &calibration,
+        )?;
+        let mut steps = Vec::new();
+        let result = (|| -> Result<(), RobotError> {
+            for index in 0..300 {
+                let mut synthetic = state.clone();
+                synthetic.source_tick += index;
+                synthetic.sim_time_ns = synthetic.source_tick * 20_000_000;
+                let step = restoring.update(&synthetic, &calibration)?;
+                let completed = step.completed;
+                steps.push(step);
+                if completed {
+                    return Ok(());
+                }
+            }
+            Err(invalid("restore pure envelope exceeded300updates"))
+        })();
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(env("G1_GRIP_OUTPUT")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(file,&serde_json::json!({"actual_integrations":0,"actual_model_inferences":0,"qualified":false,"synthetic_future_self_states_numeric_only":true,"completed":result.is_ok(),"steps":steps,"failure":result.as_ref().err().map(ToString::to_string)})).map_err(|e|invalid(e.to_string()))?;
+        result
     }
 
     /// Pure planning with one frozen real self state. Future Tick identities

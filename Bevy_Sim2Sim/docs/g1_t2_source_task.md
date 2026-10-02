@@ -1299,3 +1299,28 @@ also loses grip during a standing turn. No new model call occurs. Trace SHA256:
 The next bounded comparison must restore the independently validated original
 calibrated transport posture before body motion; friction/gain/force sweeps and
 longer failed walk deadlines are not adopted remedies.
+
+Original self FK comparison0223 identifies a common0.159071m palm translation
+back to the episode's calibrated transport posture: root-frame
+`[0.15251725, 0.000852408, 0.04518119]`. Left/right disagreement is0.624µm;
+palm rotations and fingers agree. The pure200IK-update/100standing-command
+envelope preserves the0.156043m commanded gap, with maximum joint increment
+0.007208rad and13nm rounded palm residual. It performs no integration or model
+call. `ClassicalRestore` permits only this≤18cm common rigid-grip translation
+at a completed raised carry boundary, followed by100physical standing Ticks;
+it reads original episode commands and current self joints, never object truth.
+
+Trial0224 is rejected before restore integration because the original-posture
+cache accidentally retained the predecessor VLA's small navigation command.
+The cache now explicitly stores stationary posture only; executed VLA/scan
+commands are unchanged. Corrected trial0225 reproduces the first1597body states
+bit-exact from fresh0219, then restores for200Ticks, stands for100 and repeats
+the same bounded view-turn heading for256Ticks. All556post-raise samples have
+hand-only box support, upright≥0.994888 and no non-floor robot contact. This
+counterfactual supports restoring arm posture before observation motion;
+unchanged raised posture in0222 lost support at1710. Total2153single50Hz
+integrations, no fresh VLA call. Trace SHA256:
+`c89df1860a7e9dd06ed90964ee1c38a2c1926471e2b13eb8103dbb6bf3a40423`.
+The turn's future camera identity in this fixture is explicitly synthetic.
+Fresh online restore/current-camera/turn observation remains required, and
+neither trial counts as formal T2 placement or qualified safe execution.
