@@ -132,6 +132,51 @@ def policy_reply(port, request, socket_path=None):
     return result
 
 
+def body_contract_frame(term, robot, measured, before_q, before_dq, tick):
+    """Read the actual original WBC buffers after its one control call.
+
+    No reconstructed observation, second inference, or physical truth is used.
+    Joint targets must be the same values handed to the real articulation.
+    """
+    import numpy as np
+    lower = term.get_wbc_policy.lower_body_policy
+    order = term.wbc_g1_joints_order
+    canonical_names = sorted(order, key=order.get)
+    if sorted(order.values()) != list(range(43)) or len(canonical_names) != 43:
+        raise ValueError('Original Homie canonical joint order changed')
+    ids = [robot.joint_names.index(name) for name in canonical_names]
+    obs = lower.observation
+    if (not np.array_equal(obs['q'][0], before_q[ids])
+            or not np.array_equal(obs['dq'][0], before_dq[ids])):
+        raise ValueError('Captured Homie input is not the pre-control robot state')
+    targets = measured(term.processed_actions)[ids]
+    applied = measured(robot.data.joint_pos_target)[ids]
+    if not np.array_equal(targets, applied):
+        raise ValueError('Source processed targets differ from articulation targets')
+    raw_targets = measured(term.raw_actions)[ids]
+    goal = term.get_wbc_goal
+    frame = {'control_tick': tick, 'positions': obs['q'][0].tolist(),
+        'velocities': obs['dq'][0].tolist(),
+        'root_rotation_wxyz': obs['floating_base_pose'][0, 3:7].tolist(),
+        'root_angular_velocity_body': obs['floating_base_vel'][0, 3:6].tolist(),
+        'navigation': goal['navigate_cmd'][0].tolist(),
+        'pelvis_height': float(goal['base_height_command'][0, 0]),
+        'torso_rpy': goal['torso_orientation_rpy_cmd'][0].tolist(),
+        'upper_positions': raw_targets[15:].tolist(),
+        'observation': lower.obs_buffer[0].tolist(), 'action': lower.action[0].tolist(),
+        'lower_targets': targets[:15].tolist(), 'targets': targets.tolist(),
+        'articulation_targets': applied.tolist(),
+        'policy': 'stand' if np.linalg.norm(lower.cmd) < .05 else 'walk'}
+    widths = {'positions': 43, 'velocities': 43, 'root_rotation_wxyz': 4,
+        'root_angular_velocity_body': 3, 'navigation': 3, 'torso_rpy': 3,
+        'upper_positions': 28, 'observation': 516, 'action': 15,
+        'lower_targets': 15, 'targets': 43, 'articulation_targets': 43}
+    if any(len(frame[key]) != width or not np.isfinite(frame[key]).all()
+           for key, width in widths.items()):
+        raise ValueError('Nonfinite or malformed actual source Homie buffers')
+    return frame, canonical_names
+
+
 def run_source(args, receipt, save, task_paths, mesh_assets):
     from isaaclab_arena.cli.isaaclab_arena_cli import get_isaaclab_arena_cli_parser
     from isaaclab_arena.utils.isaaclab_utils.simulation_app import SimulationAppContext
@@ -341,6 +386,7 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                     contact_subscription = get_physx_simulation_interface().subscribe_contact_report_events(contacts)
             action = torch.zeros(env.action_space.shape, device=raw.device)
             frames = []; frame_index = 0; sequence = 0; last_sha = None
+            body_frames = []
             with args.output.with_suffix('.jsonl').open('x') as trace:
                 for tick in range(args.ticks + 1):
                     q = measured(robot.data.joint_pos); root = measured(robot.data.root_link_pose_w)
@@ -393,7 +439,12 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                             # self-state. This is neither a VLA reply nor a wait
                             # controller, and is never installed in native runtime.
                             frame = {**groups, 'navigate_mps_rps': [0.0, 0.0, 0.0], 'base_height_m': .75}
-                            frames = [frame for _ in range(10)]
+                            frames = [dict(frame) for _ in range(10)]
+                            if args.body_contract_audit:
+                                # Finite named diagnostic commands exercise both
+                                # real Homie networks. Never a VLA/wait substitute.
+                                for walk_frame in frames[5:]:
+                                    walk_frame['navigate_mps_rps'] = [.1, 0.0, 0.0]
                             receipt['diagnostic_selfstate_targets'] = frame
                         print(f'G1_T2_TASK tick={tick} calls={receipt["policy_calls"]} upright={sample["upright"]:.6f}', flush=True)
                     if tick == args.ticks:
@@ -408,11 +459,34 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                     action[0, 43:46] = torch.as_tensor(frame['navigate_mps_rps'], device=raw.device)
                     action[0, 46] = frame['base_height_m']
                     frame_index += 1
+                    if args.body_contract_audit:
+                        before_q = measured(robot.data.joint_pos).copy()
+                        before_dq = measured(robot.data.joint_vel).copy()
                     _, _, terminated, truncated, info = env.step(action)
                     receipt['completed_control_ticks'] = tick + 1
                     receipt['actual_sdk_integrations'] = int(raw._sim_step_counter) - reset_counter
                     if receipt['actual_sdk_integrations'] != (tick + 1) * 4:
                         raise ValueError('T2 source integration count changed after step')
+                    if args.body_contract_audit:
+                        before_read = physical_state()
+                        before_read_counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                        body_frame, canonical_names = body_contract_frame(
+                            term, robot, measured, before_q, before_dq, tick)
+                        if (any(not np.array_equal(value, physical_state()[key]) for key, value in before_read.items())
+                                or before_read_counters != (int(raw._sim_step_counter), int(raw.sim._physics_step_count))):
+                            raise ValueError('Body-contract reading changed physical state/counters')
+                        body_frames.append(body_frame)
+                        body_file = captures / 'body_contract.json'
+                        body_file.write_text(json.dumps({'schema': 'g1_released_homie_actual_contract_v1',
+                            'arena_commit': receipt['arena_commit'], 'lab_commit': receipt['lab_commit'],
+                            'source_profile': args.source_profile, 'body_assets_sha256': FROZEN_ASSETS,
+                            'source_tree_sha256': args.source_tree_sha256,
+                            'source_runtime': receipt['runtime_versions'], 'joint_names': canonical_names,
+                            'body_input_truth_fields': [], 'extra_inferences': 0,
+                            'reading_changed_physics': False, 'frames': body_frames}, allow_nan=False))
+                        receipt['body_contract_capture'] = {'file': str(body_file), 'sha256': digest(body_file),
+                            'frames': len(body_frames), 'stand_controls': 5, 'walk_controls': 5,
+                            'extra_inferences': 0, 'reading_changed_physics': False}
                     if bool(terminated.any()) or bool(truncated.any()):
                         receipt['episode_termination'] = {'tick': tick + 1, 'terminated': bool(terminated.any()),
                             'truncated': bool(truncated.any()), 'terminal_step_auto_reset': True,
@@ -460,6 +534,8 @@ def main():
                         help='Read original SDK cooking with actual reset body poses; only zero-tick or ten-control no-VLA diagnostic')
     parser.add_argument('--scene-overlap-audit', action='store_true',
                         help='Explicit source query-support diagnostic; original ten controls, no VLA or qualification')
+    parser.add_argument('--body-contract-audit', action='store_true',
+                        help='Released-source ten controls: five stand and five walk; read actual WBC input/output/articulation targets, no extra inference')
     args = parser.parse_args()
     if (not 0 <= args.ticks <= 1500 or args.episode_id < 1 or not 0 <= args.seed < 2**32
             or (args.policy_port is not None and not 1 <= args.policy_port <= 65535)
@@ -471,6 +547,9 @@ def main():
         parser.error('Initial collision reading requires zero ticks or the original ten-control no-VLA diagnostic')
     if args.scene_overlap_audit and (not args.run_source or not args.reset_contact_audit or args.source_profile != 'development_0_3'):
         parser.error('Scene overlap diagnostic requires the original ten-control no-VLA fixture')
+    if args.body_contract_audit and (not args.run_source or not args.reset_contact_audit
+            or args.source_profile != 'release_0_2_1' or args.initial_collision_audit or args.scene_overlap_audit):
+        parser.error('Body contract reading requires released-source ten-control no-VLA fixture without collision/query changes')
     arena_rev, lab_rev, expected_runtime = SOURCE_PROFILES[args.source_profile]
     if bool(args.source_tree_receipt) != bool(args.source_tree_sha256):
         parser.error('Source-tree receipt and its frozen SHA256 must be provided together')
@@ -524,6 +603,9 @@ def main():
     if args.reset_contact_audit:
         receipt.update(scope='test-private ten-control initial-contact comparison; fixed reset self-state targets and original Homie; no VLA, wait fallback, native or task qualification',
                        reset_contact_diagnostic=True, installed_native_fallback=False)
+    if args.body_contract_audit:
+        receipt.update(scope='test-private released Homie numerical contract: five stand and five walk controls, fixed reset upper targets; no VLA, wait fallback or native qualification',
+                       body_contract_diagnostic=True)
     with args.output.open('x') as output:
         def save():
             output.seek(0); output.truncate()

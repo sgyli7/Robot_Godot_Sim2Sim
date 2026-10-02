@@ -231,6 +231,18 @@ mod tests {
     #[test]
     #[ignore = "requires G1_ORACLE, G1_ORACLE_SHA256, G1_MODEL_DIR, G1_ORT, G1_ORT_SHA256"]
     fn upstream_observation_and_real_onnx_parity() {
+        assert_oracle(false);
+    }
+
+    /// Independently recorded original release scene buffers, including both
+    /// networks and all 43 targets actually delivered to the articulation.
+    #[test]
+    #[ignore = "requires released actual G1_ORACLE + SHA, frozen models/ORT, fresh G1_PARITY_OUTPUT"]
+    fn released_scene_observation_and_real_onnx_parity() {
+        assert_oracle(true);
+    }
+
+    fn assert_oracle(released: bool) {
         let variable = |name| std::env::var(name).expect(name);
         let source = bound_bytes(
             Path::new(&variable("G1_ORACLE")),
@@ -238,10 +250,41 @@ mod tests {
         )
         .unwrap();
         let receipt: serde_json::Value = serde_json::from_slice(&source).unwrap();
-        assert_eq!(
-            receipt["arena_commit"],
-            "7d75c95934c51a0318c957a8831e862ca43c53b5"
-        );
+        if released {
+            assert_eq!(receipt["schema"], "g1_released_homie_actual_contract_v1");
+            assert_eq!(receipt["source_profile"], "release_0_2_1");
+            assert_eq!(
+                receipt["arena_commit"],
+                "8b4a3a47fc53de23e8205089d71109a2e2348acd"
+            );
+            assert_eq!(
+                receipt["lab_commit"],
+                "e57379c634b42db5a0fe9f754341be6e2a7c7c43"
+            );
+            assert_eq!(
+                receipt["source_tree_sha256"],
+                "b3e9519d606af00a80f24293f6c3952df8a2fcc134ce6f53eb5d57e031a55cee"
+            );
+            assert_eq!(receipt["body_assets_sha256"]["stand.onnx"], STAND_SHA256);
+            assert_eq!(receipt["body_assets_sha256"]["walk.onnx"], WALK_SHA256);
+            assert_eq!(
+                receipt["body_assets_sha256"]["g1_29dof_with_hand_rev_1_0.usd"],
+                super::super::definition::USD_SHA256
+            );
+            assert_eq!(
+                receipt["source_runtime"]["isaacsim_standalone_build"],
+                "6.0.0-rc.22+release.33481.407f3ea1.gl"
+            );
+            assert_eq!(receipt["joint_names"], serde_json::json!(&JOINT_NAMES[..]));
+            assert_eq!(receipt["body_input_truth_fields"], serde_json::json!([]));
+            assert_eq!(receipt["extra_inferences"], 0);
+            assert_eq!(receipt["reading_changed_physics"], false);
+        } else {
+            assert_eq!(
+                receipt["arena_commit"],
+                "7d75c95934c51a0318c957a8831e862ca43c53b5"
+            );
+        }
         let dir = std::path::PathBuf::from(variable("G1_MODEL_DIR"));
         let mut policy = HomiePolicy::load(
             Path::new(&variable("G1_ORT")),
@@ -261,7 +304,11 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|x| x.as_f64().unwrap() as f32)
+                    .map(|x| {
+                        let value = x.as_f64().unwrap() as f32;
+                        assert!(value.is_finite());
+                        value
+                    })
                     .collect::<Vec<_>>()
             };
             let state = G1State {
@@ -276,8 +323,21 @@ mod tests {
                 navigation: vector("navigation").try_into().unwrap(),
                 pelvis_height: frame["pelvis_height"].as_f64().unwrap() as f32,
                 torso_rpy: vector("torso_rpy").try_into().unwrap(),
-                upper_positions: [0.; UPPER_COUNT],
+                upper_positions: if released {
+                    vector("upper_positions").try_into().unwrap()
+                } else {
+                    [0.; UPPER_COUNT]
+                },
             };
+            assert_eq!(vector("observation").len(), OBSERVATION_SIZE);
+            assert_eq!(vector("action").len(), LOWER_COUNT);
+            assert_eq!(vector("lower_targets").len(), LOWER_COUNT);
+            if released {
+                assert_eq!(frame["control_tick"], count);
+                assert_eq!(frame["policy"], if count < 5 { "stand" } else { "walk" });
+                assert_eq!(vector("targets").len(), JOINT_COUNT);
+                assert_eq!(frame["targets"], frame["articulation_targets"]);
+            }
             for (&actual, expected) in history
                 .observe(&state, &command)
                 .unwrap()
@@ -299,14 +359,37 @@ mod tests {
             {
                 max_target = max_target.max((actual - expected).abs());
             }
+            if released {
+                for (&actual, expected) in result.targets.iter().zip(vector("targets")) {
+                    max_target = max_target.max((actual - expected).abs());
+                }
+            }
             history.accept_action(result.action, &command).unwrap();
             count += 1;
         }
         assert_eq!(count, 10);
         assert_eq!(policy.inference_count(), count);
+        assert_eq!(policy.inference_attempt_count(), count);
         println!(
             "HOMIE_ORACLE frames={count} max_obs={max_obs:e} max_action={max_action:e} max_target={max_target:e}"
         );
         assert!(max_obs < 1e-5 && max_action < 1e-5 && max_target < 1e-5);
+        if released {
+            use std::io::Write;
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(variable("G1_PARITY_OUTPUT"))
+                .unwrap();
+            let summary = serde_json::json!({"schema":"g1_released_homie_parity_v1",
+                "oracle_sha256":variable("G1_ORACLE_SHA256"), "frames":count,
+                "stand_inferences":5,"walk_inferences":5,"actual_inference_attempts":policy.inference_attempt_count(),
+                "max_observation_abs_error":max_obs,"max_action_abs_error":max_action,
+                "max_all_43_targets_abs_error":max_target,"tolerance":1e-5,
+                "physics_integrations":0,"native_stability_qualified":false});
+            output
+                .write_all(&serde_json::to_vec_pretty(&summary).unwrap())
+                .unwrap();
+        }
     }
 }

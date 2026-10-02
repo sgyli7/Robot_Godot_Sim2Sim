@@ -490,6 +490,138 @@ mod tests {
         );
     }
 
+    /// Single bounded baseline for the released T2 body, without task objects.
+    /// Measures drift and every original joint limit; survival alone is not T0
+    /// qualification. This never changes the owner's solver or time settings.
+    #[test]
+    #[ignore = "requires frozen G1 env, native_force_based, G1_CODE_COMMIT and fresh G1_T0_OUTPUT"]
+    fn real_homie_released_stand30_diagnostic() {
+        use std::{io::Write, time::Instant};
+        let mut config = config();
+        assert_eq!(config.actuator_backend, G1ActuatorBackend::NativeForceBased);
+        // Published T2 root [0,.18,0], shifted with its floor by +.795m.
+        // Flat-floor diagnostic only; no claim of original background contact.
+        config.root_pose.position = [0., 0.18, 0.795];
+        config.floor_contact_friction = 0.5;
+        let output = PathBuf::from(env::var("G1_T0_OUTPUT").unwrap());
+        let mut report_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .unwrap();
+        let trace_path = output.with_extension("jsonl");
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&trace_path)
+            .unwrap();
+        let definition = G1Definition::load(&config.definition, &config.definition_sha256).unwrap();
+        let limits: Vec<_> = definition
+            .driven_joints()
+            .iter()
+            .map(|&id| definition.model().joints[id].limits)
+            .collect();
+        let started = Instant::now();
+        let mut runner = G1Runner::load(&config).unwrap();
+        let initial = runner.measurement().unwrap();
+        assert_eq!(initial.source_tick, 0);
+        assert_eq!(initial.joint_positions[..15], LOWER_HOME);
+        let command = G1Command::default();
+        let mut reason = "completed".to_owned();
+        let mut completed = 0;
+        let mut minimum_upright = 1_f32;
+        let mut minimum_height = f32::MAX;
+        let mut maximum_drift = 0_f64;
+        let mut first_limit_violation = None;
+        let mut last_configuration = None;
+        for _ in 0..1500 {
+            let step = match runner.step(&command) {
+                Ok(step) => step,
+                Err(error) => {
+                    reason = error.to_string();
+                    break;
+                }
+            };
+            completed += 1;
+            let params = &step.step_configuration;
+            assert_eq!(params.physics_hz, 50);
+            assert_eq!(params.dt, 1. / 50.);
+            assert_eq!(params.num_solver_iterations, 1);
+            assert_eq!(params.num_internal_pgs_iterations, 1);
+            assert_eq!(params.max_ccd_substeps, 1);
+            assert_eq!(params.additional_solver_iterations_max, 0);
+            assert_eq!(step.integration_count, completed);
+            assert_eq!(step.torque_update_count, completed);
+            assert_eq!(step.inference.inference_count, completed);
+            assert_eq!(step.inference.policy, "stand");
+            assert_eq!(step.applied_torques, vec![0.; 43]);
+            minimum_upright = minimum_upright.min(step.root_upright_cosine);
+            minimum_height = minimum_height.min(step.root_position_source[2]);
+            let drift = (f64::from(step.root_position_source[0]).powi(2)
+                + (f64::from(step.root_position_source[1]) - 0.18).powi(2))
+            .sqrt();
+            maximum_drift = maximum_drift.max(drift);
+            if first_limit_violation.is_none() {
+                for (index, (&q, bounds)) in step
+                    .measurement
+                    .joint_positions
+                    .iter()
+                    .zip(&limits)
+                    .enumerate()
+                {
+                    if f64::from(q) < bounds[0] - 1e-4 || f64::from(q) > bounds[1] + 1e-4 {
+                        first_limit_violation = Some(serde_json::json!({"tick":completed,
+                            "joint":robot_minigame::g1::contract::JOINT_NAMES[index],"position":q,"limits":bounds,"tolerance_rad":1e-4}));
+                        break;
+                    }
+                }
+            }
+            let fell = step.root_position_source[2] < 0.35 || step.root_upright_cosine < 0.5;
+            serde_json::to_writer(&mut trace, &serde_json::json!({"control_tick":completed,
+                "measurement":step.measurement,"command":command,"inference":step.inference,
+                "root_position_source":step.root_position_source,"root_upright_cosine":step.root_upright_cosine,
+                "active_contact_pairs":step.active_contact_pairs,"integration_count":step.integration_count,
+                "torque_update_count":step.torque_update_count,"step_configuration":params})).unwrap();
+            trace.write_all(b"\n").unwrap();
+            last_configuration = Some(step.step_configuration);
+            if fell {
+                reason = "fell: pelvis below .35m or tilt above60deg".into();
+                break;
+            }
+        }
+        trace.flush().unwrap();
+        let report = serde_json::json!({"schema":"g1_released_homie_native_stand30_v1",
+            "scope":"single flat-floor body diagnostic; no scene, VLA, task or real-time qualification",
+            "qualified":false,"code_commit":env::var("G1_CODE_COMMIT").unwrap(),
+            "config":{"definition":config.definition,"definition_sha256":config.definition_sha256,
+                "ort_library":config.ort_library,"ort_sha256":config.ort_sha256,
+                "stand_model":config.stand_model,"walk_model":config.walk_model,
+                "actuator_backend":config.actuator_backend,"episode_id":config.episode_id,
+                "root_position_source":config.root_pose.position,"root_rotation_wxyz":config.root_pose.rotation_wxyz,
+                "robot_contact_friction":config.robot_contact_friction,"floor_contact_friction":config.floor_contact_friction,
+                "task_objects":null},"initial_measurement":initial,"requested_controls":1500,
+            "completed_controls":completed,"simulated_seconds":completed as f64*0.02,
+            "termination":reason,"minimum_upright_cosine":minimum_upright,
+            "minimum_root_height_m":minimum_height,"maximum_horizontal_drift_m":maximum_drift,
+            "first_joint_limit_violation":first_limit_violation,"limit_tolerance_rad":1e-4,
+            "progress_counts":runner.progress_counts(),"actual_step_configuration":last_configuration,
+            "execution_wall_seconds":started.elapsed().as_secs_f64(),"trace":trace_path,
+            "stand_sha256":robot_minigame::g1::policy::STAND_SHA256,
+            "walk_sha256":robot_minigame::g1::policy::WALK_SHA256,
+            "source_profile":"release_0_2_1","source_physics_hz":200,"native_physics_hz":50,
+            "limits":["robot convex cooking and four sensor mass defaults remain diagnostic",
+                "flat floor omits original shelf, objects and background contacts",
+                "PhysX joint friction and velocity constraint mapping not qualified"]});
+        serde_json::to_writer_pretty(&mut report_file, &report).unwrap();
+        report_file.flush().unwrap();
+        println!(
+            "G1_RELEASED_STAND30 termination={reason} controls={completed} max_drift_m={maximum_drift} min_upright={minimum_upright} first_limit={first_limit_violation:?}"
+        );
+        // The diagnostic reports failures honestly; this asserts measurement,
+        // never successful body/task qualification.
+        assert!(completed > 0, "no real native boundary completed: {reason}");
+    }
+
     /// Separate development-only source-frequency diagnostic. It never calls the
     /// 50 Hz game runner or presents its 200 Hz ticks as game qualification.
     #[test]

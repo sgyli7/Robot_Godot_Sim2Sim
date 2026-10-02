@@ -30,3 +30,26 @@ cargo test --locked --offline -p simulation_minigame --lib \
 还需设置 `G1_MODEL_DIR`、`G1_DEFINITION_SHA256`、`G1_ORT`、
 `G1_ORT_SHA256` 和完整 `G1_CODE_COMMIT`。使用固定集成源码路径和有界外部
 执行器记录二进制及输入 hash，不共享兄弟工作树的 Cargo target。
+
+独立的 `g1::runner::tests::real_homie_released_stand30_diagnostic` 固定为
+1500 次零导航命令，采用发布版 T2 的初始根位置经地板平移后
+`[0,.18,.795]`、机器人及地板摩擦 .5、上肢零目标和 .75 m 高度目标。
+它只用平地，省略源场景背景及任务物件，不等于 T2 场景稳定性。
+共享 USD 导出的本体身份仍独立保留原导出提交；发布版 USD 和控制器
+已经通过原始字节及源代码对照，没有重标旧导出为新源场景。
+保持现有 Homie 原生候选的每 Tick 一次 20 ms 积分、1 次 solver 时间步、
+1 次非积分 PGS、1 次 CCD 上限及零附加时间步，不启用预测限位或额外 PGS。
+输出记录完整逐 Tick 自状态、命令、实际网络输出及关节目标，并检查
+全部原配关节限位（数值容差 1e-4 rad），记录倾斜、水平漂移及实际计数。
+测试通过只意味着生成了真实诊断结果；跌倒或漂移不会被计为任务成功。
+
+设置同上的模型、源码身份环境变量以及全新 `G1_T0_OUTPUT` 后：
+
+```bash
+G1_ACTUATOR_BACKEND=native_force_based \
+cargo test --locked --offline -p simulation_minigame --lib \
+  g1::runner::tests::real_homie_released_stand30_diagnostic -- \
+  --ignored --exact --test-threads=1 --nocapture
+```
+
+同名 `.jsonl` 保存逐 Tick 记录；禁止覆盖或重复使用旧结果路径。

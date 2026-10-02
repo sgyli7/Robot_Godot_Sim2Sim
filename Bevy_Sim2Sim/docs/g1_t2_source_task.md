@@ -225,5 +225,35 @@ dynamic background and lowercase robot path) and a failed released-stack import
 root check. The latter was resolved by verifying the actual installed copied
 source roots against all 3205 frozen source files, not by relaxing byte checks.
 
+`--source-profile release_0_2_1 --reset-contact-audit --body-contract-audit
+--ticks 10 --run-source` records actual original Homie buffers in
+`source.captures/body_contract.json`. This separate diagnostic uses five zero
+navigation commands followed by five [.1,0,0] commands, fixed reset upper
+targets and the original .75 m height. It reads the pre-control 43 named joints,
+516-value history, original network output and all 43 targets actually supplied
+to the articulation. It neither reconstructs source observations nor makes a
+second inference. Physical state and SDK counters are unchanged by reading.
+It cannot be combined with collision/query diagnostics or a VLA service.
+
+The first capture completed 10 controls / 40 original integrations / zero VLA
+calls. Its byte identity is
+`ea0148e895e4cf7ee662e14eea69f277c36312e7d821fcf198831a1edc0d00c6`.
+The Rust ignored test
+`g1::policy::tests::released_scene_observation_and_real_onnx_parity` binds this
+receipt, both released source revisions, the source-tree manifest, SDK build,
+joint names and both original weights. It runs five stand and five walk ORT
+inferences with independently accumulated native history. Maximum absolute
+errors are 7.1525574e-7 for input and action, and 1.7881393e-7 for all 43
+articulation targets, below the fixed 1e-5 tolerance. This proves numerical
+contract parity on these actual source frames, not native dynamic stability.
+Set `G1_ORACLE`, `G1_ORACLE_SHA256`, `G1_MODEL_DIR`, `G1_ORT`,
+`G1_ORT_SHA256` and a fresh `G1_PARITY_OUTPUT`, then run:
+
+```bash
+cargo test --locked --offline -p robot_minigame --lib \
+  g1::policy::tests::released_scene_observation_and_real_onnx_parity -- \
+  --ignored --exact --test-threads=1 --nocapture
+```
+
 [contact_reports]: https://docs.omniverse.nvidia.com/dev-guide/latest/programmer_ref/physics/rb_physics.html
 [cooking]: https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/extensions/runtime/source/omni.physx/docs/api/python.html
