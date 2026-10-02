@@ -523,6 +523,28 @@ mod tests {
             .collect();
         let started = Instant::now();
         let mut runner = G1Runner::load(&config).unwrap();
+        // One bounded algebraic convergence comparison, never a time substep
+        // or a public runner default. Other values cannot request a sweep.
+        let pgs = match env::var("G1_HOMIE_STAND_PGS_DIAGNOSTIC").as_deref() {
+            Err(_) => 1,
+            Ok("4") => {
+                assert_eq!(
+                    runner
+                        .simulation
+                        .world
+                        .integration_parameters
+                        .num_internal_pgs_iterations,
+                    1
+                );
+                runner
+                    .simulation
+                    .world
+                    .integration_parameters
+                    .num_internal_pgs_iterations = 4;
+                4
+            }
+            Ok(other) => panic!("unsupported bounded Homie PGS diagnostic: {other}"),
+        };
         let initial = runner.measurement().unwrap();
         assert_eq!(initial.source_tick, 0);
         assert_eq!(initial.joint_positions[..15], LOWER_HOME);
@@ -547,7 +569,7 @@ mod tests {
             assert_eq!(params.physics_hz, 50);
             assert_eq!(params.dt, 1. / 50.);
             assert_eq!(params.num_solver_iterations, 1);
-            assert_eq!(params.num_internal_pgs_iterations, 1);
+            assert_eq!(params.num_internal_pgs_iterations, pgs);
             assert_eq!(params.max_ccd_substeps, 1);
             assert_eq!(params.additional_solver_iterations_max, 0);
             assert_eq!(step.integration_count, completed);
@@ -605,6 +627,7 @@ mod tests {
             "minimum_root_height_m":minimum_height,"maximum_horizontal_drift_m":maximum_drift,
             "first_joint_limit_violation":first_limit_violation,"limit_tolerance_rad":1e-4,
             "progress_counts":runner.progress_counts(),"actual_step_configuration":last_configuration,
+            "nonintegrating_pgs_diagnostic":pgs != 1,"native_default_changed":false,
             "execution_wall_seconds":started.elapsed().as_secs_f64(),"trace":trace_path,
             "stand_sha256":robot_minigame::g1::policy::STAND_SHA256,
             "walk_sha256":robot_minigame::g1::policy::WALK_SHA256,
