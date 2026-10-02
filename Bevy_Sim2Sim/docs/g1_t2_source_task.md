@@ -660,3 +660,68 @@ session layer, then cleared; original attribute values are restored. Actual
 robot/prop state and both physics counters remain exactly unchanged at0.
 Parser isolation checks pass10/10. No native lighting sweep, training, model
 change, autonomous carry, placement or1x qualification is claimed.
+
+Cases0156–0160 add a strictly opt-in source-panel renderer comparison. It loads
+only the frozen actual SDK light-query bytes(SHA256
+`d23f8c54bcbdfcc394efb0a23b0273c3c7379152b66361dc773e4733f33a482b`,
+bounded512KiB), verifies the runtime, eight paths, legacy inputs and transforms,
+then creates four fixed spatial samples per panel. There are no physical
+substeps or object/body edits. The on-axis patch intensity is L*A/4 candela;
+Bevy's point power parameter is4pi times this value,103446.37 per sample.
+This uses [the USD light luminance convention](https://openusd.org/dev/api/usd_lux_page_front.html)
+and the installed Bevy point-light conversion. No brightness is fitted to a
+task result. All source panels, including those outside the selected visual
+mesh region, are retained.
+
+The initial hemisphere spot approximation produces severe grain/shadow
+suppression in zero-step0157 and is not sent to a model. Its almost180degree
+perspective shadow projection is ill-conditioned (about10000m half-width at1m
+distance); this is a geometric explanation, not a separate shadow-off causal
+proof. The final implementation uses32point emitters, ordinary cube shadows
+and one generated64pixel-per-face linear Lambertian angular mask. The mask's
+UV/face directions follow the actual Bevy shader; its forward/black-backlight
+regression passes. This remains finite spatial quadrature with20m light range,
+raster shadows and noRTXGI, not exact RTX area-light parity. The existing
+ambient450 and EV1009.7 are held fixed for this isolated light comparison.
+The native directional light is omitted only in this explicit profile.
+
+Bevy's light-texture shader path needs an explicit build feature. Zero-step0158
+rejects the incomplete earlier build before any physical/model call; its
+"GPU lacks" error was actually caused by the missing compile feature. A new
+development-only `g1_source_lighting` feature enables `bevy/pbr_light_textures`;
+the configuration now rejects builds lacking that feature before loading a
+worker. It also requires actual GPU binding-array support and refuses an
+isotropic fallback. Source light clustering reserves the measured131072index
+capacity before extraction. Default game features/scenes remain unchanged.
+
+```bash
+cargo build -p bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_constraint_diagnostic,dev_tools_minigame/g1_source_lighting
+```
+
+Supply `diagnostic_aces_fitted=true` and a `diagnostic_source_rect_lighting`
+object containing the absolute actual-query `path` and SHA256 above, alongside
+the original mobile background configuration. The zero-step0159 GPU capture
+passes at1920x1080/MSAA8 with a real640x480 ego image; actual camera HDR/ACES
+and GPU mask support are recorded. Binary SHA256:
+`824d059652afa72b8b399a08c01a28ae80f03a9a50dddef4ea0d8357bd8a7d09`.
+
+The first realRGB four-call200Tick comparison0160 **passes the bounded held-lift
+stage**: maximum box rise0.115835m,84positive robot-contact samples,
+15consecutive held-lift ticks186–200, and no background support in those ticks.
+Minimum upright is0.994435 and maximum XY drift0.136773m. The exact same held
+rule used in source-command diagnostic0139 is retained (>=50mm rise, positive
+robot support, no background support, upright>.95). All200actual body policy
+calls/control updates/single20ms integrations and all four real model calls
+are verified. Captured PNG/model NPZ pixels are identical; only RGB and named
+self state enter N1.6. There is no source-action replay. The owned service
+closes after54.06s. Native step trace SHA256:
+`dc414ab60a0ed20cd71d89bd3bfbd31a724fb03ade0a4e8f1b1a6ea8bec4f769`.
+This enables a next finite carry/release-stage test. It does not qualify the
+complete T2 skill, science station,1x timing, strict placement or8/10 benchmark.
+
+The expanded-feature regression0161 passes174workspace library checks with
+37explicitly ignored resource/experiment cases, plus the app CLI check and the
+actual frozen-panel energy/basis comparison. Zero-step0162 also passes the
+legacy station shader configuration at1920x1080: actual HDR=false,
+tonemapping=none, original450ambient/15000directional, and no source-panel
+profile. No physics or model calls occur in that legacy GPU check.

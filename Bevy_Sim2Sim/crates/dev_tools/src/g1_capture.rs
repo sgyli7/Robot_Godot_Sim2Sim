@@ -19,6 +19,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::{Exposure, Hdr},
     core_pipeline::tonemapping::Tonemapping,
+    light::cluster::GlobalClusterSettings,
     prelude::*,
     render::{
         render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -64,6 +65,8 @@ use task_minigame::{
     types::{ObservationStamp, TaskProfile},
 };
 
+use super::g1_source_lighting::{SourceLightingReceipt, SourceRectLighting};
+
 /// Explicit evidence settings. Zero ticks captures the native initialized world
 /// without inference or integration. A nonzero budget performs at most 3 seconds
 /// of the unqualified real standing candidate and also records any failure.
@@ -104,6 +107,9 @@ struct CaptureConfiguration {
     /// and an HDR intermediate; it does not claim RTX shader equivalence.
     #[serde(default)]
     diagnostic_aces_fitted: bool,
+    /// One fixed quadrature of the original eight ceiling panels; no tuning.
+    #[serde(default)]
+    diagnostic_source_rect_lighting: Option<BackgroundVisualConfiguration>,
     #[serde(default)]
     predictive_limit_diagnostic: bool,
     #[serde(default)]
@@ -382,6 +388,7 @@ fn run_from_file(
         config.diagnostic_ambient_brightness,
         config.diagnostic_directional_illuminance,
         config.diagnostic_aces_fitted,
+        config.diagnostic_source_rect_lighting,
         config.predictive_limit_diagnostic,
         config.diagnostic_constraint_sweeps,
         config.background_visual,
@@ -458,6 +465,8 @@ pub struct G1CaptureReceipt {
     pub diagnostic_aces_fitted: bool,
     pub ego_camera_hdr: Option<bool>,
     pub ego_camera_tonemapping: Option<&'static str>,
+    source_rect_lighting: Option<SourceLightingReceipt>,
+    source_light_masks_gpu_supported: Option<bool>,
     pub factory_verified_predictive_limit_joints: usize,
     pub factory_verified_diagnostic_constraint_sweeps: Option<u32>,
     pub background_visual_status: Option<G1BackgroundVisualStatus>,
@@ -582,6 +591,8 @@ impl G1CaptureReceipt {
             diagnostic_aces_fitted: false,
             ego_camera_hdr: None,
             ego_camera_tonemapping: None,
+            source_rect_lighting: None,
+            source_light_masks_gpu_supported: None,
             factory_verified_predictive_limit_joints: 0,
             factory_verified_diagnostic_constraint_sweeps: None,
             background_visual_status: None,
@@ -629,6 +640,7 @@ struct DiagnosticPhotometry {
 struct DiagnosticIllumination {
     ambient_brightness: f32,
     directional_illuminance: f32,
+    source_rect_lighting: Option<SourceRectLighting>,
 }
 
 #[derive(Resource)]
@@ -670,6 +682,29 @@ fn configure_diagnostic_exposure(
                 Some(Tonemapping::AcesFitted) => "aces_fitted",
                 _ => "unexpected",
             });
+        }
+    }
+}
+
+fn reserve_source_light_clusters(
+    illumination: Res<DiagnosticIllumination>,
+    mut settings: ResMut<GlobalClusterSettings>,
+    outcome: Res<CaptureOutcome>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if illumination.source_rect_lighting.is_some() {
+        outcome.0.lock().unwrap().source_light_masks_gpu_supported =
+            Some(settings.clustered_decals_are_usable);
+        if !settings.clustered_decals_are_usable {
+            outcome.0.lock().unwrap().failure_reason =
+                Some("GPU lacks source-light texture masks; no isotropic fallback admitted".into());
+            exit.write(AppExit::error());
+            return;
+        }
+        if let Some(gpu) = &mut settings.gpu_clustering {
+            // Capacity measured by the zero-step32light diagnostic. Reserve it
+            // before extraction so initial model images do not see overflow.
+            gpu.initial_index_list_capacity = gpu.initial_index_list_capacity.max(131_072);
         }
     }
 }
@@ -834,6 +869,7 @@ pub fn run_capture(
         None,
         None,
         false,
+        None,
         false,
         None,
         None,
@@ -856,6 +892,7 @@ fn run_capture_owner(
     diagnostic_ambient_brightness: Option<f32>,
     diagnostic_directional_illuminance: Option<f32>,
     diagnostic_aces_fitted: bool,
+    diagnostic_source_rect_lighting: Option<BackgroundVisualConfiguration>,
     predictive_limit_diagnostic: bool,
     diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
@@ -886,6 +923,18 @@ fn run_capture_owner(
     {
         return Err("ACES comparison requires the explicit original T2 background and mobile body diagnostic".into());
     }
+    if diagnostic_source_rect_lighting.is_some() && !diagnostic_aces_fitted {
+        return Err("source panel comparison requires the explicit mobile ACES diagnostic".into());
+    }
+    if diagnostic_source_rect_lighting.is_some() && !cfg!(feature = "g1_source_lighting") {
+        return Err(
+            "source panel masks require the explicit development g1_source_lighting build feature"
+                .into(),
+        );
+    }
+    let source_rect_lighting = diagnostic_source_rect_lighting
+        .map(|input| SourceRectLighting::load(&input.path, &input.sha256))
+        .transpose()?;
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
     let ambient_brightness = diagnostic_ambient_brightness.unwrap_or(450.);
@@ -1057,6 +1106,12 @@ fn run_capture_owner(
     outcome.0.lock().unwrap().camera_ambient_brightness = ambient_brightness;
     outcome.0.lock().unwrap().camera_directional_illuminance = directional_illuminance;
     outcome.0.lock().unwrap().diagnostic_aces_fitted = diagnostic_aces_fitted;
+    outcome.0.lock().unwrap().source_rect_lighting = source_rect_lighting
+        .as_ref()
+        .map(|light| light.receipt.clone());
+    if source_rect_lighting.is_some() {
+        outcome.0.lock().unwrap().camera_directional_illuminance = 0.;
+    }
     if render_only_environment_translation.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "external_measured_pose_initialized_zero_tick_renderer_comparison";
@@ -1113,6 +1168,7 @@ fn run_capture_owner(
         .insert_resource(DiagnosticIllumination {
             ambient_brightness,
             directional_illuminance,
+            source_rect_lighting,
         })
         .insert_resource(model)
         .insert_resource(outcome.clone())
@@ -1159,7 +1215,10 @@ fn run_capture_owner(
                 }),
         )
         .add_plugins((G1VisualPlugin, G1CameraPlugin, G1ObservationPlugin))
-        .add_systems(Startup, setup_floor_scene)
+        .add_systems(
+            Startup,
+            (reserve_source_light_clusters, setup_floor_scene).chain(),
+        )
         .add_systems(
             Update,
             (configure_diagnostic_exposure, drive_capture)
@@ -1256,6 +1315,7 @@ fn pace_diagnostic_render(mut pace: ResMut<DiagnosticRenderPace>) {
 
 fn setup_floor_scene(
     mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     background: Option<Res<G1BackgroundVisualModel>>,
@@ -1282,14 +1342,18 @@ fn setup_floor_scene(
         brightness: illumination.ambient_brightness,
         ..default()
     });
-    commands.spawn((
-        DirectionalLight {
-            illuminance: illumination.directional_illuminance,
-            shadow_maps_enabled: shadows.0,
-            ..default()
-        },
-        Transform::from_xyz(3., 5., 2.).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    if let Some(source) = &illumination.source_rect_lighting {
+        source.spawn(&mut commands, &mut images);
+    } else {
+        commands.spawn((
+            DirectionalLight {
+                illuminance: illumination.directional_illuminance,
+                shadow_maps_enabled: shadows.0,
+                ..default()
+            },
+            Transform::from_xyz(3., 5., 2.).looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+    }
     commands.spawn((
         Camera3d::default(),
         Msaa::Sample8,
