@@ -146,7 +146,9 @@ def run(args, receipt, output):
                         'processed_joint_targets': term.processed_actions[0].detach().cpu().tolist(),
                         'upright': float(-gravity[2]), 'policy_sequence': sequence,
                         'last_action_frame': frame_index - 1 if frames else None,
-                        'acceptance_truth_only': {name: measured(raw.scene[name].data.root_pose_w).tolist()
+                        'acceptance_truth_only': {name: {
+                            'pose': measured(raw.scene[name].data.root_pose_w).tolist(),
+                            'velocity': measured(raw.scene[name].data.root_vel_w).tolist()}
                             for name in (launch.object, launch.destination)}}
                     log.write(json.dumps(sample, allow_nan=False) + '\n'); log.flush()
                     receipt['last_state'] = sample
@@ -195,10 +197,14 @@ def run(args, receipt, output):
                         action[0, 46] = frame['base_height_m']
                         action[0, 47:50] = 0  # Original GR00T does not emit torso RPY.
                         frame_index += 1
-                    _, _, terminated, truncated, _ = env.step(action)
+                    _, _, terminated, truncated, info = env.step(action)
                     if bool(terminated.any()) or bool(truncated.any()):
                         receipt['episode_termination'] = {'tick': tick + 1,
-                            'terminated': bool(terminated.any()), 'truncated': bool(truncated.any())}
+                            'terminated': bool(terminated.any()), 'truncated': bool(truncated.any()),
+                            'original_terms': {name: bool(raw.termination_manager.get_term(name).any())
+                                for name in raw.termination_manager.active_terms},
+                            'reset_metrics': info.get('log', {}),
+                            'terminal_step_auto_reset': True}
                         break
             receipt['source_scene_rollout_completed'] = True
             receipt['source_vla_executed'] = receipt['policy_calls'] > 0
