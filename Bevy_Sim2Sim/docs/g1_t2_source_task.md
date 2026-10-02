@@ -1324,3 +1324,13 @@ integrations, no fresh VLA call. Trace SHA256:
 The turn's future camera identity in this fixture is explicitly synthetic.
 Fresh online restore/current-camera/turn observation remains required, and
 neither trial counts as formal T2 placement or qualified safe execution.
+
+`g1_mobile_target_restored_view_diagnostic` is a separate3150Tick development
+entry. Four fresh unmarked RGB grasp calls and the actual scan/lower/coarse/
+near-clearance raise are unchanged. New real images bind the stationary restore
+and subsequent view-turn goals to their current native boundaries. The episode
+original calibrated upper posture is restored over200Ticks plus100standing
+Ticks. One disclosed fixed−0.33rad standing observation turn uses original
+self yaw, followed by a new actual RGB localization requiring both current
+markers. Target memory and navigation proposals are not executed here.
+This grants no formal placement, generalized target ability or task UI execution.

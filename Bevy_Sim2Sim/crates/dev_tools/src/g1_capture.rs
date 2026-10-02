@@ -168,6 +168,13 @@ struct MobileAssistCaptureRuntime {
     visual_approach: bool,
     raising_view: bool,
     memory_view: bool,
+    restored_view: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    restore_submitted: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    reobserve_submitted: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    restored_view_completed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     target_memory: Option<MarkerTargetMemory>,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -188,7 +195,12 @@ struct MobileAssistCaptureRuntime {
 }
 
 impl MobileAssistCaptureRuntime {
-    fn new(configuration: MobileAssistStage, raising_view: bool, memory_view: bool) -> Self {
+    fn new(
+        configuration: MobileAssistStage,
+        raising_view: bool,
+        memory_view: bool,
+        restored_view: bool,
+    ) -> Self {
         let scan_only = matches!(&configuration, MobileAssistStage::Scan(_));
         let view_with_lowering =
             matches!(&configuration, MobileAssistStage::Scan(c) if c.lowering.is_some());
@@ -202,6 +214,13 @@ impl MobileAssistCaptureRuntime {
             visual_approach,
             raising_view,
             memory_view,
+            restored_view,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            restore_submitted: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            reobserve_submitted: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            restored_view_completed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             target_memory: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -570,6 +589,15 @@ pub fn run_mobile_target_memory_view_from_file(
     run_from_file(path, options, CaptureMode::MobileTargetMemoryView)
 }
 
+/// Restore the episode's calibrated grip, capture a new current image, then
+/// perform one disclosed standing view turn and localize a new actual RGB.
+pub fn run_mobile_target_restored_view_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileTargetRestoredView)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
@@ -581,6 +609,7 @@ enum CaptureMode {
     MobileTargetApproach,
     MobileTargetRaiseView,
     MobileTargetMemoryView,
+    MobileTargetRestoredView,
 }
 
 impl CaptureMode {
@@ -591,7 +620,8 @@ impl CaptureMode {
             Self::MobileTargetView => Some(1300),
             Self::MobileTargetApproach
             | Self::MobileTargetRaiseView
-            | Self::MobileTargetMemoryView => Some(3150),
+            | Self::MobileTargetMemoryView
+            | Self::MobileTargetRestoredView => Some(3150),
             Self::Camera | Self::TaskLab | Self::MobileCarry => None,
         }
     }
@@ -1202,7 +1232,8 @@ fn run_capture_owner(
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
-    let raising_view = mode == CaptureMode::MobileTargetRaiseView || memory_view;
+    let restored_view = mode == CaptureMode::MobileTargetRestoredView;
+    let raising_view = mode == CaptureMode::MobileTargetRaiseView || memory_view || restored_view;
     let visual_approach = mode == CaptureMode::MobileTargetApproach || raising_view;
     let target_view = mode == CaptureMode::MobileTargetView || visual_approach;
     let scan_only = mode == CaptureMode::MobileScan || target_view;
@@ -1601,8 +1632,9 @@ fn run_capture_owner(
             owner_evidence,
             #[cfg(feature = "g1_constraint_diagnostic")]
             assist_evidence,
-            mobile_assist: mobile_stage
-                .map(|c| MobileAssistCaptureRuntime::new(c, raising_view, memory_view)),
+            mobile_assist: mobile_stage.map(|c| {
+                MobileAssistCaptureRuntime::new(c, raising_view, memory_view, restored_view)
+            }),
             interactive,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
@@ -1731,6 +1763,7 @@ mod budget_tests {
             (CaptureMode::MobileTargetApproach, 3150),
             (CaptureMode::MobileTargetRaiseView, 3150),
             (CaptureMode::MobileTargetMemoryView, 3150),
+            (CaptureMode::MobileTargetRestoredView, 3150),
         ] {
             assert_eq!(mode.assisted_tick_limit(), Some(budget));
         }
@@ -1982,6 +2015,9 @@ fn drive_mobile_assist(
         }
         let raise_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalRaise { raising, .. } if raising.completed));
+        if assist.restored_view && assist.raise_submitted && !assist.restored_view_completed {
+            return drive_restored_reobserve_view(runtime, outcome, port);
+        }
         if assist.memory_view
             && assist.raise_submitted
             && !assist.memory_completed
@@ -1990,7 +2026,10 @@ fn drive_mobile_assist(
             return drive_visual_memory_view(runtime, outcome, port);
         }
         let completed = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref().is_some_and(|step| {
-            if assist.raising_view {
+            if assist.restored_view {
+                assist.restored_view_completed
+                    && matches!(&step.execution, MobileAssistExecution::ClassicalReobserve { navigation, .. } if navigation.completed)
+            } else if assist.raising_view {
                 assist.raise_submitted && (!assist.memory_view || assist.memory_completed)
                     && matches!(&step.execution, MobileAssistExecution::ClassicalRaise { raising, .. } if raising.completed)
             } else if assist.visual_approach {
@@ -2292,6 +2331,154 @@ fn drive_lower_view(
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_restored_reobserve_view(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    use simulation_minigame::g1::{
+        mobile_assist::{MobileAssistCommand, MobileAssistExecution},
+        mobile_navigation::MobileScanGoal,
+        mobile_restore::MobileRestoreGoal,
+        worker::TimedCommand,
+    };
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("restored view lacks owner")?
+        .clone();
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("restored view stage absent")?;
+    if latest.phase != G1WorkerPhase::Paused {
+        return Ok(false);
+    }
+    if !assist.restore_submitted {
+        if !latest.assist_step.as_ref().is_some_and(|s| {
+            matches!(&s.execution,
+            MobileAssistExecution::ClassicalRaise { raising, .. } if raising.completed)
+        }) {
+            return Err("restore requires completed native raised carry".into());
+        }
+        let Some((observation, _)) =
+            capture_current_marker_frame(runtime, port, "restore_posture")?
+        else {
+            return Ok(false);
+        };
+        let goal = MobileRestoreGoal {
+            observation,
+            duration_ticks: 200,
+        };
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("restore lost sole native owner".into());
+        };
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: observation.sim_time_ns + 8_000_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(10),
+                command: MobileAssistCommand::ClassicalRestore(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        let mut receipt = outcome.0.lock().unwrap();
+        let handoff = receipt
+            .mobile_assist_handoff
+            .as_mut()
+            .ok_or("restore provenance absent")?;
+        handoff["transport_posture_restore"] = serde_json::json!({
+            "executed_goal":goal,"same_owner_boundary_tick":latest.timing.episode_integrations,
+            "original_episode_command_and_self_fk_only":true,"synthetic_camera_stamp":false,
+            "object_truth_in_command":false,"task_qualified":false,
+        });
+        runtime.mobile_assist.as_mut().unwrap().restore_submitted = true;
+        runtime.requested = false;
+        return Ok(false);
+    }
+    if !assist.reobserve_submitted {
+        if !latest.assist_step.as_ref().is_some_and(|s| {
+            matches!(&s.execution,
+            MobileAssistExecution::ClassicalRestore { restoring, .. } if restoring.completed)
+        }) {
+            return Err("view turn requires completed native transport restoration".into());
+        }
+        let Some((observation, [w, x, y, z])) =
+            capture_current_marker_frame(runtime, port, "restored_view_turn")?
+        else {
+            return Ok(false);
+        };
+        let yaw = (2. * (w * z + x * y)).atan2(1. - 2. * (y * y + z * z));
+        // One disclosed, fixed diagnostic view action; this is not model navigation.
+        let heading = (yaw - 0.33 + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        let goal = MobileScanGoal {
+            observation,
+            heading_yaw_source_rad: heading,
+        };
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("view turn lost sole native owner".into());
+        };
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: observation.sim_time_ns + 18_000_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(20),
+                command: MobileAssistCommand::ClassicalReobserve(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        let mut receipt = outcome.0.lock().unwrap();
+        let handoff = receipt
+            .mobile_assist_handoff
+            .as_mut()
+            .ok_or("view turn provenance absent")?;
+        handoff["restored_view_turn"] = serde_json::json!({
+            "executed_goal":goal,"current_self_yaw_rad":yaw,"fixed_view_offset_rad":-0.33,
+            "same_owner_boundary_tick":latest.timing.episode_integrations,
+            "traditional_fixed_diagnostic_view_action":true,"synthetic_camera_stamp":false,
+            "object_truth_in_command":false,"task_qualified":false,
+        });
+        runtime.mobile_assist.as_mut().unwrap().reobserve_submitted = true;
+        runtime.requested = false;
+        return Ok(false);
+    }
+    if !latest.assist_step.as_ref().is_some_and(|s| {
+        matches!(&s.execution,
+        MobileAssistExecution::ClassicalReobserve { navigation, .. } if navigation.completed)
+    }) {
+        return Err("restored localization requires completed standing view turn".into());
+    }
+    if let Some(job) = &assist.vision_job {
+        let Some(reply) = job.try_take() else {
+            return Ok(false);
+        };
+        let reply = reply?;
+        if job.observation.episode_id != runtime.episode_id
+            || job.observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
+        {
+            return Err("restored localization belongs to an old episode/boundary".into());
+        }
+        let mut receipt = outcome.0.lock().unwrap();
+        let handoff = receipt
+            .mobile_assist_handoff
+            .as_mut()
+            .ok_or("restored localization provenance absent")?;
+        handoff["actual_restored_view"] = serde_json::json!({
+            "actual_current_localization":reply,"localization_wall_ms":job.started.elapsed().as_secs_f64()*1000.,
+            "same_owner_boundary_tick":latest.timing.episode_integrations,"physics_paused_during_localization":true,
+            "static_target_memory_used":false,"proposal_executed":false,"object_truth_in_command":false,
+            "synthetic_camera_stamp":false,"task_qualified":false,
+        });
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        assist.vision_job.take();
+        assist.restored_view_completed = true;
+        runtime.requested = false;
+        return Ok(false);
+    }
+    start_marker_job(runtime, port, "visual_restored_view")?;
+    Ok(false)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
 fn drive_visual_memory_view(
     runtime: &mut CaptureRuntime,
     outcome: &CaptureOutcome,
@@ -2420,26 +2607,26 @@ fn drive_visual_approach(
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
-fn start_marker_job(
+fn capture_current_marker_frame(
     runtime: &mut CaptureRuntime,
     port: &G1CameraPort,
     stage_directory: &str,
-) -> Result<(), String> {
+) -> Result<Option<(ObservationStamp, [f32; 4])>, String> {
     let latest = runtime
         .latest
         .as_ref()
-        .ok_or("marker job lacks native owner")?
+        .ok_or("current RGB lacks owner")?
         .clone();
     if latest.phase != G1WorkerPhase::Paused {
-        return Err("marker job requires a stationary completed skill boundary".into());
+        return Err("current RGB requires a paused completed native boundary".into());
     }
     if !runtime.requested {
         port.request()?;
         runtime.requested = true;
-        return Ok(());
+        return Ok(None);
     }
     let Some(frame) = port.take() else {
-        return Ok(());
+        return Ok(None);
     };
     let frame = frame?;
     let tick = latest.timing.episode_integrations;
@@ -2479,6 +2666,35 @@ fn start_marker_job(
         serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    let rotation = frame
+        .stamp
+        .native_state
+        .as_ref()
+        .unwrap()
+        .measured_joints
+        .root_rotation_wxyz;
+    Ok(Some((observation, rotation)))
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn start_marker_job(
+    runtime: &mut CaptureRuntime,
+    port: &G1CameraPort,
+    stage_directory: &str,
+) -> Result<(), String> {
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("marker job lacks native owner")?
+        .clone();
+    if latest.phase != G1WorkerPhase::Paused {
+        return Err("marker job requires a stationary completed skill boundary".into());
+    }
+    let Some((observation, _)) = capture_current_marker_frame(runtime, port, stage_directory)?
+    else {
+        return Ok(());
+    };
+    let directory = runtime.options.output.join(stage_directory);
     let assist = runtime
         .mobile_assist
         .as_ref()
@@ -3060,7 +3276,7 @@ fn drive_capture(
                     .is_some_and(|assist| assist.completed)
                 {
                     if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
-                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.memory_view) { "bounded_actual_raised_rgb_static_target_memory_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.raising_view) { "bounded_actual_near_rgb_public_geometry_raise_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.visual_approach) { "bounded_actual_rgb_visual_coarse_approach_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
+                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.restored_view) { "bounded_actual_restored_grip_standing_turn_rgb_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.memory_view) { "bounded_actual_raised_rgb_static_target_memory_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.raising_view) { "bounded_actual_near_rgb_public_geometry_raise_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.visual_approach) { "bounded_actual_rgb_visual_coarse_approach_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
                     } else {
                         "bounded_classical_carry_skill_complete_not_task_qualified"
                     }
