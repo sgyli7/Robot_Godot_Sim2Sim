@@ -212,6 +212,30 @@ def run(args, receipt, output):
                     log.write(json.dumps(sample, allow_nan=False) + '\n'); log.flush()
                     receipt['last_state'] = sample
                     receipt['completed_control_ticks'] = tick
+                    if args.joint_kinematics_audit and tick % 40 == 0:
+                        # Independent SDK quantities only. No coordinate writes,
+                        # extra physics steps, controller or task-policy inputs.
+                        counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                        jacobian = measured(robot.root_view.get_jacobians())
+                        poses = measured(robot.data.body_link_pose_w)
+                        if (jacobian.shape != (len(robot.body_names), 6, len(names) + 6)
+                                or poses.shape != (len(robot.body_names), 7)
+                                or not np.isfinite(jacobian).all() or not np.isfinite(poses).all()):
+                            raise ValueError('Unexpected floating-base SDK joint-kinematics quantities')
+                        audit = {'schema': 'g1_source_joint_kinematics_v1',
+                            'control_tick': tick, 'source_physics_steps_since_reset': tick * 4,
+                            'before_sdk_counters': counters,
+                            'after_sdk_counters': (int(raw._sim_step_counter), int(raw.sim._physics_step_count)),
+                            'joint_names': names, 'body_names': list(robot.body_names),
+                            'joint_positions': q.tolist(), 'body_link_pose_w': poses.tolist(),
+                            'jacobian_shape': list(jacobian.shape),
+                            'world_jacobian_linear_then_angular': jacobian.tolist(),
+                            'coordinate_writes': 0, 'extra_integrations': 0,
+                            'scope': 'read-only SDK world Jacobian/FK; independent diagnostic truth only'}
+                        if audit['before_sdk_counters'] != audit['after_sdk_counters']:
+                            raise ValueError('Read-only kinematics audit advanced SDK counters')
+                        (captures / f'kinematics_{tick:04}.json').write_text(
+                            json.dumps(audit, allow_nan=False))
                     if root[2] + .795 < .35 or sample['upright'] < .5:
                         raise ValueError(f'Original T1 fall guard at {tick}')
                     if tick % 40 == 0:
@@ -292,6 +316,8 @@ def main():
     mode.add_argument('--policy-socket', type=Path)
     mode.add_argument('--expert-sequence', type=Path)
     parser.add_argument('--expert-sha256')
+    parser.add_argument('--joint-kinematics-audit', action='store_true',
+                        help='Read-only SDK Jacobian/body-pose evidence at existing 40-Tick boundaries')
     parser.add_argument('--reset-camera-refresh', action='store_true', default=True,
                         help='Render-only source reset cache diagnostic; assert unchanged physical state/counters')
     args = parser.parse_args()
