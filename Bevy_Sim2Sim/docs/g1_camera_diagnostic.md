@@ -60,9 +60,9 @@ scene; it does not qualify science-station contact or task behavior.
 The same entry also accepts an `ArenaTaskRunnerConfig` in `runner` and a
 `policy` object with `endpoint`, `max_calls` and `timeout_ms`. Both must be
 supplied together. The endpoint is IPv4 localhost `/infer`; the profile selects
-the separate static or mobile client. This mode permits one to three complete
+the separate static or mobile client. This mode permits one to four complete
 chunks only, and `--g1-ticks` must exactly equal the selected model's horizon
-times `max_calls`. The runner requires an explicit wall-clock image age limit.
+times `max_calls` (at most 200 ticks). The runner requires an explicit wall-clock image age limit.
 
 Prepare and start the verified local service separately, for example:
 

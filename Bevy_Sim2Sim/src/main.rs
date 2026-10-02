@@ -266,7 +266,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification or G1 diagnostic directory\n\
                      --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
-                     --g1-ticks N    diagnostic physical Tick budget, 0..150 (default 0)\n\
+                     --g1-ticks N    diagnostic Tick budget, 0..200 (standing max 150)\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -292,9 +292,9 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--g1-ticks" => {
                 let ticks = value()?
                     .parse::<u32>()
-                    .map_err(|_| "--g1-ticks requires an integer 0..150")?;
-                if ticks > 150 {
-                    return Err("--g1-ticks must be at most 150".into());
+                    .map_err(|_| "--g1-ticks requires an integer 0..200")?;
+                if ticks > 200 {
+                    return Err("--g1-ticks must be at most 200".into());
                 }
                 options.g1_ticks = Some(ticks);
             }
