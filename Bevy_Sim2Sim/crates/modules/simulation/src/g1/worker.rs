@@ -22,6 +22,7 @@ use std::{
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -52,6 +53,31 @@ pub struct TimedCommand<C> {
     /// Checked again after inference, immediately before applying its result.
     pub valid_until_wall: Instant,
     pub command: C,
+}
+
+/// Independent completed-step evidence. It is never an actuator command or a
+/// decision input. Generations are retained so a reset cannot hide old steps.
+pub struct OwnerStepRecord<S> {
+    pub episode_id: u64,
+    pub generation: u64,
+    pub timing: G1WorkerTiming,
+    pub step: Arc<S>,
+}
+
+/// One bounded, read-only evidence stream; the physics owner only try-sends.
+pub struct OwnerStepTrace<S> {
+    receiver: Mutex<Receiver<OwnerStepRecord<S>>>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl<S> OwnerStepTrace<S> {
+    pub fn drain(&self) -> Vec<OwnerStepRecord<S>> {
+        self.receiver.lock().unwrap().try_iter().collect()
+    }
+
+    pub fn dropped_records(&self) -> u64 {
+        self.dropped.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +200,8 @@ struct WorkerShared<C, S> {
     /// held at shutdown. This one-write latch never blocks the physics owner.
     stopped: OnceLock<Arc<WorkerSnapshot<S>>>,
     stopped_consumed: AtomicBool,
+    step_trace: OnceLock<SyncSender<OwnerStepRecord<S>>>,
+    step_trace_dropped: Arc<AtomicU64>,
 }
 
 impl<C: BoundaryCommand, S> WorkerShared<C, S> {
@@ -188,6 +216,8 @@ impl<C: BoundaryCommand, S> WorkerShared<C, S> {
             output: Mutex::new(None),
             stopped: OnceLock::new(),
             stopped_consumed: AtomicBool::new(false),
+            step_trace: OnceLock::new(),
+            step_trace_dropped: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -420,6 +450,25 @@ impl<Cmd: BoundaryCommand, Step: BoundaryStep> PhysicsWorker<Cmd, Step> {
         snapshot_is_current(&self.shared, &snapshot).then_some(snapshot)
     }
 
+    /// Attach before admitting commands to capture every completed step. The
+    /// ordinary display still replaces snapshots; a slow evidence consumer
+    /// loses records explicitly instead of delaying physics. Only one reader
+    /// is allowed, and all episode identities stay in the evidence stream.
+    pub fn subscribe_steps(&self, capacity: usize) -> Result<OwnerStepTrace<Step>, RobotError> {
+        if !(1..=4096).contains(&capacity) {
+            return Err(error("step trace capacity must be in 1..=4096"));
+        }
+        let (sender, receiver) = mpsc::sync_channel(capacity);
+        self.shared
+            .step_trace
+            .set(sender)
+            .map_err(|_| error("a completed-step evidence reader is already attached"))?;
+        Ok(OwnerStepTrace {
+            receiver: Mutex::new(receiver),
+            dropped: self.shared.step_trace_dropped.clone(),
+        })
+    }
+
     pub fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
@@ -612,6 +661,29 @@ impl OwnerClock for SystemClock {
     }
     fn wait(&self, duration: Duration) {
         thread::sleep(duration);
+    }
+}
+
+fn record_completed_step<C, S>(
+    shared: &WorkerShared<C, S>,
+    episode_id: u64,
+    generation: u64,
+    timing: &G1WorkerTiming,
+    step: &Arc<S>,
+) {
+    if let Some(sender) = shared.step_trace.get() {
+        let record = OwnerStepRecord {
+            episode_id,
+            generation,
+            timing: timing.clone(),
+            step: step.clone(),
+        };
+        if matches!(
+            sender.try_send(record),
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_))
+        ) {
+            shared.step_trace_dropped.fetch_add(1, Ordering::Release);
+        }
     }
 }
 
@@ -938,7 +1010,9 @@ fn run_owner<R, F, C>(
                             error(format!("G1 boundary cancelled: {reason:?}"))
                         })
                 };
-                let result = runner.step(&command.timed.command, &mut guard);
+                let result = runner
+                    .step(&command.timed.command, &mut guard)
+                    .map(|step| step.map(Arc::new));
                 let ended = wall.now();
                 snapshot.timing.record_progress(runner.progress_counts());
                 let integration_delta = snapshot.timing.episode_integrations - before_integrations;
@@ -964,6 +1038,11 @@ fn run_owner<R, F, C>(
                     .timing
                     .add_active_wall(ended.saturating_duration_since(last_wall));
                 last_wall = ended;
+                // Evidence retains completed old-generation work even when a
+                // concurrent reset correctly discards its display publication.
+                if let Ok(Some(step)) = &result {
+                    record_completed_step(&shared, episode, generation, &snapshot.timing, step);
+                }
                 if generation != shared.reset_count.load(Ordering::Acquire) {
                     continue 'reload;
                 }
@@ -992,7 +1071,7 @@ fn run_owner<R, F, C>(
                             snapshot.frame = Some(Arc::new(frame.clone()));
                             snapshot.measurement = Some(Arc::new(measurement.clone()));
                             snapshot.task_objects = step.task_objects().cloned().map(Arc::new);
-                            snapshot.step = Some(Arc::new(step));
+                            snapshot.step = Some(step);
                             if fell {
                                 fail(
                                     &shared,
@@ -1337,6 +1416,59 @@ mod tests {
             );
             snapshot
         }
+    }
+
+    #[test]
+    fn completed_step_trace_is_bounded_and_preserves_reset_identity() {
+        // Values are transport fixtures, never physical standing evidence.
+        let shared = WorkerShared::<G1Command, u64>::new(7);
+        let (sender, receiver) = mpsc::sync_channel(2);
+        shared.step_trace.set(sender).unwrap();
+        let trace = OwnerStepTrace {
+            receiver: Mutex::new(receiver),
+            dropped: shared.step_trace_dropped.clone(),
+        };
+        let step = Arc::new(123);
+        let timing = G1WorkerTiming {
+            total_integrations: 1,
+            episode_integrations: 1,
+            ..Default::default()
+        };
+        // Consumer lock contention cannot block the physics-side try-send.
+        let consumer = trace.receiver.lock().unwrap();
+        shared.reset().unwrap();
+        record_completed_step(&shared, 7, 0, &timing, &step);
+        record_completed_step(&shared, 8, 1, &timing, &step);
+        record_completed_step(&shared, 8, 1, &timing, &step);
+        assert_eq!(trace.dropped_records(), 1);
+        drop(consumer);
+        let records = trace.drain();
+        assert_eq!(records.len(), 2);
+        assert_eq!((records[0].episode_id, records[0].generation), (7, 0));
+        assert_eq!((records[1].episode_id, records[1].generation), (8, 1));
+        assert_eq!(records[0].timing.total_integrations, 1);
+        assert!(Arc::ptr_eq(&records[0].step, &step));
+        assert!(trace.drain().is_empty());
+        drop(trace);
+        record_completed_step(&shared, 8, 1, &timing, &step);
+        assert_eq!(shared.step_trace_dropped.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn owner_trace_rejects_multiple_readers_and_fabricates_no_frames() {
+        let harness = Harness::new();
+        assert!(harness.worker.subscribe_steps(0).is_err());
+        assert!(harness.worker.subscribe_steps(4097).is_err());
+        let trace = harness.worker.subscribe_steps(2).unwrap();
+        assert!(harness.worker.subscribe_steps(2).is_err());
+        harness.resume_current();
+        harness.poll(Duration::from_millis(40));
+        assert_eq!(harness.latest().timing.total_integrations, 2);
+        assert!(
+            trace.drain().is_empty(),
+            "fixture runner returned no actual body frame"
+        );
+        assert_eq!(trace.dropped_records(), 0);
     }
 
     #[test]

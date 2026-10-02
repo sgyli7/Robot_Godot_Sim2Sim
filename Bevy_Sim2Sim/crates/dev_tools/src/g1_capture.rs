@@ -8,6 +8,7 @@
 
 use std::{
     fs,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -49,8 +50,8 @@ use simulation_minigame::g1::{
     task_objects::{TaskObjectFrame, TaskObjectKind, TaskObjectSceneConfig},
     task_runner::{ArenaTaskBodyConfig, ArenaTaskCommand, ArenaTaskRunnerConfig, ArenaTaskStep},
     worker::{
-        AgileWorker, ArenaTaskWorker, G1Worker, G1WorkerPhase, G1WorkerTiming, TimedAgileCommand,
-        TimedArenaTaskCommand, TimedG1Command, WorkerSnapshot,
+        AgileWorker, ArenaTaskWorker, G1Worker, G1WorkerPhase, G1WorkerTiming, OwnerStepTrace,
+        TimedAgileCommand, TimedArenaTaskCommand, TimedG1Command, WorkerSnapshot,
     },
 };
 use task_minigame::{
@@ -364,6 +365,9 @@ pub struct G1CaptureReceipt {
     pub actual_torque_updates: u64,
     pub actual_model_attempts: u64,
     pub actual_model_successes: u64,
+    pub owner_step_records: u64,
+    pub owner_step_trace_dropped: u64,
+    pub owner_step_trace_complete: bool,
     pub active_wall_seconds: f64,
     pub active_sim_seconds: f64,
     pub control_deadlines_missed: u64,
@@ -475,6 +479,9 @@ impl G1CaptureReceipt {
             actual_torque_updates: 0,
             actual_model_attempts: 0,
             actual_model_successes: 0,
+            owner_step_records: 0,
+            owner_step_trace_dropped: 0,
+            owner_step_trace_complete: false,
             active_wall_seconds: 0.,
             active_sim_seconds: 0.,
             control_deadlines_missed: 0,
@@ -569,6 +576,52 @@ struct CaptureRuntime {
     ego_saved: bool,
     main_saved: Arc<Mutex<Result<bool, String>>>,
     live_policy: Option<LivePolicyRuntime>,
+    owner_evidence: Option<OwnerEvidence>,
+}
+
+/// Development-only file output. No consumer I/O runs on the physics thread.
+struct OwnerEvidence {
+    trace: OwnerStepTrace<ArenaTaskStep>,
+    output: BufWriter<fs::File>,
+    records: u64,
+}
+
+impl OwnerEvidence {
+    fn drain(&mut self, receipt: &mut G1CaptureReceipt) -> Result<(), String> {
+        for record in self.trace.drain() {
+            let value = serde_json::json!({
+                "schema": "g1_owner_completed_step_evidence_v1",
+                "episode_id": record.episode_id,
+                "generation": record.generation,
+                "owner_total_integrations": record.timing.total_integrations,
+                "owner_episode_integrations": record.timing.episode_integrations,
+                "owner_total_torque_updates": record.timing.total_torque_updates,
+                "owner_total_model_attempts": record.timing.total_inference_attempts,
+                "owner_total_model_successes": record.timing.total_successful_inferences,
+                "active_wall_seconds": record.timing.active_wall_seconds,
+                "active_sim_seconds": record.timing.active_sim_seconds,
+                "pending_ticks": record.timing.pending_ticks,
+                "control_deadlines_missed": record.timing.control_deadlines_missed,
+                "execution": record.step.execution,
+                "body": record.step.body,
+                "scope": "independent_actual_owner_step_truth_never_model_input",
+            });
+            serde_json::to_writer(&mut self.output, &value).map_err(|e| e.to_string())?;
+            self.output.write_all(b"\n").map_err(|e| e.to_string())?;
+            self.records += 1;
+        }
+        self.output.flush().map_err(|e| e.to_string())?;
+        receipt.owner_step_records = self.records;
+        receipt.owner_step_trace_dropped = self.trace.dropped_records();
+        receipt.owner_step_trace_complete =
+            receipt.owner_step_trace_dropped == 0 && self.records == receipt.actual_integrations;
+        if receipt.owner_step_trace_dropped > 0 {
+            return Err(
+                "bounded owner evidence overflow/disconnection; physical trace incomplete".into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Open a real 1080p window and save one real head-camera RGB frame with native
@@ -768,6 +821,20 @@ fn run_capture_owner(
         receipt.pauses_for_camera_and_policy = true;
     }
     let worker = config.spawn(predictive_limit_diagnostic, diagnostic_constraint_sweeps)?;
+    let owner_evidence = match &worker {
+        CaptureWorker::Task(worker) => Some(OwnerEvidence {
+            trace: worker.subscribe_steps(512).map_err(|e| e.to_string())?,
+            output: BufWriter::new(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output.join("owner_steps.jsonl"))
+                    .map_err(|e| e.to_string())?,
+            ),
+            records: 0,
+        }),
+        CaptureWorker::Mobile(_) | CaptureWorker::Static { .. } => None,
+    };
     if predictive_limit_diagnostic {
         outcome
             .0
@@ -805,6 +872,7 @@ fn run_capture_owner(
             ego_saved: false,
             main_saved: Arc::new(Mutex::new(Ok(false))),
             live_policy,
+            owner_evidence,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .add_plugins(
@@ -1144,6 +1212,9 @@ fn drive_capture(
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
+        if let Some(evidence) = &mut runtime.owner_evidence {
+            evidence.drain(&mut outcome.0.lock().unwrap())?;
+        }
         if let Some(error) = health.snapshot().error {
             return Err(error);
         }
@@ -1364,6 +1435,12 @@ fn drive_capture(
                 .as_ref()
                 .map_err(Clone::clone)?
         {
+            if let Some(evidence) = &mut runtime.owner_evidence {
+                evidence.drain(&mut outcome.0.lock().unwrap())?;
+                if !outcome.0.lock().unwrap().owner_step_trace_complete {
+                    return Err("owner evidence did not cover every actual integration".into());
+                }
+            }
             outcome.0.lock().unwrap().capture_succeeded = true;
             exit.write(AppExit::Success);
         }

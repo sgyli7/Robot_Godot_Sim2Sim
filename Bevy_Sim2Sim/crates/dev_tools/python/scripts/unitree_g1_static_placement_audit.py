@@ -48,6 +48,27 @@ def body_rotation(sample):
     return BASIS.T @ rotation([w, x, y, z]) @ BASIS
 
 
+def robot_contact_blocks_release(contact):
+    """Positive separated zero-force speculative pairs are not physical touch.
+
+    Any touching/penetrating surface, nonzero supporting force, or unresolved
+    distance remains a release blocker. No contact-distance tolerance is added.
+    """
+    if contact['other_robot_body_index'] is None:
+        return False
+    if 'geometric_distance_after_step_m' not in contact:
+        raise ValueError('Release audit requires same-Tick post-integration shape distances')
+    distance = contact['geometric_distance_after_step_m']
+    impulse = contact['normal_impulse_n_s']
+    if not np.isfinite(impulse) or impulse < 0:
+        raise ValueError('Invalid independent contact impulse')
+    if distance is None:
+        return True
+    if not np.isfinite(distance):
+        raise ValueError('Invalid independent contact distance')
+    return distance <= 0. or impulse > 0.
+
+
 def evaluate(definition, rows):
     objects = {o['kind']: o for o in definition['objects']}
     apple_points = np.asarray([v for p in objects['t1_apple']['convex_parts'] for v in p['points']])
@@ -59,6 +80,8 @@ def evaluate(definition, rows):
     episode = None
     suffix = 0
     maximum = 0
+    candidate_suffix = 0
+    candidate_maximum = 0
     minimum_margin = float('inf')
     samples = []
     fell = False
@@ -89,7 +112,8 @@ def evaluate(definition, rows):
             raise ValueError('Nonfinite object geometry/pose')
         inside = margin >= 0.
         contact = apple['last_solve_contacts']
-        released = not any(c['other_robot_body_index'] is not None for c in contact)
+        no_candidate_pair = not any(c['other_robot_body_index'] is not None for c in contact)
+        released = not any(robot_contact_blocks_release(c) for c in contact)
         supported = any(c['other_task_kind'] == 't1_plate' and c['normal_impulse_n_s'] > 0 for c in contact)
         linear = float(np.linalg.norm(apple['linear_velocity_source']))
         angular = float(np.linalg.norm(apple['angular_velocity_source']))
@@ -100,19 +124,22 @@ def evaluate(definition, rows):
         ready = inside and released and supported and linear < .02 and angular < .1 and standing and not fell
         suffix = suffix + 1 if ready else 0
         maximum = max(maximum, suffix)
+        candidate_suffix = candidate_suffix + 1 if ready and no_candidate_pair else 0
+        candidate_maximum = max(candidate_maximum, candidate_suffix)
         if ready:
             minimum_margin = min(minimum_margin, margin)
         samples.append({'tick': tick, 'phase': row.get('phase', 'saved_source_action'),
             'all_collision_vertices_inside_plate_footprint': inside,
             'minimum_signed_footprint_margin_m': margin,
-            'no_robot_contact_pair': released, 'positive_plate_support_impulse': supported,
+            'no_robot_contact_pair': no_candidate_pair,
+            'no_actual_robot_contact': released, 'positive_plate_support_impulse': supported,
             'linear_speed_m_s': linear, 'angular_speed_rad_s': angular,
             'standing': standing, 'ready': ready,
             'continuous_window_seconds': max(suffix - 1, 0) / 50.})
         previous_tick = tick
     if not samples:
         raise ValueError('Empty physical trace')
-    return {'schema': 'g1_independent_static_placement_audit_v1',
+    return {'schema': 'g1_independent_static_placement_audit_v3',
         'diagnostic_release_window_passed': maximum >= 101,
         'autonomous_task_qualified': False, 'formal_ten_episode_acceptance_passed': False,
         'target_rule': 'vertical prism over convex outer footprint of frozen original plate collision geometry; physical plate support required separately',
@@ -120,7 +147,9 @@ def evaluate(definition, rows):
         'target_rule_frozen_for_formal_suite': False,
         'samples': samples, 'actual_physics_samples': len(samples),
         'max_continuous_placement_seconds': max(maximum - 1, 0) / 50.,
+        'candidate_pair_only_max_continuous_seconds': max(candidate_maximum - 1, 0) / 50.,
         'final_continuous_placement_seconds': max(suffix - 1, 0) / 50.,
+        'release_rule': 'no robot pair with unresolved/nonpositive same-Tick post-integration shape distance or positive last-solve normal impulse; cached solver distances never establish release',
         'minimum_margin_during_ready_samples_m': minimum_margin if minimum_margin != float('inf') else None,
         'scope': 'read-only diagnostic truth; no model input, control, pose write or autonomous qualification'}
 

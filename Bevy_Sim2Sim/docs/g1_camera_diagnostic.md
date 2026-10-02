@@ -185,3 +185,38 @@ directional 981.363 at unchanged EV11.7. It used no policy inference or task
 success data. This is an approximate rendered-light calibration, not original
 area-light/RTX/global-illumination parity. The science-station lighting is
 unaffected, and native task performance remains unqualified.
+
+Task-owner captures additionally save `owner_steps.jsonl`, one immutable real
+completed step per integration, through an independently bounded 512-record
+channel. File serialization happens on the development/render thread; the
+physical owner only try-sends an `Arc`. Overflow/disconnection is counted and
+fails capture completeness instead of delaying physics. The ordinary display
+slot may still replace frames. Reset generations remain in evidence while old
+display/model observations are rejected. Receipts report record count, dropped
+records and coverage of actual integrations. Empty transport fixtures never
+manufacture physical step records.
+
+An eight-call native image-policy run preserved all 320 actual steps with zero
+evidence drops. Independent containment checks use every original apple hull
+vertex in the moving original plate's footprint, rather than object-center
+placement. Contact-candidate presence alone is insufficient to identify touch:
+a positive-distance, zero-force speculative pair may be retained. Moreover,
+Rapier's cached solver distance belongs to the last full collision update.
+Published contacts therefore also include a read-only Parry shape-distance
+query at the exact completed body poses. Release requires positive current
+geometric separation and zero last-solve robot normal impulse; missing or
+unsupported queries remain release blockers. No clearance tolerance is added,
+and cached distances cannot replace that query. This evidence never enters the
+policy RGB/self-state wire and does not establish the formal ten-episode suite.
+
+The repeated actual 320-Tick native run passed the diagnostic placement window
+for 2.76 continuous seconds, with at least 0.02828 m footprint margin. Tick 280
+retained one hand candidate with cached separation 0.01960 m, exact completed-
+pose separation 0.01608 m and zero normal impulse; the original candidate-only
+criterion consequently reported just 1.94 seconds. Both results are retained.
+All 320 measured joint/root/prop pose and velocity arrays exactly matched the
+run before adding the read-only geometry query. Positive hand force, actual
+touch, out-of-target geometry, unsupported queries and missing-Tick negative
+controls reject release/success. Active physics ratio was 0.98919, with four
+missed boundaries and no remaining Tick debt; camera/inference pauses are
+explicitly excluded and continuous 1× task operation remains unqualified.

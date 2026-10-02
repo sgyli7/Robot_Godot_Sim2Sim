@@ -280,6 +280,10 @@ pub struct TaskObjectContactSample {
     pub manifold_count: usize,
     pub solver_points: usize,
     pub min_solver_distance_m: Option<f32>,
+    /// Read-only shape query at the published post-integration body poses.
+    /// Unlike cached solver distances this belongs to this exact sample Tick.
+    /// Zero means intersection/touch; None means the query was unsupported.
+    pub geometric_distance_after_step_m: Option<f32>,
     pub normal_impulse_n_s: f32,
 }
 
@@ -500,6 +504,24 @@ impl TaskObjectScene {
                         manifold_count: pair.manifolds.len(),
                         solver_points,
                         min_solver_distance_m: minimum,
+                        geometric_distance_after_step_m: rapier3d::parry::query::distance(
+                            &(*body.position()
+                                * collider.position_wrt_parent().copied().unwrap_or_default()),
+                            collider.shape(),
+                            &world.world.colliders[other].parent().map_or_else(
+                                || *world.world.colliders[other].position(),
+                                |parent| {
+                                    *world.world.bodies[parent].position()
+                                        * world.world.colliders[other]
+                                            .position_wrt_parent()
+                                            .copied()
+                                            .unwrap_or_default()
+                                },
+                            ),
+                            world.world.colliders[other].shape(),
+                        )
+                        .ok()
+                        .filter(|distance| distance.is_finite() && *distance >= 0.),
                         normal_impulse_n_s: pair.total_impulse_magnitude(),
                     }
                 })

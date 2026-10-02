@@ -237,3 +237,14 @@ apple height of -0.00790 m and maximum 0.00906 m. The model contacted/moved the
 object but the original success term remained false. All same-pose and blocked-
 state checks passed. This repair is retained as source-asset fidelity work;
 it is not reported as task success.
+
+After mapping the authored background albedo offsets, a finite two-patch
+background-only diffuse calibration was frozen before task evaluation. The
+source-physics/native-image comparison then lifted the apple by 0.10657 m and
+transferred it above the plate, but still timed out at 300 controls without
+release. No further lighting search was selected. The identical frozen camera
+candidate in the actual native owner completed eight image-policy calls and
+320 native 50 Hz steps; the apple ended released, supported by the plate and
+nearly stationary, with the robot standing. Full per-Tick containment/release
+verification is recorded separately. These paused camera/inference diagnostics
+are not continuous 1× operation or the required ten-episode acceptance suite.
