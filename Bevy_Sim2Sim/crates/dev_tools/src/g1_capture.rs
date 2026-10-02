@@ -517,25 +517,32 @@ fn run_capture_owner(
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
         return Err("diagnostic exposure must be finite EV100 in 0..=20".into());
     }
-    if options.ticks > 150
+    let tick_limit = if matches!(config, CaptureRunnerConfig::Task(_)) {
+        200
+    } else {
+        150
+    };
+    if options.ticks > tick_limit
         || options.timeout.is_zero()
         || options.timeout > Duration::from_secs(180)
     {
-        return Err("capture requires 0..=150 ticks and a finite timeout <=180 seconds".into());
+        return Err(
+            "capture exceeds its bounded tick budget or finite timeout <=180 seconds".into(),
+        );
     }
     let live_policy = match (&config, policy) {
         (CaptureRunnerConfig::Task(config), Some(policy)) => {
             let profile = config.body.profile();
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
-                || policy.max_calls > 3
+                || policy.max_calls > 4
                 || options.ticks != policy.max_calls * horizon
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
                 || config.max_observation_wall_age_ms == 0
                 || config.max_observation_wall_age_ms > 20_000
             {
-                return Err("live diagnostic requires 1..=3 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
+                return Err("live diagnostic requires 1..=4 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
             }
             let timeout = Duration::from_millis(policy.timeout_ms);
             let worker = match profile {
