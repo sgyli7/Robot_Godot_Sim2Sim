@@ -28,6 +28,61 @@ fn main() -> ExitCode {
     }
 }
 
+/// Hash actual contact impulses and warm-start state without altering the solver.
+fn contact_impulse_signature(simulation: &SimulationWorld) -> Value {
+    let mut hash = Sha256::new();
+    let mut points = 0_usize;
+    let mut nonzero_impulses = 0_usize;
+    for pair in simulation
+        .live_contact_pairs()
+        .filter(|pair| pair.has_any_active_contact())
+    {
+        for handle in [pair.collider1, pair.collider2] {
+            let (index, generation) = handle.into_raw_parts();
+            hash.update(index.to_le_bytes());
+            hash.update(generation.to_le_bytes());
+        }
+        for manifold in pair.solver_manifolds() {
+            hash.update(manifold.subshape1.to_le_bytes());
+            hash.update(manifold.subshape2.to_le_bytes());
+            hash.update((manifold.points.len() as u64).to_le_bytes());
+            for value in manifold.data.normal.to_array() {
+                hash.update(value.to_bits().to_le_bytes());
+            }
+            for point in &manifold.points {
+                let data = &point.data;
+                points += 1;
+                nonzero_impulses += usize::from(
+                    data.impulse != 0.0 || data.tangent_impulse.iter().any(|value| *value != 0.0),
+                );
+                for value in [
+                    data.impulse,
+                    data.tangent_impulse[0],
+                    data.tangent_impulse[1],
+                    data.warmstart_impulse,
+                    data.warmstart_tangent_impulse[0],
+                    data.warmstart_tangent_impulse[1],
+                    data.warmstart_twist_impulse,
+                ] {
+                    hash.update(value.to_bits().to_le_bytes());
+                }
+                for vector in [
+                    data.warmstart_tangent_world,
+                    data.solver_dp1,
+                    data.solver_dp2,
+                ] {
+                    for value in vector.to_array() {
+                        hash.update(value.to_bits().to_le_bytes());
+                    }
+                }
+            }
+        }
+    }
+    json!({"sha256":format!("{:x}",hash.finalize()),"point_count":points,
+        "nonzero_impulse_points":nonzero_impulses,
+        "scope":"actual normal/friction impulses, warm-start state and solver lever arms after this native solve"})
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = env::args().skip(1).collect();
     let option = |name: &str| {
@@ -364,7 +419,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "solver_velocity_update_ns":native.solver.velocity_update_time.time().as_nanos(),
                     "solver_writeback_ns":native.solver.velocity_writeback_time.time().as_nanos(),
                     "solver_contacts":native.solver.ncontacts,
-                    "solver_constraints":native.solver.nconstraints
+                    "solver_constraints":native.solver.nconstraints,
+                    "contact_impulse_signature":contact_impulse_signature(&simulation)
                 }))
             } else {
                 None

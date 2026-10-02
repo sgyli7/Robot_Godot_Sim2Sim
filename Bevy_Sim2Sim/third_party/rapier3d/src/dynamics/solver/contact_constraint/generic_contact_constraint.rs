@@ -163,7 +163,9 @@ impl GenericContactConstraintBuilder {
         // staged solver's pre-phase (before any worker starts), so growing here is race-free
         // (the old `!parallel` guard served the deleted parallel solver's shared buffer).
         if jacobians.nrows() < required_jacobian_len {
-            jacobians.resize_vertically_mut(required_jacobian_len, 0.0);
+            // Local modification: nalgebra's mutable resize clones the full old vector.
+            // Transfer its owned storage instead, preserving the prefix and zero-filled tail.
+            *jacobians = core::mem::take(jacobians).resize_vertically(required_jacobian_len, 0.0);
         }
 
         let chunk_j_id = *jacobian_id;

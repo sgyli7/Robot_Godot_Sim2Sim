@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前停留在源端 M0，GPU／优化器使用为零。按用户确认，主线收回到 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。已有 CPU 自定义接触／离散实验收口为诊断档案，不继续作为默认训练内核扩展。原 33 体 v5 限位与嘴销改善，但源端接触仍未准入；v6 冷重置地面穿透约 2.504 mm、CPU P95 约 180 ms，仍未合格。最新诊断入口为 [地面实验收口检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/ground_discrete_diagnostic_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前仍在 M0-S／M0-T，GPU／优化器使用为零。按用户确认，主线是 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。成熟栈的原生模型接线已完成，下一项是可复核的任务碰撞模型；[短几何筛选](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_proxy_pilot_checkpoint.json)只保留脚饰件局部候选，没有晋升全身模型。Bevy 性能子 agent 的缓冲改动经[独立对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle02_review.json)将相同短程序的物理步均值约从 **157 ms 降到 53 ms**，尚未达到持续 50 Hz。已有自定义 CPU 接触／离散分支已收口为历史诊断，不再作为默认训练内核扩展。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -401,3 +401,25 @@ v6 冷重置地面穿透 **2.504 mm**、源 CPU 物理加控制器 P95 **180.17 
 [接线检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/mjlab_baseline_001/bootstrap_checkpoint.json)中，新参考的 22 组物理数组与原生凝聚父模型一致，上游 Entity 封装后的 18 组身体、关节、机构和驱动数组一致，电机名称／顺序不变。质量仍为 **10.430762603 kg**，21 体、18 主动轴、2 被动坐标。沿用 Goose 控制器完成 **10 次 20 ms 原生积分及 10 次力矩更新**，65 维观测有限，无数值警告。这只有 0.2 秒接线证据，未授予站立或源端物理资格；原碰撞几何和未校准足底仍待处理。
 
 最终 **76 项 Goose Python 回归通过、11 项专属新引擎检查跳过**；5 项 Bevy 原生回归、Rust 格式和工程结构检查通过。下一项明确是**从已核验来源整理任务碰撞代理并冻结一份原生训练 MJCF**，保持总质量／完整惯量、支撑轮廓、嘴接触与空腔；完成有界源端物理筛查后接上游任务管理和一次 PPO smoke。不上新的通用框架，不继续扩展 CPU 地面修正。
+
+### 成熟碰撞工具的有界筛选
+
+[碰撞代理试验检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_proxy_pilot_checkpoint.json)保存 26 份证据及六份实际执行源码。复用已安装的 CoACD 1.0.14，使用[官方实尺度模式](https://github.com/SarahWeiii/CoACD)，按米声明凹度阈值，不自行实现分解器。每个零件先冻结来源、参数、种子、CPU 线程、墙钟预算和几何检查；不修改运行模型、物理参数或碰撞过滤。
+
+- 右脚饰件：原 279 块 → 184 块，分解约 4.26 秒；4,384 个源表面采样的最大缺口约 **0.106 mm**，4,511 个有源表面间隙的空腔见证均未填堵。双精度布尔检查的多占／缺失体积约为源体积的 **1.451%／0.0177%**。只通过本零件的局部几何筛选，未取得整机碰撞或性能资格。
+- 右胫骨叉板：原 100 块 → 167 块，分解约 57.81 秒；局部几何筛选通过，但块数增加，拒绝作为性能候选。不能以成熟工具名称保证全量重跑会提速。
+- 左前躯干壳：普通 QEM 的 20,000 三角减面未保留闭合正体积；Manifold 保拓扑简化后仍有 **0.164 mm** 采样缺口，超过提前冻结的 0.1 mm 门槛，布尔体积恒等式也未达到冻结容差。均拒绝，未进入分解或模型晋升；一次只读数组接口失败及仅增加可写副本的修复另存。
+
+独立审查发现通用 Trimesh 布尔封装会将顶点转换为 float32，薄脚环的体积恒等式误差约为源体积的 0.591%；改用原生 Manifold `Mesh64` 后误差降至约 4.33e−20 m³。原收据保持不变，采用单独的[双精度复核](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/coacd_native_proxy_001/double_precision_audit.json)，不把体积和有限空腔采样当作全局几何证明。
+
+本轮没有新增积分、策略或 GPU 使用，也没有冻结新的全身碰撞模型。下一周期回到**来源刚体归属、任务接触表面与剩余碰撞成本**，形成可复核的模型简化方案；保留空腔、运动干涉、脚和嘴见证，复用成熟几何工具，不继续扫外壳减面参数或全量原样重跑 CoACD。M0-S／M0-T 未通过。
+
+### Bevy 性能子 agent 第二周期
+
+性能子 agent 继续复用同一聊天中的任务，按用户授权长期保留，每轮有界工作后闲置。第二轮只修改原生 Rapier 接触 Jacobian 缓冲增容：nalgebra 0.35.0 的 mutable resize 会克隆整个旧向量，改为转移所有权后调用同一个 resize，保留旧前缀和新增零值。几何、过滤、求解参数、驱动、观测及每 Tick 一次 20 ms 积分均保持原值。
+
+带相同实际冲量签名工具的前 20 Tick 配对中，**原生 step 均值 156.62→52.45 ms；约束组装均值 114.70→10.79 ms；探针物理墙钟 P95 950.16→80.46 ms**。主线[独立复核](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle02_review.json)的总物理墙钟均值为 **157.08→52.89 ms**，与原生 step 区分。初次未加冲量签名的另一对照为约 191.95→52.49 ms，说明冷启动及主机负载影响计时；不把不同程序的数值拼成同一成绩。
+
+前后、计时开／关、重复程序的实际关节、身体、力矩及接触字段一致；只按唯一 body 名规范化无序几何读出。20 Tick 的真实法向／摩擦冲量、热启动及力臂 SHA 签名完全一致，每 Tick 有 30–74 个非零冲量点。默认 simulation 回归 **28 项通过**（22 单元、2 armature、4 预测限位），10 项依赖外部冻结夹具的既有检查未运行；工程结构 **564 项通过**。七次配对与重复试验共 **140 次实际积分**，完整证据见[周期报告](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_bevy_performance_001/cycle_02/cycle_02_report.md)及[核验收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_bevy_performance_001/cycle_02/cycle_02_audit.json)。这是性能改动回归，不授予原候选物理资格。没有 Actor、PPO 或 GPU，仍未达到 16 ms／持续 50 Hz 门槛。
+
+本周期到此收口，不继续追逐下一条内核热点。下一次性能周期根据新碰撞候选或新的可检验瓶颈派工，保留固定基线、真实物理结果对照与默认功能回归；无安全收益时不采用改动。
