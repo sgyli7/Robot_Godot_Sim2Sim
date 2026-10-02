@@ -442,7 +442,14 @@ impl StagedIslandSolver {
 
         // Generic (multibody) contact constraints: serial init, solved by worker 0.
         let mut jacobian_id = 0;
-        set.compute_generic_constraints(bodies, multibodies, graph, store, &mut jacobian_id);
+        set.compute_generic_constraints(
+            bodies,
+            multibodies,
+            graph,
+            store,
+            base_params.combine_same_multibody_contacts,
+            &mut jacobian_id,
+        );
 
         #[cfg(feature = "dim3")]
         self.any_gyroscopic.store(false, Ordering::Relaxed);

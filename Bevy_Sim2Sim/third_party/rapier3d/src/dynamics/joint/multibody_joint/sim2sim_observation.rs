@@ -159,6 +159,41 @@ pub struct NativeGenericJointUpdateSample {
     pub inverse_row_inertia: Real,
 }
 
+/// The native operands of one contact row whose two sides share an articulation.
+/// Contact Jacobians are already signed: its relative row is J1 + J2.
+/// Computed responses use f64 accumulation of the actual stored solver operands;
+/// they exclude contact softness and do not add a solve or modify an impulse.
+#[cfg(feature = "sim2sim-limit-row-trace")]
+#[derive(Clone, Debug)]
+pub struct NativeContactMassTraceSample {
+    /// Existing biased-solve barrier, before position integration.
+    pub phase: LimitRowTracePhase,
+    /// Existing temporal substep ordinal.
+    pub substep_id: usize,
+    /// Native contact graph edge and solver manifold ordinal.
+    pub manifold_reference: [u32; 2],
+    /// Original manifold point identity.
+    pub contact_id: u8,
+    /// Zero is normal; one and two are the original tangential rows.
+    pub row_kind: usize,
+    /// Original rigid bodies owning the two signed row blocks.
+    pub bodies: [RigidBodyHandle; 2],
+    /// Original link identities within the shared owner.
+    pub link_ids: [usize; 2],
+    /// Width of each original shared-owner row block.
+    pub ndofs: usize,
+    /// Native r coefficient, before the separate contact softness factor.
+    pub native_reciprocal_response: Real,
+    /// J1 dot WJ1 and J2 dot WJ2, from the actual row blocks.
+    pub side_response: [f64; 2],
+    /// J1 dot WJ2 and J2 dot WJ1; absent in a side-only denominator.
+    pub cross_response: [f64; 2],
+    /// (J1 + J2) dot (WJ1 + WJ2), the shared-velocity unit-impulse response.
+    pub combined_response: f64,
+    /// Original accumulated impulse at this barrier, including warmstart accounting.
+    pub total_impulse: Real,
+}
+
 /// Partial measurements from one completed full pipeline step.
 ///
 /// The partial getter retains stage-A validity; complete native contact data needs
@@ -197,6 +232,12 @@ pub struct MultibodyObservation {
     /// Per-row update operands, only with the separate serial trace feature.
     #[cfg(feature = "sim2sim-limit-row-trace")]
     pub generic_joint_updates: Vec<NativeGenericJointUpdateSample>,
+    /// Original shared-owner contact row responses at the biased-solve barrier.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub contact_mass_timing: Vec<NativeContactMassTraceSample>,
+    /// Every eligible row matched the native contact ownership manifest and layout.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub contact_mass_trace_complete: bool,
     /// Number of recorded native dry-friction row sides.
     pub own_dry_friction_row_side_count: usize,
     /// Whether the existing implicit-Coriolis energy guard was evaluated.
@@ -208,7 +249,9 @@ pub struct MultibodyObservation {
     /// A separate diagnostic request bypassed the implicit velocity-dependent matrix.
     #[cfg(feature = "sim2sim-plain-mass-probe")]
     pub plain_mass_probe_selected: bool,
-    /// Sum of actual signed original normal-contact J times final total impulse.
+    /// Sum of native signed normal-contact J times final total impulse.
+    /// Experimental combined same-owner rows use a zero first block and the
+    /// relative second block; this is an owner total, not per-link attribution.
     pub contact_normal_impulse: Vec<Real>,
     /// Sum of both actual original tangential-contact rows times final total impulse.
     pub contact_tangent_impulse: Vec<Real>,
@@ -650,6 +693,144 @@ impl MultibodyJointSet {
         }
     }
 
+    /// Read existing contact operands only at the completed biased-solve barrier.
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    pub(crate) fn observe_contact_mass_timing(
+        &mut self,
+        roots: &[MultibodyLinkId],
+        constraints: &[GenericContactConstraint],
+        jacobians: &[Real],
+        substep_id: usize,
+    ) {
+        let manifest = roots.first().and_then(|root| {
+            self.multibodies[root.multibody.0]
+                .sim2sim_observation
+                .contact_manifest
+                .clone()
+        });
+        for root in roots {
+            self.multibodies[root.multibody.0]
+                .sim2sim_observation
+                .contact_mass_trace_complete = manifest.as_ref().is_some_and(|m| m.complete);
+        }
+        let Some(manifest) = manifest.filter(|m| m.complete) else {
+            return;
+        };
+        for constraint in constraints {
+            let Some(expected) = manifest
+                .constraints
+                .iter()
+                .find(|entry| entry.reference == constraint.manifold_id)
+            else {
+                for root in roots {
+                    self.multibodies[root.multibody.0]
+                        .sim2sim_observation
+                        .contact_mass_trace_complete = false;
+                }
+                return;
+            };
+            let [Some(side1), Some(side2)] = &expected.sides else {
+                continue;
+            };
+            if side1.multibody != side2.multibody {
+                continue;
+            }
+            let owner = side1.multibody;
+            let multibody = &self.multibodies[owner.0];
+            let n = multibody.ndofs();
+            let count = constraint.num_contacts as usize;
+            let matched = roots.iter().any(|root| root.multibody == owner)
+                && n != 0
+                && constraint.ndofs1 == n
+                && constraint.ndofs2 == n
+                && constraint.solver_vel1 == multibody.solver_id
+                && constraint.solver_vel2 == multibody.solver_id
+                && constraint.generic_constraint_mask == 0b11
+                && expected.generic_sides == [true, true]
+                && side1.ndofs == n
+                && side2.ndofs == n
+                && count <= constraint.manifold_contact_id.len()
+                && constraint.manifold_contact_id[..count] == expected.contact_ids
+                && [side1, side2].iter().all(|side| {
+                    self.rigid_body_link(side.body)
+                        .is_some_and(|link| link.multibody == owner && link.id == side.link_id)
+                });
+            if !matched {
+                self.multibodies[owner.0]
+                    .sim2sim_observation
+                    .contact_mass_trace_complete = false;
+                continue;
+            }
+            for k in 0..count {
+                for row_kind in 0..3 {
+                    let start = constraint.j_id + (k * 3 + row_kind) * 4 * n;
+                    let Some(blocks) = jacobians.get(start..start + 4 * n) else {
+                        self.multibodies[owner.0]
+                            .sim2sim_observation
+                            .contact_mass_trace_complete = false;
+                        continue;
+                    };
+                    let j1 = &blocks[..n];
+                    let wj1 = &blocks[n..2 * n];
+                    let j2 = &blocks[2 * n..3 * n];
+                    let wj2 = &blocks[3 * n..];
+                    let dot = |left: &[Real], right: &[Real]| -> f64 {
+                        left.iter()
+                            .zip(right)
+                            .map(|(a, b)| (*a as f64) * (*b as f64))
+                            .sum()
+                    };
+                    let combined_response = (0..n)
+                        .map(|i| (j1[i] as f64 + j2[i] as f64) * (wj1[i] as f64 + wj2[i] as f64))
+                        .sum();
+                    let (native_reciprocal_response, total_impulse) = if row_kind == 0 {
+                        (
+                            constraint.normal_part[k].r,
+                            constraint.normal_part[k].total_impulse(),
+                        )
+                    } else {
+                        (
+                            constraint.tangent_part[k].r[row_kind - 1],
+                            constraint.tangent_part[k].total_impulse()[row_kind - 1],
+                        )
+                    };
+                    let sample = NativeContactMassTraceSample {
+                        phase: LimitRowTracePhase::AfterBiasedSolve,
+                        substep_id,
+                        manifold_reference: [
+                            constraint.manifold_id.edge,
+                            constraint.manifold_id.manifold,
+                        ],
+                        contact_id: constraint.manifold_contact_id[k],
+                        row_kind,
+                        bodies: [side1.body, side2.body],
+                        link_ids: [side1.link_id, side2.link_id],
+                        ndofs: n,
+                        native_reciprocal_response,
+                        side_response: [dot(j1, wj1), dot(j2, wj2)],
+                        cross_response: [dot(j1, wj2), dot(j2, wj1)],
+                        combined_response,
+                        total_impulse,
+                    };
+                    if !blocks.iter().all(|value| value.is_finite())
+                        || !sample.native_reciprocal_response.is_finite()
+                        || !sample.combined_response.is_finite()
+                        || !sample.total_impulse.is_finite()
+                    {
+                        self.multibodies[owner.0]
+                            .sim2sim_observation
+                            .contact_mass_trace_complete = false;
+                        continue;
+                    }
+                    self.multibodies[owner.0]
+                        .sim2sim_observation
+                        .contact_mass_timing
+                        .push(sample);
+                }
+            }
+        }
+    }
+
     pub(crate) fn observe_contact_rows(
         &mut self,
         roots: &[MultibodyLinkId],
@@ -842,6 +1023,173 @@ impl MultibodyJointSet {
 mod tests {
     use super::*;
     use crate::prelude::*;
+
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    fn shared_contact_fixture(
+        combined: bool,
+        centers: [Vector; 2],
+        slide_axis: Vector,
+    ) -> (PhysicsWorld, [RigidBodyHandle; 2]) {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        world.integration_parameters.dt = 0.02;
+        world.integration_parameters.num_solver_iterations = 1;
+        world.integration_parameters.max_ccd_substeps = 0;
+        world.integration_parameters.combine_same_multibody_contacts = combined;
+        let root = world.insert_body(RigidBodyBuilder::dynamic().additional_mass_properties(
+            MassProperties::new(Vector::ZERO, 1.0, Vector::splat(0.1)),
+        ));
+        world.bodies[root].recompute_mass_properties_from_colliders(&world.colliders);
+        let mut children = Vec::new();
+        for anchor in centers {
+            let child = world.insert_body(
+                RigidBodyBuilder::dynamic()
+                    .translation(anchor)
+                    .additional_mass_properties(MassProperties::new(
+                        Vector::ZERO,
+                        1.0,
+                        Vector::splat(0.1),
+                    )),
+            );
+            world.insert_collider(
+                ColliderBuilder::ball(0.1).density(0.0).friction(0.0),
+                Some(child),
+            );
+            world.bodies[child].recompute_mass_properties_from_colliders(&world.colliders);
+            world
+                .insert_multibody_joint(
+                    root,
+                    child,
+                    PrismaticJointBuilder::new(slide_axis)
+                        .local_anchor1(anchor)
+                        .contacts_enabled(true),
+                )
+                .unwrap();
+            children.push(child);
+        }
+        assert_eq!(
+            world
+                .multibody_joints
+                .rigid_body_link(children[0])
+                .unwrap()
+                .multibody,
+            world
+                .multibody_joints
+                .rigid_body_link(children[1])
+                .unwrap()
+                .multibody,
+        );
+        (world, [children[0], children[1]])
+    }
+
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    #[test]
+    fn actual_shared_owner_contact_mass_includes_cross_response() {
+        for combined in [false, true] {
+            let (mut world, children) =
+                shared_contact_fixture(combined, [-Vector::Y * 0.09, Vector::Y * 0.09], Vector::X);
+            world.step();
+            let owner = *world.multibody_joints.rigid_body_link(children[0]).unwrap();
+            let observation = world
+                .multibody_joints
+                .get_multibody(owner.multibody)
+                .unwrap()
+                .sim2sim_observation()
+                .unwrap();
+            assert!(observation.contact_mass_trace_complete);
+            let normal = observation
+                .contact_mass_timing
+                .iter()
+                .find(|row| row.row_kind == 0)
+                .unwrap();
+            // Three 1 kg bodies with child slides along X: along the Y contact
+            // normal all move together. Opposite forces at the same point cancel.
+            if combined {
+                assert!(normal.side_response.iter().all(|response| *response == 0.0));
+                assert_eq!(normal.native_reciprocal_response, 0.0);
+                assert_eq!(normal.total_impulse, 0.0);
+            } else {
+                assert!(
+                    (normal.side_response.iter().sum::<f64>() - 2.0 / 3.0).abs() < 1.0e-5,
+                    "{normal:?}"
+                );
+                assert!((normal.cross_response.iter().sum::<f64>() + 2.0 / 3.0).abs() < 1.0e-5);
+                assert!(normal.combined_response.abs() < 1.0e-5);
+                assert!((normal.native_reciprocal_response - 1.5).abs() < 1.0e-5);
+            }
+            assert_eq!(normal.phase, LimitRowTracePhase::AfterBiasedSolve);
+            assert_eq!(normal.substep_id, 0);
+            assert_eq!(observation.contact_mass_timing.len(), 3);
+            world.multibody_joints.invalidate_sim2sim_observations();
+            assert!(
+                world
+                    .multibody_joints
+                    .get_multibody(owner.multibody)
+                    .unwrap()
+                    .sim2sim_observation()
+                    .is_none()
+            );
+        }
+    }
+
+    #[cfg(feature = "sim2sim-limit-row-trace")]
+    #[test]
+    fn combined_shared_contact_resolves_nonzero_row_in_one_pass() {
+        let normal = Vector::new(1.0, 1.0, 0.0).normalize();
+        let mut closing = Vec::new();
+        for combined in [false, true] {
+            let (mut world, children) =
+                shared_contact_fixture(combined, [-normal * 0.1, normal * 0.1], Vector::Y);
+            world.integration_parameters.contact_softness = SpringCoefficients::new(1.0e6, 1.0);
+            let owner = *world.multibody_joints.rigid_body_link(children[0]).unwrap();
+            for (child, velocity) in children.into_iter().zip([1.0, -1.0]) {
+                let link = *world.multibody_joints.rigid_body_link(child).unwrap();
+                let mb = world
+                    .multibody_joints
+                    .get_multibody_mut(link.multibody)
+                    .unwrap();
+                let dof = mb.link(link.id).unwrap().assembly_id();
+                mb.generalized_velocity_mut()[dof] = velocity;
+            }
+            world.step();
+            let observation = world
+                .multibody_joints
+                .get_multibody(owner.multibody)
+                .unwrap()
+                .sim2sim_observation()
+                .unwrap();
+            assert!(observation.contact_mass_trace_complete);
+            let row = observation
+                .contact_mass_timing
+                .iter()
+                .find(|row| row.row_kind == 0)
+                .unwrap();
+            assert!(row.combined_response > 0.1);
+            if combined {
+                assert!(
+                    (row.native_reciprocal_response as f64 * row.combined_response - 1.0).abs()
+                        < 1.0e-5
+                );
+                assert!(row.total_impulse > 0.0);
+            }
+            let mb = world
+                .multibody_joints
+                .get_multibody(owner.multibody)
+                .unwrap();
+            let slide_dofs = children.map(|child| {
+                let link = world.multibody_joints.rigid_body_link(child).unwrap();
+                mb.link(link.id).unwrap().assembly_id()
+            });
+            // Read the completed native generalized velocity, rather than the
+            // rigid-body velocity cache from the pre-integration link update.
+            let velocity = mb.generalized_velocity();
+            closing.push((normal.y * (velocity[slide_dofs[0]] - velocity[slide_dofs[1]])).abs());
+        }
+        // The only normal contact has no restitution or friction. A correct
+        // relative mass removes its initial closing velocity in the native pass.
+        assert!(closing[0] > 0.01, "native closing: {closing:?}");
+        assert!(closing[1] < 1.0e-5, "combined closing: {closing:?}");
+    }
 
     fn fixture() -> (
         MultibodyJointSet,

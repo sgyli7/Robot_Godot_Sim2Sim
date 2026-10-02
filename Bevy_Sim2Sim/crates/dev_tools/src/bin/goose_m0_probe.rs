@@ -82,6 +82,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !["default", "fresh"].contains(&manifold_cache) {
         return Err("diagnostic manifold cache must be default or fresh".into());
     }
+    let trace_detail = option("--native-trace-detail")
+        .map(String::as_str)
+        .unwrap_or("full");
+    if !["full", "compact"].contains(&trace_detail) {
+        return Err("native trace detail must be full or compact".into());
+    }
+    let shared_contact_mode = option("--shared-owner-contact-mode")
+        .map(String::as_str)
+        .unwrap_or("native");
+    if !["native", "combined"].contains(&shared_contact_mode) {
+        return Err("shared-owner contact mode must be native or combined".into());
+    }
     if ticks == 0 || ticks > 100 || resets == 0 || resets > 20 || ![4, 8, 16, 32].contains(&pgs) {
         return Err("bounded M0 requires ticks1..100, cold-resets1..20, PGS4/8/16/32".into());
     }
@@ -106,6 +118,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "third_party/rapier3d/src/dynamics/solver/joint_constraint/generic_joint_constraint_builder.rs",
         "third_party/rapier3d/src/dynamics/solver/staged_island_solver/solve.rs",
         "third_party/rapier3d/src/dynamics/solver/staged_island_solver/worker.rs",
+        "third_party/rapier3d/src/dynamics/solver/contact_constraint/generic_contact_constraint.rs",
+        "third_party/rapier3d/src/dynamics/solver/contact_constraint/generic_contact_constraint_element.rs",
         "Cargo.lock",
     ];
     let code_hashes: serde_json::Map<String, Value> = code_paths
@@ -149,6 +163,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     receipt["diagnostic_prediction_mode"] = json!(prediction);
     receipt["diagnostic_ccd_mode"] = json!(ccd);
     receipt["diagnostic_manifold_cache"] = json!(manifold_cache);
+    receipt["native_trace_detail"] = json!(trace_detail);
+    receipt["shared_owner_contact_mode"] = json!(shared_contact_mode);
+    receipt["shared_owner_contact_scope"] = json!(
+        "combined is experimental: zero first block plus signed relative second block, one native implicit-mass response; existing relative-row cancellation guard; original detection/filtering unchanged"
+    );
+    receipt["native_trace_enabled"] = json!(cfg!(feature = "sim2sim_limit_row_trace"));
+    receipt["compact_trace_scope"] = json!(
+        "compact omits per-joint-update serialization only; original native tracing and physical stepping unchanged"
+    );
     receipt["fresh_cache_scope"] = json!(
         "raw geometric manifolds and Parry workspace cleared per native query; raw warmstart data discarded; later Rapier cluster matching unchanged"
     );
@@ -158,12 +181,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             || prediction != "default"
             || ccd != "default"
             || manifold_cache != "default"
+            || shared_contact_mode != "native"
     );
     let mut trace = Vec::new();
     let mut times = Vec::new();
     let mut failures = Vec::new();
     for reset in 0..resets {
         let mut simulation = SimulationWorld::new_with_profile(PhysicsClockProfile::Goose50);
+        simulation
+            .world
+            .integration_parameters
+            .combine_same_multibody_contacts = shared_contact_mode == "combined";
         let fresh_queries = Arc::new(AtomicU64::new(0));
         if manifold_cache == "fresh" {
             simulation.world.narrow_phase = NarrowPhase::with_query_dispatcher(
@@ -194,7 +222,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             receipt["native_contact_parameters"] = json!({
                 "prediction_distance_m":simulation.world.integration_parameters.prediction_distance(),
                 "contact_recycling":simulation.world.integration_parameters.contact_recycling,
-                "max_ccd_substeps":simulation.world.integration_parameters.max_ccd_substeps});
+                "max_ccd_substeps":simulation.world.integration_parameters.max_ccd_substeps,
+                "combine_same_multibody_contacts":simulation.world.integration_parameters.combine_same_multibody_contacts});
         }
         let assembly = match GooseAssembly::build(&mut simulation, &plant) {
             Ok(assembly) => assembly,
@@ -426,14 +455,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "impulse_bounds":row.impulse_bounds})
                         })
                         .collect();
-                    let updates: Vec<_> = observation.generic_joint_updates.iter().map(|row| json!({
+                    let updates: Vec<_> = if trace_detail == "full" {
+                        observation.generic_joint_updates.iter().map(|row| json!({
                         "row_index":row.row_index,"without_bias":row.without_bias,
                         "writeback_kind":row.writeback_kind,"joint_index":row.joint_index,
                         "impulse_before":row.impulse_before,"impulse_after":row.impulse_after,
                         "impulse_bounds":row.impulse_bounds,"jacobian":row.jacobian,
                         "weighted_jacobian":row.weighted_jacobian,"velocity_before":row.velocity_before,
                         "velocity_after":row.velocity_after,"rhs":row.rhs,"cfm_gain":row.cfm_gain,
-                        "inverse_row_inertia":row.inverse_row_inertia})).collect();
+                        "inverse_row_inertia":row.inverse_row_inertia})).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let contact_mass_rows: Vec<_> = observation.contact_mass_timing.iter().map(|row| json!({
+                        "phase":row.phase.as_str(),"substep_id":row.substep_id,
+                        "manifold_reference":row.manifold_reference,"contact_id":row.contact_id,"row_kind":row.row_kind,
+                        "bodies":row.bodies.map(|handle|assembly.body_handles.iter()
+                            .find_map(|(name,owned)|(*owned==handle).then_some(name))),
+                        "link_ids":row.link_ids,"ndofs":row.ndofs,
+                        "native_reciprocal_response":row.native_reciprocal_response,
+                        "side_response":row.side_response,"cross_response":row.cross_response,
+                        "combined_response":row.combined_response,"total_impulse":row.total_impulse})).collect();
                     trace.last_mut().unwrap()["native_coupled_solve"] = json!({
                         "valid":true,"epoch":observation.epoch,"dt_s":observation.full_step_dt(),
                         "energy_guard_fallback":observation.energy_guard_fallback,
@@ -441,7 +483,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "mass_matrix_phase":"native constraint matrix last computed before integration",
                         "mass_matrix":(0..matrix.nrows()).map(|i|matrix.row(i).iter().copied().collect::<Vec<_>>()).collect::<Vec<_>>(),
                         "backend_dof_mapping":mapping,"pin_rows":rows,"limit_rows":limit_rows,
-                        "generic_joint_updates":updates});
+                        "generic_joint_updates":updates,
+                        "contact_mass_trace_complete":observation.contact_mass_trace_complete,
+                        "shared_owner_contact_mass_rows":contact_mass_rows});
                 } else {
                     trace.last_mut().unwrap()["native_coupled_solve"] = json!({"valid":false});
                 }
@@ -476,7 +520,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     times.sort_by(f64::total_cmp);
     let actual_resets = receipt["resets"].as_array().map_or(0, Vec::len);
     let finished = failures.is_empty() && actual_resets == resets && trace.len() == resets * ticks;
-    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" && ccd=="default" && manifold_cache=="default" {"passed"} else if finished {"partial"} else {"failed"},
+    receipt["checks"]["cold_resets_single_integrations"] = json!({"status":if finished && resets==20 && ticks==100 && scene=="floor" && stop_scope=="all" && recycling=="default" && prediction=="default" && ccd=="default" && manifold_cache=="default" && shared_contact_mode=="native" {"passed"} else if finished {"partial"} else {"failed"},
         "measurement_passed":finished,"scope":"fresh_world_reinitialization; same-world scene retention/handle cleanup not tested",
         "reset_count":actual_resets,"requested_resets":resets,"requested_ticks_per_reset":ticks,
         "completed_integrations":trace.len(),"failures":failures,

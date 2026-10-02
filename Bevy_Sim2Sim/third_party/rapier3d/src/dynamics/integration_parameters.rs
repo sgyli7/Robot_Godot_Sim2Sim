@@ -276,6 +276,13 @@ pub struct IntegrationParameters {
     /// applies, read solver contacts/impulses from [`crate::geometry::ContactPair::solver_clusters`],
     /// not [`crate::geometry::ContactPair::manifolds`].
     pub contact_clustering: bool,
+    /// Experimental shared-articulation contact rows (default: false).
+    /// Two signed link blocks are solved as their combined relative row,
+    /// including the cross response of the native implicit mass matrix.
+    /// The existing relative-Jacobian cancellation guard removes numerical
+    /// null rows; this does not change contact detection or pair filtering.
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    pub combine_same_multibody_contacts: bool,
     /// If enabled, a contact pair whose relative pose moved less than [`Self::contact_recycle_distance`]
     /// since its last full narrow-phase update skips contact determination and keeps its existing points
     /// (default: `true`) — a large speed-up for quasi-static scenes. Trade-offs:
@@ -396,6 +403,7 @@ impl Default for IntegrationParameters {
             normalized_max_linear_velocity: 400.0,
             max_ccd_substeps: 1,
             contact_clustering: true,
+            combine_same_multibody_contacts: false,
             contact_recycling: true,
             normalized_contact_recycle_distance: 0.05,
             friction_in_bias_pass: false,

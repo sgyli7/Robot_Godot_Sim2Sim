@@ -11,8 +11,8 @@ pub(crate) use sim2sim_observation::{
 };
 #[cfg(all(feature = "alloc", feature = "sim2sim-limit-row-trace"))]
 pub use sim2sim_observation::{
-    LimitRowTracePhase, LimitRowTraceSample, NativeGenericJointUpdateSample,
-    NativeJointRowTraceSample,
+    LimitRowTracePhase, LimitRowTraceSample, NativeContactMassTraceSample,
+    NativeGenericJointUpdateSample, NativeJointRowTraceSample,
 };
 
 #[cfg(feature = "alloc")]

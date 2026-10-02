@@ -24,6 +24,7 @@ impl ContactConstraintsSet {
         multibody_joints: &MultibodyJointSet,
         graph: &SolverContactGraph,
         store: &ManifoldStore,
+        combine_same_multibody_contacts: bool,
         jacobian_id: &mut usize,
     ) {
         let generic = graph.generic();
@@ -42,6 +43,7 @@ impl ContactConstraintsSet {
                 manifold,
                 bodies,
                 multibody_joints,
+                combine_same_multibody_contacts,
                 &mut self.generic_velocity_constraints_builder[curr_id],
                 &mut self.generic_velocity_constraints[curr_id],
                 &mut self.generic_jacobians,

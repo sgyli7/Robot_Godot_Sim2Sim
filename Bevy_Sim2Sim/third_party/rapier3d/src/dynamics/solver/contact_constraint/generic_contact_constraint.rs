@@ -1,9 +1,9 @@
 use crate::dynamics::solver::GenericRhs;
-use crate::dynamics::{IntegrationParameters, MultibodyJointSet, RigidBodySet};
+use crate::dynamics::{IntegrationParameters, Multibody, MultibodyJointSet, RigidBodySet};
 use crate::geometry::ContactManifold;
 #[cfg(feature = "dim3")]
 use crate::math::TangentImpulse;
-use crate::math::{DIM, DVector, MAX_MANIFOLD_POINTS, Real};
+use crate::math::{AngVector, DIM, DVector, MAX_MANIFOLD_POINTS, Real};
 use crate::utils::{self, AngularInertiaOps, CrossProduct, DotProduct};
 
 use super::{ContactConstraintNormalPart, ContactConstraintTangentPart};
@@ -15,6 +15,40 @@ use crate::prelude::RigidBodyHandle;
 #[cfg(feature = "dim2")]
 use crate::utils::OrthonormalBasis;
 use parry::math::Vector;
+
+/// Keep the two-side buffer layout, with a zero first block and the signed
+/// relative row on the second block. Both sides address the same velocity
+/// vector, so a single native M^-1 solve represents their complete response.
+fn fill_combined_contact_jacobians(
+    multibody: &Multibody,
+    link_ids: [usize; 2],
+    force1: Vector,
+    torque1: AngVector,
+    torque2: AngVector,
+    jacobian_id: &mut usize,
+    jacobians: &mut DVector,
+) -> Real {
+    let n = multibody.ndofs();
+    if n == 0 {
+        return 0.0;
+    }
+    jacobians.rows_mut(*jacobian_id, 2 * n).fill(0.0);
+    *jacobian_id += 2 * n;
+    let combined_id = *jacobian_id;
+    multibody.fill_relative_jacobians(
+        link_ids[0],
+        -force1,
+        -torque1,
+        link_ids[1],
+        -force1,
+        torque2,
+        jacobian_id,
+        jacobians,
+    );
+    jacobians
+        .rows(combined_id, n)
+        .dot(&jacobians.rows(combined_id + n, n))
+}
 
 #[derive(Copy, Clone)]
 pub(crate) struct GenericContactConstraintBuilder {
@@ -37,6 +71,7 @@ impl GenericContactConstraintBuilder {
         manifold: &ContactManifold,
         bodies: &RigidBodySet,
         multibodies: &MultibodyJointSet,
+        combine_same_multibody_contacts: bool,
         out_builder: &mut GenericContactConstraintBuilder,
         out_constraint: &mut GenericContactConstraint,
         jacobians: &mut DVector,
@@ -81,6 +116,9 @@ impl GenericContactConstraintBuilder {
             .rigid_body_link(handle2)
             .map(|m| (&multibodies[m.multibody], m.id))
             .filter(|(mb, link_id)| (*link_id != 0 || mb.root_is_dynamic) && !rb2.is_sleeping());
+        let shared_owner = multibody1.zip(multibody2).filter(|(first, second)| {
+            combine_same_multibody_contacts && core::ptr::eq(first.0, second.0)
+        });
         let solver_vel1 =
             multibody1
                 .map(|mb| mb.0.solver_id)
@@ -198,27 +236,57 @@ impl GenericContactConstraintBuilder {
                     Default::default()
                 };
 
-                let inv_r1 = if let Some((mb1, link_id1)) = multibody1.as_ref() {
-                    mb1.fill_jacobians(*link_id1, force_dir1, torque_dir1, jacobian_id, jacobians)
-                        .0
-                } else if type1.is_dynamic_or_kinematic() {
-                    force_dir1.dot(mprops1.effective_inv_mass * force_dir1)
-                        + ii_torque_dir1.gdot(torque_dir1)
+                let response = if let Some(((mb, link1), (_, link2))) = shared_owner {
+                    fill_combined_contact_jacobians(
+                        mb,
+                        [link1, link2],
+                        force_dir1,
+                        torque_dir1,
+                        torque_dir2,
+                        jacobian_id,
+                        jacobians,
+                    )
                 } else {
-                    0.0
-                };
-
-                let inv_r2 = if let Some((mb2, link_id2)) = multibody2.as_ref() {
-                    mb2.fill_jacobians(*link_id2, -force_dir1, torque_dir2, jacobian_id, jacobians)
+                    let inv_r1 = if let Some((mb1, link_id1)) = multibody1.as_ref() {
+                        mb1.fill_jacobians(
+                            *link_id1,
+                            force_dir1,
+                            torque_dir1,
+                            jacobian_id,
+                            jacobians,
+                        )
                         .0
-                } else if type2.is_dynamic_or_kinematic() {
-                    force_dir1.dot(mprops2.effective_inv_mass * force_dir1)
-                        + ii_torque_dir2.gdot(torque_dir2)
-                } else {
-                    0.0
-                };
+                    } else if type1.is_dynamic_or_kinematic() {
+                        force_dir1.dot(mprops1.effective_inv_mass * force_dir1)
+                            + ii_torque_dir1.gdot(torque_dir1)
+                    } else {
+                        0.0
+                    };
 
-                let r = crate::utils::inv(inv_r1 + inv_r2);
+                    let inv_r2 = if let Some((mb2, link_id2)) = multibody2.as_ref() {
+                        mb2.fill_jacobians(
+                            *link_id2,
+                            -force_dir1,
+                            torque_dir2,
+                            jacobian_id,
+                            jacobians,
+                        )
+                        .0
+                    } else if type2.is_dynamic_or_kinematic() {
+                        force_dir1.dot(mprops2.effective_inv_mass * force_dir1)
+                            + ii_torque_dir2.gdot(torque_dir2)
+                    } else {
+                        0.0
+                    };
+
+                    inv_r1 + inv_r2
+                };
+                let r = crate::utils::inv(response);
+                let warmstart_impulse = if shared_owner.is_some() && r == 0.0 {
+                    0.0
+                } else {
+                    pt_data.warmstart_impulse
+                };
 
                 // Warm-start impulses and contact newness come from the manifold
                 // point (they are not duplicated on the solver contacts).
@@ -239,8 +307,8 @@ impl GenericContactConstraintBuilder {
                     // Minus the warm-start impulse, so the first substep's `update` cancels it
                     // when it folds `impulse` in: that value belongs to the previous step (see
                     // the coulomb-friction `generate`).
-                    impulse_accumulator: -pt_data.warmstart_impulse,
-                    impulse: pt_data.warmstart_impulse,
+                    impulse_accumulator: -warmstart_impulse,
+                    impulse: warmstart_impulse,
                     r,
                     #[cfg(feature = "block-solver")]
                     r_mat_elts: [0.0; 2],
@@ -290,39 +358,52 @@ impl GenericContactConstraintBuilder {
                     out_constraint.tangent_part[k].ii_torque_dir2[j] = ii_torque_dir2;
 
                     let tangent_glam = tangents1[j];
-                    let inv_r1 = if let Some((mb1, link_id1)) = multibody1.as_ref() {
-                        mb1.fill_jacobians(
-                            *link_id1,
+                    let response = if let Some(((mb, link1), (_, link2))) = shared_owner {
+                        fill_combined_contact_jacobians(
+                            mb,
+                            [link1, link2],
                             tangent_glam,
                             torque_dir1,
-                            jacobian_id,
-                            jacobians,
-                        )
-                        .0
-                    } else if type1.is_dynamic_or_kinematic() {
-                        tangent_glam.dot(mprops1.effective_inv_mass * tangent_glam)
-                            + ii_torque_dir1.gdot(torque_dir1)
-                    } else {
-                        0.0
-                    };
-
-                    let inv_r2 = if let Some((mb2, link_id2)) = multibody2.as_ref() {
-                        mb2.fill_jacobians(
-                            *link_id2,
-                            -tangent_glam,
                             torque_dir2,
                             jacobian_id,
                             jacobians,
                         )
-                        .0
-                    } else if type2.is_dynamic_or_kinematic() {
-                        tangent_glam.dot(mprops2.effective_inv_mass * tangent_glam)
-                            + ii_torque_dir2.gdot(torque_dir2)
                     } else {
-                        0.0
-                    };
+                        let inv_r1 = if let Some((mb1, link_id1)) = multibody1.as_ref() {
+                            mb1.fill_jacobians(
+                                *link_id1,
+                                tangent_glam,
+                                torque_dir1,
+                                jacobian_id,
+                                jacobians,
+                            )
+                            .0
+                        } else if type1.is_dynamic_or_kinematic() {
+                            tangent_glam.dot(mprops1.effective_inv_mass * tangent_glam)
+                                + ii_torque_dir1.gdot(torque_dir1)
+                        } else {
+                            0.0
+                        };
 
-                    let r = crate::utils::inv(inv_r1 + inv_r2);
+                        let inv_r2 = if let Some((mb2, link_id2)) = multibody2.as_ref() {
+                            mb2.fill_jacobians(
+                                *link_id2,
+                                -tangent_glam,
+                                torque_dir2,
+                                jacobian_id,
+                                jacobians,
+                            )
+                            .0
+                        } else if type2.is_dynamic_or_kinematic() {
+                            tangent_glam.dot(mprops2.effective_inv_mass * tangent_glam)
+                                + ii_torque_dir2.gdot(torque_dir2)
+                        } else {
+                            0.0
+                        };
+
+                        inv_r1 + inv_r2
+                    };
+                    let r = crate::utils::inv(response);
                     let rhs_wo_bias = manifold_point.tangent_velocity.gdot(tangents1[j]);
 
                     out_constraint.tangent_part[k].rhs_wo_bias[j] = rhs_wo_bias;
@@ -332,6 +413,12 @@ impl GenericContactConstraintBuilder {
                     // in lhs. See the corresponding code on the `velocity_constraint.rs`
                     // file.
                     out_constraint.tangent_part[k].r[j] = r;
+                    if shared_owner.is_some()
+                        && (r == 0.0 || out_constraint.normal_part[k].r == 0.0)
+                    {
+                        out_constraint.tangent_part[k].impulse[j] = 0.0;
+                        out_constraint.tangent_part[k].impulse_accumulator[j] = 0.0;
+                    }
                 }
             }
 
