@@ -255,5 +255,30 @@ cargo test --locked --offline -p robot_minigame --lib \
   --ignored --exact --test-threads=1 --nocapture
 ```
 
+The published-stack zero-control `--initial-collision-audit` also completed with
+zero VLA calls, zero integrations and zero physical-state change. It recorded
+305 enabled colliders, 177 cooked convex parts and all 53 measured robot poses.
+The corresponding development stack had 171 parts. Specifically, the original
+shelf frame cooks to 34 rather than 31 hulls and the shelf surfaces to 93 rather
+than 90; all other cooked hull counts agree. This is an observed cooking
+difference between the composite stacks, not proof that these six additional
+parts alone cause or solve the earlier launch. Do not use the development
+cooking as the released reference. The ground plane remains an explicitly
+unsupported analytic shape in this geometry reader; the two dynamic background
+bodies (tabletop and drill) retain measured poses and require actual mass,
+material and owner mapping before native insertion.
+
+The existing all-four-object query/export at SDK
+`6.0.0-rc.22+release.33481.407f3ea1.gl` already includes both original T2 assets.
+The frozen export identity is
+`19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0`,
+bound to the host-path-remapped query
+`70ca6c1513c29b0e942535190c11f5e73c742dd281fe41543be51f573ced81bb`.
+The .1 kg box is one original cube; the scaled bin is 422.090668 kg and 16
+original convex parts at [4,2,1] scale. The independent original 6.0 downloads
+match both USD identities. This binds existing geometry to the selected T2
+runtime without recooking or modifying its old receipt/qualification fields;
+it does not establish native scene contact or placement success.
+
 [contact_reports]: https://docs.omniverse.nvidia.com/dev-guide/latest/programmer_ref/physics/rb_physics.html
 [cooking]: https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/extensions/runtime/source/omni.physx/docs/api/python.html
