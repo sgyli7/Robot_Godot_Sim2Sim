@@ -1114,3 +1114,12 @@ there is no extra integration, truth input, Qwen target selection or release.
 Startup0198 rejects missing vision, wrong script/definition hashes, vision in
 the old target-view scene and an extra grasp call before output/world/model
 creation. Three reply-guard checks and six scene-budget/CLI checks pass.
+
+
+Live entry0199 stops before any model call or physics integration because the
+original17,171,205byte collider definition exceeded the initially allocated4MiB
+worker file budget. The owned model is closed and the failed startup is retained.
+The pinned definition gets a finite32MiB read ceiling; its SHA256 identity is
+unchanged. Actual saved RGB worker roundtrip0200 then loads the original file,
+detects21/22 and verifies the bound reply in0.45seconds, with zero model calls
+or physics steps. This tests the worker contract only, not fresh execution.

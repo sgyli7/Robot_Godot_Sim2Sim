@@ -42,7 +42,8 @@ impl MarkerVisionConfiguration {
             (
                 &self.definition_path,
                 &self.definition_sha256,
-                4 * 1024 * 1024,
+                // The pinned full original collider definition is17,171,205bytes.
+                32 * 1024 * 1024,
             ),
         ] {
             if !path.is_absolute() || digest(path, maximum)? != *hash {
@@ -271,6 +272,50 @@ mod worker {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        #[ignore = "requires pinned config and saved actual RGB/self-sensor inputs; no physics/models"]
+        fn real_rgb_local_worker_roundtrip() -> Result<(), String> {
+            let fixture = std::env::var("G1_MARKER_JOB_FIXTURE").map_err(|e| e.to_string())?;
+            let f: serde_json::Value =
+                serde_json::from_slice(&fs::read(fixture).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            let config: MarkerVisionConfiguration =
+                serde_json::from_value(f["configuration"].clone()).map_err(|e| e.to_string())?;
+            config.validate()?;
+            let directory = PathBuf::from(f["output"].as_str().ok_or("output absent")?);
+            fs::create_dir(&directory).map_err(|e| e.to_string())?;
+            fs::copy(
+                f["image"].as_str().ok_or("image absent")?,
+                directory.join("ego.png"),
+            )
+            .map_err(|e| e.to_string())?;
+            fs::copy(
+                f["observation"].as_str().ok_or("observation absent")?,
+                directory.join("observation.json"),
+            )
+            .map_err(|e| e.to_string())?;
+            let input: serde_json::Value = serde_json::from_slice(
+                &fs::read(directory.join("observation.json")).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let stamp =
+                serde_json::from_value(input["stamp"].clone()).map_err(|e| e.to_string())?;
+            let job = MarkerVisionJob::start(config, directory.clone(), stamp)?;
+            let result = loop {
+                if let Some(reply) = job.try_take() {
+                    break reply?;
+                }
+                if job.started.elapsed() > Duration::from_secs(4) {
+                    return Err("worker did not report finite completion".into());
+                }
+                thread::sleep(Duration::from_millis(5));
+            };
+            fs::write(directory.join("roundtrip_receipt.json"),serde_json::to_vec_pretty(&serde_json::json!({
+                "actual_saved_rgb_fixture":true,"fresh_vla_calls":0,"actual_integrations":0,
+                "qualified":false,"wall_ms":job.started.elapsed().as_secs_f64()*1000.,"reply":result,
+            })).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            Ok(())
+        }
         fn fixture() -> (serde_json::Value, ObservationStamp) {
             let stamp = ObservationStamp {
                 episode_id: 7,
