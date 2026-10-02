@@ -66,6 +66,11 @@ def main():
             dependencies = set()
             if path.suffix == '.mdl':
                 source = data.decode('utf-8')
+                # Quoted examples inside comments are not asset dependencies.
+                # Preserve strings (including URLs containing //) while removing
+                # actual line/block comments before scanning MDL references.
+                source = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*[\s\S]*?\*/',
+                    lambda match: match.group(1) or '', source)
                 result['module_imports'] = sorted(set(re.findall(r'\bimport\s+([^;]+);', source)))
                 for literal in re.findall(r'"([^"\n]+)"', source):
                     if re.search(r'\.(png|jpg|jpeg|exr|hdr|mdl)$', literal, re.IGNORECASE):

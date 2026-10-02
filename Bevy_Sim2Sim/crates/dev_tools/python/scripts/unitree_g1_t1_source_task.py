@@ -182,6 +182,10 @@ def run(args, receipt, output):
                         break
                     if frames:
                         frame = frames[frame_index]
+                        # Original remap_policy_joints_to_sim_joints_np starts
+                        # with zero for unpredicted leg joint targets; WBC then
+                        # fills those joints from the lower-body policy.
+                        action.zero_()
                         for key, ids in indices.items():
                             target = np.asarray(frame[key], dtype=np.float32)
                             if target.shape != (len(ids),) or not np.isfinite(target).all():
