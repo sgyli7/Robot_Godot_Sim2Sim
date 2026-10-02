@@ -1166,3 +1166,43 @@ drift cannot mask blockage; alternating zero/positive gait velocity is allowed.
 Simulation checks0205:66pass/35explicit real-asset trials ignored. The next
 stage must restore visual/known-geometry clearance before walking over the
 bin; merely extending the collision deadline is not an adopted remedy.
+
+Actual near RGB plus the pinned public collision geometry produces the0206
+clearance proposal without world/object poses: raise0.130138m over131Ticks
+to retain10cm above the rim. The separate bounded self-FK raising controller
+preserves palm orientations/gap/fingers, then stands100Ticks. Saved-fixture
+trial0208 raises the box0.703970→0.818480m, but its fine approach is rejected
+by the forward-progress guard at1757actual Ticks. Read-only contact replay0209
+reproduces all1757body states exactly and identifies first non-floor robot
+contact at1674: left hip-yaw link against the original table legs,3.369N·s.
+This is distinct from the earlier lowered-box/rim collision. No physical
+parameter or formal frequency is changed.
+
+Saved-fixture standoff0210 uses an explicitly manual diagnostic20cm earlier
+waypoint; this margin is not presented as an online visual plan. It completes
+1761native Ticks with no non-floor robot contact, but the box slips into the
+bin before a release command. Current episode/camera boundaries after raising
+are synthetic diagnostic fixtures, and all fresh-model counts are zero.
+
+The bounded release controller opens the commanded palm gap to30cm over100
+Ticks, retaining the palm midpoint/orientations/fingers and standing125physical
+Ticks afterward. Trial0212 reproduces0210's first1761body states exactly and
+finishes1986actual50Hz single integrations. The actual palm gap is0.300431m at
+the end of opening and0.303367m at the final boundary. Independent original-bin
+floor-footprint/support/separation/speed/standing criteria hold continuously
+for5.38seconds, but hand contact first disappears at1681, before opening1762.
+**This is development placement evidence, not controlled release or formal T2
+success.** It cannot count toward8/10. Trace SHA256:
+`4beea127e0b6b8a67973f03e9345b9dd4136cb921beb9d344795d165d63e1906`.
+
+Read-only self-FK/contact audit measures the held actual palm gap≈22.8cm
+against the unchanged15.6043cm command, with original contact-loaded tracking
+error; original FK agrees with actual bodies below0.2µm. The box is already
+about7cm below the palm midpoint at the near boundary, and slides farther
+during the final walk. No held sample fully fits the bin-floor footprint before
+hand loss, so simply opening earlier does not satisfy placement. This rules
+out claiming that the existing slipping trajectory is a successful planned
+release; fresh raised RGB and controlled retention/placement remain required.
+Checks0213:68simulation checks pass/35real-asset trials explicitly ignored;
+both development-feature and default entry compile. Contact auditing is
+test-only and reads the last solve without refreshing contacts or integrating.

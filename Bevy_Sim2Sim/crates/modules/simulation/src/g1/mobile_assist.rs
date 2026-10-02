@@ -20,6 +20,8 @@ use super::{
         MobileCarryGoal, MobileCarryNavigator, MobileNavigationStep, MobileScanGoal,
         MobileScanNavigator,
     },
+    mobile_raise::{MobileGripRaising, MobileRaiseGoal, MobileRaiseStep},
+    mobile_release::{MobileGripRelease, MobileReleaseGoal, MobileReleaseStep},
     runner::{G1Measurement, G1ProgressCounts},
     task_objects::TaskObjectFrame,
     task_policy::{ArenaControllerCommand, controller_command},
@@ -35,6 +37,8 @@ pub enum MobileAssistCommand {
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
     ClassicalLower(MobileLowerGoal),
+    ClassicalRaise(MobileRaiseGoal),
+    ClassicalRelease(MobileReleaseGoal),
 }
 
 impl MobileAssistCommand {
@@ -50,6 +54,8 @@ impl MobileAssistCommand {
             Self::ClassicalCarry(goal) => goal.validate(),
             Self::ClassicalScan(goal) => goal.validate(),
             Self::ClassicalLower(goal) => goal.validate(),
+            Self::ClassicalRaise(goal) => goal.validate(),
+            Self::ClassicalRelease(goal) => goal.validate(),
         }
     }
 }
@@ -74,6 +80,14 @@ pub enum MobileAssistExecution {
         goal: MobileLowerGoal,
         lowering: MobileLowerStep,
     },
+    ClassicalRaise {
+        goal: MobileRaiseGoal,
+        raising: MobileRaiseStep,
+    },
+    ClassicalRelease {
+        goal: MobileReleaseGoal,
+        opening: MobileReleaseStep,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -93,6 +107,8 @@ pub struct MobileAssistRunner {
     carry: Option<CarryState>,
     scan: Option<ScanState>,
     lower: Option<MobileGripLowering>,
+    raise: Option<MobileGripRaising>,
+    release: Option<MobileGripRelease>,
     halted: bool,
 }
 
@@ -126,6 +142,8 @@ impl MobileAssistRunner {
             carry: None,
             scan: None,
             lower: None,
+            raise: None,
+            release: None,
             halted: false,
         })
     }
@@ -150,7 +168,11 @@ impl MobileAssistRunner {
     }
 
     pub fn completed_skill(&self) -> bool {
-        if let Some(lower) = &self.lower {
+        if let Some(release) = &self.release {
+            release.completed()
+        } else if let Some(raise) = &self.raise {
+            raise.completed()
+        } else if let Some(lower) = &self.lower {
             lower.completed()
         } else {
             self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
@@ -186,6 +208,12 @@ impl MobileAssistRunner {
         if let Some(carry) = &self.carry {
             if !carry.navigator.completed() {
                 return Err(invalid("cannot replace an active carry"));
+            }
+            if let Some(raise) = &self.raise {
+                if !raise.completed() {
+                    return Err(invalid("cannot replace active raising"));
+                }
+                return Ok((raise.command().clone(), carry.grip.clone()));
             }
             return Ok((carry.command.clone(), carry.grip.clone()));
         }
@@ -241,6 +269,11 @@ impl MobileAssistRunner {
                         .as_ref()
                         .is_some_and(|scan| !scan.navigator.completed())
                     || self.lower.as_ref().is_some_and(|lower| !lower.completed())
+                    || self.raise.as_ref().is_some_and(|raise| !raise.completed())
+                    || self
+                        .release
+                        .as_ref()
+                        .is_some_and(|release| !release.completed())
                 {
                     return Err(invalid(
                         "cannot replace active classical carry with a VLA chunk",
@@ -261,12 +294,17 @@ impl MobileAssistRunner {
                 self.carry = None;
                 self.scan = None;
                 self.lower = None;
+                self.raise = None;
+                self.release = None;
                 Ok(MobileAssistStep {
                     execution: MobileAssistExecution::OriginalVla(step.execution),
                     body: step.body,
                 })
             }
             MobileAssistCommand::ClassicalCarry(goal) => {
+                if self.release.is_some() {
+                    return Err(invalid("carry after opening requires a new grasp/reset"));
+                }
                 let state = self.owner.measurement()?;
                 if self.carry.as_ref().is_none_or(|carry| {
                     carry.navigator.completed() && carry.navigator.goal() != goal
@@ -285,6 +323,7 @@ impl MobileAssistRunner {
                     });
                     self.scan = None;
                     self.lower = None;
+                    self.raise = None;
                 }
                 let carry = self.carry.as_mut().unwrap();
                 if carry.navigator.goal() != goal {
@@ -338,6 +377,66 @@ impl MobileAssistRunner {
                         grip: scan.grip.clone(),
                         navigation,
                         command: scan.command.clone(),
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalRelease(goal) => {
+                let state = self.owner.measurement()?;
+                if self.release.is_none() {
+                    if self.carry.as_ref().is_none_or(|c| !c.navigator.completed())
+                        || self.raise.as_ref().is_some_and(|r| !r.completed())
+                    {
+                        return Err(invalid("release requires completed stationary carry"));
+                    }
+                    let (command, _) = self.prepare_classical(&goal.observation, &state)?;
+                    self.release = Some(MobileGripRelease::new(
+                        goal.clone(),
+                        &state,
+                        command,
+                        &self.calibration,
+                    )?);
+                }
+                let release = self.release.as_mut().unwrap();
+                if release.goal() != goal {
+                    return Err(invalid("release goal changed while executing"));
+                }
+                let opening = release.update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&opening.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalRelease {
+                        goal: goal.clone(),
+                        opening,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalRaise(goal) => {
+                if self.release.is_some() {
+                    return Err(invalid("raising after opening requires new grasp/reset"));
+                }
+                let state = self.owner.measurement()?;
+                if self.raise.is_none() {
+                    if self.carry.as_ref().is_none_or(|c| !c.navigator.completed()) {
+                        return Err(invalid("raising requires completed stationary carry"));
+                    }
+                    let (command, _) = self.prepare_classical(&goal.observation, &state)?;
+                    self.raise = Some(MobileGripRaising::new(goal.clone(), &state, command)?);
+                }
+                let raise = self.raise.as_mut().unwrap();
+                if raise.goal() != goal {
+                    return Err(invalid("raise goal changed while executing"));
+                }
+                let raising = raise.update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&raising.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalRaise {
+                        goal: goal.clone(),
+                        raising,
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
@@ -401,6 +500,8 @@ mod tests {
         lower: MobileLowerGoal,
         carry: Option<MobileCarryGoal>,
         fine_carry: Option<MobileCarryGoal>,
+        raise: Option<MobileRaiseGoal>,
+        release: Option<MobileReleaseGoal>,
     }
 
     /// Frozen real-RGB grasp/scan prefix, then lowering and optional visual carry.
@@ -437,6 +538,9 @@ mod tests {
         let mut carry_started = false;
         let mut coarse_completed = false;
         let mut fine_started = false;
+        let mut fine_completed = false;
+        let mut raise_started = false;
+        let mut release_started = false;
         let maximum_ticks = if goals.carry.is_some() { 3150 } else { 1300 };
         let mut actual_ticks = 0;
         let now = || {
@@ -470,6 +574,14 @@ mod tests {
                     current = Some(MobileAssistCommand::ClassicalCarry(goal.clone()));
                     carry_started = true;
                 } else if carry_started
+                    && !raise_started
+                    && owner.completed_skill()
+                    && let Some(goal) = &mut goals.raise
+                {
+                    goal.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalRaise(goal.clone()));
+                    raise_started = true;
+                } else if carry_started
                     && !fine_started
                     && owner.completed_skill()
                     && let Some(goal) = &mut goals.fine_carry
@@ -477,6 +589,14 @@ mod tests {
                     goal.observation.captured_at_unix_ms = now();
                     current = Some(MobileAssistCommand::ClassicalCarry(goal.clone()));
                     fine_started = true;
+                } else if fine_started
+                    && !release_started
+                    && owner.completed_skill()
+                    && let Some(goal) = &mut goals.release
+                {
+                    goal.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalRelease(goal.clone()));
+                    release_started = true;
                 }
                 let step = owner.step_with_guard(current.as_ref().unwrap(), &mut || Ok(()))?;
                 if matches!(&step.execution, MobileAssistExecution::ClassicalLower { lowering, .. } if lowering.completed)
@@ -487,10 +607,14 @@ mod tests {
                 if carry_started && !fine_started && owner.completed_skill() {
                     coarse_completed = true;
                 }
+                if fine_started && !release_started && owner.completed_skill() {
+                    fine_completed = true;
+                }
                 serde_json::to_writer(
                     &mut trace,
                     &serde_json::json!({
                         "saved_grasp_scan_fixture":true,"fresh_vla_calls":0,"qualified":false,
+                        "robot_background_contacts_auditor_only":owner.owner.diagnostic_robot_background_contacts(),
                         "execution":step.execution,"body":step.body,
                     }),
                 )
@@ -500,6 +624,7 @@ mod tests {
                     && owner.completed_skill()
                     && (goals.carry.is_none() || carry_started)
                     && (goals.fine_carry.is_none() || fine_started)
+                    && (goals.release.is_none() || release_started)
                 {
                     return Ok(());
                 }
@@ -514,7 +639,9 @@ mod tests {
             .map_err(|e| invalid(e.to_string()))?;
         serde_json::to_writer_pretty(file,&serde_json::json!({
             "actual_integrations":actual_ticks,"lower_started":lower_started,"carry_started":carry_started,
-            "fine_carry_started":fine_started,"completed_fine_carry":fine_started && result.is_ok(),
+            "fine_carry_started":fine_started,"completed_fine_carry":fine_completed,
+            "raise_started":raise_started,
+            "release_started":release_started,"completed_release":release_started && result.is_ok(),
             "completed_lowering":lower_completed,"completed_carry":coarse_completed,
             "completed_selected_sequence":result.is_ok(),"failure":result.as_ref().err().map(ToString::to_string),
             "fresh_vla_calls":0,"saved_native_fixture_used":true,"qualified":false,
@@ -608,7 +735,9 @@ mod tests {
                 let (phase, command) = match &step.execution {
                     MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
                     MobileAssistExecution::ClassicalScan { .. }
-                    | MobileAssistExecution::ClassicalLower { .. } => {
+                    | MobileAssistExecution::ClassicalLower { .. }
+                    | MobileAssistExecution::ClassicalRaise { .. }
+                    | MobileAssistExecution::ClassicalRelease { .. } => {
                         return Err(invalid("unexpected scan in saved carry fixture"));
                     }
                     MobileAssistExecution::ClassicalCarry {
@@ -734,7 +863,9 @@ mod worker_diagnostic {
                     let (phase, command) = match &record.step.execution {
                         MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
                         MobileAssistExecution::ClassicalScan { .. }
-                        | MobileAssistExecution::ClassicalLower { .. } => {
+                        | MobileAssistExecution::ClassicalLower { .. }
+                        | MobileAssistExecution::ClassicalRaise { .. }
+                        | MobileAssistExecution::ClassicalRelease { .. } => {
                             return Err(invalid("unexpected scan in saved carry fixture"));
                         }
                         MobileAssistExecution::ClassicalCarry {

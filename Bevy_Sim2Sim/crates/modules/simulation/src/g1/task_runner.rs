@@ -477,6 +477,14 @@ impl ArenaTaskRunner {
         }
     }
 
+    #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn diagnostic_robot_background_contacts(&self) -> Vec<serde_json::Value> {
+        match &self.body {
+            ArenaBodyRunner::MobileHomieV2(body) => body.diagnostic_robot_background_contacts(),
+            ArenaBodyRunner::StaticAgile(_) => Vec::new(),
+        }
+    }
+
     pub fn progress_counts(&self) -> G1ProgressCounts {
         let mut counts = match &self.body {
             ArenaBodyRunner::StaticAgile(body) => body.progress_counts(),

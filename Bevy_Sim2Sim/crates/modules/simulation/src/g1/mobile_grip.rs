@@ -116,7 +116,7 @@ impl MobileGripCalibration {
         state: &G1Measurement,
         original: &G1Command,
     ) -> Result<MobileGripCorrection, RobotError> {
-        self.solve(state, original, None)
+        self.solve(state, original, None, None)
     }
 
     /// One bounded Cartesian increment preserves both palm rotations/gap and
@@ -134,7 +134,39 @@ impl MobileGripCalibration {
                 "Cartesian grip increment exceeds3mm per native Tick",
             ));
         }
-        self.solve(state, previous, Some(offset_root_source_m))
+        self.solve(state, previous, Some(offset_root_source_m), None)
+    }
+
+    /// Open both palm targets symmetrically; no prop/contact sensor is read.
+    pub fn spread(
+        &self,
+        state: &G1Measurement,
+        previous: &G1Command,
+        gap_increment_m: f64,
+    ) -> Result<MobileGripCorrection, RobotError> {
+        if !gap_increment_m.is_finite() || !(0. ..=0.004).contains(&gap_increment_m) {
+            return Err(invalid("grip opening exceeds2mm per palm per native Tick"));
+        }
+        self.solve(state, previous, None, Some(gap_increment_m))
+    }
+
+    pub fn commanded_gap(
+        &self,
+        state: &G1Measurement,
+        command: &G1Command,
+    ) -> Result<f64, RobotError> {
+        validate_self_state(state)?;
+        command.validate()?;
+        let mut q = [0.; JOINT_COUNT];
+        for i in 0..JOINT_COUNT {
+            q[i] = f64::from(if i < LOWER_COUNT {
+                state.joint_positions[i]
+            } else {
+                command.upper_positions[i - LOWER_COUNT]
+            });
+        }
+        let poses = self.forward(&q);
+        Ok((poses[28].translation.vector - poses[45].translation.vector).norm())
     }
 
     /// Keep both original shoulder-to-wrist radii from increasing during a
@@ -203,6 +235,7 @@ impl MobileGripCalibration {
         state: &G1Measurement,
         original: &G1Command,
         translation: Option<[f64; 3]>,
+        opening: Option<f64>,
     ) -> Result<MobileGripCorrection, RobotError> {
         validate_self_state(state)?;
         original.validate()?;
@@ -236,8 +269,9 @@ impl MobileGripCalibration {
                 goal.translation.vector += Vector3::from(offset);
             }
         } else {
-            goals[0].translation.vector = midpoint + direction * (SOURCE_PALM_GAP_M * 0.5);
-            goals[1].translation.vector = midpoint - direction * (SOURCE_PALM_GAP_M * 0.5);
+            let gap = opening.map_or(SOURCE_PALM_GAP_M, |increment| original_gap + increment);
+            goals[0].translation.vector = midpoint + direction * (gap * 0.5);
+            goals[1].translation.vector = midpoint - direction * (gap * 0.5);
         }
         let mut iterations = [0; 2];
         for arm in 0..2 {
@@ -312,6 +346,8 @@ impl MobileGripCalibration {
             receipt: MobileGripReceipt {
                 schema: if translation.is_some() {
                     "g1_mobile_self_state_cartesian_grip_v1"
+                } else if opening.is_some() {
+                    "g1_mobile_self_state_open_grip_v1"
                 } else {
                     "g1_mobile_source_gap_assist_v1"
                 },

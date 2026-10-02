@@ -9,6 +9,10 @@ pub mod mobile_grip;
 pub mod mobile_lowering;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_navigation;
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub mod mobile_raise;
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub mod mobile_release;
 pub mod runner;
 pub mod task_background;
 pub mod task_objects;

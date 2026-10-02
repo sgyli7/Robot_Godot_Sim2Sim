@@ -612,6 +612,17 @@ impl TaskObjectScene {
             objects,
         })
     }
+
+    /// Test-only label lookup; never changes contact state or controller inputs.
+    #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn diagnostic_background_path(
+        &self,
+        collider: rapier3d::prelude::ColliderHandle,
+    ) -> Option<&str> {
+        self.source_t2_background
+            .as_ref()
+            .and_then(|b| b.collider_path(collider))
+    }
 }
 
 fn normal_impulse_on_collider(

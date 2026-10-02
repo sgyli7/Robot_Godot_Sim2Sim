@@ -219,6 +219,26 @@ impl G1Runner {
             .transpose()
     }
 
+    /// Completed last-solve evidence only; no additional collision refresh/step.
+    #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn diagnostic_robot_background_contacts(&self) -> Vec<serde_json::Value> {
+        let world = &self.simulation.world;
+        let handles = self.assembly.diagnostic_body_handles();
+        world.narrow_phase.contact_pairs().filter_map(|pair| {
+            if !pair.has_any_active_contact() || pair.total_impulse_magnitude()<=1e-8 { return None; }
+            let left=world.colliders[pair.collider1].parent().and_then(|h| handles.iter().position(|r| *r==h));
+            let right=world.colliders[pair.collider2].parent().and_then(|h| handles.iter().position(|r| *r==h));
+            let (robot,other)=match (left,right) {
+                (Some(i),None)=>(i,pair.collider2),
+                (None,Some(i))=>(i,pair.collider1),
+                _=>return None,
+            };
+            let path=self.task_objects.as_ref()?.diagnostic_background_path(other)?;
+            Some(serde_json::json!({"robot_body_index":robot,"background_collider_path":path,
+                "normal_impulse_n_s":pair.total_impulse_magnitude(),"source_tick":self.simulation.integration_count}))
+        }).collect()
+    }
+
     /// Test-only causal comparison after an exactly matched200Tick grasp.
     /// Forces fresh contact geometry; no solver iterations, gains, time step,
     /// body pose or motor target is altered.
