@@ -84,7 +84,7 @@ impl GooseAssembly {
                 "Goose needs the explicit single-step 50 Hz world profile",
             ));
         }
-        if plant.candidate_id == "goose_460_condensed50_v1" {
+        if plant.is_condensed() {
             return Err(invalid(
                 "Condensed Goose contact law is not implemented; rigid pads cannot stand in for it",
             ));

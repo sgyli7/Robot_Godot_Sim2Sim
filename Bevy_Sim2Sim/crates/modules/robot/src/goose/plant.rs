@@ -109,7 +109,10 @@ impl GoosePlant {
             (self.schema.as_str(), self.candidate_id.as_str()),
             (
                 "goose_plant50_v1",
-                "goose_460_full50_v1" | "goose_460_condensed50_v1"
+                "goose_460_full50_v1"
+                    | "goose_460_condensed50_v1"
+                    | "goose_task_collision_v1_full50"
+                    | "goose_task_collision_v1_condensed50"
             ) | ("goose_plant50_experimental_v2", "goose_460_full50_be_v2")
         );
         if !identity_valid
@@ -150,11 +153,7 @@ impl GoosePlant {
                 return Err(invalid("Goose mechanical identity needs lowercase SHA256"));
             }
         }
-        let expected_bodies = if self.candidate_id == "goose_460_condensed50_v1" {
-            21
-        } else {
-            33
-        };
+        let expected_bodies = if self.is_condensed() { 21 } else { 33 };
         if self.bodies.len() != expected_bodies || self.joints.len() + 1 != self.bodies.len() {
             return Err(invalid("Goose candidate body/coordinate counts mismatch"));
         }
@@ -304,6 +303,14 @@ impl GoosePlant {
         finite(&self.jaw_loop.output_pin_world_m)?;
         unit_axis(self.jaw_loop.rotation_axis_world)?;
         Ok(())
+    }
+
+    /// Pad masses have been merged; target construction still needs a contact law.
+    pub fn is_condensed(&self) -> bool {
+        matches!(
+            self.candidate_id.as_str(),
+            "goose_460_condensed50_v1" | "goose_task_collision_v1_condensed50"
+        )
     }
 }
 

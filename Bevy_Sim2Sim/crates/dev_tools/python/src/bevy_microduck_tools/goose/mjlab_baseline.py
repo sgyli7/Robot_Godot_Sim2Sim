@@ -15,6 +15,11 @@ import xml.etree.ElementTree as ET
 from .artifacts import CANDIDATES, DT, JOINT_ORDER, sha256, write_json
 
 CANDIDATE = "goose_460_condensed_mjlab50_reference_v1"
+NATIVE_PARENTS = {
+    CANDIDATES[1]: CANDIDATE,
+    "goose_task_collision_v1_condensed50":
+        "goose_task_collision_condensed_mjlab50_reference_v1",
+}
 VERSIONS = {"mjlab": "1.3.0", "mujoco": "3.10.0", "mujoco-warp": "3.8.1",
             "warp-lang": "1.12.0", "rsl-rl-lib": "5.0.1"}
 
@@ -46,13 +51,14 @@ def build_reference(parent_model: Path, parent_contract: Path, destination: Path
     """Reuse the existing mass-conserving condensation and native MJCF exporter."""
     require_upstream_stack()
     contract = _read_native_contract(parent_model, parent_contract)
-    if contract["candidate"] != CANDIDATES[1]:
+    candidate = NATIVE_PARENTS.get(contract["candidate"])
+    if candidate is None:
         raise ValueError("The frozen condensed native parent is required")
     if destination.exists():
         raise FileExistsError("Preserve the previous native reference")
     tree = ET.parse(parent_model)
     root = tree.getroot()
-    root.set("model", CANDIDATE)
+    root.set("model", candidate)
     # implicitfast is supported by the pinned mjlab/Warp stack. No CPU callback.
     root.find("option").set("integrator", "implicitfast")
     flag = root.find("./option/flag")
@@ -62,10 +68,12 @@ def build_reference(parent_model: Path, parent_contract: Path, destination: Path
     destination.mkdir(parents=True)
     path = destination / "robot.xml"
     tree.write(path, encoding="unicode")
+    parent_candidate = contract["candidate"]
     contract = copy.deepcopy(contract)
-    contract.update(candidate=CANDIDATE, integrator="implicitfast", model_sha256=sha256(path),
+    contract.update(candidate=candidate, integrator="implicitfast", model_sha256=sha256(path),
         status="NATIVE_MODEL_REFERENCE_ONLY", training_release=False, optimizer_updates=0,
-        upstream_baseline={"versions": VERSIONS, "parent_model_sha256": sha256(parent_model),
+        upstream_baseline={"versions": VERSIONS, "parent_candidate": parent_candidate,
+            "parent_model_sha256": sha256(parent_model),
             "parent_contract_sha256": sha256(parent_contract), "decimation": 1,
             "native_mj_step": True, "custom_constraint_callbacks": False,
             "collision_proxy_qualified": False, "source_qualified": False,
@@ -82,7 +90,8 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
     contract = _read_native_contract(model_path, contract_path)
-    if contract["candidate"] != CANDIDATE or contract["integrator"] != "implicitfast":
+    if (contract["candidate"] not in NATIVE_PARENTS.values()
+            or contract["integrator"] != "implicitfast"):
         raise ValueError("Explicit native mjlab reference required")
     model = mujoco.MjModel.from_xml_path(str(model_path))
     if model.nu != 18 or model.opt.timestep != DT:

@@ -2,10 +2,13 @@
 
 版本：2026-10-03。实施分支：`codex/goose50_training`。
 
-当前仍在 M0-S／M0-T，GPU／优化器使用为零。按用户确认，主线是 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。成熟栈原生模型接线及碰撞导出修正已完成。原始目标输入为 **33 刚体、32 树关节（18 主动／14 被动）、另 1 个嘴部闭环销，15,727 个碰撞子形状**。新[无碰撞消融核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_performance_cycle04_review.json)保留同一二进制、刚体、关节和力矩程序，仅去除机器人碰撞几何，原生步从 **51.48 ms** 降到 **0.506／0.199 ms**；这定位了复杂碰撞、CCD 和接触组装成本，不授予物理等价或游戏性能资格。用户已授权把来源 CAD 净空及简洁碰撞代理专项交给「Goose Robot 硬件工程」，对方已开始核查；Sai_Lab 维护导入、50 Hz 映射、控制、训练和性能验证，不修改 Sai_Rotbots 源资产。原生 XML 真实脚参数导向夹具已通过归一化修正后的静载检查，变化接触及整机仍未通过，保持未发布，不追加自定义内核分支。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前仍在 **M0-S／M0-T，GPU／PPO／优化器更新为零**。主线保持 **统一 MJCF → 原生 MuJoCo → mjlab／RSL-RL 源训练 → Rapier／Bevy 验收**。硬件工程已发完成通知，按用户先前约定结束等待并接收新来源包；交付通知不等于物理通过。
 
-**当前按用户授权暂停主动推进，等待来源模型交付。** 最新只读状态确认「Goose Robot 硬件工程」正在复核五处动态接触并制作简洁碰撞版本。已向其发送完成后唤醒本聊天的请求，附直接用户授权与本聊天身份；新交付须给唯一版本入口、冻结哈希、报告及未通过项。现有 `Goose ProjectManager` 两小时 heartbeat 已设为 `PAUSED`，不创建替代任务或继续轮询。性能子 agent 已闲置；本轮已完成的 2 mm 对照和原生归一化修正归档在文末。收到完成通知后先读取新版本、复核导入及源端准入，再恢复正常周期；暂停不表示训练完成或 M0 通过。
+新 `goose_task_collision_v1` 是**未发布的碰撞候选**。独立核验 ZIP／入口、11 个元数据文件、7,407 个网格资产和原始 16,314 个清单文件；28 项物理合同字段和 27 组编译物理数组与原包一致。原结构仍为 **33 体、32 树关节（18 主动／14 被动）、另 1 嘴销**；碰撞子形状 **15,727 → 7,419**。源 CAD 三组已确认干涉在新代理的同主动角 FK 查询中仍有接触，保存为明确拒绝姿态。两组仅求解位姿重叠的足部案例不升级为理想 FK 的 CAD 干涉。
 
+新的 50 Hz 映射分别使用 `goose_task_collision_v1_full50`／`goose_task_collision_v1_condensed50` 身份。原生源端短检查中，full50 第 11 次积分出现 QACC 警告；condensed50 完成 100 Tick，无警告、质量与完整惯量守恒，但脚底、嘴部和完整任务物理资格仍未通过。源包仍有 30 项表面误差或恢复原代理后未重新认证的问题，`training_release=false`、`collision_release=false`；不继承原包 0.2 秒冒烟成绩。所有新证据集中在[独立接入收据](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/import_receipt.json)及[更正后的 CAD 拒绝姿态](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/source_static_rejections_v2.json)。
+
+本轮 Bevy 默认配置短对照已收口：新版 full50 两次在凸包构建阶段、凝聚版本在未实现接触律护栏处均以零积分拒绝，**没有新版性能成绩**。该凸叶子具有非零体积，不能由 `hull collapsed` 文本推断真实几何退化；可靠目标导入由 Sai_Lab 负责。新版凝聚模型已通过原生 `MjSpec`／`EntityCfg` effort 接线及 10 次 CPU 积分，不等于 mjlab GPU rollout。下一步并行处理**任务所需安全动作范围／代理未通过项**与**可靠目标凸体接入**，再进入原生整机准入；不回到已关闭的自定义内核／脚底参数扫描。来源 CAD／代理修订由 Sai_Rotbots 负责，Sai_Lab 负责导入、50 Hz、驱动、训练和目标验证。性能子 agent 沿用本聊天已有任务，每轮有界完成后闲置。两小时检查继续使用已有 heartbeat；不新建聊天或替代管理任务。代码按[唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，临时产物只放项目备份目录。
 ## 1. 目标与当前基线
 
 本任务交付三条主线，优先完成移动和跌倒恢复，再完成拾物运输闭环。
@@ -124,7 +127,7 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 当前优先项是成熟源训练链路的可运行最小闭环：**复用并锁定依赖 → 统一任务 MJCF／碰撞代理 → 原生源端准入 → 小批量 PPO 与导出 → 首个站立／移动源策略 → 目标迁移**。Bevy 性能并行推进。每周期只选能解锁下一阶段的一个问题；局部实验达到诊断目的即收口，连续两次无改善就回到模型或成熟流程，不追加求解器分支。下方历史检查点中的“下一批”只记录当时决定，以本段现行顺序为准。
 
-当前先做**原生 XML 物理准入**，不因等待全身几何优化继续推迟源端检查。整脚合并分解已关闭；成本筛查保留成熟工具在真实来源零件上的局部结果，避免继续处理复杂合并包络。脚底校准先核验固定接触点及有效质量假设，再测变化接触、倾斜、冲击和 1.5 mm 末端；通过后与原生嘴部及整机检查合并。模型仍显式未发布，原有不合格项不得由孤立夹具成绩替代。
+现行首要工作为**新来源候选的任务可用性及原生整机准入**。已有脚底导向夹具仅说明固定接触／有效质量条件下的静载映射，不在整机中直接复用该夹具系数，不继续扫局部精度。已知干涉姿态与 30 项代理未通过项保留明确拒绝；依据任务所需的弯腰与恢复动作范围决定来源修订，不能只靠收窄独立轴限位、扩大排除或删除身体接触取得资格。原结构重复出现已知高刚度脚垫警告后停止该候选，源主线采用成熟栈支持的凝聚参考推进，足底行程、变化接触与嘴部仍按整机门槛验收。
 
 ## 6. 实施检查点：M0 未通过
 
@@ -477,3 +480,26 @@ v6 冷重置地面穿透 **2.504 mm**、源 CPU 物理加控制器 P95 **180.17 
 原生 XML 导向真实足参数夹具把接触系数计算中的 `A=1/m` 改为该模型编译得到的 `body_invweight0`，只改静态 XML `solref/solimp`，地面参数和全部质量、COM、完整惯量、几何及关节保持。四档 5／10／20／30 N 每区域与一次 30 N 释放共 **1,000 次真实 20 ms 积分**，无警告、非有限值或运行时约束改写。四档静载误差约 **1 μm**，最大相对误差 **0.467%**；30 N 最大压缩 **1.290 mm**。[独立进程核验](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/independent_native_xml_normalization_review.json)复算载荷误差并确认原生正则符合目标、物理与几何数组逐值相同，证实上一轮导向静载失配来自归一化换算。它仍是无硬后衬／摩擦的六 patch 导向夹具，不授予自由足、冲击、行程末端、整机、Warp 或 Rapier 资格。
 
 用户本轮明确允许依赖来源修改时暂停、由硬件工程完成后呼叫。来源专项已确认在运行，本地没有需要继续补跑的同批实验；所有未通过项和三条能力主线保留。[等待检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/awaiting_source_geometry_checkpoint.json)保存本轮收据及恢复顺序。既有两小时检查已通过 app 工具暂停并读取配置确认；不自动继续实验或空耗轮询。恢复后先读取交付及来源差异，复核质量／惯量／轴序、关键碰撞面、导入和本体资格；未通过仍不开始 PPO。
+
+
+### 新来源 `task_collision_v1` 接入检查点
+
+按此前用户约定，收到来源完成通知后结束等待，只恢复本聊天既有两小时 heartbeat，不创建新的 PM 或聊天。来源交付保持未发布身份，Sai_Lab 不修改 Sai_Rotbots 源资产。
+
+| 检查 | 实际结果 | 本轮结论 |
+| --- | --- | --- |
+| 包身份与物理继承 | ZIP SHA `53b80b938b364d0cbf07a8fdb7f985bdcf8d8566c5dbc125b26ddfdd61d668d1`；入口 SHA `162490c6b6306c287c13b9013ed3bc8d34d8fc2f17f6d824e88adaa95da49cf6`；11 元数据／7,407 网格及原 16,314 清单文件核验 | 同来源可复核的实验候选；源和目标均未发布 |
+| CAD 拒绝姿态 | 三组已确认真 CAD 干涉在新代理理想 FK 中仍有接触；两组足部仅求解位姿重叠的案例在理想 FK 不重叠 | 不把已知干涉组合用于安全初态／目标；不授予连续动作域净空资格 |
+| 新原生 full50 | 33 体／32 树，11 次原生积分调用，末次 QACC 警告 | 失败后立即停止，没有扩大冷重置次数或切换私有求解器 |
+| 新原生 condensed50 | 21 体／20 树，100 Tick 有限无警告；质量／COM／完整惯量守恒 | 仅冷运行冒烟；脚底、嘴闭环及任务仍未通过 |
+| 新 mjlab 接线 | 复用已有接线，27 组物理数组和原碰撞数组与父模型一致；Entity 编译后按名称核对除场景地面外全部碰撞属性，18 电机第六轴驱动输入转子；另完成 10 次 20 ms CPU 积分 | 原生参考接线完成；GPU、rollout task、PPO 和 ONNX 导出仍未运行 |
+| 新 Rapier 接入 | full50 两次都在 `torso_mounted_shell_right_fore_task_038` 凸包构建处拒绝；condensed 在接触律守卫处拒绝；均 0 积分 | 不跳过形状、不以刚性脚替代凝聚接触，不报告不存在的提速 |
+| 匹配原生旧对照 | 同一新二进制下两次各 20 Tick；原生步均值 55.66／55.83 ms，P95 87.40／88.19 ms；状态、力矩、接触冲量和积分计数重复一致 | 只是旧 full50 的规定力矩诊断，不与历史数值方法不同的 v2 拼成前后对照 |
+
+目标构建失败的叶子源／导出体积都约 **1.01059e−6 m³**，相对差约 **9.03e−7**；导出后转 float32 没有新增坐标差。原代理每个凸叶子最多 64 支持顶点；新版有 126 个超过 64，失败叶子达到 **5,578**。总支持顶点由 322,493 降至 169,774，但还不能据此计算目标性能。以上来源复杂度及未通过项已具体反馈工程侧；目标凸体构建的可靠性由 Sai_Lab 维护，不能把构造器拒绝解释成硬件几何塌缩。
+
+证据：[接入收据](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/import_receipt.json)、[CAD 拒绝姿态 v2](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/source_static_rejections_v2.json)、[mjlab 原生接线](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/task_collision_condensed_mjlab50_reference_v1/wiring_receipt.json)、[构建失败叶子核查](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/collapsed_leaf_interpretation.json)、[代理复杂度](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/proxy_complexity_audit.json)、[性能周期报告](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/performance_cycle06/report.md)、[主线独立核验](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_task_collision_m0_001/independent_cycle06_review.json)。最初静态核查按不存在的 case 名称匹配，误将拒绝标记写成 false；已用实际 `FK_recorded_active_q` 更正到独立 v2 收据，原收据保留为被替代记录，没有重复积分。
+
+本轮 **16 项 robot、22 项 simulation（10 项外部夹具忽略）、12 项 mjlab 接线回归、570 项工程结构检查**通过，Rust 格式及空白检查通过。新来源共 121 次 CPU 原生积分调用（含 full50 最后一次失败）、旧目标控制共 40 次积分，新目标零积分；没有 Actor、GPU 或优化器更新。性能子 agent 已闲置，不启动新的参数矩阵。已有两小时 heartbeat 已恢复，继续同聊天有界推进；长期目标尚未完成。
+
+下一周期的问题固定为：**在保留原生碰撞支持包络、物理参数与失败守卫的前提下，成熟凸体构建流程能否可靠接入这份新候选？** 只做一个可拒绝的兼容性对照，不重写凸包算法或改引擎；源任务安全动作域和 30 项代理问题由工程侧处理。目标导入工作不阻止源端复用 mjlab，来源未通过项和整机物理门槛也不因接线成功而被跳过。

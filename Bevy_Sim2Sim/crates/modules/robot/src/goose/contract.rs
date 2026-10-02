@@ -71,7 +71,10 @@ impl GooseControlContract {
             (self.schema.as_str(), self.candidate.as_str()),
             (
                 "goose_50hz_candidate_si_v1",
-                "goose_460_full50_v1" | "goose_460_condensed50_v1"
+                "goose_460_full50_v1"
+                    | "goose_460_condensed50_v1"
+                    | "goose_task_collision_v1_full50"
+                    | "goose_task_collision_v1_condensed50"
             ) | ("goose_50hz_experimental_si_v2", "goose_460_full50_be_v2")
         );
         if self.robot != "Goose_V0.1"
@@ -455,6 +458,29 @@ mod tests {
             phase_frequency_hz: 1.2,
             model_sha256: "a".repeat(64),
         }
+    }
+
+    #[test]
+    fn task_collision_candidate_keeps_timing_and_motor_guards() {
+        for name in [
+            "goose_task_collision_v1_full50",
+            "goose_task_collision_v1_condensed50",
+        ] {
+            let mut candidate = contract();
+            candidate.candidate = name.into();
+            assert!(candidate.validate().is_ok());
+            candidate.physics_dt_s = 0.0001;
+            assert!(candidate.validate().is_err());
+            candidate.physics_dt_s = GOOSE_DT;
+            candidate.joints[5].actuation_joint = Some("beak_hinge".into());
+            assert!(candidate.validate().is_err());
+            candidate.joints[5].actuation_joint = Some("beak_input_rotor".into());
+            candidate.schema = "goose_50hz_experimental_si_v2".into();
+            assert!(candidate.validate().is_err());
+        }
+        let mut candidate = contract();
+        candidate.candidate = "goose_task_collision_v1".into();
+        assert!(candidate.validate().is_err());
     }
 
     #[test]
