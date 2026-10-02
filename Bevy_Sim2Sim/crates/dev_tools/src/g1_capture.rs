@@ -454,11 +454,18 @@ struct SourceShelfVisual;
 struct DiagnosticExposure(f32);
 
 fn configure_diagnostic_exposure(
+    mut commands: Commands,
     setting: Res<DiagnosticExposure>,
-    mut cameras: Query<&mut Exposure, With<Camera3d>>,
+    mut cameras: Query<(Entity, Option<&mut Exposure>), With<Camera3d>>,
 ) {
-    for mut camera in &mut cameras {
-        camera.ev100 = setting.0;
+    for (entity, camera) in &mut cameras {
+        if let Some(mut camera) = camera {
+            camera.ev100 = setting.0;
+        } else {
+            commands
+                .entity(entity)
+                .insert(Exposure { ev100: setting.0 });
+        }
     }
 }
 
