@@ -193,6 +193,25 @@ this does not identify one SDK bug or isolate a single causal change. The
 selected next task run uses the published stack rather than tuning around that
 launch. No controller, task geometry, reset pose, frequency or model was tuned.
 
+The full published-stack run subsequently triggered its original proximity
+success after 19 actual N1.6 inferences, 942 controls and 3768 integrations.
+Independent checks matched all 941 available post-control action hashes and
+all 19 unchanged transport request/reply byte pairs. Model counters reported
+19 successful and zero failed inferences; no prop truth entered requests.
+The robot moved 1.18305 m and remained upright (minimum upright 0.992552).
+The box moved 1.85548 m toward the bin; actual camera frames at controls 300
+and 600 show it between the hands during the move. The owned model and
+transport processes closed afterward.
+
+This remains source evidence with inference pauses. The terminal control 942
+auto-resets, so the last available physical sample is control 941. Its box
+speed is still 1.54792 m/s and its horizontal distance to the bin center is
+0.114308 m. The proximity trigger cannot prove a supported, released and
+stable two-second placement, native Rapier transfer, continuous 1× execution,
+or the required ten-episode score. Those gates remain open. The source-stack
+failure is preserved, while the next work is T2 native body/action/geometry
+migration using this released reference.
+
 The audit also retains two failed geometry-reader assumptions (unmeasured
 dynamic background and lowercase robot path) and a failed released-stack import
 root check. The latter was resolved by verifying the actual installed copied
