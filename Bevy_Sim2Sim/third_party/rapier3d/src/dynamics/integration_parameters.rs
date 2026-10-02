@@ -288,6 +288,11 @@ pub struct IntegrationParameters {
     #[cfg(feature = "sim2sim-physical-normal-contact")]
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     pub experimental_guided_normal_block: bool,
+    /// Experimental normal-only block for an isolated six-DoF multibody foot.
+    /// Rejects friction, moving counterparts and mixed owners; default off.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    pub experimental_free_normal_block: bool,
     /// If enabled, a contact pair whose relative pose moved less than [`Self::contact_recycle_distance`]
     /// since its last full narrow-phase update skips contact determination and keeps its existing points
     /// (default: `true`) — a large speed-up for quasi-static scenes. Trade-offs:
@@ -411,6 +416,8 @@ impl Default for IntegrationParameters {
             combine_same_multibody_contacts: false,
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             experimental_guided_normal_block: false,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            experimental_free_normal_block: false,
             contact_recycling: true,
             normalized_contact_recycle_distance: 0.05,
             friction_in_bias_pass: false,

@@ -77,3 +77,8 @@ required-features = ["sim2sim_source_limit_probe"]
 name = "goose_condensed_sole_probe"
 path = "src/bin/goose_condensed_sole_probe.rs"
 required-features = ["sim2sim_physical_normal_contact"]
+
+[[bin]]
+name = "goose_free_sole_probe"
+path = "src/bin/goose_free_sole_probe.rs"
+required-features = ["sim2sim_physical_normal_contact"]

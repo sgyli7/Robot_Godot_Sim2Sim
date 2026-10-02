@@ -209,6 +209,97 @@ mod physical_normal_contact {
             }
         }
     }
+
+    #[test]
+    fn free_normal_block_preserves_coupled_force_and_moment_in_one_step() {
+        for torque in [-0.003, 0.003] {
+            let mut world = PhysicsWorld::new();
+            world.gravity = Vector::ZERO;
+            world.integration_parameters.dt = 0.02;
+            world.integration_parameters.num_solver_iterations = 1;
+            world.integration_parameters.num_internal_pgs_iterations = 32;
+            world.integration_parameters.max_ccd_substeps = 0;
+            world.integration_parameters.experimental_free_normal_block = true;
+            world.integration_parameters.contact_recycling = false;
+            world.integration_parameters.normalized_prediction_distance = 0.01;
+            world.colliders.insert(
+                ColliderBuilder::halfspace(na::Unit::new_unchecked(Vector::Y)).friction(0.0),
+            );
+            let anchor = world.insert_body(RigidBodyBuilder::fixed());
+            let position = Vector::new(0.0, 0.0007, 0.0);
+            let (body, _) = world.insert(
+                RigidBodyBuilder::dynamic()
+                    .translation(position)
+                    .can_sleep(false)
+                    .additional_mass_properties(MassProperties::new(
+                        Vector::ZERO,
+                        0.293,
+                        Vector::splat(0.001),
+                    )),
+                ColliderBuilder::cuboid(0.01, 0.001, 0.01)
+                    .density(0.0)
+                    .friction(0.0)
+                    .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS),
+            );
+            let joint = world
+                .insert_multibody_joint(
+                    anchor,
+                    body,
+                    GenericJointBuilder::new(JointAxesMask::empty()).local_anchor1(position),
+                )
+                .unwrap();
+            let (mb, _) = world.multibody_joints.get_mut(joint).unwrap();
+            mb.damping_mut().fill(0.0);
+            mb.armature_mut().fill(0.0);
+            mb.frictions_mut().fill(0.0);
+            world.bodies[body].add_force(-Vector::Y * 5.0, true);
+            world.bodies[body].add_torque(Vector::X * torque, true);
+            world.step_with_events(
+                &Material {
+                    enabled: true,
+                    single_point: false,
+                },
+                &(),
+            );
+            let (mb, id) = world.multibody_joints.get(joint).unwrap();
+            let twist = mb.body_jacobian(id) * mb.generalized_velocity();
+            let expected_v = (-0.02 * 5.0 - 0.02 * 23357.0304 * (-0.0003))
+                / (0.293 + 0.02 * 2.0 + 0.02 * 0.02 * 23357.0304);
+            let expected_omega =
+                0.02 * torque / (0.001 + (0.02 * 2.0 + 0.02 * 0.02 * 23357.0304) * 0.01 * 0.01);
+            assert!(
+                (twist[1] - expected_v).abs() < 2e-6,
+                "v={}, expected={expected_v}",
+                twist[1]
+            );
+            assert!(
+                (twist[3] - expected_omega).abs() < 2e-6,
+                "omega={}, expected={expected_omega}",
+                twist[3]
+            );
+            assert!(
+                (world.bodies[body].translation().y - position.y - 0.02 * expected_v).abs() < 1e-7
+            );
+            let observation = mb.sim2sim_observation().unwrap();
+            assert!(observation.single_temporal_step);
+            assert_eq!(observation.solver_assignment_count, 1);
+            assert!(world.quarantine().is_empty());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly six DoF and zero friction")]
+    fn free_normal_block_rejects_guided_topology() {
+        let (mut world, _, _) = fixture(0.293);
+        world.integration_parameters.experimental_free_normal_block = true;
+        world.step_with_events(
+            &Material {
+                enabled: true,
+                single_point: false,
+            },
+            &(),
+        );
+    }
 }
 
 /// Regression test for <https://github.com/dimforge/rapier/issues/927> (Bug 1).

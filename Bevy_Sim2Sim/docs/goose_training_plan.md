@@ -2,6 +2,8 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
+当前停留在 M0，GPU／优化器使用为零。导向凝聚足底的源／目标物理载荷已配对通过；新六自由度足底的静态合力／力矩平衡通过，倾斜瞬态与单位旋转检查未通过，未晋升整机候选。最新执行入口为 [六自由度足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_free_contact_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+
 ## 1. 目标与当前基线
 
 本任务交付三条主线，优先完成移动和跌倒恢复，再完成拾物运输闭环。
@@ -274,3 +276,13 @@ Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD
 权威入口为 [目标端凝聚足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/condensed_contact_target_checkpoint.json)；[最终执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_target_guided_block_code/verified_snapshot.json) **159 文件**核对执行哈希和二进制。原生关节范围 **27 项通过**，simulation **25 项通过、10 项外部夹具未运行**；格式、空白及结构检查通过。原候选、失败收据和默认运行行为保留，GPU／优化器为零，**M0 未通过**。
 
 下一批转向**无导向足底的完整合力／力矩和倾斜接触**：建立新的实验版本，保留完整六自由度及惯量，先验证耦合法向行在名义半机重与 ±3° pitch／roll 初态下的响应；禁止把单自由度求解器套到整机或继续重复导向载荷实验。无导向、摩擦与几何背衬资格完成后，再接入同版本 21 体候选的冷重置、驱动和嘴部约束准入。
+
+### 六自由度足底合力／力矩检查点
+
+源端新增开发模块 `condensed_free_contact.py`，目标端新增开发工具 `goose_free_sole_probe.rs`，仍使用同一冻结右脚的质量、COM、完整惯量与六个原始接触盒。局部基础近似按实际点数分配 K/C，并根据脚垫轴与地面法向的余弦平方作虚功投影；它不等于原六个共享滑动坐标的精确凝聚，不继承原脚垫高频动态资格。脚体保留完整六自由度；零重力、零摩擦，名义半机重外力施加于真实踝部原点。初始高度只在初始化时按旋转后的最低盒角点设为 0.5 mm 间隙，积分后不改写位姿。
+
+新的 `experimental_free_normal_block` 默认关闭，限定同一六自由度所有者、固定对侧、零摩擦和最多 96 条原生行。使用原生有符号 J/WJ 构造互补方程，保留实际非对称响应，采用有界主动集和 LU；未收敛或残差超限即失败。它在既有有偏与松弛求解阶段末尾分别进行代数求解，仍只作一次 20 ms 原生积分，不能套入整机。单步合力／力矩回归最初遗漏 Rapier 默认 0.1 角阻尼；[失败夹具源码](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/free_normal_first_analytic_failure/failure.json)保留，清零与源端一致后解析回归通过。
+
+[独立比较](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/condensed_free_comparison_v2.json)覆盖平放、±3° pitch、±3° roll，共每引擎 **500 次积分**。五组稳态载荷相对误差 ≤**3.73e−7**，目标力矩平衡残差 ≤**1.85e−6 N·m**，未越过 1.5 mm 行程；平放全程压缩差约 **0.00034 mm**。倾斜全程最大压缩差分别 **0.1024／0.1296／0.1085／0.1085 mm**，超过这批预先保留的 0.05 mm 局部门槛。动态合力差最大 **0.6543 N**，力矩差最大 **0.01106 N·m**，分别报告，不用稳态成绩覆盖瞬态。两条侧倾轨迹的平方四元数范数误差约 **2.265e−6／2.205e−6**，超出现有接口的 2e−6 容差；开发轨迹保存原值，没有绕过 Actor 合同或归一化物理状态。**拒绝本次局部动态晋升，M0 未通过，GPU／优化器为零。**
+
+执行代码、二进制与比较器见 [17 文件执行快照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/attempts/condensed_free_v2_executed_code/verified_snapshot.json)。Python **55 项通过**，原生关节 **29 项通过**，simulation **25 项通过、10 项外部夹具未运行**。下一受控问题只隔离偏心 COM 自由体的惯性响应：以同一物理角速度比较无接触初态与第二个 Tick，再决定接触或积分公式是否需要调整；单位旋转保持须在原生积分表示内处理，禁止积分后搬正身体。不继续扫描 PGS，不重复导向载荷，不把这份右脚夹具当作摩擦、左脚、背衬 CAD 或整机资格。

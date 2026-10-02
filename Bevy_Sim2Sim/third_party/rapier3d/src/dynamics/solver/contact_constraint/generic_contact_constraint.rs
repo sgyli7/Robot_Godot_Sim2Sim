@@ -580,13 +580,17 @@ impl GenericContactConstraintBuilder {
                     // The fixed point is lambda/h = -K(g+h*v_next)-C*v_next.
                     let denominator = params.dt * spring.stiffness_n_m + spring.damping_n_s_m;
                     let alpha = 1.0 / (params.dt * denominator);
+                    constraint.physical_normal_alpha = alpha;
                     normal_part.cfm_factor = 1.0 / (1.0 + alpha * normal_part.r);
                     normal_part.rhs = spring.stiffness_n_m / denominator * dist;
                     // Physical restoring force must survive the unbiased relaxation pass.
                     normal_part.rhs_wo_bias = normal_part.rhs;
                 }
                 #[cfg(feature = "sim2sim-physical-normal-contact")]
-                if params.experimental_guided_normal_block && self.normal_spring.is_none() {
+                if (params.experimental_guided_normal_block
+                    || params.experimental_free_normal_block)
+                    && self.normal_spring.is_none()
+                {
                     // The guided fixture's declared backing row uses the actual gap.
                     normal_part.rhs = dist * inv_dt;
                     normal_part.rhs_wo_bias = normal_part.rhs;
@@ -678,6 +682,8 @@ pub(crate) struct GenericContactConstraint {
     pub cfm_factor: Real,
     #[cfg(feature = "sim2sim-physical-normal-contact")]
     pub physical_normal: bool,
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub physical_normal_alpha: Real,
     pub limit: Real,
     pub solver_vel1: u32,
     pub solver_vel2: u32,
@@ -689,6 +695,154 @@ pub(crate) struct GenericContactConstraint {
 }
 
 impl GenericContactConstraint {
+    /// Couple the existing normal rows using their actual signed J and WJ.
+    /// A bounded active-set LCP solve changes impulses and solver velocities,
+    /// never positions or the number of temporal integrations. Only the isolated
+    /// frictionless six-DoF fixture is supported by this experimental path.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub fn solve_free_physical_block(
+        constraints: &mut [Self],
+        jacobians: &DVector,
+        solver_vels: &mut DVector,
+    ) {
+        if constraints.is_empty() {
+            return;
+        }
+        let mut owner = None;
+        let mut rows = Vec::new();
+        for (ci, c) in constraints.iter().enumerate() {
+            assert!(
+                c.ndofs1 + c.ndofs2 == 6 && c.limit == 0.0,
+                "free normal block requires exactly six DoF and zero friction"
+            );
+            let (slot, fixed, offset) = if c.ndofs1 == 6 {
+                (c.solver_vel1, c.solver_vel2, 0)
+            } else {
+                (c.solver_vel2, c.solver_vel1, 2 * c.ndofs1)
+            };
+            assert!(
+                fixed == u32::MAX && slot != u32::MAX,
+                "free normal block requires a world-attached counterpart"
+            );
+            if let Some(expected) = owner {
+                assert_eq!(slot, expected, "mixed free normal owners");
+            } else {
+                owner = Some(slot);
+            }
+            for pi in 0..c.num_contacts as usize {
+                let jid = c.j_id + pi * 12 * DIM + offset;
+                let j: Vec<f64> = (0..6).map(|i| jacobians[jid + i] as f64).collect();
+                let wj: Vec<f64> = (0..6).map(|i| jacobians[jid + 6 + i] as f64).collect();
+                let response = (0..6).map(|i| j[i] * wj[i]).sum::<f64>();
+                let alpha = if c.physical_normal {
+                    c.physical_normal_alpha as f64
+                } else {
+                    (1e-7 * response).max(1e-12)
+                };
+                assert!(
+                    response > 0.0
+                        && alpha > 0.0
+                        && alpha.is_finite()
+                        && j.iter().chain(&wj).all(|v| v.is_finite()),
+                    "invalid free normal response"
+                );
+                rows.push((
+                    ci,
+                    pi,
+                    j,
+                    wj,
+                    alpha,
+                    c.normal_part[pi].rhs as f64,
+                    c.normal_part[pi].impulse as f64,
+                ));
+            }
+        }
+        assert!(rows.len() <= 96, "isolated normal row capacity exceeded");
+        let slot = owner.unwrap() as usize;
+        let mut free: Vec<f64> = (0..6).map(|i| solver_vels[slot + i] as f64).collect();
+        for row in &rows {
+            for i in 0..6 {
+                free[i] -= row.3[i] * row.6;
+            }
+        }
+        let n = rows.len();
+        let a = na::DMatrix::<f64>::from_fn(n, n, |i, k| {
+            (0..6).map(|d| rows[i].2[d] * rows[k].3[d]).sum::<f64>()
+                + if i == k { rows[i].4 } else { 0.0 }
+        });
+        let b = na::DVector::<f64>::from_fn(n, |i, _| {
+            (0..6).map(|d| rows[i].2[d] * free[d]).sum::<f64>() + rows[i].5
+        });
+        // Keep the actual (potentially nonsymmetric implicit) native response.
+        // Do not symmetrize it or substitute an independent rigid-body mass.
+        let mut lambda = na::DVector::<f64>::zeros(n);
+        let mut active: Vec<usize> = Vec::new();
+        let tolerance = 1e-9 * (1.0 + b.amax());
+        let mut solved = false;
+        for _ in 0..4 * n * n + 1 {
+            let w = &a * &lambda + &b;
+            let next = (0..n)
+                .filter(|i| !active.contains(i) && w[*i] < -tolerance)
+                .min_by(|i, k| w[*i].total_cmp(&w[*k]));
+            let Some(next) = next else {
+                solved = true;
+                break;
+            };
+            active.push(next);
+            let mut inner_solved = false;
+            for _ in 0..2 * n + 1 {
+                let reduced = na::DMatrix::<f64>::from_fn(active.len(), active.len(), |i, k| {
+                    a[(active[i], active[k])]
+                });
+                let rhs = na::DVector::<f64>::from_fn(active.len(), |i, _| -b[active[i]]);
+                let candidate = reduced
+                    .lu()
+                    .solve(&rhs)
+                    .expect("singular physical normal active set");
+                if candidate.iter().all(|v| *v >= 0.0) {
+                    lambda.fill(0.0);
+                    for (i, id) in active.iter().enumerate() {
+                        lambda[*id] = candidate[i];
+                    }
+                    inner_solved = true;
+                    break;
+                }
+                let fraction = active
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| candidate[*i] < 0.0)
+                    .map(|(i, id)| lambda[*id] / (lambda[*id] - candidate[i]))
+                    .fold(1.0, f64::min);
+                for (i, id) in active.iter().enumerate() {
+                    lambda[*id] += fraction * (candidate[i] - lambda[*id]);
+                }
+                active.retain(|id| lambda[*id] > 1e-14);
+            }
+            assert!(
+                inner_solved,
+                "physical normal inner iteration bound reached"
+            );
+        }
+        let w = &a * &lambda + &b;
+        assert!(
+            solved
+                && lambda.iter().all(|v| v.is_finite() && *v >= -tolerance)
+                && (0..n).all(|i| w[i] >= -10.0 * tolerance
+                    && (lambda[i] * w[i]).abs() <= 10.0 * tolerance * (1.0 + lambda[i])),
+            "physical normal complementarity residual or iteration bound failed"
+        );
+        for (i, row) in rows.iter().enumerate() {
+            constraints[row.0].normal_part[row.1].impulse = lambda[i] as Real;
+            for d in 0..6 {
+                free[d] += row.3[d] * lambda[i];
+            }
+        }
+        assert!(free.iter().all(|v| v.is_finite()));
+        for d in 0..6 {
+            solver_vels[slot + d] = free[d] as Real;
+        }
+    }
+
     /// Solve the original normal rows together on one guided degree of freedom.
     /// This is a coupled impulse solve at the existing algebraic barrier, not a
     /// coordinate correction or another integration. Each original point retains
@@ -787,6 +941,8 @@ impl GenericContactConstraint {
             cfm_factor: 0.0,
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             physical_normal: false,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            physical_normal_alpha: 0.0,
             limit: 0.0,
             solver_vel1: u32::MAX,
             solver_vel2: u32::MAX,
