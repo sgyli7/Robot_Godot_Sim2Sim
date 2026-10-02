@@ -203,7 +203,11 @@ fn spawn_visuals(
         mesh.insert_indices(bevy::mesh::Indices::U32(
             source.triangles.iter().flatten().copied().collect(),
         ));
-        mesh.compute_smooth_normals();
+        if source.bound_material.is_some() {
+            compute_source_normals(&mut mesh);
+        } else {
+            mesh.compute_smooth_normals();
+        }
         let mesh = meshes.add(mesh);
         let color = source.bound_material.as_ref().map_or_else(
             || {
@@ -310,4 +314,166 @@ fn sync_visuals(
     status.episode_id = Some(frame.episode_id);
     status.source_tick = Some(frame.source_tick);
     status.error = None;
+}
+
+/// Compute source-render normals without modifying any mesh positions/indices.
+fn compute_source_normals(mesh: &mut Mesh) {
+    mesh.compute_custom_smooth_normals(|indices, positions, normals| {
+        let [a, b, c] = indices.map(|i| Vec3::from_array(positions[i]).as_dvec3());
+        let face = (b - a).cross(c - a).normalize_or_zero();
+        if face == bevy::math::DVec3::ZERO {
+            return;
+        }
+        for (index, (u, v)) in
+            indices
+                .into_iter()
+                .zip([(b - a, c - a), (a - b, c - b), (a - c, b - c)])
+        {
+            // Bevy's default compares squared edge-length products against
+            // f32::EPSILON, discarding millimeter-scale G1 faces in meters.
+            // Keep angle weighting, evaluating only truly degenerate edges
+            // as zero; no mesh scaling or replacement normals are introduced.
+            let denominator = (u.length_squared() * v.length_squared()).sqrt();
+            if denominator > 0. {
+                let angle = (u.dot(v) / denominator).clamp(-1., 1.).acos();
+                normals[index] += face.as_vec3() * angle as f32;
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_triangle_in_meters_keeps_unit_normals_without_changing_geometry() {
+        let positions = vec![[0., 0., 0.], [0.001, 0., 0.], [0., 0.002, 0.]];
+        let mut mesh = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
+        mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 1, 2]));
+        compute_source_normals(&mut mesh);
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+        else {
+            panic!("missing source normals");
+        };
+        for normal in normals {
+            assert!(Vec3::from_array(*normal).abs_diff_eq(Vec3::Z, 1e-6));
+        }
+        assert_eq!(
+            mesh.indices().unwrap().iter().collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap(),
+            &bevy::mesh::VertexAttributeValues::Float32x3(positions)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires frozen actual six source normal meshes; no GPU or physical steps"]
+    fn actual_source_arm_mesh_normals_diagnostic() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, path::PathBuf};
+        #[derive(Deserialize)]
+        struct Source {
+            usd_sha256: String,
+            qualified: bool,
+            physical_steps: u64,
+            rows: Vec<Row>,
+        }
+        #[derive(Deserialize)]
+        struct Row {
+            path: String,
+            points_body_source: Vec<[f64; 3]>,
+            triangles: Vec<[u32; 3]>,
+            authored_face_corner_normals_body_source: Vec<[f64; 3]>,
+            orientation: String,
+        }
+        let input = PathBuf::from(std::env::var("G1_SOURCE_NORMALS_FIXTURE").unwrap());
+        let expected = std::env::var("G1_SOURCE_NORMALS_FIXTURE_SHA256").unwrap();
+        assert!(fs::metadata(&input).unwrap().len() < 64 * 1024 * 1024);
+        let bytes = fs::read(input).unwrap();
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), expected);
+        let source: Source = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            source.usd_sha256,
+            "a7a2bab76981d19a1d76adecdfffec9b52afa34df9ba8e288ccedf410d3ce6bd"
+        );
+        assert!(!source.qualified);
+        assert_eq!(source.physical_steps, 0);
+        assert_eq!(source.rows.len(), 6);
+        let mut results = Vec::new();
+        for row in source.rows {
+            assert_eq!(row.orientation, "rightHanded");
+            assert_eq!(
+                row.authored_face_corner_normals_body_source.len(),
+                3 * row.triangles.len()
+            );
+            let positions = row
+                .points_body_source
+                .iter()
+                .map(|p| p.map(|v| v as f32))
+                .collect::<Vec<_>>();
+            let mut mesh = Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_indices(bevy::mesh::Indices::U32(
+                row.triangles.iter().flatten().copied().collect(),
+            ));
+            compute_source_normals(&mut mesh);
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
+                mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+            else {
+                panic!("missing actual source normals");
+            };
+            let mut zero = 0;
+            let mut cosine_sum = 0.0_f64;
+            let mut minimum_cosine = 1.0_f64;
+            for (index, author) in row
+                .triangles
+                .iter()
+                .flatten()
+                .zip(&row.authored_face_corner_normals_body_source)
+            {
+                let computed = Vec3::from_array(normals[*index as usize]).as_dvec3();
+                zero += usize::from(computed.length_squared() == 0.);
+                let authored = bevy::math::DVec3::from_array(*author).normalize();
+                let cosine = computed.dot(authored);
+                cosine_sum += cosine;
+                minimum_cosine = minimum_cosine.min(cosine);
+            }
+            results.push(serde_json::json!({
+                "path": row.path, "corner_count": row.authored_face_corner_normals_body_source.len(),
+                "zero_corners": zero, "minimum_cosine": minimum_cosine,
+                "mean_cosine": cosine_sum / row.authored_face_corner_normals_body_source.len() as f64,
+            }));
+        }
+        let output = PathBuf::from(std::env::var("G1_SOURCE_NORMALS_OUTPUT").unwrap());
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(output)
+            .unwrap();
+        serde_json::to_writer_pretty(
+            &mut file,
+            &serde_json::json!({
+                "qualified": false, "physical_steps": 0, "gpu_frames": 0,
+                "source_fixture_sha256": expected, "actual_rust_source_render_normal_rule": true,
+                "results": results,
+            }),
+        )
+        .unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|r| r["zero_corners"] == 0 && r["mean_cosine"].as_f64().unwrap() > 0.99)
+        );
+    }
 }

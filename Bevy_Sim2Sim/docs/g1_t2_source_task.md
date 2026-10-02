@@ -505,11 +505,11 @@ frozen runner/action files:
 
 ```bash
 G1_CODE_COMMIT=$(git rev-parse HEAD) \
-G1_MOBILE_REPLAY_CONFIG=.scratch/g1/t2_native_original_source_grasp_20261002_0139/runner.json \
+G1_MOBILE_REPLAY_CONFIG="$PWD/.scratch/g1/t2_native_original_source_grasp_20261002_0139/runner.json" \
 G1_MOBILE_REPLAY_CONFIG_SHA256=08bc9d2932dc50186cdc65ec41e7214c249f7a183f61c299aed4a4e22b4fdfe7 \
-G1_MOBILE_REPLAY_ACTIONS=.scratch/g1/t2_native_original_source_grasp_20261002_0139/actions.json \
+G1_MOBILE_REPLAY_ACTIONS="$PWD/.scratch/g1/t2_native_original_source_grasp_20261002_0139/actions.json" \
 G1_MOBILE_REPLAY_ACTIONS_SHA256=61868bb49efb02c0e297ae15d04e298bafeb5649656428a4f8f0e349eecd9b88 \
-G1_MOBILE_REPLAY_OUTPUT=.scratch/g1/NEW_MOBILE_MECHANICAL_RECEIPT.json \
+G1_MOBILE_REPLAY_OUTPUT="$PWD/.scratch/g1/NEW_MOBILE_MECHANICAL_RECEIPT.json" \
 CARGO_BUILD_JOBS=2 \
 CARGO_TARGET_DIR=/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target \
 flock /tmp/sai-g1-cargo.lock cargo test -p simulation_minigame \
@@ -577,3 +577,46 @@ remaining lighting, normals or feedback gap is harmless. The service is closed
 and the full actual input/response/trajectory records are retained. No longer
 rollout or parameter sweep follows this negative result; source actual render
 settings and source-authored normal correspondence are the next bounded audit.
+
+Cases0145–0146 add an exclusive released zero-step render audit, rejecting model,
+motion or other-query combinations before source access. The actual SDK read
+records eight tiny authored/default rectangular lights, the existing scene DB
+ambient settings, postprocessing inputs and87robot meshes including invisible
+collision/proxy meshes. It preserves the complete physical state and bothSDK
+counters exactly at0, with0USD/render-setting writes and0model calls. No dome or
+native directional-light equivalence is inferred. Queried global tone-mapping
+settings include operator6/whiteScale40.2, histogram disabled and sceneDB ambient
+color(0.1,0.1,0.1)/intensity1; null settings remain explicitly unavailable. These
+are measured inputs, not proof that RTX/Bevy photometric units or sensor pipelines
+are equivalent. The owned source process closes after16.45s.
+
+Cases0147–0150 establish a separate deterministic normal-generation bug.
+Bevy's default angle weighting rejects squared edge-length products below
+`f32::EPSILON`, discarding millimeter-size source triangles expressed in meters.
+In the six actual wrist/palm/elbow meshes, it produces zero normals at94–99% of
+face corners (bothpalms above99%). Their original authored normal vectors are
+finite and use right-handed winding. A real small-triangle regression first
+fails under the old method, then passes under the new source-only angle weighting.
+The correction evaluates angles in f64 and discards truly degenerate edges,
+without modifying a point, index, transform, body or physical parameter.
+Legacy station-style G1 files retain the existing normal behavior.
+
+The real Rust comparison against the six hash-bound source meshes passes at all
+307056face corners with0zero normals; mean source-direction cosine exceeds
+0.999999996 in everymesh. The 40.03MB fixture SHA256 is
+`7a75aabecf545e66d84137af9aa1c80396f030825bd2776de5ed24b9015d2a5d`.
+The first ignored-test invocation used an incorrect Cargo-relative fixture path;
+that harness failure remains recorded, followed by the successful absolute-path
+invocation. Rendering tests pass32/3ignored and the app rebuild passes. Actual
+zero-Tick source-normal GPU capture0149 passes, with binary SHA256
+`f21f835bc73eefada2c98b6f861483607f16782ddc09212fc78009b7b1bfcb7a`.
+The target-box pixels remain exactly unchanged from0143; hand-region pixel
+changes are small, so corrected normals do not establish brightness parity.
+
+The fixed four-call200Tick realRGB loop0150 again fails held lift:0hand impulses,
+200shelf-support samples, at most0.038mm rise, minimum upright0.993468 and maximum
+XY drift0.180417m. All200bodycalls/updates/integrations and actual model pixel
+bytes are verified. The owned model closes. This rejects normals as a sufficient
+explanation for the present grasp failure, while retaining a validated rendering
+repair. Further longer/physical-parameter sweeps remain at0; the next comparison
+must be justified by actual source photometric/postprocessing data.

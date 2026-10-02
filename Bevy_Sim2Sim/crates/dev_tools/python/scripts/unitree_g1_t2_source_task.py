@@ -315,6 +315,16 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                 raise ValueError('T2 render refresh changed physical state or counters')
             reset_counter = int(raw._sim_step_counter)
             captures = args.output.with_suffix('.captures'); captures.mkdir()
+            if args.scene_render_audit:
+                from unitree_g1_t2_render_query import query_render_inputs
+                before=physical_state();counters=(int(raw._sim_step_counter),int(raw.sim._physics_step_count))
+                receipt['actual_render_inputs']=query_render_inputs(raw,captures/'render_inputs.json')
+                after=physical_state();delta=max(float(np.abs(after[k]-v).max()) for k,v in before.items())
+                receipt['actual_render_inputs'].update(physical_state_max_abs_change=delta,before_sdk_counters=counters,
+                    after_sdk_counters=[int(raw._sim_step_counter),int(raw.sim._physics_step_count)])
+                if delta!=0 or counters!=(int(raw._sim_step_counter),int(raw.sim._physics_step_count)):
+                    raise ValueError('Render input query changed actual scene state/counters')
+                save()
             if args.contact_settings_audit:
                 from unitree_g1_t2_contact_query import query_contacts
                 before=physical_state();counters=(int(raw._sim_step_counter),int(raw.sim._physics_step_count))
@@ -578,6 +588,7 @@ def main():
     parser.add_argument('--policy-port', type=int)
     parser.add_argument('--policy-socket', type=Path, help='Private byte-preserving transport to the original local HTTP model owner')
     parser.add_argument('--contact-settings-audit', action='store_true', help='Released zero-step effective SDK contact/material/actuator inputs, no writes')
+    parser.add_argument('--scene-render-audit', action='store_true', help='Read actual released light/material/render settings; exclusive zero-step diagnostic')
     parser.add_argument('--native-action-replay', type=Path, help='One fixed 100-control source-only causal diagnostic, never task autonomy')
     parser.add_argument('--native-action-replay-sha256')
     parser.add_argument('--startup-trace', action='store_true', help='Finite startup stack/log diagnostic only')
@@ -629,6 +640,11 @@ def main():
             or args.policy_port or args.policy_socket or args.reset_contact_audit or args.initial_collision_audit
             or args.background_owner_audit or args.scene_overlap_audit or args.body_contract_audit or args.native_action_replay):
         parser.error('Effective contact query requires exclusive released zero-step scene')
+    if args.scene_render_audit and (not args.run_source or args.source_profile!='release_0_2_1' or args.ticks!=0
+            or args.policy_port or args.policy_socket or args.reset_contact_audit or args.initial_collision_audit
+            or args.background_owner_audit or args.scene_overlap_audit or args.body_contract_audit
+            or args.native_action_replay or args.contact_settings_audit):
+        parser.error('Render input query requires exclusive released zero-step scene')
     arena_rev, lab_rev, expected_runtime = SOURCE_PROFILES[args.source_profile]
     if bool(args.source_tree_receipt) != bool(args.source_tree_sha256):
         parser.error('Source-tree receipt and its frozen SHA256 must be provided together')

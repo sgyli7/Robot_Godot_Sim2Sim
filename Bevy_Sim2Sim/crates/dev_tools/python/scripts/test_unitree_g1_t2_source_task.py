@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from unitree_g1_t2_source_task import GROUP_NAMES, PROFILE, SOURCE_PROFILES, validate_reply, verify_source_receipt
+from unitree_g1_t2_source_task import GROUP_NAMES, PROFILE, SOURCE_PROFILES, main, validate_reply, verify_source_receipt
 
 
 class MobileSourceGuards(unittest.TestCase):
@@ -101,6 +102,22 @@ class MobileSourceIdentityGuards(unittest.TestCase):
             self.verify()
         with self.assertRaises(ValueError):
             verify_source_receipt(self.receipt, '0'*64, self.roots, self.profile)
+
+
+class RenderAuditAdmission(unittest.TestCase):
+    def test_render_query_cannot_run_with_model_motion_or_other_query(self):
+        base = ['source_query', '--arena-source', '/unused', '--lab-source', '/unused',
+                '--homie-assets', '/unused', '--task-assets', '/unused',
+                '--output', '/unused', '--episode-id', '5', '--run-source',
+                '--source-profile', 'release_0_2_1', '--scene-render-audit']
+        for extra in (['--policy-port', '5558'], ['--ticks', '100', '--policy-port', '5558'],
+                      ['--contact-settings-audit'], ['--background-owner-audit']):
+            with self.subTest(extra=extra), patch('sys.argv', base + extra), \
+                    patch('unitree_g1_t2_source_task.source_check') as source, \
+                    patch('sys.stderr'), self.assertRaises(SystemExit) as stopped:
+                main()
+            self.assertEqual(stopped.exception.code, 2)
+            source.assert_not_called()
 
 
 if __name__ == '__main__':
