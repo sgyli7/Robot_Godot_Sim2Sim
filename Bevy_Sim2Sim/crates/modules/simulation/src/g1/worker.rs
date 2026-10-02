@@ -293,6 +293,26 @@ impl PhysicsWorker<AgileCommand, AgileStep> {
 }
 
 impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
+    /// Fresh-world contact convergence comparison with predictive limits.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn spawn_static_predictive_constraint_diagnostic(
+        config: ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        let episode = config.body.episode_id();
+        Self::spawn_owner(
+            episode,
+            move |episode_id| {
+                ArenaTaskRunner::load_static_predictive_constraint_diagnostic(
+                    &ArenaTaskRunnerConfig {
+                        body: config.body.with_episode(episode_id),
+                        ..config.clone()
+                    },
+                )
+            },
+            SystemClock,
+        )
+    }
+
     /// Explicit opt-in limit probe; reset recreates the same selected backend.
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub fn spawn_static_predictive_limit_diagnostic(

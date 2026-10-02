@@ -254,6 +254,21 @@ impl ArenaTaskRunner {
         Ok(owner)
     }
 
+    /// Isolate contact convergence after the independent hard-limit repair.
+    /// This combines the two existing startup-only diagnostic mechanisms;
+    /// it keeps one 20 ms integration and never enters normal loading.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn load_static_predictive_constraint_diagnostic(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        let mut owner = Self::load_static_predictive_limit_diagnostic(config)?;
+        let ArenaBodyRunner::StaticAgile(body) = &mut owner.body else {
+            return Err(error("predictive convergence diagnostic body mismatch"));
+        };
+        body.set_diagnostic_constraint_sweeps()?;
+        Ok(owner)
+    }
+
     /// Explicit static-only development comparison; normal loading stays at 4.
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub fn load_static_constraint_diagnostic(
