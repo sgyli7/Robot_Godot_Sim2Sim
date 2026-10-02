@@ -200,3 +200,15 @@ Rapier 证据：[同代码、PGS 4 的两种平面基对照](/home/ethan/Project
 下一周期以 **足底与整机任务碰撞代理** 为单一主线：在同状态下先核对脚垫—地面接触距离、实际冲量及限位响应，再做保留空腔和脚嘴关键面的几何简化，用源／目标对照验证载荷与冲击。保持真实质量、完整惯量、K/C/A、原碰撞过滤及 65／18、82／18 Actor 合同。源与目标同版物理准入前不开始 PPO；M0/M1 均未通过，GPU 使用为零。上一轮归类为有证据推进，本轮同样产出了改变下一行动的真实收据。
 
 本检查点 **31 项回归通过、10 项外部夹具检查未运行**，开启／关闭记录的真实整机轨迹对照通过；[510 项工程结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_contact_manifold_checkpoint.json)、Rust 格式和 Git 空白检查通过。所有临时脚本、模型、收据、轨迹与按执行哈希冻结的源码仍在项目备份目录。
+
+### 可移动足底与 CCD 对照检查点
+
+新增开发夹具使用原始右脚体和六个脚垫的质量、完整惯量、几何、K/C/A 与 1.5 mm 行程。脚体仅受竖直导向约束，地面为固定 0.2 m 厚箱体；取消摩擦，重力为零，向真实脚体施加 5／10／20／30 N 每接触区及半机重载荷。释放和一次声明的冲击另列程序。夹具总物理质量 **0.292980652 kg**；外力模拟静态载荷，没有给脚体添加半机质量，因此冲击不代表完整机器人的落地资格。每程序 100 Tick，每 Tick 一次真实 20 ms 积分。
+
+[源端收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_source/receipt.json)与 [目标端初始收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_target_pgs4/receipt.json)各覆盖 7 个程序／700 次积分。目标静载总弹簧承载相对误差小于 **0.001%**，但不能据此授予接触资格。源端保留原生柔顺法向接触，目标保留原生法向接触，两者接触规律未匹配。源端从原始 0.5 mm 间隙起步时没有提前生成法向约束；20／30 N 档越过有限厚度地面并继续下落，失败轨迹完整保留。
+
+冲击程序暴露了独立于弹簧局部求解的问题。[CCD 开启记录](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_ccd_on_witness/receipt.json)中，Rapier 自动高速 CCD 在积分后单独裁剪脚垫刚体位置，首 Tick 的刚体位置与原生关节链位置差 **74.35 mm**，随后穿透逃逸。[关闭 CCD 的唯一对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/guided_sole_ccd_off_control/receipt.json)中，该位置差为 **零**，没有发生相同逃逸，但首次接触仍穿透 **69.35 mm**。六个非冲击程序的实际轨迹完全相同，新增记录与初始记录的实际轨迹也完全相同。这只确认该夹具的 CCD 裁剪会破坏关节几何一致性，不声称已经解决整机穿透。
+
+Goose50 现允许显式关闭 CCD 做单次积分诊断，禁止大于一次 CCD／求解时间步；默认仍为原值，MicroDuck 的步进规则保持原值。此选择尚未晋升正式候选。下一次对照检查整机关节几何在关闭 CCD 后是否一致，并建立源／目标同版本的 20 ms 法向接触试验；不继续盲扫 PGS。任务碰撞代理继续保持空腔、脚嘴关键面及原自碰撞过滤。**M0 未通过，PPO／GPU 使用仍为零。**
+
+结果、范围和下一问题集中在 [足底检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/guided_sole_checkpoint.json)。运行时代码位于 `crates/modules/simulation/src/`；新增 Rust、Python 夹具分别位于 `crates/dev_tools/src/bin/`、`crates/dev_tools/python/src/bevy_microduck_tools/goose/`；临时模型、日志、收据与冻结源码均位于项目备份目录。模拟库 **22 项通过、10 项外部夹具未运行**，Goose Python **30 项通过**，工程结构、Rust 格式及 Git 空白检查通过。

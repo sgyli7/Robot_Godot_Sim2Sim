@@ -232,9 +232,9 @@ impl SimulationWorld {
 
     /// Construct the world on an explicit clock. Native `dt` is `1 / rate_hz`.
     ///
-    /// Both profiles set one solver iteration and one CCD substep. Rapier
-    /// subdivides physical time when those counts, or any body's extra solver
-    /// iterations, rise above this single-step guard.
+    /// Both profiles default to one solver iteration and one CCD pass. Goose
+    /// diagnostics may disable CCD with zero passes, which still integrates
+    /// once. Counts above one or body extra iterations subdivide physical time.
     pub fn new_with_profile(profile: PhysicsClockProfile) -> Self {
         let mut world = PhysicsWorld::new();
         world.integration_parameters.dt = profile.dt();
@@ -401,10 +401,14 @@ impl SimulationWorld {
 
     fn validate_configuration(&self) -> Result<(), SimulationError> {
         let p = self.configuration();
+        let ccd_valid = match self.clock_profile {
+            PhysicsClockProfile::MicroDuck60 => p.max_ccd_substeps == 1,
+            PhysicsClockProfile::Goose50 => p.max_ccd_substeps <= 1,
+        };
         if p.dt != self.clock_profile.dt()
             || p.physics_hz != self.clock_profile.rate_hz()
             || p.num_solver_iterations != 1
-            || p.max_ccd_substeps != 1
+            || !ccd_valid
             || p.additional_solver_iterations_max != 0
         {
             return Err(SimulationError::InvalidStepConfiguration);
@@ -759,6 +763,32 @@ mod tests {
         micro.world.integration_parameters.dt = PhysicsClockProfile::Goose50.dt();
         assert_eq!(micro.configuration().physics_hz, PHYSICS_HZ);
         expect_reject(&mut micro);
+    }
+
+    #[test]
+    fn goose_ccd_off_keeps_one_native_integration_and_microduck_guard_unchanged() {
+        let mut goose = SimulationWorld::foundation_with_profile(PhysicsClockProfile::Goose50);
+        goose.world.integration_parameters.max_ccd_substeps = 0;
+        for _ in 0..50 {
+            goose.step_with_torques(&[]).unwrap();
+        }
+        let snapshot = goose.snapshot();
+        assert_eq!(snapshot.integration_count, 50);
+        assert_eq!(snapshot.global_seconds, 1.0);
+        assert_eq!(snapshot.torque_update_count, 50);
+        goose.world.integration_parameters.max_ccd_substeps = 2;
+        assert!(matches!(
+            goose.step_with_torques(&[]),
+            Err(SimulationError::InvalidStepConfiguration)
+        ));
+        assert_eq!(goose.snapshot().integration_count, 50);
+        let mut micro = SimulationWorld::foundation();
+        micro.world.integration_parameters.max_ccd_substeps = 0;
+        assert!(matches!(
+            micro.step_with_torques(&[]),
+            Err(SimulationError::InvalidStepConfiguration)
+        ));
+        assert_eq!(micro.snapshot().integration_count, 0);
     }
 
     #[test]
