@@ -33,6 +33,10 @@ pub struct MultibodyJoint {
     // Default false keeps existing articulations' integration byte-identical.
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     unit_rotation_maintenance: bool,
+    /// Opt-in two-sided speculative velocity rows for one revolute joint.
+    #[cfg(feature = "g1-predictive-limits")]
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    predictive_angular_limits: bool,
     /// Per-DoF spring stiffness (a passive joint spring integrated implicitly
     /// in the generalized dynamics). Zero on axes with no spring.
     pub(crate) spring_stiffness: SpatialVector,
@@ -55,11 +59,44 @@ impl MultibodyJoint {
             coords: Default::default(),
             joint_rot: Rotation::IDENTITY,
             unit_rotation_maintenance: false,
+            #[cfg(feature = "g1-predictive-limits")]
+            predictive_angular_limits: false,
             spring_stiffness: Default::default(),
             spring_ref: Default::default(),
             #[cfg(feature = "sim2sim-source-limit-probe")]
             sim2sim_source_limit_probe: None,
         }
+    }
+
+    /// Enable predictive hard bounds only for a limited single angular DoF.
+    /// These rows constrain velocity before the existing integration. They do
+    /// not modify positions, motor targets, inertias or integration frequency.
+    #[cfg(feature = "g1-predictive-limits")]
+    pub fn set_predictive_angular_limits(&mut self, enabled: bool) -> bool {
+        let limits = self.data.limits[DIM];
+        if self.kinematic
+            || self.ndofs() != 1
+            || self.num_free_lin_dofs() != 0
+            || self.data.locked_axes.bits() & (1 << DIM) != 0
+            || self.data.limit_axes.bits() & (1 << DIM) == 0
+            || !limits.min.is_finite()
+            || !limits.max.is_finite()
+            || limits.min > limits.max
+        {
+            return false;
+        }
+        #[cfg(feature = "sim2sim-source-limit-probe")]
+        if self.sim2sim_source_limit_probe.is_some() {
+            return false;
+        }
+        self.predictive_angular_limits = enabled;
+        true
+    }
+
+    /// Whether this joint explicitly uses predictive angular bounds.
+    #[cfg(feature = "g1-predictive-limits")]
+    pub fn predictive_angular_limits(&self) -> bool {
+        self.predictive_angular_limits
     }
 
     /// Opt in to unit-length maintenance of a three-angular-DoF joint.
@@ -367,6 +404,10 @@ impl MultibodyJoint {
             if (locked_bits & (1 << i)) == 0 {
                 if (limit_bits & (1 << i)) != 0 {
                     num_constraints += 1;
+                    #[cfg(feature = "g1-predictive-limits")]
+                    if self.predictive_angular_limits && i == DIM {
+                        num_constraints += 1;
+                    }
                 }
                 if (motor_bits & (1 << i)) != 0 {
                     num_constraints += 1;
@@ -473,9 +514,19 @@ impl MultibodyJoint {
             if (locked_bits & (1 << i)) == 0 {
                 let limits = if (limit_bits & (1 << i)) != 0 {
                     let limits = [self.data.limits[i].min, self.data.limits[i].max];
-                    #[cfg(feature = "sim2sim-source-limit-probe")]
-                    if i == DIM && self.sim2sim_source_limit_probe.is_some() {
-                        joint::unit_joint_source_limit_probe_constraint(
+                    let predictive = {
+                        #[cfg(feature = "g1-predictive-limits")]
+                        {
+                            self.predictive_angular_limits && i == DIM
+                        }
+                        #[cfg(not(feature = "g1-predictive-limits"))]
+                        {
+                            false
+                        }
+                    };
+                    if predictive {
+                        #[cfg(feature = "g1-predictive-limits")]
+                        joint::unit_joint_predictive_limit_constraints(
                             params,
                             multibody,
                             link,
@@ -486,9 +537,39 @@ impl MultibodyJoint {
                             jacobians,
                             constraints,
                             &mut num_constraints,
-                            self.sim2sim_source_limit_probe.as_ref().unwrap(),
                         );
                     } else {
+                        #[cfg(feature = "sim2sim-source-limit-probe")]
+                        if i == DIM && self.sim2sim_source_limit_probe.is_some() {
+                            joint::unit_joint_source_limit_probe_constraint(
+                                params,
+                                multibody,
+                                link,
+                                limits,
+                                self.coords[i],
+                                curr_free_dof,
+                                j_id,
+                                jacobians,
+                                constraints,
+                                &mut num_constraints,
+                                self.sim2sim_source_limit_probe.as_ref().unwrap(),
+                            );
+                        } else {
+                            joint::unit_joint_limit_constraint(
+                                params,
+                                multibody,
+                                link,
+                                limits,
+                                self.coords[i],
+                                curr_free_dof,
+                                j_id,
+                                jacobians,
+                                constraints,
+                                &mut num_constraints,
+                                self.data.softness,
+                            );
+                        }
+                        #[cfg(not(feature = "sim2sim-source-limit-probe"))]
                         joint::unit_joint_limit_constraint(
                             params,
                             multibody,
@@ -503,20 +584,6 @@ impl MultibodyJoint {
                             self.data.softness,
                         );
                     }
-                    #[cfg(not(feature = "sim2sim-source-limit-probe"))]
-                    joint::unit_joint_limit_constraint(
-                        params,
-                        multibody,
-                        link,
-                        limits,
-                        self.coords[i],
-                        curr_free_dof,
-                        j_id,
-                        jacobians,
-                        constraints,
-                        &mut num_constraints,
-                        self.data.softness,
-                    );
                     Some(limits)
                 } else {
                     None

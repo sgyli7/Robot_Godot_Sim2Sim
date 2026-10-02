@@ -44,8 +44,9 @@ fn bounded_read(path: &Path, max: u64) -> Result<Vec<u8>, String> {
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if !matches!(args.len(), 4 | 6)
+    if !matches!(args.len(), 4 | 5 | 6)
         || args[3] != "--offline-diagnostic"
+        || (args.len() == 5 && args[4] != "--predictive-limits")
         || (args.len() == 6 && (args[4] != "--constraint-sweeps" || args[5] != "16"))
     {
         return Err("usage: g1_task_chunk_probe CONFIG.json UNCHANGED_CHUNK.json NEW_RECEIPT.json --offline-diagnostic".into());
@@ -105,7 +106,23 @@ fn main() -> Result<(), String> {
         receipt["input_observations"] =
             json!(chunks.iter().map(|c| c.observation).collect::<Vec<_>>());
         receipt["expected_ticks"] = json!(expected_ticks);
-        let owner = if args.len() == 6 {
+        let owner = if args.len() == 5 {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            {
+                let owner = ArenaTaskWorker::spawn_static_predictive_limit_diagnostic(config)
+                    .map_err(|e| e.to_string())?;
+                receipt["factory_verified_predictive_limit_joints"] = json!(43);
+                receipt["predictive_free_root"] = json!(false);
+                receipt["coordinate_projection"] = json!(false);
+                owner
+            }
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
+            {
+                return Err(
+                    "predictive limit comparison requires its explicit development feature".into(),
+                );
+            }
+        } else if args.len() == 6 {
             receipt["isolated_nonintegrating_constraint_sweeps"] = json!(16);
             #[cfg(feature = "g1_constraint_diagnostic")]
             {

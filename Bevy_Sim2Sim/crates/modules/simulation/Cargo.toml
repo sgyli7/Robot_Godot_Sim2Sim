@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = []
-g1_constraint_diagnostic = []
+g1_constraint_diagnostic = ["rapier3d/g1-predictive-limits"]
 sim2sim_observation = ["rapier3d/sim2sim-observation"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "rapier3d/sim2sim-limit-row-trace"]
 sim2sim_motor_row_trace = ["sim2sim_observation", "rapier3d/sim2sim-motor-row-trace"]

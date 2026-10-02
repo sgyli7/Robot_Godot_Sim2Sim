@@ -55,6 +55,7 @@ features = [
 status = "actively-developed"
 
 [features]
+g1-predictive-limits = []
 alloc = [
     "nalgebra/alloc",
     "parry3d/alloc",

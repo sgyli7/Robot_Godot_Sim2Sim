@@ -237,6 +237,23 @@ pub struct ArenaTaskRunner {
 }
 
 impl ArenaTaskRunner {
+    /// Static-only, fresh-world predictive hard-limit comparison. The normal
+    /// constructor retains the original reactive constraint implementation.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn load_static_predictive_limit_diagnostic(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        if config.body.profile() != TaskProfile::StaticApple {
+            return Err(error("isolated predictive limit comparison is static-only"));
+        }
+        let mut owner = Self::load(config)?;
+        let ArenaBodyRunner::StaticAgile(body) = &mut owner.body else {
+            return Err(error("predictive limit diagnostic body mismatch"));
+        };
+        body.enable_diagnostic_predictive_limits()?;
+        Ok(owner)
+    }
+
     /// Explicit static-only development comparison; normal loading stays at 4.
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub fn load_static_constraint_diagnostic(

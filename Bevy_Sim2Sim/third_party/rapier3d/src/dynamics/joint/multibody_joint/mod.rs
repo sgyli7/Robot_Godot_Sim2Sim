@@ -25,6 +25,8 @@ pub use self::multibody_joint_handle::{MultibodyIndex, MultibodyJointHandle};
 pub use self::multibody_joint_set::{MultibodyJointSet, MultibodyLinkId};
 #[cfg(feature = "alloc")]
 pub use self::multibody_link::MultibodyLink;
+#[cfg(all(feature = "alloc", feature = "g1-predictive-limits"))]
+pub(crate) use self::unit_multibody_joint::unit_joint_predictive_limit_constraints;
 #[cfg(feature = "alloc")]
 pub use self::unit_multibody_joint::{
     unit_joint_friction_constraint, unit_joint_limit_constraint, unit_joint_motor_constraint,

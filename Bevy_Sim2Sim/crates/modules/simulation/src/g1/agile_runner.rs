@@ -364,6 +364,27 @@ impl AgileRunner {
             .num_internal_pgs_iterations = 16;
         validate_clock(self.configuration())
     }
+
+    /// Predictive bounds are isolated from the normal loading path. No change
+    /// to source gains, action semantics or the four nonintegrating sweeps.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn enable_diagnostic_predictive_limits(&mut self) -> Result<(), RobotError> {
+        if self.simulation.integration_count != 0 || self.policy.inference_count() != 0 {
+            return Err(error(
+                "predictive limit diagnostic requires a fresh zero-Tick owner",
+            ));
+        }
+        if self
+            .assembly
+            .enable_diagnostic_predictive_limits(&mut self.simulation.world)?
+            != JOINT_COUNT
+        {
+            return Err(error(
+                "predictive limit diagnostic source joint coverage changed",
+            ));
+        }
+        validate_clock(self.configuration())
+    }
     pub fn motor_update_count(&self) -> u64 {
         self.motor_update_count
     }

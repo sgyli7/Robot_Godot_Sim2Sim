@@ -106,6 +106,64 @@ pub(crate) fn unit_joint_source_limit_probe_constraint(
     *j_id += 2 * ndofs;
 }
 
+/// Two unilateral rows enforce lower <= q + dt * v <= upper before the
+/// existing Euler coordinate integration. Both remain available while q is
+/// inside its range, so a motor/contact cannot cross a bound before activation.
+/// Bounds enter the physical velocity solve, including its stabilization pass;
+/// no coordinate projection, pose write, narrowed range or extra step is used.
+#[cfg(feature = "g1-predictive-limits")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unit_joint_predictive_limit_constraints(
+    params: &IntegrationParameters,
+    multibody: &Multibody,
+    link: &MultibodyLink,
+    limits: [Real; 2],
+    curr_pos: Real,
+    dof_id: usize,
+    j_id: &mut usize,
+    jacobians: &mut DVector,
+    constraints: &mut [GenericJointConstraint],
+    insert_at: &mut usize,
+) {
+    let ndofs = multibody.ndofs();
+    let backend_dof = dof_id + link.assembly_id;
+    for (bound, impulse_bounds) in [
+        (limits[0], [-Real::MAX, 0.0]),
+        (limits[1], [0.0, Real::MAX]),
+    ] {
+        let dof_j_id = *j_id + backend_dof;
+        jacobians.rows_mut(*j_id, ndofs * 2).fill(0.0);
+        jacobians[dof_j_id] = 1.0;
+        jacobians[dof_j_id + ndofs] = 1.0;
+        multibody
+            .inv_augmented_mass()
+            .solve_mut(&mut jacobians.rows_mut(*j_id + ndofs, ndofs));
+        let lhs = jacobians[dof_j_id + ndofs];
+        let rhs = (curr_pos - bound) / params.dt;
+        constraints[*insert_at] = GenericJointConstraint {
+            is_rigid_body1: false,
+            solver_vel1: u32::MAX,
+            ndofs1: 0,
+            j_id1: 0,
+            is_rigid_body2: false,
+            solver_vel2: multibody.solver_id,
+            ndofs2: ndofs,
+            j_id2: *j_id,
+            joint_id: usize::MAX,
+            impulse: 0.0,
+            impulse_bounds,
+            inv_lhs: crate::utils::inv(lhs),
+            rhs,
+            rhs_wo_bias: rhs,
+            cfm_coeff: 0.0,
+            cfm_gain: 0.0,
+            writeback_id: WritebackId::Limit(dof_id),
+        };
+        *insert_at += 1;
+        *j_id += 2 * ndofs;
+    }
+}
+
 /// Initializes and generate the velocity constraints applicable to the multibody links attached
 /// to this multibody_joint.
 pub fn unit_joint_limit_constraint(

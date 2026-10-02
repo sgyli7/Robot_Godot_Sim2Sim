@@ -46,6 +46,47 @@ impl G1Assembly {
         &self.definition_sha256
     }
 
+    /// Opt-in development comparison at startup. The original limits and
+    /// coordinates remain unchanged, and the six-DoF root is never selected.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn enable_diagnostic_predictive_limits(
+        &self,
+        world: &mut PhysicsWorld,
+    ) -> Result<usize, RobotError> {
+        self.current_root_velocity(world)?;
+        if self.driven.len() != JOINT_COUNT {
+            return Err(invalid(
+                "predictive limit diagnostic needs all 43 source joints",
+            ));
+        }
+        for driven in &self.driven {
+            let (tree, link_id) = world
+                .multibody_joints
+                .get_mut(driven.handle)
+                .ok_or_else(|| invalid("stale predictive limit diagnostic joint"))?;
+            if tree.root().joint().predictive_angular_limits() {
+                return Err(invalid(
+                    "predictive limit diagnostic selected the free root",
+                ));
+            }
+            let joint = &mut tree.link_mut(link_id).unwrap().joint;
+            let previous_q = joint.coords();
+            let previous_limits = joint.data.limits[3];
+            if !joint.set_predictive_angular_limits(true)
+                || !joint.predictive_angular_limits()
+                || joint.coords() != previous_q
+                || joint.data.limits[3].min != previous_limits.min
+                || joint.data.limits[3].max != previous_limits.max
+            {
+                return Err(invalid(
+                    "predictive limit diagnostic changed source coordinates or bounds",
+                ));
+            }
+        }
+        self.current_root_velocity(world)?;
+        Ok(self.driven.len())
+    }
+
     /// Read-only source-body mapping for bounded native contact diagnostics.
     #[cfg(test)]
     pub(super) fn diagnostic_body_handles(&self) -> &[RigidBodyHandle] {
@@ -599,6 +640,110 @@ fn invalid(message: impl Into<String>) -> RobotError {
 mod tests {
     use super::*;
     use std::{env, path::Path};
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    fn predictive_limit_prevents_the_first_boundary_crossing_in_one_real_step() {
+        for velocity in [-1., 1.] {
+            let mut outcomes = Vec::new();
+            for predictive in [false, true] {
+                let mut simulation = crate::SimulationWorld::with_game_frequency(50).unwrap();
+                let parent = simulation.world.bodies.insert(RigidBodyBuilder::fixed());
+                let child = simulation.world.bodies.insert(RigidBodyBuilder::dynamic());
+                simulation.world.colliders.insert_with_parent(
+                    ColliderBuilder::ball(0.1).density(1000.),
+                    child,
+                    &mut simulation.world.bodies,
+                );
+                let handle = simulation
+                    .world
+                    .multibody_joints
+                    .insert(
+                        parent,
+                        child,
+                        GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES)
+                            .limits(JointAxis::AngX, [0., 0.]),
+                        true,
+                    )
+                    .unwrap();
+                let (tree, link_id) = simulation.world.multibody_joints.get_mut(handle).unwrap();
+                tree.forward_kinematics(&simulation.world.bodies, true);
+                assert_eq!(tree.ndofs(), 1);
+                assert!(
+                    tree.link_mut(link_id)
+                        .unwrap()
+                        .joint
+                        .set_predictive_angular_limits(predictive)
+                );
+                tree.generalized_velocity_mut()[0] = velocity;
+                let snapshot = simulation.step_with_torques(&[]).unwrap();
+                assert_eq!(snapshot.integration_count, 1);
+                let (tree, link_id) = simulation.world.multibody_joints.get(handle).unwrap();
+                outcomes.push(tree.link(link_id).unwrap().joint().coords()[3]);
+            }
+            assert!(
+                outcomes[0].abs() > 0.001,
+                "reactive control must reproduce first-step crossing"
+            );
+            assert!(
+                outcomes[1].abs() < 0.00001,
+                "predictive rows must prevent crossing, not repair next Tick"
+            );
+        }
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    fn predictive_limit_leaves_interior_motion_and_free_root_unchanged() {
+        let mut free = MultibodyJoint::new(GenericJoint::default(), false);
+        assert!(!free.set_predictive_angular_limits(true));
+        assert!(!free.predictive_angular_limits());
+        for velocity in [-1., 1.] {
+            let mut outcomes = Vec::new();
+            for predictive in [false, true] {
+                let mut simulation = crate::SimulationWorld::with_game_frequency(50).unwrap();
+                let parent = simulation.world.bodies.insert(RigidBodyBuilder::fixed());
+                let child = simulation.world.bodies.insert(RigidBodyBuilder::dynamic());
+                simulation.world.colliders.insert_with_parent(
+                    ColliderBuilder::ball(0.1).density(1000.),
+                    child,
+                    &mut simulation.world.bodies,
+                );
+                let handle = simulation
+                    .world
+                    .multibody_joints
+                    .insert(
+                        parent,
+                        child,
+                        GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES)
+                            .limits(JointAxis::AngX, [-1., 1.]),
+                        true,
+                    )
+                    .unwrap();
+                let (tree, link_id) = simulation.world.multibody_joints.get_mut(handle).unwrap();
+                tree.forward_kinematics(&simulation.world.bodies, true);
+                assert_eq!(tree.ndofs(), 1);
+                assert!(
+                    tree.link_mut(link_id)
+                        .unwrap()
+                        .joint
+                        .set_predictive_angular_limits(predictive)
+                );
+                tree.generalized_velocity_mut()[0] = velocity;
+                assert_eq!(
+                    simulation.step_with_torques(&[]).unwrap().integration_count,
+                    1
+                );
+                let (tree, link_id) = simulation.world.multibody_joints.get(handle).unwrap();
+                outcomes.push(tree.link(link_id).unwrap().joint().coords()[3]);
+            }
+            assert!(outcomes[0].abs() > 0.001);
+            assert!(
+                (outcomes[1] - outcomes[0]).abs() < 0.000001,
+                "interior motion must not be braked"
+            );
+        }
+    }
 
     #[test]
     fn task_actuator_parameters_reject_invalid_values() {
