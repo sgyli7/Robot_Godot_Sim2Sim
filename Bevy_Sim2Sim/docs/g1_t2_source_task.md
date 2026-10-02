@@ -1073,7 +1073,7 @@ The final actual RGB/self-sensor whitelist feeds classical marker localization;
 no target height, object pose, contact truth or saved action enters execution.
 This visibility pose is not bin approach, physical release or task acceptance.
 
-Fresh Bevy trial0196 completes913actual50HzT ticks after four unmarked RGB
+Fresh Bevy trial0196 completes913 actual 50Hz Ticks after four unmarked RGB
 N1.6 calls; all913physical body states match the offline0194trial except the
 new episode identity. All250lower/stop Ticks retain hand-only support. Both
 markers decode from the actual final RGB. Independent audit measures horizontal
@@ -1087,3 +1087,30 @@ and closes the owned model after four successful inferences. It does not
 qualify original-bin placement, continuous unpaused1x or formal8/10.
 Raw trace SHA256:
 `ec9c9cd9cdf4a449f97c0cd26d08a14e76ff511f0ff02948fb02ff9f0065c2e9`.
+
+
+The saved0196 prefix plus its actual RGB marker proposal is mechanically
+checked in0197 before admitting online motion. A disclosed0.65m reobservation
+margin produces a1.081257m coarse waypoint. The sole native owner completes
+1307single50Hz integrations; the first913body states match0196exactly. All394
+carry/stop samples retain hand-only support, upright at least0.992602, and
+actual root displacement is1.135662m. Independent geometry keeps both markers
+visible at the final boundary. This is a saved-fixture control diagnostic with
+zero fresh VLA calls; it grants no autonomous or placement qualification.
+Trace SHA256:
+`157f71d99300bcea80573bc948bff7ec98b2df3ccdccc9bf705795d5fec070ef`.
+
+`g1_mobile_target_approach_diagnostic` separately requires3150maximum Ticks,
+four fresh original grasp calls, matched source scene/4PGS/light/fiducials,
+and the same18cm visibility lowering. Its `mobile_scan.vision` pins absolute
+Python/script/original-definition paths and SHA256 identities. After lowering,
+a bounded local worker receives a new actual RGB and whitelisted self-state
+capture. It has one reply slot and a3second deadline; timeout/cancellation kills
+only its owned subprocess. Reply admission checks episode/frame/time and input
+hashes, both distinct marker identities, residual≤1pixel and edge≥8pixels.
+The executed goal records both the raw visual proposal and traditional0.65m
+reobservation margin. Physics stays paused during this diagnostic localization;
+there is no extra integration, truth input, Qwen target selection or release.
+Startup0198 rejects missing vision, wrong script/definition hashes, vision in
+the old target-view scene and an extra grasp call before output/world/model
+creation. Three reply-guard checks and six scene-budget/CLI checks pass.

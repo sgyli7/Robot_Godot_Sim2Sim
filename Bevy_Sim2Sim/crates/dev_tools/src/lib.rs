@@ -3,6 +3,8 @@
 #[cfg(feature = "rendering_preview")]
 pub mod g1_capture;
 #[cfg(feature = "rendering_preview")]
+mod g1_marker_vision;
+#[cfg(feature = "rendering_preview")]
 mod g1_source_lighting;
 #[cfg(feature = "rendering_preview")]
 pub mod g1_task_lab;

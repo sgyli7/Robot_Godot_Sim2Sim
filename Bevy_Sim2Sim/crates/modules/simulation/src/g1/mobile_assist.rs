@@ -386,12 +386,13 @@ mod tests {
     struct ScanLowerFixture {
         scan: MobileScanGoal,
         lower: MobileLowerGoal,
+        carry: Option<MobileCarryGoal>,
     }
 
-    /// Frozen real-RGB grasp/scan prefix, then one new physical lowering stage.
+    /// Frozen real-RGB grasp/scan prefix, then lowering and optional visual carry.
     /// This has zero fresh VLA calls and grants no autonomous/task qualification.
     #[test]
-    #[ignore = "requires frozen four-grasp/scan goals/new output;<=1300native50HzTicks,0freshVLA"]
+    #[ignore = "requires frozen four-grasp/scan goals/new output;<=3150native50HzTicks,0freshVLA"]
     fn real_mobile_scan_lowering_diagnostic() -> Result<(), RobotError> {
         let config: ArenaTaskRunnerConfig =
             serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
@@ -418,6 +419,9 @@ mod tests {
         let mut owner = MobileAssistRunner::load(&config)?;
         let mut current = None;
         let mut lower_started = false;
+        let mut lower_completed = false;
+        let mut carry_started = false;
+        let maximum_ticks = if goals.carry.is_some() { 3150 } else { 1300 };
         let mut actual_ticks = 0;
         let now = || {
             SystemTime::now()
@@ -426,7 +430,7 @@ mod tests {
                 .as_millis() as u64
         };
         let result = (|| -> Result<(), RobotError> {
-            for tick in 1..=1300 {
+            for tick in 1..=maximum_ticks {
                 if tick <= 200 && (tick - 1) % 50 == 0 {
                     let mut chunk = sequence.chunks[((tick - 1) / 50) as usize].clone();
                     chunk.observation.captured_at_unix_ms = now();
@@ -441,8 +445,20 @@ mod tests {
                     goals.lower.observation.captured_at_unix_ms = now();
                     current = Some(MobileAssistCommand::ClassicalLower(goals.lower.clone()));
                     lower_started = true;
+                } else if lower_started
+                    && !carry_started
+                    && owner.completed_skill()
+                    && let Some(goal) = &mut goals.carry
+                {
+                    goal.observation.captured_at_unix_ms = now();
+                    current = Some(MobileAssistCommand::ClassicalCarry(goal.clone()));
+                    carry_started = true;
                 }
                 let step = owner.step_with_guard(current.as_ref().unwrap(), &mut || Ok(()))?;
+                if matches!(&step.execution, MobileAssistExecution::ClassicalLower { lowering, .. } if lowering.completed)
+                {
+                    lower_completed = true;
+                }
                 actual_ticks = tick;
                 serde_json::to_writer(
                     &mut trace,
@@ -453,7 +469,10 @@ mod tests {
                 )
                 .map_err(|e| invalid(e.to_string()))?;
                 writeln!(trace).map_err(|e| invalid(e.to_string()))?;
-                if lower_started && owner.completed_skill() {
+                if lower_started
+                    && owner.completed_skill()
+                    && (goals.carry.is_none() || carry_started)
+                {
                     return Ok(());
                 }
             }
@@ -466,8 +485,9 @@ mod tests {
             .open(&output)
             .map_err(|e| invalid(e.to_string()))?;
         serde_json::to_writer_pretty(file,&serde_json::json!({
-            "actual_integrations":actual_ticks,"lower_started":lower_started,
-            "completed_lowering":result.is_ok(),"failure":result.as_ref().err().map(ToString::to_string),
+            "actual_integrations":actual_ticks,"lower_started":lower_started,"carry_started":carry_started,
+            "completed_lowering":lower_completed,"completed_carry":carry_started && result.is_ok(),
+            "completed_selected_sequence":result.is_ok(),"failure":result.as_ref().err().map(ToString::to_string),
             "fresh_vla_calls":0,"saved_native_fixture_used":true,"qualified":false,
             "physics_hz":50,"integrations_per_tick":1,
         })).map_err(|e| invalid(e.to_string()))?;

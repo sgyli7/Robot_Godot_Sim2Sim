@@ -66,6 +66,9 @@ use task_minigame::{
     types::{ObservationStamp, TaskProfile},
 };
 
+use super::g1_marker_vision::MarkerVisionConfiguration;
+#[cfg(feature = "g1_constraint_diagnostic")]
+use super::g1_marker_vision::MarkerVisionJob;
 use super::g1_source_lighting::{SourceLightingReceipt, SourceRectLighting};
 
 /// Explicit evidence settings. Zero ticks captures the native initialized world
@@ -143,6 +146,8 @@ struct MobileScanCaptureConfiguration {
     fiducial_assets: BackgroundVisualConfiguration,
     #[serde(default)]
     lowering: Option<MobileLowerCaptureConfiguration>,
+    #[serde(default)]
+    vision: Option<MarkerVisionConfiguration>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -160,6 +165,11 @@ enum MobileAssistStage {
 struct MobileAssistCaptureRuntime {
     scan_only: bool,
     view_with_lowering: bool,
+    visual_approach: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    vision_job: Option<MarkerVisionJob>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    visual_goal_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     lower_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -174,11 +184,18 @@ impl MobileAssistCaptureRuntime {
         let scan_only = matches!(&configuration, MobileAssistStage::Scan(_));
         let view_with_lowering =
             matches!(&configuration, MobileAssistStage::Scan(c) if c.lowering.is_some());
+        let visual_approach =
+            matches!(&configuration, MobileAssistStage::Scan(c) if c.vision.is_some());
         #[cfg(not(feature = "g1_constraint_diagnostic"))]
         let _ = configuration;
         Self {
             scan_only,
             view_with_lowering,
+            visual_approach,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            vision_job: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            visual_goal_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             lower_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -510,6 +527,15 @@ pub fn run_mobile_target_view_from_file(
     run_from_file(path, options, CaptureMode::MobileTargetView)
 }
 
+/// Four fresh original RGB grasp chunks, scan/lower, then actual RGB coarse approach.
+/// Development evidence only; no release, arbitrary target, or task qualification.
+pub fn run_mobile_target_approach_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileTargetApproach)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
@@ -518,6 +544,7 @@ enum CaptureMode {
     MobileAssist,
     MobileScan,
     MobileTargetView,
+    MobileTargetApproach,
 }
 
 /// Interactive development entry; it never advertises unqualified execution.
@@ -1124,7 +1151,8 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
-    let target_view = mode == CaptureMode::MobileTargetView;
+    let visual_approach = mode == CaptureMode::MobileTargetApproach;
+    let target_view = mode == CaptureMode::MobileTargetView || visual_approach;
     let scan_only = mode == CaptureMode::MobileScan || target_view;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only;
     if (mode == CaptureMode::MobileAssist) != mobile_assist.is_some()
@@ -1135,7 +1163,9 @@ fn run_capture_owner(
     if assisted_carry
         && (!cfg!(feature = "g1_constraint_diagnostic")
             || options.ticks
-                != if target_view {
+                != if visual_approach {
+                    3150
+                } else if target_view {
                     1300
                 } else if scan_only {
                     1050
@@ -1164,12 +1194,16 @@ fn run_capture_owner(
                 !c.heading_yaw_source_rad.is_finite()
                     || c.heading_yaw_source_rad.abs() > std::f32::consts::PI
                     || c.lowering.is_some() != target_view
+                    || c.vision.is_some() != visual_approach
                     || c.lowering
                         .as_ref()
                         .is_some_and(|l| l.distance_m != 0.18 || l.duration_ticks != 150)
             }))
     {
-        return Err("mobile assist/scan entry requires its2050/1050maximumTicks,4liveoriginalgrasp chunks and the matched mobile scene/source-light/4PGS profile;carry distance is exactly2m".into());
+        return Err("mobile development entry requires its exact 2050/1050/1300/3150 Tick budget, four fresh original grasp chunks and matched source scene/light/4PGS profile; manual carry is exactly 2m".into());
+    }
+    if let Some(vision) = mobile_scan.as_ref().and_then(|c| c.vision.as_ref()) {
+        vision.validate()?;
     }
     let fiducial_model = mobile_scan
         .as_ref()
@@ -1866,8 +1900,15 @@ fn drive_mobile_assist(
         if assist.view_with_lowering && !assist.lower_submitted && scan_complete {
             return drive_lower_view(runtime, outcome, port);
         }
+        let lower_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
+            .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalLower { lowering, .. } if lowering.completed));
+        if assist.visual_approach && !assist.visual_goal_submitted && lower_complete {
+            return drive_visual_approach(runtime, outcome, port);
+        }
         let completed = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref().is_some_and(|step| {
-            if assist.view_with_lowering {
+            if assist.visual_approach {
+                assist.visual_goal_submitted && matches!(&step.execution, MobileAssistExecution::ClassicalCarry { navigation, .. } if navigation.completed)
+            } else if assist.view_with_lowering {
                 matches!(&step.execution, MobileAssistExecution::ClassicalLower { lowering, .. } if lowering.completed)
             } else {
                 matches!(&step.execution,MobileAssistExecution::ClassicalCarry {navigation,..} | MobileAssistExecution::ClassicalScan {navigation,..} if navigation.completed)
@@ -2083,6 +2124,159 @@ fn drive_lower_view(
     runtime.mobile_assist.as_mut().unwrap().lower_submitted = true;
     runtime.requested = false;
     Ok(false)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_visual_approach(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    use simulation_minigame::g1::{
+        mobile_assist::MobileAssistCommand, mobile_navigation::MobileCarryGoal,
+        worker::TimedCommand,
+    };
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("visual approach lacks owner")?
+        .clone();
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("visual approach stage absent")?;
+    if latest.phase != G1WorkerPhase::Paused || assist.visual_goal_submitted {
+        return Err("visual approach requires its completed stationary lower boundary".into());
+    }
+    if let Some(job) = &assist.vision_job {
+        let Some(reply) = job.try_take() else {
+            return Ok(false);
+        };
+        let reply = reply?;
+        let observation = job.observation;
+        let wall_ms = job.started.elapsed().as_secs_f64() * 1000.;
+        if observation.episode_id != runtime.episode_id
+            || observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
+        {
+            return Err("visual goal belongs to an old episode/boundary".into());
+        }
+        let proposal = &reply["navigation_proposal"];
+        // Reobserve from a clear intermediate waypoint before final placement.
+        // This margin is explicitly traditional geometry, not a VLA action.
+        let distance = proposal["relative_distance_m"]
+            .as_f64()
+            .ok_or("missing approach distance")?
+            - 0.65;
+        if !(0.1..=1.85).contains(&distance) {
+            return Err("visual coarse waypoint outside bounded range".into());
+        }
+        let goal = MobileCarryGoal {
+            observation,
+            heading_yaw_source_rad: proposal["heading_yaw_source_rad"]
+                .as_f64()
+                .ok_or("missing approach heading")? as f32,
+            relative_distance_m: distance as f32,
+        };
+        goal.validate().map_err(|e| e.to_string())?;
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("visual approach lost sole native owner".into());
+        };
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: observation.sim_time_ns + 41_000_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(42),
+                command: MobileAssistCommand::ClassicalCarry(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        let mut receipt = outcome.0.lock().unwrap();
+        let handoff = receipt
+            .mobile_assist_handoff
+            .as_mut()
+            .ok_or("visual approach provenance absent")?;
+        handoff["visual_approach"] = serde_json::json!({
+            "actual_localization":reply,"executed_coarse_goal":goal,"reobservation_margin_m":0.65,
+            "localization_wall_ms":wall_ms,"physics_paused_during_localization":true,
+            "same_owner_boundary_tick":latest.timing.episode_integrations,
+            "object_truth_in_command":false,"qwen_target_selection":false,"task_qualified":false,
+        });
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        assist.vision_job.take();
+        assist.visual_goal_submitted = true;
+        runtime.requested = false;
+        return Ok(false);
+    }
+    if !runtime.requested {
+        port.request()?;
+        runtime.requested = true;
+        return Ok(false);
+    }
+    let Some(frame) = port.take() else {
+        return Ok(false);
+    };
+    let frame = frame?;
+    let tick = latest.timing.episode_integrations;
+    if frame.stamp.source != CameraPoseSource::PhysicsBody
+        || frame.stamp.episode_id != runtime.episode_id
+        || frame.stamp.source_ticks != [tick; 2]
+        || frame.stamp.sim_time_ns != tick * 20_000_000
+    {
+        return Err("visual approach RGB mismatches completed native lower boundary".into());
+    }
+    frame
+        .stamp
+        .native_state
+        .as_ref()
+        .ok_or("visual approach self state absent")?
+        .validate()?;
+    let input = marker_observation(&frame.stamp)?;
+    let observation: ObservationStamp =
+        serde_json::from_value(input["stamp"].clone()).map_err(|e| e.to_string())?;
+    let directory = runtime.options.output.join("visual_approach");
+    fs::create_dir(&directory).map_err(|e| e.to_string())?;
+    let rgb = task_minigame::decision::CameraRgb::from_rgb(
+        "native_ego",
+        frame.width,
+        frame.height,
+        frame.rgb,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(directory.join("ego.png"), rgb.png()).map_err(|e| e.to_string())?;
+    fs::write(
+        directory.join("observation.json"),
+        serde_json::to_vec_pretty(&input).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        directory.join("audit_stamp.json"),
+        serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let MobileAssistStage::Scan(config) = &assist.configuration else {
+        return Err("visual approach lacks scan profile".into());
+    };
+    let config = config
+        .vision
+        .clone()
+        .ok_or("visual localization worker config absent")?;
+    runtime.mobile_assist.as_mut().unwrap().vision_job =
+        Some(MarkerVisionJob::start(config, directory, observation)?);
+    Ok(false)
+}
+
+fn marker_observation(stamp: &G1CaptureStamp) -> Result<serde_json::Value, String> {
+    let state = stamp
+        .native_state
+        .as_ref()
+        .ok_or("marker image self state absent")?;
+    state.validate()?;
+    Ok(serde_json::json!({
+        "schema":"g1_mobile_marker_observation_v1",
+        "stamp":ObservationStamp {episode_id:stamp.episode_id,frame_id:stamp.capture_sequence,
+            sim_time_ns:stamp.sim_time_ns,captured_at_unix_ms:stamp.captured_at_unix_ms},
+        "camera":rendering_minigame::g1_camera::G1CameraCalibration::default(),
+        "measured_joints":state.measured_joints,
+    }))
 }
 
 fn drive_live_policy(
@@ -2610,7 +2804,7 @@ fn drive_capture(
                     .is_some_and(|assist| assist.completed)
                 {
                     if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
-                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
+                        if runtime.mobile_assist.as_ref().is_some_and(|a| a.visual_approach) { "bounded_actual_rgb_visual_coarse_approach_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
                     } else {
                         "bounded_classical_carry_skill_complete_not_task_qualified"
                     }
@@ -2664,17 +2858,7 @@ fn drive_capture(
             if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
                 // Deliberately omit world camera/body poses and all task objects.
                 // Perception receives actual RGB plus original self sensors only.
-                let input = serde_json::json!({
-                    "schema":"g1_mobile_marker_observation_v1",
-                    "stamp":ObservationStamp {
-                        episode_id: frame.stamp.episode_id,
-                        frame_id: frame.stamp.capture_sequence,
-                        sim_time_ns: frame.stamp.sim_time_ns,
-                        captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
-                    },
-                    "camera":rendering_minigame::g1_camera::G1CameraCalibration::default(),
-                    "measured_joints":frame.stamp.native_state.as_ref().unwrap().measured_joints,
-                });
+                let input = marker_observation(&frame.stamp)?;
                 fs::write(
                     runtime.options.output.join("vision_observation.json"),
                     serde_json::to_vec_pretty(&input).map_err(|e| e.to_string())?,
