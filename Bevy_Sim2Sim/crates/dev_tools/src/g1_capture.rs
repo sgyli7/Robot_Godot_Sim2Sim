@@ -43,10 +43,18 @@ use simulation_minigame::g1::{
     agile_runner::AgileRunnerConfig,
     runner::{G1ActuatorBackend, G1RunnerConfig},
     task_objects::{TaskObjectFrame, TaskObjectKind, TaskObjectSceneConfig},
+    task_runner::{ArenaTaskBodyConfig, ArenaTaskCommand, ArenaTaskRunnerConfig, ArenaTaskStep},
     worker::{
-        AgileWorker, G1Worker, G1WorkerPhase, G1WorkerTiming, TimedAgileCommand, TimedG1Command,
-        WorkerSnapshot,
+        AgileWorker, ArenaTaskWorker, G1Worker, G1WorkerPhase, G1WorkerTiming, TimedAgileCommand,
+        TimedArenaTaskCommand, TimedG1Command, WorkerSnapshot,
     },
+};
+use task_minigame::{
+    policy::{
+        ARENA_ACTION_PERIOD_NS, MobilePolicyClient, PolicyInferenceRequest, PolicyObservation,
+        PolicyWorker, StaticPolicyClient, map_measured_joints, profile_contract,
+    },
+    types::{ObservationStamp, TaskProfile},
 };
 
 /// Explicit evidence settings. Zero ticks captures the native initialized world
@@ -68,12 +76,33 @@ struct CaptureConfiguration {
     task_visual_path: Option<PathBuf>,
     #[serde(default)]
     task_visual_sha256: Option<String>,
+    #[serde(default)]
+    policy: Option<LivePolicyConfiguration>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LivePolicyConfiguration {
+    endpoint: String,
+    max_calls: u32,
+    timeout_ms: u64,
+}
+
+struct LivePolicyRuntime {
+    worker: PolicyWorker,
+    profile: TaskProfile,
+    next_sequence: u64,
+    pending: Option<ObservationStamp>,
+    submitted_chunks: u32,
+    max_calls: u32,
+    next_boundary_tick: u64,
 }
 
 // Distinct complete startup schemas and typed workers; no action conversion.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum CaptureRunnerConfig {
+    Task(ArenaTaskRunnerConfig),
     Mobile(G1RunnerConfig),
     Static(AgileRunnerConfig),
 }
@@ -81,18 +110,26 @@ enum CaptureRunnerConfig {
 impl CaptureRunnerConfig {
     fn task_objects(&self) -> Option<&TaskObjectSceneConfig> {
         match self {
+            Self::Task(c) => match &c.body {
+                ArenaTaskBodyConfig::StaticAgile(c) => c.task_objects.as_ref(),
+                ArenaTaskBodyConfig::MobileHomieV2(c) => c.task_objects.as_ref(),
+            },
             Self::Mobile(c) => c.task_objects.as_ref(),
             Self::Static(c) => c.task_objects.as_ref(),
         }
     }
     fn episode(&self) -> u64 {
         match self {
+            Self::Task(c) => c.body.episode_id(),
             Self::Mobile(c) => c.episode_id,
             Self::Static(c) => c.episode_id,
         }
     }
     fn spawn(self) -> Result<CaptureWorker, String> {
         match self {
+            Self::Task(c) => ArenaTaskWorker::spawn(c)
+                .map(CaptureWorker::Task)
+                .map_err(|e| e.to_string()),
             Self::Mobile(c) => G1Worker::spawn(c)
                 .map(CaptureWorker::Mobile)
                 .map_err(|e| e.to_string()),
@@ -114,6 +151,7 @@ impl CaptureRunnerConfig {
 }
 
 enum CaptureWorker {
+    Task(ArenaTaskWorker),
     Mobile(G1Worker),
     Static {
         worker: AgileWorker,
@@ -129,6 +167,7 @@ struct CaptureSnapshot {
     measurement: Option<Arc<simulation_minigame::g1::runner::G1Measurement>>,
     task_objects: Option<Arc<TaskObjectFrame>>,
     timing: G1WorkerTiming,
+    task_step: Option<Arc<ArenaTaskStep>>,
 }
 impl CaptureSnapshot {
     fn from_worker<S>(s: &WorkerSnapshot<S>) -> Self {
@@ -140,12 +179,18 @@ impl CaptureSnapshot {
             measurement: s.measurement.clone(),
             task_objects: s.task_objects.clone(),
             timing: s.timing.clone(),
+            task_step: None,
         }
     }
 }
 impl CaptureWorker {
     fn take_latest(&self) -> Option<Arc<CaptureSnapshot>> {
         match self {
+            Self::Task(w) => w.take_latest().map(|s| {
+                let mut snapshot = CaptureSnapshot::from_worker(&s);
+                snapshot.task_step = s.step.clone();
+                Arc::new(snapshot)
+            }),
             Self::Mobile(w) => w
                 .take_latest()
                 .map(|s| Arc::new(CaptureSnapshot::from_worker(&s))),
@@ -156,6 +201,7 @@ impl CaptureWorker {
     }
     fn pause(&self) {
         match self {
+            Self::Task(w) => w.pause(),
             Self::Mobile(w) => w.pause(),
             Self::Static { worker, .. } => worker.pause(),
         }
@@ -164,6 +210,7 @@ impl CaptureWorker {
         let valid_until_sim_ns = u64::from(ticks) * 20_000_000;
         let valid_until_wall = Instant::now() + Duration::from_secs(8);
         match self {
+            Self::Task(_) => return Err("task owner requires actual matched policy output".into()),
             Self::Mobile(w) => w.submit(TimedG1Command {
                 episode_id,
                 valid_until_sim_ns,
@@ -193,6 +240,9 @@ pub fn run_capture_from_file(
     if config.task_visual_path.is_some() != config.task_visual_sha256.is_some() {
         return Err("task visual path/hash must both be supplied".into());
     }
+    if matches!(config.runner, CaptureRunnerConfig::Task(_)) != config.policy.is_some() {
+        return Err("task owner and live policy configuration must be supplied together".into());
+    }
     run_capture_owner(
         config.runner,
         &config.visual_path,
@@ -202,6 +252,7 @@ pub fn run_capture_from_file(
             .as_deref()
             .zip(config.task_visual_sha256.as_deref()),
         options,
+        config.policy,
     )
 }
 
@@ -252,6 +303,10 @@ pub struct G1CaptureReceipt {
     pub failure_reason: Option<String>,
     pub ego_stamp: Option<G1CaptureStamp>,
     pub main_resolution: [u32; 2],
+    pub live_policy_inference_calls: u32,
+    pub live_policy_successes: u32,
+    pub live_action_chunks: Vec<serde_json::Value>,
+    pub pauses_for_camera_and_policy: bool,
     pub unqualified: Vec<&'static str>,
 }
 
@@ -268,6 +323,30 @@ impl G1CaptureReceipt {
             walk,
             agile,
         ) = match config {
+            CaptureRunnerConfig::Task(c) => match &c.body {
+                ArenaTaskBodyConfig::StaticAgile(c) => (
+                    "static_agile",
+                    c.floor_contact_friction,
+                    c.robot_contact_friction,
+                    c.definition_sha256.clone(),
+                    c.ort_sha256.clone(),
+                    G1ActuatorBackend::NativeForceBased,
+                    None,
+                    None,
+                    Some(robot_minigame::g1::agile::MODEL_SHA256),
+                ),
+                ArenaTaskBodyConfig::MobileHomieV2(c) => (
+                    "mobile_homie",
+                    c.floor_contact_friction,
+                    c.robot_contact_friction,
+                    c.definition_sha256.clone(),
+                    c.ort_sha256.clone(),
+                    c.actuator_backend,
+                    Some(robot_minigame::g1::policy::STAND_SHA256),
+                    Some(robot_minigame::g1::policy::WALK_SHA256),
+                    None,
+                ),
+            },
             CaptureRunnerConfig::Mobile(c) => (
                 "mobile_homie",
                 c.floor_contact_friction,
@@ -327,6 +406,10 @@ impl G1CaptureReceipt {
             failure_reason: None,
             ego_stamp: None,
             main_resolution: [1920, 1080],
+            live_policy_inference_calls: 0,
+            live_policy_successes: 0,
+            live_action_chunks: Vec::new(),
+            pauses_for_camera_and_policy: false,
             unqualified: vec![
                 "standing_stability",
                 "science_station_contact_geometry",
@@ -358,6 +441,9 @@ impl G1CaptureReceipt {
 #[derive(Resource, Clone)]
 struct CaptureOutcome(Arc<Mutex<G1CaptureReceipt>>);
 
+#[derive(Component)]
+struct SourceShelfVisual;
+
 #[derive(Resource)]
 struct CaptureRuntime {
     worker: CaptureWorker,
@@ -370,6 +456,7 @@ struct CaptureRuntime {
     requested: bool,
     ego_saved: bool,
     main_saved: Arc<Mutex<Result<bool, String>>>,
+    live_policy: Option<LivePolicyRuntime>,
 }
 
 /// Open a real 1080p window and save one real head-camera RGB frame with native
@@ -387,6 +474,7 @@ pub fn run_capture(
         visual_sha256,
         None,
         options,
+        None,
     )
 }
 
@@ -396,6 +484,7 @@ fn run_capture_owner(
     visual_sha256: &str,
     task_visual: Option<(&Path, &str)>,
     options: G1CaptureOptions,
+    policy: Option<LivePolicyConfiguration>,
 ) -> Result<G1CaptureReceipt, String> {
     if options.ticks > 150
         || options.timeout.is_zero()
@@ -403,6 +492,47 @@ fn run_capture_owner(
     {
         return Err("capture requires 0..=150 ticks and a finite timeout <=180 seconds".into());
     }
+    let live_policy = match (&config, policy) {
+        (CaptureRunnerConfig::Task(config), Some(policy)) => {
+            let profile = config.body.profile();
+            let horizon = profile_contract(profile).action_horizon as u32;
+            if policy.max_calls == 0
+                || policy.max_calls > 3
+                || options.ticks != policy.max_calls * horizon
+                || policy.timeout_ms == 0
+                || policy.timeout_ms > 20_000
+                || config.max_observation_wall_age_ms == 0
+                || config.max_observation_wall_age_ms > 20_000
+            {
+                return Err("live diagnostic requires 1..=3 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
+            }
+            let timeout = Duration::from_millis(policy.timeout_ms);
+            let worker = match profile {
+                TaskProfile::StaticApple => PolicyWorker::spawn(
+                    StaticPolicyClient::new(&policy.endpoint, timeout)
+                        .map_err(|e| format!("{e:?}"))?,
+                    config.body.episode_id(),
+                ),
+                TaskProfile::MobileBox => PolicyWorker::spawn_mobile(
+                    MobilePolicyClient::new(&policy.endpoint, timeout)
+                        .map_err(|e| format!("{e:?}"))?,
+                    config.body.episode_id(),
+                ),
+            }
+            .map_err(|e| e.to_string())?;
+            Some(LivePolicyRuntime {
+                worker,
+                profile,
+                next_sequence: 1,
+                pending: None,
+                submitted_chunks: 0,
+                max_calls: policy.max_calls,
+                next_boundary_tick: 0,
+            })
+        }
+        (_, None) => None,
+        _ => return Err("live policy requires the matched task owner".into()),
+    };
     let assets = validate_render_asset_root(&default_asset_root())?;
     let scene = StationScene::load(&assets)?;
     let model = G1VisualModel::load(visual_path, visual_sha256)?;
@@ -429,6 +559,11 @@ fn run_capture_owner(
     ))));
     outcome.0.lock().unwrap().task_visual_sha256 =
         task_model.as_ref().map(|m| m.file_sha256.clone());
+    if live_policy.is_some() {
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
+        receipt.pauses_for_camera_and_policy = true;
+    }
     let worker = config.spawn()?;
     let mut app = App::new();
     // Scene supplies the existing enamel configuration only. Its meshes, props,
@@ -448,6 +583,7 @@ fn run_capture_owner(
             requested: false,
             ego_saved: false,
             main_saved: Arc::new(Mutex::new(Ok(false))),
+            live_policy,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .add_plugins(
@@ -569,6 +705,189 @@ fn observation(snapshot: &CaptureSnapshot) -> Result<Option<Arc<G1CameraNativeSt
     Ok(Some(native))
 }
 
+/// Diagnostic pauses are explicit: rendering/inference never advances physics,
+/// and each reply resumes the existing owner without a scene reset or restamp.
+fn drive_live_policy(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("missing live owner snapshot")?;
+    let live = runtime
+        .live_policy
+        .as_mut()
+        .ok_or("missing live policy worker")?;
+    if latest.phase == G1WorkerPhase::Failed {
+        return Err(latest
+            .reason
+            .clone()
+            .unwrap_or("live physical owner failed".into()));
+    }
+    if let Some(reply) = live.worker.try_take_reply() {
+        if live.pending.take() != Some(reply.observation)
+            || reply.profile != live.profile
+            || reply.sequence_id + 1 != live.next_sequence
+            || latest.phase != G1WorkerPhase::Paused
+            || latest.timing.episode_integrations != live.next_boundary_tick
+        {
+            return Err("live policy reply and paused physical boundary disagree".into());
+        }
+        let chunk = reply.result.map_err(|e| format!("live policy: {e:?}"))?;
+        let horizon = chunk.frames.len() as u64;
+        let end_tick = live
+            .next_boundary_tick
+            .checked_add(horizon)
+            .ok_or("live tick overflow")?;
+        let CaptureWorker::Task(owner) = &runtime.worker else {
+            return Err("live task lost its unique physical owner".into());
+        };
+        fs::write(
+            runtime
+                .options
+                .output
+                .join(format!("live_reply_{:04}.json", reply.sequence_id)),
+            serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        owner
+            .submit(TimedArenaTaskCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: end_tick
+                    .checked_mul(ARENA_ACTION_PERIOD_NS)
+                    .ok_or("live time overflow")?,
+                valid_until_wall: Instant::now()
+                    + Duration::from_nanos(horizon * ARENA_ACTION_PERIOD_NS)
+                    + Duration::from_secs(1),
+                command: ArenaTaskCommand {
+                    chunk: Arc::new(chunk),
+                },
+            })
+            .map_err(|e| e.to_string())?;
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.live_policy_successes += 1;
+        receipt.live_action_chunks.push(serde_json::json!({
+            "sequence_id": reply.sequence_id, "observation": reply.observation,
+            "inference_ms": reply.elapsed.as_millis(), "start_tick": live.next_boundary_tick,
+            "end_tick_exclusive": end_tick, "frame_count": horizon,
+            "same_owner_world": true, "task_qualified": false,
+        }));
+        live.next_boundary_tick = end_tick;
+        live.submitted_chunks += 1;
+        return Ok(false);
+    }
+    if live.pending.is_some() || latest.phase != G1WorkerPhase::Paused {
+        return Ok(false);
+    }
+    if latest.timing.episode_integrations != live.next_boundary_tick {
+        // Submission resumes on the next owner boundary. An unchanged paused
+        // display snapshot can arrive first; it must not be treated as a reset.
+        return Ok(false);
+    }
+    if !runtime.requested {
+        if let Some(step) = &latest.task_step {
+            if step.execution.admitted_chunks != u64::from(live.submitted_chunks)
+                || step.execution.frame_index + 1 != profile_contract(live.profile).action_horizon
+            {
+                return Err(
+                    "owner admission/frame counters disagree with completed live chunk".into(),
+                );
+            }
+            fs::write(
+                runtime
+                    .options
+                    .output
+                    .join(format!("live_boundary_{:04}.json", live.submitted_chunks)),
+                serde_json::to_vec(step.as_ref()).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if live.submitted_chunks == live.max_calls {
+            return Ok(true);
+        }
+        port.request()?;
+        runtime.requested = true;
+        return Ok(false);
+    }
+    if live.submitted_chunks == live.max_calls {
+        return Ok(true);
+    }
+    if let Some(frame) = port.take() {
+        let frame = frame?;
+        if frame.stamp.source != CameraPoseSource::PhysicsBody
+            || frame.stamp.episode_id != runtime.episode_id
+            || frame.stamp.source_ticks != [live.next_boundary_tick; 2]
+            || frame.stamp.sim_time_ns != live.next_boundary_tick * ARENA_ACTION_PERIOD_NS
+        {
+            return Err("live RGB was rendered from a different physical boundary".into());
+        }
+        let native = frame
+            .stamp
+            .native_state
+            .as_ref()
+            .ok_or("live RGB lacks measured self state")?;
+        native.validate()?;
+        let names = robot_minigame::g1::contract::JOINT_NAMES.map(str::to_owned);
+        let observation = PolicyObservation {
+            stamp: ObservationStamp {
+                episode_id: frame.stamp.episode_id,
+                frame_id: frame.stamp.capture_sequence,
+                sim_time_ns: frame.stamp.sim_time_ns,
+                captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
+            },
+            measured_joint_positions_rad: map_measured_joints(
+                &names,
+                &native.measured_joints.positions,
+            )
+            .map_err(|e| format!("live measured joints: {e:?}"))?,
+            camera_width: frame.width,
+            camera_height: frame.height,
+            camera_rgb: frame.rgb,
+        };
+        observation
+            .validate()
+            .map_err(|e| format!("live RGB/self state: {e:?}"))?;
+        let camera = task_minigame::decision::CameraRgb::from_rgb(
+            "native_ego",
+            observation.camera_width,
+            observation.camera_height,
+            observation.camera_rgb.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        fs::write(
+            runtime
+                .options
+                .output
+                .join(format!("live_ego_{:04}.png", live.next_sequence)),
+            camera.png(),
+        )
+        .map_err(|e| e.to_string())?;
+        fs::write(
+            runtime
+                .options
+                .output
+                .join(format!("live_stamp_{:04}.json", live.next_sequence)),
+            serde_json::to_vec(&frame.stamp).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let stamp = observation.stamp;
+        live.worker
+            .submit_latest(PolicyInferenceRequest {
+                profile: live.profile,
+                sequence_id: live.next_sequence,
+                observation,
+            })
+            .map_err(|e| format!("live policy submission: {e:?}"))?;
+        live.pending = Some(stamp);
+        live.next_sequence += 1;
+        runtime.requested = false;
+        outcome.0.lock().unwrap().live_policy_inference_calls += 1;
+    }
+    Ok(false)
+}
+
 fn drive_capture(
     mut commands: Commands,
     mut runtime: ResMut<CaptureRuntime>,
@@ -581,6 +900,9 @@ fn drive_capture(
     mut input: ResMut<G1BodyObservationInput>,
     port: Res<G1CameraPort>,
     mut exit: MessageWriter<AppExit>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut shelf_visual: Query<&mut Transform, With<SourceShelfVisual>>,
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
@@ -595,6 +917,36 @@ fn drive_capture(
         }
         if let Some(snapshot) = runtime.worker.take_latest() {
             input.0 = observation(&snapshot)?;
+            if let Some(shelf) = snapshot
+                .task_objects
+                .as_ref()
+                .and_then(|frame| frame.source_t1_shelf.as_ref())
+            {
+                let transform = Transform {
+                    translation: Vec3::from_array(shelf.translation_engine),
+                    rotation: Quat::from_array(shelf.rotation_engine_xyzw),
+                    ..default()
+                };
+                if let Some(mut shown) = shelf_visual.iter_mut().next() {
+                    *shown = transform;
+                } else {
+                    commands.spawn((
+                        Name::new("actual_source_procedural_support_geometry"),
+                        SourceShelfVisual,
+                        Mesh3d(meshes.add(Cuboid::new(
+                            shelf.size_engine[0],
+                            shelf.size_engine[1],
+                            shelf.size_engine[2],
+                        ))),
+                        MeshMaterial3d(materials.add(StandardMaterial {
+                            base_color: Color::srgb(0.5, 0.45, 0.36),
+                            perceptual_roughness: 0.85,
+                            ..default()
+                        })),
+                        transform,
+                    ));
+                }
+            }
             task_input.0 = match (&task_model, &snapshot.task_objects) {
                 (Some(model), Some(frame)) => {
                     let robot = snapshot
@@ -667,7 +1019,11 @@ fn drive_capture(
         if !render_ready {
             return Ok(());
         }
-        if !runtime.command_submitted && runtime.options.ticks > 0 {
+        if runtime.live_policy.is_some() && !drive_live_policy(&mut runtime, &outcome, &port)? {
+            return Ok(());
+        }
+        if runtime.live_policy.is_none() && !runtime.command_submitted && runtime.options.ticks > 0
+        {
             runtime
                 .worker
                 .submit_stand(runtime.episode_id, runtime.options.ticks)?;

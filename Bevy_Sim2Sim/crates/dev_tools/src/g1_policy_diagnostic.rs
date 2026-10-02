@@ -228,7 +228,7 @@ fn run_inner(
         server_weight_bytes_independently_verified: false,
     });
     receipt.wire_schema = Some(match parsed.profile {
-        TaskProfile::StaticApple => "unitree_g1_static_observation_v1",
+        TaskProfile::StaticApple => "unitree_g1_static_observation_v2",
         TaskProfile::MobileBox => "mobile_observation_v1",
     });
     let horizon_ns = (contract.action_horizon as u64)
