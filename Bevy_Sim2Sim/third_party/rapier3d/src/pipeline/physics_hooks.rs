@@ -63,6 +63,9 @@ pub struct ContactModificationContext<'a> {
     /// Only frictionless, non-bouncy contacts involving a multibody are supported.
     #[cfg(feature = "sim2sim-physical-normal-contact")]
     pub experimental_normal_spring: &'a mut Option<crate::geometry::ExperimentalNormalSpring>,
+    /// Optional region identity for the explicit shared-pad contact experiment.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub experimental_shared_pad: &'a mut Option<crate::geometry::ExperimentalSharedPadBinding>,
     /// User-defined data attached to the manifold.
     // NOTE: we keep this a &'a mut u32 to emphasize the
     // fact that this can be modified.

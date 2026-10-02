@@ -5,6 +5,8 @@ pub(crate) use contact_constraints_set::{
 pub(crate) use contact_with_coulomb_friction::*;
 pub(crate) use generic_contact_constraint::*;
 pub(crate) use generic_contact_constraint_element::*;
+#[cfg(feature = "sim2sim-physical-normal-contact")]
+pub(crate) use shared_pad_constraint::solve_shared_pad_block;
 
 #[cfg(feature = "dim3")]
 pub(crate) use contact_with_twist_friction::*;
@@ -14,6 +16,8 @@ mod contact_constraints_set;
 mod contact_with_coulomb_friction;
 mod generic_contact_constraint;
 mod generic_contact_constraint_element;
+#[cfg(feature = "sim2sim-physical-normal-contact")]
+mod shared_pad_constraint;
 
 #[cfg(feature = "dim3")]
 mod contact_with_twist_friction;

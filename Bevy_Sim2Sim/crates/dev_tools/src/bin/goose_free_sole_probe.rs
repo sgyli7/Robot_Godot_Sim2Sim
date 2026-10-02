@@ -5,7 +5,9 @@ use std::{
 };
 
 use rapier3d::{
-    geometry::ExperimentalNormalSpring, pipeline::ContactModificationContext, prelude::*,
+    geometry::{ExperimentalNormalSpring, ExperimentalSharedPadBinding},
+    pipeline::ContactModificationContext,
+    prelude::*,
 };
 use robot_minigame::{
     basis::engine_to_source_vector,
@@ -37,6 +39,8 @@ struct Materials {
     ground: ColliderHandle,
     foot: RigidBodyHandle,
     soft: HashMap<ColliderHandle, (f32, f32)>,
+    shared: HashMap<ColliderHandle, usize>,
+    compression: Mutex<Vec<f64>>,
     points: Mutex<HashMap<(ColliderHandle, usize), Vector>>,
 }
 
@@ -59,7 +63,25 @@ impl PhysicsHooks for Materials {
             .dot(*context.normal)
             .abs();
         assert!(cosine >= 0.5, "foot tilt outside declared prototype");
-        if let Some((k, c)) = self.soft.get(&patch) {
+        if let Some(index) = self.shared.get(&patch) {
+            let axis = context.bodies[self.foot].rotation() * Vector::Y;
+            let normal = if context.collider2 == patch {
+                *context.normal
+            } else {
+                -*context.normal
+            };
+            *context.experimental_shared_pad = Some(ExperimentalSharedPadBinding {
+                patch_index: *index,
+                axis_cosine: axis.dot(normal),
+            });
+            let shift = axis * self.compression.lock().unwrap()[*index] as f32;
+            for point in context.solver_contacts.iter_mut() {
+                // The virtual slide changes the material-point lever, not body poses.
+                // Shifting both anchors leaves the nominal signed gap unchanged.
+                point.anchor1 += shift;
+                point.anchor2 += shift;
+            }
+        } else if let Some((k, c)) = self.soft.get(&patch) {
             if !context.solver_contacts.is_empty() {
                 let count = context.solver_contacts.len() as f32;
                 *context.experimental_normal_spring = Some(ExperimentalNormalSpring {
@@ -161,6 +183,7 @@ fn case(
     world.integration_parameters.contact_recycling = false;
     world.integration_parameters.experimental_free_normal_block =
         ["free_block", "free_block_plain"].contains(&mode);
+    world.integration_parameters.experimental_shared_pad_block = mode == "free_shared";
     world.integration_parameters.normalized_prediction_distance = band as f32;
     world.integration_parameters.normalized_allowed_linear_error = 0.0;
     world
@@ -198,11 +221,14 @@ fn case(
         ground,
         foot: body,
         soft: HashMap::new(),
+        shared: HashMap::new(),
+        compression: Mutex::new(vec![0.0; 6]),
         points: Mutex::new(HashMap::new()),
     };
     let mut materials = materials;
     let mut bindings = Vec::new();
     let mut ledger = Vec::new();
+    let mut shared_mechanics = Vec::new();
     for patch in &patches {
         if patch.kind != "box" || patch.local_rotation_wxyz != [1.0, 0.0, 0.0, 0.0] {
             return Err("original box geometry changed".into());
@@ -221,7 +247,15 @@ fn case(
         }
         let [hx, hy, hz] = patch.half_extents_m.ok_or("box extents absent")?;
         ledger.push(original.clone());
+        shared_mechanics.push(rapier3d::dynamics::ExperimentalSharedPadMechanics {
+            stiffness_n_m: k as f32,
+            damping_n_s_m: c as f32,
+            travel_m: travel as f32,
+        });
         for stop in [false, true] {
+            if mode == "free_shared" && stop {
+                continue;
+            }
             let local = vector(patch.local_position_m)
                 + if stop {
                     Vector::Y * travel as f32
@@ -244,7 +278,11 @@ fn case(
                 &mut world.bodies,
             );
             if !stop {
-                materials.soft.insert(collider, (k as f32, c as f32));
+                if mode == "free_shared" {
+                    materials.shared.insert(collider, ledger.len() - 1);
+                } else {
+                    materials.soft.insert(collider, (k as f32, c as f32));
+                }
             }
             bindings.push((collider, patch.name.clone(), stop));
         }
@@ -257,10 +295,13 @@ fn case(
     mb.armature_mut().fill(0.0);
     mb.frictions_mut().fill(0.0);
     #[cfg(feature = "sim2sim_plain_mass_probe")]
-    mb.sim2sim_set_plain_mass_probe(mode == "free_block_plain");
+    mb.sim2sim_set_plain_mass_probe(["free_block_plain", "free_shared"].contains(&mode));
     #[cfg(not(feature = "sim2sim_plain_mass_probe"))]
-    if mode == "free_block_plain" {
+    if ["free_block_plain", "free_shared"].contains(&mode) {
         return Err("plain mass mode requires explicit sim2sim_plain_mass_probe feature".into());
+    }
+    if mode == "free_shared" {
+        mb.sim2sim_configure_shared_pads(shared_mechanics);
     }
     mb.update_rigid_bodies(&mut world.bodies, true);
     let mut frames = Vec::new();
@@ -277,6 +318,18 @@ fn case(
         let start = Instant::now();
         world.step_with_events(&materials, &());
         elapsed.push(start.elapsed().as_secs_f64() * 1000.0);
+        if mode == "free_shared" {
+            let (mb, _) = world.multibody_joints.get_mut(joint).unwrap();
+            mb.sim2sim_commit_shared_pad_tick()?;
+            materials
+                .compression
+                .lock()
+                .unwrap()
+                .copy_from_slice(mb.sim2sim_shared_pad_compressions().unwrap());
+            if mb.sim2sim_commit_shared_pad_tick().is_ok() {
+                return Err("shared compression history committed twice".into());
+            }
+        }
         let (mb, _) = world.multibody_joints.get(joint).unwrap();
         let observation = mb
             .sim2sim_observation()
@@ -342,13 +395,23 @@ fn case(
         {
             return Err("nonfinite free foot".into());
         }
-        frames.push(json!({"tick":tick,"time_s":(tick+1) as f64*DT,"integration_count":tick+1,
+        let mut frame = json!({"tick":tick,"time_s":(tick+1) as f64*DT,"integration_count":tick+1,
             "native_epoch":observation.epoch,"native_full_step_dt_s":observation.full_step_dt(),
             "qpos_wxyz":qpos,"generalized_velocity_native":mb.generalized_velocity().as_slice(),
             "quaternion_norm_error":quaternion_norm_error,
             "com_before_m":source(com),"applied_force_world_n":source(applied),"applied_moment_world_nm":source(torque),
             "contact_force_world_n":source(force),"contact_moment_world_nm":source(moment),
-            "patch_force_n":patch_force,"patch_min_gap_m":gaps,"rows":rows}));
+            "patch_force_n":patch_force,"patch_min_gap_m":gaps,"rows":rows});
+        if let Some(s) = mb.sim2sim_shared_pad_result() {
+            frame["shared_pad_state"] = json!({
+                "compression_m":mb.sim2sim_shared_pad_compressions(),"final_candidate_compression_m":s.compression_m,
+                "compression_velocity_m_s":s.compression_velocity_m_s,"lower_stop_impulses_n_s":s.lower_stop_impulses_n_s,
+                "upper_stop_impulses_n_s":s.upper_stop_impulses_n_s,"solve_calls":s.solve_calls,
+                "complementarity_residual_m_s":s.complementarity_residual_m_s,"max_travel_violation_m":s.max_travel_violation_m,
+                "barrier_compression_difference_m":s.barrier_compression_difference_m,
+                "algebraic_iterations":s.algebraic_iterations});
+        }
+        frames.push(frame);
     }
     elapsed.sort_by(f64::total_cmp);
     Ok(
@@ -502,7 +565,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if !(3..=4).contains(&args.len()) {
         return Err(
-            "usage: goose_free_sole_probe FROZEN_CONDENSED_PLANT NEW_OUTPUT_DIR native|free_block|free_block_plain|inertia_native|inertia_plain [FROZEN_SOURCE_INERTIA_RECEIPT]"
+            "usage: goose_free_sole_probe FROZEN_CONDENSED_PLANT NEW_OUTPUT_DIR native|free_block|free_block_plain|free_shared|inertia_native|inertia_plain [FROZEN_SOURCE_INERTIA_RECEIPT]"
                 .into(),
         );
     }
@@ -511,6 +574,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "native",
         "free_block",
         "free_block_plain",
+        "free_shared",
         "inertia_native",
         "inertia_plain",
     ]
@@ -604,6 +668,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "third_party/rapier3d/src/dynamics/integration_parameters.rs",
         "third_party/rapier3d/src/dynamics/solver/contact_constraint/generic_contact_constraint.rs",
         "third_party/rapier3d/src/dynamics/solver/staged_island_solver/worker.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/multibody.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/shared_pad_state.rs",
+        "third_party/rapier3d/src/dynamics/solver/contact_constraint/shared_pad_constraint.rs",
+        "third_party/rapier3d/src/geometry/contact_pair.rs",
+        "third_party/rapier3d/src/geometry/mod.rs",
+        "third_party/rapier3d/src/geometry/narrow_phase/pair_update.rs",
+        "third_party/rapier3d/src/pipeline/physics_hooks.rs",
+        "third_party/rapier3d/src/dynamics/joint/multibody_joint/mod.rs",
+        "third_party/rapier3d/src/dynamics/solver/contact_constraint/mod.rs",
         "Cargo.lock",
     ] {
         hashes.insert(path.to_owned(), json!(hash(&project.join(path))?));
@@ -612,16 +685,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir(output)?;
     fs::write(
         output.join("receipt.json"),
-        serde_json::to_vec_pretty(&json!({"schema":"goose_free_condensed_target_v2",
-        "revision":if mode == "free_block_plain" { "goose_free_condensed_be_contact_v3" } else { "goose_free_condensed_contact_v2" },
+        serde_json::to_vec_pretty(
+            &json!({"schema":if mode=="free_shared" {"goose_shared_free_pad_target_v4"} else {"goose_free_condensed_target_v2"},
+        "revision":if mode=="free_shared" {"goose_shared_pad_condensed_contact_v4"} else if mode == "free_block_plain" { "goose_free_condensed_be_contact_v3" } else { "goose_free_condensed_contact_v2" },
         "plant_path":plant_path,"plant_sha256":plant_hash,
         "physics_dt_s":DT,"integrations_per_tick":1,"substeps":0,"coordinate_writes_after_initialization":0,
         "qualified":false,"m0_passed":false,"optimizer_updates":0,"inference_count":0,
         "normal_mode":mode,"cases":cases,"runtime_code_sha256":hashes,
         "executable":executable,"executable_sha256":hash(&executable)?,"elapsed_wall_s":start.elapsed().as_secs_f64(),
-        "limitations":["isolated frictionless six-DoF right foot; not whole body",
+        "limitations":if mode=="free_shared" {vec!["isolated frictionless six-DoF right foot; not whole body",
+            "six original shared K/C/history/stroke coordinates; no independent pad mass",
+            "no full load/impact series, left foot, friction, whole-body or high-frequency admission"]} else {vec!["isolated frictionless six-DoF right foot; not whole body",
             "per-point foundation approximates shared sliding patches; not exact pad force/moment equivalence",
-            "shifted backing boxes not CAD qualified; no high-frequency equivalence"]}))?,
+            "shifted backing boxes not CAD qualified; no high-frequency equivalence"]}}),
+        )?,
     )?;
     println!(
         "{}",

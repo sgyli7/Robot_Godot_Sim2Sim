@@ -1,6 +1,13 @@
 //! MultibodyJoints using the reduced-coordinates formalism or using constraints.
 // Local modification: expose default-disabled read-only observation diagnostics.
 
+#[cfg(all(feature = "alloc", feature = "sim2sim-physical-normal-contact"))]
+mod shared_pad_state;
+#[cfg(all(feature = "alloc", feature = "sim2sim-physical-normal-contact"))]
+pub(crate) use shared_pad_state::SharedPadState;
+#[cfg(all(feature = "alloc", feature = "sim2sim-physical-normal-contact"))]
+pub use shared_pad_state::{ExperimentalSharedPadMechanics, ExperimentalSharedPadResult};
+
 #[cfg(all(feature = "alloc", feature = "sim2sim-observation"))]
 mod sim2sim_observation;
 #[cfg(all(feature = "alloc", feature = "sim2sim-observation"))]

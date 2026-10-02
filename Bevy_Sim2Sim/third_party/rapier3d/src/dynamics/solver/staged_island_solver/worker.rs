@@ -41,6 +41,47 @@ unsafe fn free_normal_block(ctx: &SharedCtx<'_>, worker_id: usize, stage: usize)
     ctx.sync.sync(stage, 1)
 }
 
+/// Shared-state candidate is computed twice algebraically, committed once by
+/// the caller after the native full Tick succeeds. No additional integration.
+#[cfg(feature = "sim2sim-physical-normal-contact")]
+unsafe fn shared_pad_block(ctx: &SharedCtx<'_>, worker_id: usize, stage: usize, dt: Real) -> usize {
+    assert_eq!(
+        dt.to_bits(),
+        (0.02 as Real).to_bits(),
+        "shared-pad experiment requires one 20ms integration"
+    );
+    assert_eq!(
+        ctx.base_params.num_solver_iterations, 1,
+        "shared-pad experiment rejects temporal substeps"
+    );
+    assert_eq!(ctx.groups.len(), 1, "isolated shared-pad fixture only");
+    if worker_id == 0 {
+        let contacts = unsafe { &mut *ctx.contact_constraints };
+        let vs = unsafe { &mut *ctx.velocity_solver };
+        let multibodies = unsafe { &mut *ctx.multibodies };
+        let joints = unsafe { &*ctx.joint_constraints };
+        assert!(
+            joints.generic_velocity_constraints.is_empty()
+                && joints.velocity_constraints.is_empty()
+                && joints.simd_velocity_constraints.is_empty(),
+            "shared-pad fixture does not qualify other joint constraints"
+        );
+        assert_eq!(vs.multibody_roots.len(), 1, "one shared-pad owner required");
+        let multibody = multibodies
+            .get_multibody_mut_internal(vs.multibody_roots[0].multibody)
+            .unwrap();
+        crate::dynamics::solver::contact_constraint::solve_shared_pad_block(
+            &mut contacts.generic_velocity_constraints,
+            &contacts.generic_jacobians,
+            &mut vs.generic_solver_vels,
+            multibody,
+            dt,
+        );
+        ctx.sync.complete(stage, 1, 1);
+    }
+    ctx.sync.sync(stage, 1)
+}
+
 /// Per-full-step angular rotation cap (0.25π ≈ 45°): bodies without
 /// `allow_fast_rotation` get their angular velocity clamped each substep so the full-step
 /// rotation stays under this (≥ 0.5π per step breaks CCD).
@@ -612,6 +653,15 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
                 );
                 stage = unsafe { free_normal_block(ctx, worker_id, stage) };
             }
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            if params.experimental_shared_pad_block {
+                assert!(
+                    !params.experimental_guided_normal_block
+                        && !params.experimental_free_normal_block,
+                    "conflicting shared-pad experiments"
+                );
+                stage = unsafe { shared_pad_block(ctx, worker_id, stage, params.dt) };
+            }
             #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
             if worker_id == 0 && params.num_internal_pgs_iterations > 0 {
                 unsafe { trace_limit_rows(ctx, LimitRowTracePhase::AfterBiasedSolve, substep_id) };
@@ -717,6 +767,10 @@ pub(super) unsafe fn run_worker(ctx: &SharedCtx, worker_id: usize) {
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             if params.experimental_free_normal_block {
                 stage = unsafe { free_normal_block(ctx, worker_id, stage) };
+            }
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            if params.experimental_shared_pad_block {
+                stage = unsafe { shared_pad_block(ctx, worker_id, stage, params.dt) };
             }
             #[cfg(all(feature = "sim2sim-limit-row-trace", not(feature = "parallel")))]
             if worker_id == 0 && params.num_internal_stabilization_iterations > 0 {

@@ -97,6 +97,9 @@ pub struct MultibodyDofCoupling {
 #[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug)]
 pub struct Multibody {
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    #[cfg_attr(feature = "serde-serialize", serde(skip))]
+    pub(crate) shared_pad_state: Option<super::SharedPadState>,
     #[cfg(feature = "sim2sim-observation")]
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
     pub(crate) sim2sim_observation: MultibodyObservation,
@@ -194,6 +197,8 @@ impl Multibody {
 
     pub(crate) fn with_self_contacts(self_contacts_enabled: bool) -> Self {
         Multibody {
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            shared_pad_state: None,
             #[cfg(feature = "sim2sim-observation")]
             sim2sim_observation: MultibodyObservation::default(),
             #[cfg(feature = "sim2sim-plain-mass-probe")]
@@ -562,6 +567,9 @@ impl Multibody {
         if self.ndofs == 0 {
             return; // Nothing to do.
         }
+
+        #[cfg(feature = "sim2sim-physical-normal-contact")]
+        self.begin_shared_pad_tick(dt);
 
         self.accelerations.fill(0.0);
         #[cfg(feature = "sim2sim-observation")]

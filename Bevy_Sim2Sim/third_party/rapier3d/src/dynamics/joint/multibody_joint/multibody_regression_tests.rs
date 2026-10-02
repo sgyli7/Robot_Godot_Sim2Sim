@@ -9,6 +9,169 @@
 use crate::alloc_prelude::*;
 use crate::prelude::*;
 
+#[cfg(all(
+    feature = "dim3",
+    feature = "sim2sim-physical-normal-contact",
+    feature = "sim2sim-plain-mass-probe"
+))]
+mod shared_pad_contact {
+    use super::*;
+    use crate::dynamics::ExperimentalSharedPadMechanics;
+    use crate::geometry::ExperimentalSharedPadBinding;
+    use crate::pipeline::ContactModificationContext;
+    use std::sync::Mutex;
+
+    struct SharedMaterial {
+        patches: Vec<ColliderHandle>,
+        compression: Mutex<Vec<f64>>,
+    }
+
+    impl PhysicsHooks for SharedMaterial {
+        fn modify_solver_contacts(&self, context: &mut ContactModificationContext) {
+            let (index, on_second) =
+                if let Some(i) = self.patches.iter().position(|p| *p == context.collider2) {
+                    (i, true)
+                } else {
+                    (
+                        self.patches
+                            .iter()
+                            .position(|p| *p == context.collider1)
+                            .unwrap(),
+                        false,
+                    )
+                };
+            let normal = if on_second {
+                *context.normal
+            } else {
+                -*context.normal
+            };
+            *context.experimental_shared_pad = Some(ExperimentalSharedPadBinding {
+                patch_index: index,
+                axis_cosine: normal.y,
+            });
+            let shift = Vector::Y * self.compression.lock().unwrap()[index] as Real;
+            for point in context.solver_contacts.iter_mut() {
+                point.anchor1 += shift;
+                point.anchor2 += shift;
+            }
+        }
+    }
+
+    #[test]
+    fn shared_stroke_reaction_release_and_single_tick_history_commit() {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::ZERO;
+        world.integration_parameters.dt = 0.02;
+        world.integration_parameters.num_solver_iterations = 1;
+        world.integration_parameters.num_internal_pgs_iterations = 32;
+        world.integration_parameters.max_ccd_substeps = 0;
+        world.integration_parameters.contact_recycling = false;
+        world.integration_parameters.experimental_shared_pad_block = true;
+        world.integration_parameters.normalized_prediction_distance = 0.4;
+        world
+            .colliders
+            .insert(ColliderBuilder::halfspace(na::Unit::new_unchecked(Vector::Y)).friction(0.0));
+        let anchor = world.insert_body(RigidBodyBuilder::fixed());
+        let pose = Pose::from_translation(Vector::Y * 0.0015);
+        let body = world.insert_body(
+            RigidBodyBuilder::dynamic()
+                .pose(pose)
+                .can_sleep(false)
+                .additional_mass_properties(MassProperties::new(
+                    Vector::ZERO,
+                    0.293,
+                    Vector::splat(0.002),
+                )),
+        );
+        let joint = world
+            .insert_multibody_joint(
+                anchor,
+                body,
+                GenericJointBuilder::new(JointAxesMask::empty())
+                    .local_frame1(pose)
+                    .contacts_enabled(false),
+            )
+            .unwrap();
+        let mut patches = Vec::new();
+        for x in [-0.08, 0.0, 0.08] {
+            for z in [-0.025, 0.025] {
+                patches.push(
+                    world.colliders.insert_with_parent(
+                        ColliderBuilder::cuboid(0.002, 0.001, 0.01)
+                            .translation(Vector::new(x, 0.0, z))
+                            .density(0.0)
+                            .friction(0.0)
+                            .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS),
+                        body,
+                        &mut world.bodies,
+                    ),
+                );
+            }
+        }
+        let (mb, _) = world.multibody_joints.get_mut(joint).unwrap();
+        mb.forward_kinematics(&world.bodies, true);
+        mb.damping_mut().fill(0.0);
+        mb.armature_mut().fill(0.0);
+        mb.frictions_mut().fill(0.0);
+        mb.sim2sim_set_plain_mass_probe(true);
+        mb.sim2sim_configure_shared_pads(vec![
+            ExperimentalSharedPadMechanics {
+                stiffness_n_m: 23357.0304,
+                damping_n_s_m: 2.0,
+                travel_m: 0.0015,
+            };
+            6
+        ]);
+        let material = SharedMaterial {
+            patches,
+            compression: Mutex::new(vec![0.0; 6]),
+        };
+        let mut saw_upper_reaction = false;
+        let mut peak = 0.0_f64;
+        for tick in 0..80 {
+            world.bodies[body].reset_forces(true);
+            if tick < 40 {
+                world.bodies[body].add_force(-Vector::Y * 240.0, true);
+            }
+            world.step_with_events(&material, &());
+            let (mb, _) = world.multibody_joints.get_mut(joint).unwrap();
+            let result = mb.sim2sim_shared_pad_result().unwrap();
+            assert_eq!(result.solve_calls, 2);
+            saw_upper_reaction |= result.upper_stop_impulses_n_s.iter().any(|p| *p > 1e-4);
+            assert!(result.max_travel_violation_m <= 2e-8);
+            mb.sim2sim_commit_shared_pad_tick().unwrap();
+            let committed = mb.sim2sim_shared_pad_compressions().unwrap().to_vec();
+            peak = peak.max(committed.iter().copied().fold(0.0, f64::max));
+            material
+                .compression
+                .lock()
+                .unwrap()
+                .copy_from_slice(&committed);
+            assert!(mb.sim2sim_commit_shared_pad_tick().is_err());
+            assert_eq!(
+                mb.sim2sim_shared_pad_compressions().unwrap(),
+                committed.as_slice()
+            );
+            let observation = mb.sim2sim_observation().unwrap();
+            assert_eq!(observation.epoch, tick + 1);
+            assert_eq!(
+                observation.full_step_dt().to_bits(),
+                (0.02 as Real).to_bits()
+            );
+            assert!(observation.single_temporal_step && world.quarantine().is_empty());
+        }
+        assert!(saw_upper_reaction && peak > 0.00149);
+        assert!(
+            material
+                .compression
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|q| q.abs() < peak * 0.1)
+        );
+    }
+}
+
 #[cfg(all(feature = "dim3", feature = "sim2sim-physical-normal-contact"))]
 mod physical_normal_contact {
     use super::*;

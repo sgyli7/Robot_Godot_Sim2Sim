@@ -14,8 +14,6 @@ pub use self::collider_handle::ColliderHandle;
 pub use self::collider_set::{ColliderSet, ModifiedColliders};
 #[cfg(feature = "alloc")]
 pub(crate) use self::contact_pair::ContactRecycleState;
-#[cfg(feature = "sim2sim-physical-normal-contact")]
-pub use self::contact_pair::ExperimentalNormalSpring;
 #[cfg(feature = "alloc")]
 pub(crate) use self::contact_pair::PairEventStatus;
 #[cfg(feature = "alloc")]
@@ -28,6 +26,8 @@ pub use self::contact_pair::{
     SimdSolverContact, SolverContact, SolverContactGeneric, SolverContacts, SolverFlags, is_bouncy,
     is_bouncy_simd,
 };
+#[cfg(feature = "sim2sim-physical-normal-contact")]
+pub use self::contact_pair::{ExperimentalNormalSpring, ExperimentalSharedPadBinding};
 #[cfg(feature = "alloc")]
 pub use self::interaction_graph::{
     ColliderGraphIndex, InteractionGraph, RigidBodyGraphIndex, TemporaryInteractionIndex,

@@ -293,6 +293,10 @@ pub struct IntegrationParameters {
     #[cfg(feature = "sim2sim-physical-normal-contact")]
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     pub experimental_free_normal_block: bool,
+    /// Explicit six-DoF shared K/C/history/stroke condensation; default off.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    pub experimental_shared_pad_block: bool,
     /// If enabled, a contact pair whose relative pose moved less than [`Self::contact_recycle_distance`]
     /// since its last full narrow-phase update skips contact determination and keeps its existing points
     /// (default: `true`) — a large speed-up for quasi-static scenes. Trade-offs:
@@ -418,6 +422,8 @@ impl Default for IntegrationParameters {
             experimental_guided_normal_block: false,
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             experimental_free_normal_block: false,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            experimental_shared_pad_block: false,
             contact_recycling: true,
             normalized_contact_recycle_distance: 0.05,
             friction_in_bias_pass: false,

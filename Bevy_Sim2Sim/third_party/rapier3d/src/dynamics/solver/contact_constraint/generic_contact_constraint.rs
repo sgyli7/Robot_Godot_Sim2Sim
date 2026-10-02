@@ -173,6 +173,7 @@ impl GenericContactConstraintBuilder {
         {
             out_builder.normal_spring = manifold.data.experimental_normal_spring;
             out_constraint.physical_normal = out_builder.normal_spring.is_some();
+            out_constraint.shared_pad = manifold.data.experimental_shared_pad;
         }
         out_constraint.dir1 = force_dir1;
         out_constraint.im1 = if type1.is_dynamic_or_kinematic() {
@@ -552,10 +553,11 @@ impl GenericContactConstraintBuilder {
         ];
 
         let dir1_na = constraint.dir1;
-        for ((info, normal_part), tangent_part) in all_infos
+        for (_point_index, ((info, normal_part), tangent_part)) in all_infos
             .iter()
             .zip(normal_parts.iter_mut())
             .zip(tangent_parts.iter_mut())
+            .enumerate()
         {
             // Tangent velocity is equivalent to the first body's surface moving artificially.
             let p1 = pose1 * info.local_p1 + info.tangent_vel * solved_dt;
@@ -588,12 +590,17 @@ impl GenericContactConstraintBuilder {
                 }
                 #[cfg(feature = "sim2sim-physical-normal-contact")]
                 if (params.experimental_guided_normal_block
-                    || params.experimental_free_normal_block)
+                    || params.experimental_free_normal_block
+                    || params.experimental_shared_pad_block)
                     && self.normal_spring.is_none()
                 {
                     // The guided fixture's declared backing row uses the actual gap.
                     normal_part.rhs = dist * inv_dt;
                     normal_part.rhs_wo_bias = normal_part.rhs;
+                }
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                if constraint.shared_pad.is_some() {
+                    constraint.shared_nominal_gaps[_point_index] = dist;
                 }
                 // Bank the previous substep's impulse before the warm-start scaling (see the
                 // coulomb-friction `update`).
@@ -684,6 +691,10 @@ pub(crate) struct GenericContactConstraint {
     pub physical_normal: bool,
     #[cfg(feature = "sim2sim-physical-normal-contact")]
     pub physical_normal_alpha: Real,
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub shared_pad: Option<crate::geometry::ExperimentalSharedPadBinding>,
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    pub shared_nominal_gaps: [Real; MAX_MANIFOLD_POINTS],
     pub limit: Real,
     pub solver_vel1: u32,
     pub solver_vel2: u32,
@@ -943,6 +954,10 @@ impl GenericContactConstraint {
             physical_normal: false,
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             physical_normal_alpha: 0.0,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            shared_pad: None,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            shared_nominal_gaps: [0.0; MAX_MANIFOLD_POINTS],
             limit: 0.0,
             solver_vel1: u32::MAX,
             solver_vel2: u32::MAX,

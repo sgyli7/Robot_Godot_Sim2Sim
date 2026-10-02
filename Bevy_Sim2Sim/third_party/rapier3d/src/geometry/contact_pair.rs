@@ -530,6 +530,18 @@ pub struct ExperimentalNormalSpring {
     pub damping_n_s_m: Real,
 }
 
+/// Identity and signed normal projection of one original shared sliding patch.
+/// Its K/C, stroke and committed compression live on the owning multibody.
+#[cfg(feature = "sim2sim-physical-normal-contact")]
+#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug)]
+pub struct ExperimentalSharedPadBinding {
+    /// Index in the owner's immutable original patch mechanics.
+    pub patch_index: usize,
+    /// Projection of its positive compression axis onto the force normal.
+    pub axis_cosine: Real,
+}
+
 /// A contact manifold between two colliders.
 ///
 /// A contact manifold describes a set of contacts between two colliders. All the contact
@@ -598,6 +610,10 @@ pub struct ContactManifoldData {
     #[cfg(feature = "sim2sim-physical-normal-contact")]
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     pub experimental_normal_spring: Option<ExperimentalNormalSpring>,
+    /// Explicit shared compression experiment; absent for default contacts.
+    #[cfg(feature = "sim2sim-physical-normal-contact")]
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    pub experimental_shared_pad: Option<ExperimentalSharedPadBinding>,
 }
 
 /// A single solver contact.
@@ -824,6 +840,8 @@ impl ContactManifoldData {
             restitution: 0.0,
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             experimental_normal_spring: None,
+            #[cfg(feature = "sim2sim-physical-normal-contact")]
+            experimental_shared_pad: None,
         }
     }
 

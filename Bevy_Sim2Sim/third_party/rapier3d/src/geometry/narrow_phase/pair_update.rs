@@ -412,6 +412,7 @@ pub(super) fn process_pair(
             #[cfg(feature = "sim2sim-physical-normal-contact")]
             {
                 manifold.data.experimental_normal_spring = None;
+                manifold.data.experimental_shared_pad = None;
             }
             manifold.data.relative_dominance =
                 dominance1.effective_group(&rb_type1) - dominance2.effective_group(&rb_type2);
@@ -511,6 +512,8 @@ pub(super) fn process_pair(
                 let mut modifiable_restitution = manifold.data.restitution;
                 #[cfg(feature = "sim2sim-physical-normal-contact")]
                 let mut modifiable_normal_spring = None;
+                #[cfg(feature = "sim2sim-physical-normal-contact")]
+                let mut modifiable_shared_pad = None;
 
                 let mut context = ContactModificationContext {
                     bodies,
@@ -526,6 +529,8 @@ pub(super) fn process_pair(
                     restitution: &mut modifiable_restitution,
                     #[cfg(feature = "sim2sim-physical-normal-contact")]
                     experimental_normal_spring: &mut modifiable_normal_spring,
+                    #[cfg(feature = "sim2sim-physical-normal-contact")]
+                    experimental_shared_pad: &mut modifiable_shared_pad,
                     user_data: &mut modifiable_user_data,
                 };
 
@@ -558,6 +563,23 @@ pub(super) fn process_pair(
                         );
                     }
                     manifold.data.experimental_normal_spring = modifiable_normal_spring;
+                    if let Some(binding) = modifiable_shared_pad {
+                        let has_multibody = [rb_handle1, rb_handle2]
+                            .into_iter()
+                            .flatten()
+                            .any(|h| multibody_joints.rigid_body_link(h).is_some());
+                        assert!(
+                            has_multibody
+                                && modifiable_normal_spring.is_none()
+                                && modifiable_friction == 0.0
+                                && modifiable_restitution == 0.0
+                                && binding.axis_cosine.is_finite()
+                                && binding.axis_cosine > 0.5
+                                && binding.axis_cosine <= 1.0 + 1e-6,
+                            "shared-pad contact requires exclusive frictionless mechanics and a valid axis"
+                        );
+                    }
+                    manifold.data.experimental_shared_pad = modifiable_shared_pad;
                 }
             }
 
