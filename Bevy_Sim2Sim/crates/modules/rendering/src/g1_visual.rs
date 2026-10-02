@@ -28,6 +28,17 @@ struct SourceVisual {
     points: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     display_color: [f64; 3],
+    #[serde(default)]
+    bound_material: Option<SourceVisualMaterial>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceVisualMaterial {
+    path: String,
+    shader_id: String,
+    source_input: String,
+    diffuse_color_linear: [f32; 3],
 }
 
 /// Frozen model data; loading binds both the triangle file and source USD hash.
@@ -72,6 +83,15 @@ impl G1VisualModel {
                     .display_color
                     .iter()
                     .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+                || visual.bound_material.as_ref().is_some_and(|material| {
+                    material.path.is_empty()
+                        || material.shader_id != "UsdPreviewSurface"
+                        || material.source_input != "diffuse_color_constant"
+                        || material
+                            .diffuse_color_linear
+                            .iter()
+                            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+                })
             {
                 return Err("invalid frozen G1 visual mesh".into());
             }
@@ -87,6 +107,13 @@ impl G1VisualModel {
     }
     pub fn source_usd_sha256(&self) -> &str {
         &self.document.usd_sha256
+    }
+    pub fn source_material_mesh_count(&self) -> usize {
+        self.document
+            .visuals
+            .iter()
+            .filter(|visual| visual.bound_material.is_some())
+            .count()
     }
 }
 
@@ -140,6 +167,7 @@ fn spawn_visuals(
     station: Res<StationScene>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StationMaterial>>,
+    mut source_materials: ResMut<Assets<StandardMaterial>>,
     mut inks: ResMut<Assets<InkMaterial>>,
     mut status: ResMut<G1VisualStatus>,
 ) {
@@ -177,34 +205,59 @@ fn spawn_visuals(
         ));
         mesh.compute_smooth_normals();
         let mesh = meshes.add(mesh);
-        let color = source.display_color.map(|value| value as f32);
-        let material = materials.add(StationMaterial {
-            base: StandardMaterial {
-                base_color: Color::srgb(color[0], color[1], color[2]),
-                perceptual_roughness: 0.6,
-                metallic: 0.0,
-                ..default()
+        let color = source.bound_material.as_ref().map_or_else(
+            || {
+                let color = source.display_color.map(|value| value as f32);
+                Color::srgb(color[0], color[1], color[2])
             },
-            extension: StationEnamel::new(0, &station.0.layout),
-        });
-        let surface = commands
-            .spawn((
-                Name::new(source.path.clone()),
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(material),
-                Transform::IDENTITY,
-            ))
-            .id();
-        let outline = commands
-            .spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(ink.clone()),
-                Transform::IDENTITY,
-            ))
-            .id();
-        commands
-            .entity(roots[source.body])
-            .add_children(&[surface, outline]);
+            |material| {
+                let [r, g, b] = material.diffuse_color_linear;
+                Color::linear_rgba(r, g, b, 1.)
+            },
+        );
+        let base = StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.6,
+            metallic: 0.0,
+            ..default()
+        };
+        if source.bound_material.is_some() {
+            // The station shader imposes cool bands and procedural hatching,
+            // absent from the source robot. Bound USD colors use the normal
+            // PBR path, with no ink shell, under the same scene illumination.
+            let surface = commands
+                .spawn((
+                    Name::new(source.path.clone()),
+                    Mesh3d(mesh),
+                    MeshMaterial3d(source_materials.add(base)),
+                    Transform::IDENTITY,
+                ))
+                .id();
+            commands.entity(roots[source.body]).add_child(surface);
+        } else {
+            let material = materials.add(StationMaterial {
+                base,
+                extension: StationEnamel::new(0, &station.0.layout),
+            });
+            let surface = commands
+                .spawn((
+                    Name::new(source.path.clone()),
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(material),
+                    Transform::IDENTITY,
+                ))
+                .id();
+            let outline = commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(ink.clone()),
+                    Transform::IDENTITY,
+                ))
+                .id();
+            commands
+                .entity(roots[source.body])
+                .add_children(&[surface, outline]);
+        }
     }
     status.mesh_count = model.document.visuals.len();
 }

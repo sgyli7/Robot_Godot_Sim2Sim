@@ -434,3 +434,48 @@ error: all49 source body visual meshes have bound `UsdPreviewSurface` materials
 substituting gray-purple. This source-authored material omission is the next
 bounded correction. Tracking/cooked-shape and timing gaps remain independently
 open; no friction/gain/PGS/frequency or longer-run sweep follows this observation.
+
+
+Source body material repair (cases0132–0138) preserves all49 mesh point/index
+arrays and the53-body order exactly. A fresh unused physical export differs
+only in exporter identity; the installed physics cache is untouched. The new
+external visual file is `homie_v2/g1_visuals_bound_material_v1.json`, SHA256
+`298d427d9bf3078a212f256faee95ff7ba23216a26032ac32acd7101b4d70220`.
+The exporter now reads the actual bound shader's `diffuse_color_constant`:
+48white meshes and onegray mesh. Old visual files keep their original behavior.
+
+The color-only native preview0133 still applied station cool bands/hatching.
+Bound-source materials therefore now use standard PBR without the extra ink
+shell. Roughness0.6/metallic0, illumination/exposure/camera, object/background
+materials, geometry and every physical parameter are unchanged. RTX/MDL parity
+and preservation of the body's authored face-varying normals remain unproven.
+This fixes an authored material/shader mismatch, without adjusting sensor pixels,
+lighting values, model preprocessing, source images or action semantics.
+
+PBR preview0134 first failed with0integrations because the shared readiness
+observer awaited unused enamel/ink pipelines. The source-only diagnostic now
+awaits the actual StandardMaterial fragment shader, while the existing station
+entry still requires both enamel and ink. Actual GPU preview0136 passed with
+49bound-material meshes and zero model/control/physical updates; legacy GPU
+preview0138 also passed with the original visual cache. The current binary SHA
+is `234188af7b49b0505a94ee2c89f1c891ff34816f9ca3605b09ebb49ca044e314`.
+
+Case0135 used two genuine N1.6 calls/100nativeTicks under the repaired visuals.
+Unlike the old gray fallback, it applied nonzero hand/box impulses at five Ticks
+and moved the box about10.09mm, but did not lift it off the shelf. The original
+source live task first makes a substantial lift around controls150–200; a
+100Tick prefix alone is not a valid grasp-failure benchmark. Case0137 therefore
+covers exactly four calls/200Ticks, without a longer or parameter sweep. Its
+first100joint states are byte-for-byte identical to0135. It stays upright,
+applies positive hand/box impulses at17Ticks and raises the box at most29.70mm,
+but the shelf remains a support at **every** Tick. At200 it rests on the shelf;
+held lift/carry/release remain unpassed. The corresponding original live source
+box height is1.006593m after the disclosed offset. This outcome motivates one
+explicit diagnostic transplant of the original four source command chunks;
+replay results cannot count as autonomous task or benchmark success.
+
+Both finite services were closed after use. Actual model NPZ input RGB matches
+the saved native PNG bytes; only the named joint self state is included alongside
+RGB. One integration/20msTick and distinct VLA/body-policy counts are verified.
+Final source-material/PBR Rust library checks passed172tests/34ignored, the app
+CLI check passed1test, and the source/contact Python checks passed26tests.

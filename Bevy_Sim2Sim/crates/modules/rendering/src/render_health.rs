@@ -2,13 +2,14 @@
 
 use bevy::{
     asset::LoadState,
+    pbr::Material,
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
         render_resource::{CachedPipelineState, PipelineCache, PollType},
         renderer::RenderDevice,
     },
-    shader::{Shader, ShaderCacheError},
+    shader::{Shader, ShaderCacheError, ShaderRef},
 };
 use std::{
     path::{Path, PathBuf},
@@ -44,8 +45,7 @@ impl StationRenderHealth {
 
 #[derive(Resource, Clone)]
 struct RequiredRenderAssets {
-    enamel: Handle<Shader>,
-    ink: Handle<Shader>,
+    fragments: Vec<Handle<Shader>>,
     font: Handle<Font>,
 }
 
@@ -68,10 +68,35 @@ pub fn validate_render_asset_root(asset_root: &Path) -> Result<PathBuf, String> 
 pub fn install_station_render_health(app: &mut App) -> Result<StationRenderHealth, String> {
     let server = app.world().resource::<AssetServer>();
     let handles = RequiredRenderAssets {
-        enamel: server.load("game/shaders/station_enamel.wgsl"),
-        ink: server.load("game/shaders/station_ink.wgsl"),
+        fragments: vec![
+            server.load("game/shaders/station_enamel.wgsl"),
+            server.load("game/shaders/station_ink.wgsl"),
+        ],
         font: server.load("third_party/fonts/noto_sans_cjk_regular.otf"),
     };
+    install_render_health(app, handles)
+}
+
+/// Source G1 PBR-only diagnostics must await the material actually drawn;
+/// unused station enamel/ink pipelines are never queued by that scene.
+pub fn install_pbr_render_health(app: &mut App) -> Result<StationRenderHealth, String> {
+    let server = app.world().resource::<AssetServer>();
+    let fragment = match <StandardMaterial as Material>::fragment_shader() {
+        ShaderRef::Handle(handle) => handle,
+        ShaderRef::Path(path) => server.load(path),
+        ShaderRef::Default => return Err("standard PBR fragment shader unavailable".into()),
+    };
+    let handles = RequiredRenderAssets {
+        fragments: vec![fragment],
+        font: server.load("third_party/fonts/noto_sans_cjk_regular.otf"),
+    };
+    install_render_health(app, handles)
+}
+
+fn install_render_health(
+    app: &mut App,
+    handles: RequiredRenderAssets,
+) -> Result<StationRenderHealth, String> {
     let status = StationRenderHealth::default();
     let render = app
         .get_sub_app_mut(RenderApp)
@@ -91,11 +116,12 @@ fn observe_asset_failures(
     handles: Res<RequiredRenderAssets>,
     status: Res<StationRenderHealth>,
 ) {
-    for handle in [
-        handles.enamel.id().untyped(),
-        handles.ink.id().untyped(),
-        handles.font.id().untyped(),
-    ] {
+    for handle in handles
+        .fragments
+        .iter()
+        .map(|handle| handle.id().untyped())
+        .chain([handles.font.id().untyped()])
+    {
         if let Some(LoadState::Failed(error)) = server.get_load_state(handle) {
             let mut state = status.0.lock().unwrap();
             state
@@ -115,8 +141,7 @@ fn observe_pipelines(
     let mut state = status.0.lock().unwrap();
     state.snapshot.compiled = 0;
     state.snapshot.pending = 0;
-    let mut enamel_ready = false;
-    let mut ink_ready = false;
+    let mut fragments_ready = vec![false; handles.fragments.len()];
     for pipeline in cache.pipelines() {
         match &pipeline.state {
             CachedPipelineState::Ok(_) => {
@@ -125,8 +150,9 @@ fn observe_pipelines(
                     &pipeline.descriptor
                     && let Some(fragment) = &d.fragment
                 {
-                    enamel_ready |= fragment.shader == handles.enamel;
-                    ink_ready |= fragment.shader == handles.ink;
+                    for (ready, required) in fragments_ready.iter_mut().zip(&handles.fragments) {
+                        *ready |= &fragment.shader == required;
+                    }
                 }
             }
             CachedPipelineState::Err(
@@ -143,8 +169,9 @@ fn observe_pipelines(
             }
         }
     }
-    state.snapshot.ready =
-        enamel_ready && ink_ready && state.snapshot.pending == 0 && state.snapshot.error.is_none();
+    state.snapshot.ready = fragments_ready.iter().all(|ready| *ready)
+        && state.snapshot.pending == 0
+        && state.snapshot.error.is_none();
     if state.snapshot.error.is_some() && state.snapshot.pending == 0 && !state.error_drained {
         if let Err(error) = device.poll(PollType::Wait {
             submission_index: None,

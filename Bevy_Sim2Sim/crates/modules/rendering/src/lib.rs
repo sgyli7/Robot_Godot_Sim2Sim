@@ -11,8 +11,8 @@ pub mod geometry;
 mod material;
 mod render_health;
 pub use render_health::{
-    StationRenderHealth, StationRenderSnapshot, install_station_render_health,
-    validate_render_asset_root,
+    StationRenderHealth, StationRenderSnapshot, install_pbr_render_health,
+    install_station_render_health, validate_render_asset_root,
 };
 pub mod robot_mesh;
 pub mod robot_visual;

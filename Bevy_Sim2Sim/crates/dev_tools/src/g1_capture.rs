@@ -415,6 +415,7 @@ pub struct G1CaptureReceipt {
     pub last_task_object_frame: Option<TaskObjectFrame>,
     pub task_visual_status: Option<G1TaskVisualStatus>,
     pub visual_sha256: String,
+    pub body_bound_material_mesh_count: usize,
     pub actuator_backend: G1ActuatorBackend,
     pub physics_hz: u32,
     pub integrations_per_tick: u32,
@@ -535,6 +536,7 @@ impl G1CaptureReceipt {
             last_task_object_frame: None,
             task_visual_status: None,
             visual_sha256: visual_sha256.into(),
+            body_bound_material_mesh_count: 0,
             actuator_backend: backend,
             physics_hz: 50,
             integrations_per_tick: 1,
@@ -964,6 +966,7 @@ fn run_capture_owner(
     let assets = validate_render_asset_root(&default_asset_root())?;
     let scene = StationScene::load(&assets)?;
     let model = G1VisualModel::load(visual_path, visual_sha256)?;
+    let source_pbr_body = model.source_material_mesh_count() == model.mesh_count();
     let task_model = match (config.task_objects(), task_visual) {
         (Some(objects), Some((path, sha))) => Some(G1TaskVisualModel::load(
             path,
@@ -987,6 +990,7 @@ fn run_capture_owner(
     ))));
     outcome.0.lock().unwrap().task_visual_sha256 =
         task_model.as_ref().map(|m| m.file_sha256.clone());
+    outcome.0.lock().unwrap().body_bound_material_mesh_count = model.source_material_mesh_count();
     outcome.0.lock().unwrap().camera_exposure_ev100 = exposure_ev100;
     outcome.0.lock().unwrap().diagnostic_directional_shadow_maps = directional_shadow_maps;
     outcome.0.lock().unwrap().render_present_mode = if diagnostic_vsync {
@@ -1133,7 +1137,11 @@ fn run_capture_owner(
             .reset(episode_id)
             .map_err(|error| format!("camera episode: {error}"))?;
     }
-    install_station_render_health(&mut app)?;
+    if source_pbr_body {
+        rendering_minigame::install_pbr_render_health(&mut app)?;
+    } else {
+        install_station_render_health(&mut app)?;
+    }
     let mut exit = app.run();
     if let Some(outcome) = lab_outcome {
         let mut lab = outcome.0.lock().map_err(|_| "lab outcome poisoned")?;

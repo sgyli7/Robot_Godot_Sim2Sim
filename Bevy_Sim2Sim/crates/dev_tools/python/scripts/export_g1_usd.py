@@ -12,7 +12,7 @@ import json
 import math
 from pathlib import Path
 
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 USD_SHA256 = "a7a2bab76981d19a1d76adecdfffec9b52afa34df9ba8e288ccedf410d3ce6bd"
 ARENA_COMMIT = "7d75c95934c51a0318c957a8831e862ca43c53b5"
@@ -36,6 +36,24 @@ def pose(matrix):
     if any(abs(x - 1.0) > 1e-5 for x in scale):
         raise ValueError(f"non-rigid body/joint pose scale {scale}")
     return {"position": vector(t.GetTranslation()), "rotation_wxyz": quaternion(t.GetRotation().GetQuat())}
+
+
+def bound_visual_material(prim):
+    """Preserve the actual G1 bound shader color, not displayColor fallback."""
+    material = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
+    if not material:
+        raise ValueError(f"source G1 visual has no bound material: {prim.GetPath()}")
+    shaders = [UsdShade.Shader(p) for p in Usd.PrimRange(material.GetPrim())
+               if p.IsA(UsdShade.Shader)]
+    if len(shaders) != 1 or shaders[0].GetIdAttr().Get() != "UsdPreviewSurface":
+        raise ValueError(f"unsupported source G1 visual shader: {material.GetPath()}")
+    shader = shaders[0]
+    source_input = "diffuse_color_constant"
+    color = shader.GetInput(source_input).Get()
+    if color is None or any(not math.isfinite(v) or not 0 <= v <= 1 for v in color):
+        raise ValueError(f"invalid source G1 diffuse color: {material.GetPath()}")
+    return {"path": str(material.GetPath()), "shader_id": "UsdPreviewSurface",
+            "source_input": source_input, "diffuse_color_linear": vector(color)}
 
 
 def inertia_oracle(stage, destination):
@@ -221,7 +239,8 @@ def main():
                     offset += count
                 colors = mesh.GetDisplayColorAttr().Get()
                 visuals.append({**data, "points": points, "triangles": triangles,
-                                "display_color": vector(colors[0]) if colors else [0.65, 0.65, 0.68]})
+                                "display_color": vector(colors[0]) if colors else [0.65, 0.65, 0.68],
+                                "bound_material": bound_visual_material(prim)})
                 continue
         else:
             transform = Gf.Transform(relative)
