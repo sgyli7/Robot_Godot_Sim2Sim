@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前停留在 M0，GPU／优化器使用为零。新增原 33 体的 MuJoCo 3.13 `discrete` 显式候选，在项目 Python 3.12 下完成 9,600 次脚垫及 2,000 次整机冷重置积分；静态压缩和数值检查通过，但脚垫行程与接触仍未准入，不能启动训练。最新入口为 [原生 discrete 检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_discrete313_checkpoint.json)。共同压缩 v4 的左右无摩擦足底证据保持有效，作为另一条未完成的实验路线。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前停留在 M0，GPU／优化器使用为零。原 33 体的显式 CPU 候选 `goose_460_full50_discrete_limits_exact_v5` 已完成 9,600 次脚垫、2,000 次整机冷重置积分，并经 1,620 次积分核对原生推进映射；脚垫行程通过，嘴销误差降至约 0.70 μm，但接触穿透仍未准入，不能启动训练。最新入口为 [预测限位与精确对角检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/discrete_exact_limits_checkpoint.json)。共同压缩 v4 的左右无摩擦足底证据保持有效。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -115,7 +115,7 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 当前M0实施中，尚未启动PPO。原始产物归档 `/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/`；本页为唯一计划和状态入口。最终交付冻结策略、本体/合同、Bevy包、复现命令、三主线报告及未通过清单。制造/电气/实物载荷仍由机器人工程侧维护；仿真资格不自动等于实物资格。
 
-当前下一项是摩擦和接触方向耦合：法向及切向行都要包含真实虚拟滑动方向，覆盖法向投影为负或接近零的情形及原行程反力。完成接触法则验证后，与同版 21 体的关节、嘴销和限位共同求解，再做整机准入。局部六自由度求解器不能直接绕过拓扑守卫装入整机。已有嘴部、PGS、缓存与代理失败不再重复扫描；未改变 M0 门槛或启动 PPO。
+当前优先项是原 33 体候选的接触准入：地面预测接触短对照已定位激活距离的影响，下一批把法则和真实边界冻结成独立候选，补接触反力、释放／冲击、逐轴和自碰撞检查，并核对任务碰撞代理来源与性能，再配对同版本 Rapier。共同压缩路线的摩擦和任意接触方向仍未通过，保留其拓扑守卫；不重复 PGS、局部嘴部或微小精度扫描。M0 门槛不变，PPO 尚未启动。
 
 ## 6. 实施检查点：M0 未通过
 
@@ -359,3 +359,20 @@ MuJoCo **3.13.0** 新增原生 `discrete`，让线性刚度、阻尼与约束在
 首批隔离环境误用了 Python 3.13.15，与项目 `>=3.12,<3.13` 不兼容，记录及实际执行源码保留。最终锁定 **Python 3.12.14、MuJoCo 3.13.0、NumPy 2.5.3** 后复跑，**116 份 JSONL 物理轨迹哈希与首批完全一致**。运行时增加 Python 与引擎版本检查。旧引擎回归 **69 项通过、3 项新引擎专属检查跳过**；正确环境的新版本检查 **4 项通过、1 项旧引擎专属检查跳过**。首个新环境宽范围测试触发 3 项旧 MuJoCo 3.10 ABI 的主动拒绝，日志保留，未取消旧版本锁或宣称跨版本兼容。
 
 当前权威入口为 [原生 discrete 检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/native_discrete313_checkpoint.json)，状态为 `SOURCE_NATIVE_DISCRETE_LIMITS_CONTACT_UNQUALIFIED`。下一批先对 **原生限位激活／约束参数**做一次版本化短对照，并检查已定位碰撞代理的来源及真实表面；保留原物理 K/C、质量和完整惯量，不重复精度、PGS 或局部嘴部扫描。共同压缩路线的摩擦与任意接触方向仍是未通过项，保留其守卫。源／目标同版本整机物理准入、真实 GPU 小批量和 PPO 更新之前，训练链路继续锁定。**GPU、PPO、优化器更新为零，长期目标尚未完成。**
+
+
+### 预测限位与精确约束对角检查点
+
+源端开发模块 [predictive_discrete.py](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/dev_tools/python/src/bevy_microduck_tools/goose/predictive_discrete.py)为原 32 个标量关节的两个真实端点建立原生约束行。每 Tick 使用一次前向预览、一次修正代数求解和 **一次 20 ms 原生 Euler 推进**；预览不推进时间，关闭 Euler 的二次阻尼，没有逐 Tick 写入 qpos／qvel。约束修正在 native effective metric 建立后执行。固定版本 [原生前向源码](https://github.com/google-deepmind/mujoco/blob/3.13.0/src/engine/engine_forward.c)支持这一阶段边界；这些公共阶段的 CPU 组合不构成 Warp 兼容声明。
+
+[推进映射对照](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/discrete_predictive_final_parity_v1/receipt.json)在关闭预测限位修正的控制路径中，对八个原脚垫程序及十个保存整机初态进行 **1,620 次真实积分**，qpos／qvel／qacc 与原生 `mj_step` 的差均为 **0**。额外代数求解没有增加时间子步；相同 65／18 驱动、延迟、热代理和功率限制保留。传感器回归另核对前向预览产生的 RNE 缓存被最终约束解正确失效，不将机器人没有的力传感器当作本体验收证据。
+
+近似对角候选 v4 的行程已改善，但整机关节仍有 **3.743e−5 rad** 越界、嘴销 **0.1792 mm** 误差、P95 **57.48 ms**。同一 100 Tick 控制中只开启 `diagexact`，闭合和收敛明显改善，继而冻结独立候选 `goose_460_full50_discrete_limits_exact_v5`。该选项在当前有效惯量的 factored backbone 上计算约束空间对角；不包括额外 tendon／actuator／flex 耦合，见 [3.13 选项定义](https://mujoco.readthedocs.io/en/3.13.0/XMLreference.html#option-flag)。本机器人新增限位 tendon 的 K/C 为零，原驱动仍为直接力矩。
+
+[最终独立评价](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/discrete_exact_limits_evaluation_v1.json)核对 **96 个脚垫程序、9,600 次积分**和 **20 次名义冷重置、2,000 次整机积分**。全部有限、无警告；32 组编译物理数组与原生 v3 一致，包括质量、完整惯量、物理 K/C/armature、几何、摩擦和碰撞过滤。原关节区间保留，限位行表达和求解选项明确版本化。孤立脚垫最大行程越界 **4.208e−11 m**，整机滑动轴 **1.032e−10 m**，旋转轴 **7.272e−9 rad**；四档静载曲线相对误差 **1.27e−16**。嘴销最大距离 **0.696 μm**，源物理加原控制器 P95 **7.16 ms**。模型 SHA `a8f0abe37bcab6883c6e713de1d4c3a443e41a0fa6389a29591497428f1891d1`，合同 SHA `04f0381c5f46bafc12acd4825a964385784d790fc1b675bf2faf75d876f32076`。
+
+独立进程重算 100 个完成姿态的 FK／碰撞，没有新增积分或修改轨迹。足底地面最大穿透仍为 **13.048 mm**，自碰撞最大 **3.432 mm**，最深配对为右胫骨惰轮叉板与右脚装饰件；两者分别保留；**源端接触与 M0 未通过**。末帧直立度约 0.9992、COM 高度约 0.28393 m，只是重复名义出生的 2 秒无 Actor 诊断，不能授予 60 秒站立或移动／恢复资格。此前颈部壳体来源审查确认它是厂商尺寸圆柱包络而非厂商 CAD，不能凭猜测开空腔、删碰撞体或扩大排除名单。
+
+两个新地面接触实验各 **100 次积分**，明确改变地面接触法则，未修改冻结 v5 模型或授予新候选资格。只加强已激活接触时，积分前穿地增至 **18.389 mm**；保持同一法则，仅增加 **10 mm 检测激活余量**并仍以真实表面距离为法向边界，降至 **0.328 mm**。后一实验 P95 约 **21.19 ms**，仍未达到目标预算。这是一次名义短对照，不能外推所有落地速度、摩擦、倾斜、自碰撞或目标引擎；[协议、轨迹与收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/discrete_ground_predictive_activation_diagnostic_v2/receipt.json)保留，下一批先冻结完整接触合同并检查实际反力与代理开销，不继续扫正则强度。
+
+本轮旧引擎 Goose 回归 **70 项通过、7 项新引擎检查跳过**，新引擎专项 **4 项通过、1 项旧引擎检查跳过**；[552 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_discrete_exact_checkpoint.json)通过。代码和测试位于 `crates/dev_tools/python/`，运行时合同仍为 [robot/src/goose/contract.rs](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/modules/robot/src/goose/contract.rs)。实验模型、脚本、日志、收据和执行快照全部在项目备份目录。**GPU、PPO、优化器更新为零，长期目标尚未完成。**
