@@ -17,7 +17,7 @@ use std::{
 use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
-    camera::Exposure,
+    camera::{Exposure, Hdr},
     core_pipeline::tonemapping::Tonemapping,
     prelude::*,
     render::{
@@ -34,7 +34,8 @@ use rendering_minigame::{
     },
     g1_camera::{
         CameraPoseSource, G1BodyObservationInput, G1CameraJointState, G1CameraNativeState,
-        G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1CapturedRgb, G1ObservationPlugin,
+        G1CameraPlugin, G1CameraPort, G1CaptureStamp, G1CapturedRgb, G1EgoCamera,
+        G1ObservationPlugin,
     },
     g1_task_visual::{
         G1TaskVisualFrame, G1TaskVisualInput, G1TaskVisualModel, G1TaskVisualPlugin,
@@ -99,6 +100,10 @@ struct CaptureConfiguration {
     diagnostic_ambient_brightness: Option<f32>,
     #[serde(default)]
     diagnostic_directional_illuminance: Option<f32>,
+    /// Source T2 uses ACES. This opt-in comparison uses Bevy's fitted ACES
+    /// and an HDR intermediate; it does not claim RTX shader equivalence.
+    #[serde(default)]
+    diagnostic_aces_fitted: bool,
     #[serde(default)]
     predictive_limit_diagnostic: bool,
     #[serde(default)]
@@ -376,6 +381,7 @@ fn run_from_file(
         config.diagnostic_render_hz,
         config.diagnostic_ambient_brightness,
         config.diagnostic_directional_illuminance,
+        config.diagnostic_aces_fitted,
         config.predictive_limit_diagnostic,
         config.diagnostic_constraint_sweeps,
         config.background_visual,
@@ -449,6 +455,9 @@ pub struct G1CaptureReceipt {
     pub diagnostic_directional_shadow_maps: bool,
     pub camera_ambient_brightness: f32,
     pub camera_directional_illuminance: f32,
+    pub diagnostic_aces_fitted: bool,
+    pub ego_camera_hdr: Option<bool>,
+    pub ego_camera_tonemapping: Option<&'static str>,
     pub factory_verified_predictive_limit_joints: usize,
     pub factory_verified_diagnostic_constraint_sweeps: Option<u32>,
     pub background_visual_status: Option<G1BackgroundVisualStatus>,
@@ -570,6 +579,9 @@ impl G1CaptureReceipt {
             diagnostic_directional_shadow_maps: true,
             camera_ambient_brightness: 450.,
             camera_directional_illuminance: 15_000.,
+            diagnostic_aces_fitted: false,
+            ego_camera_hdr: None,
+            ego_camera_tonemapping: None,
             factory_verified_predictive_limit_joints: 0,
             factory_verified_diagnostic_constraint_sweeps: None,
             background_visual_status: None,
@@ -609,7 +621,10 @@ struct CaptureOutcome(Arc<Mutex<G1CaptureReceipt>>);
 struct SourceShelfVisual;
 
 #[derive(Resource)]
-struct DiagnosticExposure(f32);
+struct DiagnosticPhotometry {
+    exposure_ev100: f32,
+    aces_fitted: bool,
+}
 #[derive(Resource)]
 struct DiagnosticIllumination {
     ambient_brightness: f32,
@@ -621,16 +636,40 @@ struct DiagnosticDirectionalShadows(bool);
 
 fn configure_diagnostic_exposure(
     mut commands: Commands,
-    setting: Res<DiagnosticExposure>,
-    mut cameras: Query<(Entity, Option<&mut Exposure>), With<Camera3d>>,
+    setting: Res<DiagnosticPhotometry>,
+    outcome: Res<CaptureOutcome>,
+    mut cameras: Query<
+        (
+            Entity,
+            Option<&mut Exposure>,
+            Option<&Hdr>,
+            Option<&Tonemapping>,
+            Option<&G1EgoCamera>,
+        ),
+        With<Camera3d>,
+    >,
 ) {
-    for (entity, camera) in &mut cameras {
+    for (entity, camera, hdr, tonemapping, ego) in &mut cameras {
         if let Some(mut camera) = camera {
-            camera.ev100 = setting.0;
+            camera.ev100 = setting.exposure_ev100;
         } else {
+            commands.entity(entity).insert(Exposure {
+                ev100: setting.exposure_ev100,
+            });
+        }
+        if setting.aces_fitted && hdr.is_none() {
             commands
                 .entity(entity)
-                .insert(Exposure { ev100: setting.0 });
+                .insert((Hdr, Tonemapping::AcesFitted));
+        }
+        if ego.is_some() {
+            let mut receipt = outcome.0.lock().unwrap();
+            receipt.ego_camera_hdr = Some(hdr.is_some());
+            receipt.ego_camera_tonemapping = Some(match tonemapping {
+                Some(Tonemapping::None) => "none",
+                Some(Tonemapping::AcesFitted) => "aces_fitted",
+                _ => "unexpected",
+            });
         }
     }
 }
@@ -795,6 +834,7 @@ pub fn run_capture(
         None,
         None,
         false,
+        false,
         None,
         None,
         None,
@@ -815,6 +855,7 @@ fn run_capture_owner(
     diagnostic_render_hz: Option<u32>,
     diagnostic_ambient_brightness: Option<f32>,
     diagnostic_directional_illuminance: Option<f32>,
+    diagnostic_aces_fitted: bool,
     predictive_limit_diagnostic: bool,
     diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
@@ -831,6 +872,20 @@ fn run_capture_owner(
         CaptureRunnerConfig::Task(config) => Some(config.body.profile()),
         CaptureRunnerConfig::Mobile(_) | CaptureRunnerConfig::Static(_) => None,
     };
+    if diagnostic_aces_fitted
+        && (background_visual.is_none()
+            || !matches!(
+                &config,
+                CaptureRunnerConfig::Mobile(_)
+                    | CaptureRunnerConfig::Task(ArenaTaskRunnerConfig {
+                        body: ArenaTaskBodyConfig::MobileHomieV2(_),
+                        ..
+                    })
+            )
+            || interactive)
+    {
+        return Err("ACES comparison requires the explicit original T2 background and mobile body diagnostic".into());
+    }
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
     let ambient_brightness = diagnostic_ambient_brightness.unwrap_or(450.);
@@ -1001,6 +1056,7 @@ fn run_capture_owner(
     outcome.0.lock().unwrap().diagnostic_render_hz = diagnostic_render_hz;
     outcome.0.lock().unwrap().camera_ambient_brightness = ambient_brightness;
     outcome.0.lock().unwrap().camera_directional_illuminance = directional_illuminance;
+    outcome.0.lock().unwrap().diagnostic_aces_fitted = diagnostic_aces_fitted;
     if render_only_environment_translation.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "external_measured_pose_initialized_zero_tick_renderer_comparison";
@@ -1049,7 +1105,10 @@ fn run_capture_owner(
     // Scene supplies the existing enamel configuration only. Its meshes, props,
     // fixtures and camera shots are not spawned in this floor diagnostic.
     app.insert_resource(scene)
-        .insert_resource(DiagnosticExposure(exposure_ev100))
+        .insert_resource(DiagnosticPhotometry {
+            exposure_ev100,
+            aces_fitted: diagnostic_aces_fitted,
+        })
         .insert_resource(DiagnosticDirectionalShadows(directional_shadow_maps))
         .insert_resource(DiagnosticIllumination {
             ambient_brightness,

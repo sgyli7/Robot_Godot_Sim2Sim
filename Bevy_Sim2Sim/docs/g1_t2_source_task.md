@@ -580,7 +580,7 @@ settings and source-authored normal correspondence are the next bounded audit.
 
 Cases0145–0146 add an exclusive released zero-step render audit, rejecting model,
 motion or other-query combinations before source access. The actual SDK read
-records eight tiny authored/default rectangular lights, the existing scene DB
+records eight rectangular-light transforms and modern-schema default inputs, the existing scene DB
 ambient settings, postprocessing inputs and87robot meshes including invisible
 collision/proxy meshes. It preserves the complete physical state and bothSDK
 counters exactly at0, with0USD/render-setting writes and0model calls. No dome or
@@ -620,3 +620,43 @@ bytes are verified. The owned model closes. This rejects normals as a sufficient
 explanation for the present grasp failure, while retaining a validated rendering
 repair. Further longer/physical-parameter sweeps remain at0; the next comparison
 must be justified by actual source photometric/postprocessing data.
+
+Cases0151–0155 resolve two source-data interpretation gaps without changing
+formal physics. The actual RobotHeadCam and its640x480 RenderProduct use
+`acesApproximation`, exposure:fStop5, ISO100, exposure time0.02s,
+responsivity1.102670908 and disabled autoexposure. These camera attributes agree
+with the measured global settings; they supersede global exposure controls as
+described in [NVIDIA's camera documentation](https://docs.omniverse.nvidia.com/materials-and-rendering/latest/cameras.html).
+The packaged original RTX UI maps operator6 to ACES and exposes whiteScale
+only for Hable(operator5). Thus40.2 is not an ACES exposure multiplier.
+
+The native diagnostic explicitly used `Tonemapping::None` and no HDR
+intermediate. An opt-in `diagnostic_aces_fitted` comparison now enables Bevy's
+HDR intermediate and fitted ACES in the matched mobile-background diagnostic,
+leaving all public scene defaults unchanged. The GPU receipt reads the actual
+ego-camera components (`ego_camera_hdr=true`, `ego_camera_tonemapping=aces_fitted`).
+It does not claim that fitted ACES equals the closed RTX approximation.
+The zero-step0153 GPU capture passes. The one four-call200Tick0154 run still
+fails held lift:0positive hand impulses,200shelf-supported ticks, at most0.038mm
+rise, upright>=0.993600, drift<=0.178126m. All actual model pixels and200single
+20ms integrations are independently verified; the owned model closes. Exposure,
+lighting and every physical parameter remain fixed in this isolated comparison.
+
+The initial light audit missed the old USD attributes, reading only modern
+`inputs:*` schema defaults. The complete authored-source query now records the
+legacy `intensity=200000`, `width=200`, `height=28` and warm color on all eight
+original ceiling RectLights. Their world scale produces a1.96x0.084m panel,
+rather than the modern un-authored1x1 fallback. Case0155 performs one bounded
+source-only light positive control: baseline, explicit modern intensity0,
+legacy intensity0, and restored original values, with six render pumps each.
+Both zero conditions reduce mean RGB by about44/255; restored light values
+recover the bright box/hands. The restored image differs from baseline by
+6.397/255, so temporal rendering has not reproduced identical pixels and this
+is not an exact attribute-precedence/shader-equivalence proof. It demonstrates
+that these eight source lights materially affect the original camera and
+cannot be replaced by an unrelated directional light without validation.
+Only temporary light intensity overrides were made in the ephemeral source
+session layer, then cleared; original attribute values are restored. Actual
+robot/prop state and both physics counters remain exactly unchanged at0.
+Parser isolation checks pass10/10. No native lighting sweep, training, model
+change, autonomous carry, placement or1x qualification is claimed.
