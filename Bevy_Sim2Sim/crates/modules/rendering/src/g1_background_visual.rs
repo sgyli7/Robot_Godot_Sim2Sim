@@ -1,4 +1,4 @@
-//! Bounded original static-task background visuals, without background physics.
+//! Bounded original task background visuals, separate from physics ownership.
 //! Authored basic PBR inputs are mapped; the receipt discloses omitted surfaces
 //! and the absence of MDL/default/lighting parity. This is a render diagnostic.
 
@@ -24,6 +24,8 @@ const SOURCE_USD_SHA: &str = "7e14dcfd948591b8fdae61d41b412097b39490022dfc25aab9
 #[serde(deny_unknown_fields)]
 struct Document {
     schema: String,
+    #[serde(default)]
+    source_t2_background_sha256: Option<String>,
     units: String,
     source_usd_sha256: String,
     exporter_sha256: String,
@@ -46,6 +48,8 @@ struct Document {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceMesh {
+    #[serde(default)]
+    owner_path: Option<String>,
     path: String,
     material: Material,
     source_face_subset: Option<Vec<u32>>,
@@ -109,9 +113,39 @@ pub struct G1BackgroundVisualModel {
 impl G1BackgroundVisualModel {
     /// Translation is supplied by the caller's frozen physics scene profile.
     pub fn load(path: &Path, sha256: &str, native_translation: [f64; 3]) -> Result<Self, String> {
+        Self::load_profile(path, sha256, native_translation, None)
+    }
+
+    pub fn load_mobile(
+        path: &Path,
+        sha256: &str,
+        native_translation: [f64; 3],
+        background_physics_sha256: &str,
+    ) -> Result<Self, String> {
+        Self::load_profile(
+            path,
+            sha256,
+            native_translation,
+            Some(background_physics_sha256),
+        )
+    }
+
+    fn load_profile(
+        path: &Path,
+        sha256: &str,
+        native_translation: [f64; 3],
+        background_physics_sha256: Option<&str>,
+    ) -> Result<Self, String> {
+        let mobile = background_physics_sha256.is_some();
         let bytes = bounded_bytes(path, sha256, 128 * 1024 * 1024)?;
         let document: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if document.schema != "native_g1_static_background_visual_v1"
+        if document.schema
+            != if mobile {
+                "native_g1_mobile_background_visual_v1"
+            } else {
+                "native_g1_static_background_visual_v1"
+            }
+            || document.source_t2_background_sha256.as_deref() != background_physics_sha256
             || document.units != "metres_z_up"
             || document.source_usd_sha256 != SOURCE_USD_SHA
             || !sha_text(&document.exporter_sha256)
@@ -119,29 +153,45 @@ impl G1BackgroundVisualModel {
             || document.source_background_translation != [4.420, 1.408, -0.795]
             || document.native_environment_translation != native_translation
             || native_translation != [0., 0., 0.795]
-            || document.selection_region_min != [-0.25, -1.2, 0.]
-            || document.selection_region_max != [1.6, 1.2, 2.5]
+            || document.selection_region_min
+                != if mobile {
+                    [-1.5, -3.5, 0.]
+                } else {
+                    [-0.25, -1.2, 0.]
+                }
+            || document.selection_region_max
+                != if mobile {
+                    [2.5, 1.5, 2.5]
+                } else {
+                    [1.6, 1.2, 2.5]
+                }
             || document.mesh_selection
-                != "whole source meshes intersecting disclosed static-task region"
+                != if mobile {
+                    "whole source meshes intersecting disclosed mobile-task region"
+                } else {
+                    "whole source meshes intersecting disclosed static-task region"
+                }
             || document.material_scope
                 != "authored basic PBR inputs; MDL defaults/effects and lighting parity unproven"
             || document.source_renderer_parity_proven
             || document.physics_integrations != 0
             || document.background_physics_registered
             || document.meshes.is_empty()
-            || document.meshes.len() > 128
+            || document.meshes.len() > if mobile { 256 } else { 128 }
             || document.skipped_outside_region.len() > 4096
             || document.omitted_unmapped_geometry.len() > 4096
         {
             return Err("background source/schema/coverage contract mismatch".into());
         }
         let expected = ["jetson_orin_06", "jetson_orin_03", "hesai_box_06"];
-        if document.source_deactivated_prims.len() != expected.len()
-            || !document
-                .source_deactivated_prims
-                .iter()
-                .zip(expected)
-                .all(|(p, name)| p == &format!("/Lab/BackgroundAssets/boxes/{name}"))
+        if (mobile && !document.source_deactivated_prims.is_empty())
+            || (!mobile
+                && (document.source_deactivated_prims.len() != expected.len()
+                    || !document
+                        .source_deactivated_prims
+                        .iter()
+                        .zip(expected)
+                        .all(|(p, name)| p == &format!("/Lab/BackgroundAssets/boxes/{name}"))))
             || document
                 .meshes
                 .iter()
@@ -150,6 +200,24 @@ impl G1BackgroundVisualModel {
                 != 3
         {
             return Err("background startup deactivation/shelf coverage changed".into());
+        }
+        let dynamic_owners = [
+            "/World/envs/env_0/galileo_locomanip/TaskAssets/table/Geometry/sm_tabletop_a01_01",
+            "/World/envs/env_0/galileo_locomanip/TaskAssets/power_drill_physics",
+        ];
+        if document.meshes.iter().any(|m| {
+            m.owner_path
+                .as_ref()
+                .is_some_and(|p| !mobile || !dynamic_owners.contains(&p.as_str()))
+        }) || (mobile
+            && dynamic_owners.iter().any(|p| {
+                !document
+                    .meshes
+                    .iter()
+                    .any(|m| m.owner_path.as_deref() == Some(p))
+            }))
+        {
+            return Err("mobile background dynamic visual coverage/identity changed".into());
         }
         let mut textures = HashMap::new();
         let mut total_vertices = 0;
@@ -264,12 +332,32 @@ pub struct G1BackgroundVisualStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct BackgroundBodyPose {
+    pub path: String,
+    pub translation_engine: [f32; 3],
+    pub rotation_engine_xyzw: [f32; 4],
+}
+pub struct BackgroundOwnerFrame {
+    pub physics_definition_sha256: String,
+    pub bodies: Vec<BackgroundBodyPose>,
+}
+#[derive(Resource, Default)]
+pub struct G1BackgroundVisualInput(pub Option<BackgroundOwnerFrame>);
+#[derive(Component)]
+struct DynamicBackgroundOwner(String);
+
 pub struct G1BackgroundVisualPlugin;
 impl Plugin for G1BackgroundVisualPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<BackgroundMaterial>::default())
             .init_resource::<G1BackgroundVisualStatus>()
-            .add_systems(Startup, spawn);
+            .init_resource::<G1BackgroundVisualInput>()
+            .add_systems(Startup, spawn)
+            .add_systems(
+                PostUpdate,
+                update_dynamic_owners.before(bevy::transform::TransformSystems::Propagate),
+            );
     }
 }
 
@@ -384,12 +472,15 @@ fn spawn(
                     ),
                 },
             });
-            commands.spawn((
+            let mut entity = commands.spawn((
                 Name::new(source.path.clone()),
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(material),
                 Transform::IDENTITY,
             ));
+            if let Some(path) = &source.owner_path {
+                entity.insert((DynamicBackgroundOwner(path.clone()), Visibility::Hidden));
+            }
             status.mesh_count += 1;
         }
         status.texture_count = textures.len();
@@ -397,6 +488,40 @@ fn spawn(
     })();
     if let Err(error) = result {
         status.error = Some(error);
+    }
+}
+
+fn update_dynamic_owners(
+    model: Res<G1BackgroundVisualModel>,
+    input: Res<G1BackgroundVisualInput>,
+    mut entities: Query<(&DynamicBackgroundOwner, &mut Transform, &mut Visibility)>,
+    mut status: ResMut<G1BackgroundVisualStatus>,
+) {
+    let Some(frame) = &input.0 else {
+        return;
+    };
+    if model.document.source_t2_background_sha256.as_deref()
+        != Some(&frame.physics_definition_sha256)
+    {
+        status.error = Some("mobile background physical/render definition identity differs".into());
+        return;
+    }
+    status.background_physics_registered = true;
+    for (owner, mut transform, mut visibility) in &mut entities {
+        let Some(pose) = frame.bodies.iter().find(|p| p.path == owner.0) else {
+            status.error =
+                Some("actual mobile background owner missing from completed frame".into());
+            continue;
+        };
+        let q = Quat::from_array(pose.rotation_engine_xyzw);
+        let p = Vec3::from_array(pose.translation_engine);
+        if !p.is_finite() || !q.is_finite() || (q.length_squared() - 1.).abs() > 1e-4 {
+            status.error = Some("invalid actual mobile background render pose".into());
+            continue;
+        }
+        transform.translation = p;
+        transform.rotation = q;
+        *visibility = Visibility::Inherited;
     }
 }
 

@@ -29,7 +29,8 @@ use bevy::{
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
-        G1BackgroundVisualModel, G1BackgroundVisualPlugin, G1BackgroundVisualStatus,
+        BackgroundBodyPose, BackgroundOwnerFrame, G1BackgroundVisualInput, G1BackgroundVisualModel,
+        G1BackgroundVisualPlugin, G1BackgroundVisualStatus,
     },
     g1_camera::{
         CameraPoseSource, G1BodyObservationInput, G1CameraJointState, G1CameraNativeState,
@@ -172,6 +173,26 @@ impl CaptureRunnerConfig {
         predictive_limit_diagnostic: bool,
         diagnostic_constraint_sweeps: Option<u32>,
     ) -> Result<CaptureWorker, String> {
+        if diagnostic_constraint_sweeps == Some(4) && !predictive_limit_diagnostic {
+            let Self::Task(config) = self else {
+                return Err(
+                    "mobile convergence candidate requires a matched mobile task owner".into(),
+                );
+            };
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            {
+                return ArenaTaskWorker::spawn_mobile_constraint_diagnostic(config)
+                    .map(CaptureWorker::Task)
+                    .map_err(|e| e.to_string());
+            }
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
+            {
+                let _ = config;
+                return Err(
+                    "mobile convergence candidate requires its explicit development feature".into(),
+                );
+            }
+        }
         if diagnostic_constraint_sweeps.is_some()
             && (diagnostic_constraint_sweeps != Some(16) || !predictive_limit_diagnostic)
         {
@@ -854,17 +875,32 @@ fn run_capture_owner(
     }
     let background_model = background_visual
         .map(|background| {
-            let translation = match render_only_environment_translation {
-                Some(translation) => translation,
-                None => {
-                    config
-                        .task_objects()
-                        .and_then(|c| c.source_t1_shelf.as_ref())
-                        .ok_or("original background needs the frozen source static shelf profile")?
-                        .environment_translation_source
+            if let Some(t2) = config
+                .task_objects()
+                .and_then(|c| c.source_t2_background.as_ref())
+            {
+                if render_only_environment_translation.is_some() {
+                    return Err("mobile background requires actual completed physical poses".into());
                 }
-            };
-            G1BackgroundVisualModel::load(&background.path, &background.sha256, translation)
+                G1BackgroundVisualModel::load_mobile(
+                    &background.path,
+                    &background.sha256,
+                    t2.environment_translation_source,
+                    &t2.definition_sha256,
+                )
+            } else {
+                let translation = match render_only_environment_translation {
+                    Some(translation) => translation,
+                    None => {
+                        config
+                            .task_objects()
+                            .and_then(|c| c.source_t1_shelf.as_ref())
+                            .ok_or("original background needs the frozen source scene profile")?
+                            .environment_translation_source
+                    }
+                };
+                G1BackgroundVisualModel::load(&background.path, &background.sha256, translation)
+            }
         })
         .transpose()?;
     let tick_limit = if matches!(config, CaptureRunnerConfig::Task(_)) {
@@ -1018,6 +1054,7 @@ fn run_capture_owner(
         .insert_resource(model)
         .insert_resource(outcome.clone())
         .init_resource::<G1TaskVisualInput>()
+        .init_resource::<G1BackgroundVisualInput>()
         .insert_resource(CaptureRuntime {
             worker,
             options,
@@ -1595,8 +1632,11 @@ fn drive_capture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut shelf_visual: Query<&mut Transform, With<SourceShelfVisual>>,
-    background_model: Option<Res<G1BackgroundVisualModel>>,
-    background_status: Option<Res<G1BackgroundVisualStatus>>,
+    (background_model, background_status, mut background_input): (
+        Option<Res<G1BackgroundVisualModel>>,
+        Option<Res<G1BackgroundVisualStatus>>,
+        ResMut<G1BackgroundVisualInput>,
+    ),
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
@@ -1617,6 +1657,23 @@ fn drive_capture(
         }
         if let Some(snapshot) = runtime.worker.take_latest() {
             input.0 = observation(&snapshot)?;
+            background_input.0 = snapshot
+                .task_objects
+                .as_ref()
+                .and_then(|f| f.source_t2_background.as_ref())
+                .map(|background| BackgroundOwnerFrame {
+                    physics_definition_sha256: background.definition_sha256.clone(),
+                    bodies: background
+                        .bodies
+                        .iter()
+                        .filter(|b| b.dynamic)
+                        .map(|b| BackgroundBodyPose {
+                            path: b.path.clone(),
+                            translation_engine: b.translation_engine,
+                            rotation_engine_xyzw: b.rotation_engine_xyzw,
+                        })
+                        .collect(),
+                });
             if background_model.is_none()
                 && let Some(shelf) = snapshot
                     .task_objects

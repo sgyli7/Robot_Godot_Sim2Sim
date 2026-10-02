@@ -323,6 +323,24 @@ impl PhysicsWorker<AgileCommand, AgileStep> {
 }
 
 impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
+    /// Reset recreates the same explicitly selected mobile diagnostic world.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn spawn_mobile_constraint_diagnostic(
+        config: ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        let episode = config.body.episode_id();
+        Self::spawn_owner(
+            episode,
+            move |episode_id| {
+                ArenaTaskRunner::load_mobile_constraint_diagnostic(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+
     /// Fresh-world contact convergence comparison with predictive limits.
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub fn spawn_static_predictive_constraint_diagnostic(

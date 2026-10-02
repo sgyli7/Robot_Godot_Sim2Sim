@@ -315,6 +315,29 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                 raise ValueError('T2 render refresh changed physical state or counters')
             reset_counter = int(raw._sim_step_counter)
             captures = args.output.with_suffix('.captures'); captures.mkdir()
+            if args.contact_settings_audit:
+                from unitree_g1_t2_contact_query import query_contacts
+                before=physical_state();counters=(int(raw._sim_step_counter),int(raw.sim._physics_step_count))
+                receipt['actual_contact_parameters']=query_contacts(raw,measured,captures/'contact_parameters.json')
+                after=physical_state();delta=max(float(np.abs(after[k]-v).max()) for k,v in before.items())
+                receipt['actual_contact_parameters'].update(physical_state_max_abs_change=delta,before_sdk_counters=counters,
+                    after_sdk_counters=[int(raw._sim_step_counter),int(raw.sim._physics_step_count)])
+                if delta!=0 or counters!=(int(raw._sim_step_counter),int(raw.sim._physics_step_count)):
+                    raise ValueError('Contact query changed actual scene state/counters')
+                save()
+            if args.background_owner_audit:
+                from unitree_g1_t2_background_query import query_background
+                before_query = physical_state()
+                before_counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                receipt['background_owner_query'] = query_background(raw, measured, captures / 'background_owners.json')
+                after_query = physical_state()
+                error = max(float(np.abs(after_query[key] - value).max()) for key, value in before_query.items())
+                after_counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                receipt['background_owner_query'].update(physical_state_max_abs_change=error,
+                    before_sdk_counters=before_counters, after_sdk_counters=after_counters)
+                if error != 0 or before_counters != after_counters:
+                    raise ValueError('Background owner query changed physical state or counters')
+                save()
             if args.scene_overlap_audit:
                 from omni.physx import get_physx_scene_query_interface
                 box_pose = measured(raw.scene['brown_box'].data.root_link_pose_w).tolist()
@@ -348,19 +371,22 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                 if query_error != 0 or before_query_counters != after_query_counters:
                     raise ValueError('Initial collision query changed physics state/counters')
                 save()
-            contact_events = []; contact_subscription = None
-            if args.reset_contact_audit:
+            contact_events = []; contact_subscription = None; replay_contact_view = None
+            if args.reset_contact_audit or args.native_action_replay:
                 from omni.physx import get_physx_simulation_interface
                 from pxr import PhysicsSchemaTools, PhysxSchema, UsdPhysics
                 import omni.usd
                 stage = omni.usd.get_context().get_stage()
+                actor_prefixes = ('/World/envs/env_0/brown_box', '/World/envs/env_0/Robot/') if args.native_action_replay else ('/World/envs/env_0/brown_box',)
                 actors = [prim for prim in stage.Traverse()
-                          if str(prim.GetPath()).startswith('/World/envs/env_0/brown_box')
+                          if str(prim.GetPath()).startswith(actor_prefixes)
                           and prim.HasAPI(UsdPhysics.RigidBodyAPI)]
-                existing_report_api = bool(actors) and all(prim.HasAPI(PhysxSchema.PhysxContactReportAPI) for prim in actors)
+                reporting_actors = [prim for prim in actors if prim.HasAPI(PhysxSchema.PhysxContactReportAPI)]
+                existing_report_api = bool(reporting_actors) if args.native_action_replay else bool(actors) and len(reporting_actors) == len(actors)
                 if not existing_report_api and not release_source:
                     raise ValueError('Original T2 box has no existing contact report API; no schema is added')
                 receipt['observed_contact_report_actors'] = [str(prim.GetPath()) for prim in actors]
+                receipt['existing_contact_report_actors'] = [str(prim.GetPath()) for prim in reporting_actors]
                 receipt['original_contact_report_api_available'] = existing_report_api
                 receipt['contact_report_schema_writes'] = 0
                 receipt['contact_report_overflow'] = False
@@ -370,7 +396,7 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                                  for key in ('actor0', 'actor1', 'collider0', 'collider1')}
                         if not any('/brown_box' in paths[key] for key in ('actor0', 'actor1')):
                             continue
-                        if len(contact_events) >= 1024:
+                        if len(contact_events) >= (4096 if args.native_action_replay else 1024):
                             receipt['contact_report_overflow'] = True
                             continue
                         values = []
@@ -384,6 +410,18 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                             'env_counter_at_callback': int(raw._sim_step_counter), 'points': values})
                 if existing_report_api:
                     contact_subscription = get_physx_simulation_interface().subscribe_contact_report_events(contacts)
+                if args.native_action_replay:
+                    from unitree_g1_t2_contact_query import make_box_hand_contact_view, sample_box_hand_contacts
+                    before = physical_state()
+                    counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                    replay_contact_view, metadata = make_box_hand_contact_view(raw)
+                    after = physical_state()
+                    delta = max(float(np.abs(after[key] - value).max()) for key, value in before.items())
+                    metadata.update(physical_state_max_abs_change=delta, before_sdk_counters=counters,
+                                    after_sdk_counters=[int(raw._sim_step_counter), int(raw.sim._physics_step_count)])
+                    if delta != 0 or counters != (int(raw._sim_step_counter), int(raw.sim._physics_step_count)):
+                        raise ValueError('Contact tensor view changed physical state/counters')
+                    receipt['acceptance_contact_tensor_view'] = metadata
             action = torch.zeros(env.action_space.shape, device=raw.device)
             frames = []; frame_index = 0; sequence = 0; last_sha = None
             body_frames = []
@@ -404,7 +442,14 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                         'acceptance_truth_only': {name: {'pose': measured(raw.scene[name].data.root_pose_w).tolist(),
                             'velocity': measured(raw.scene[name].data.root_vel_w).tolist()}
                             for name in ('brown_box', 'blue_sorting_bin')}}
-                    if args.reset_contact_audit and 'contact_sensor_brown_box' in raw.scene.sensors:
+                    if args.native_action_replay:
+                        # Actual measured SDK link poses distinguish tracking
+                        # from shape/contact differences. Acceptance-only;
+                        # replay runs zero VLA calls and no policy reads this.
+                        sample['acceptance_truth_only']['robot_body_link_poses_xyzw'] = measured(robot.data.body_link_pose_w).tolist()
+                        receipt['acceptance_body_names'] = list(robot.body_names)
+                        sample['acceptance_truth_only']['box_hand_contact_tensor'] = sample_box_hand_contacts(replay_contact_view, .005)
+                    if (args.reset_contact_audit or args.native_action_replay) and 'contact_sensor_brown_box' in raw.scene.sensors:
                         sensor = raw.scene['contact_sensor_brown_box']
                         sample['acceptance_truth_only']['existing_box_contact_sensor'] = {
                             'net_forces_w': measured(sensor.data.net_forces_w).tolist(),
@@ -434,6 +479,11 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
                             frames = reply['frames']; frame_index = 0; sequence += 1
                             receipt['policy_calls'] += 1
                             receipt.setdefault('policy_call_seconds', []).append(time.monotonic() - started)
+                        elif args.native_action_replay and tick < args.ticks:
+                            frozen=json.loads(args.native_action_replay.read_text())
+                            if digest(args.native_action_replay)!=args.native_action_replay_sha256:
+                                raise ValueError('Frozen native diagnostic action bytes changed')
+                            frames=frozen['chunks'][tick//50]['frames'];frame_index=0;sequence+=1
                         elif args.reset_contact_audit and tick == 0:
                             # Explicit ten-control diagnostic, using only reset
                             # self-state. This is neither a VLA reply nor a wait
@@ -497,7 +547,7 @@ def run_source(args, receipt, save, task_paths, mesh_assets):
             receipt['source_vla_executed'] = receipt['policy_calls'] > 0
             receipt['stage'] = 'completed_finite_source_diagnostic'
             receipt['trace_sha256'] = digest(args.output.with_suffix('.jsonl'))
-            if args.reset_contact_audit:
+            if args.reset_contact_audit or args.native_action_replay:
                 (captures / 'initial_contacts.json').write_text(json.dumps(contact_events, allow_nan=False))
                 receipt['observed_contact_report_events'] = len(contact_events)
                 contact_subscription = None
@@ -527,6 +577,9 @@ def main():
     parser.add_argument('--episode-id', type=int, required=True)
     parser.add_argument('--policy-port', type=int)
     parser.add_argument('--policy-socket', type=Path, help='Private byte-preserving transport to the original local HTTP model owner')
+    parser.add_argument('--contact-settings-audit', action='store_true', help='Released zero-step effective SDK contact/material/actuator inputs, no writes')
+    parser.add_argument('--native-action-replay', type=Path, help='One fixed 100-control source-only causal diagnostic, never task autonomy')
+    parser.add_argument('--native-action-replay-sha256')
     parser.add_argument('--startup-trace', action='store_true', help='Finite startup stack/log diagnostic only')
     parser.add_argument('--reset-contact-audit', action='store_true',
                         help='Ten original source controls with fixed reset self-state targets; no VLA or native fallback')
@@ -536,11 +589,13 @@ def main():
                         help='Explicit source query-support diagnostic; original ten controls, no VLA or qualification')
     parser.add_argument('--body-contract-audit', action='store_true',
                         help='Released-source ten controls: five stand and five walk; read actual WBC input/output/articulation targets, no extra inference')
+    parser.add_argument('--background-owner-audit', action='store_true',
+                        help='Read all released background shapes/materials and actual dynamic owner mass/inertia; zero controls only')
     args = parser.parse_args()
     if (not 0 <= args.ticks <= 1500 or args.episode_id < 1 or not 0 <= args.seed < 2**32
             or (args.policy_port is not None and not 1 <= args.policy_port <= 65535)
             or (args.policy_port is not None and args.policy_socket is not None)
-            or (args.ticks > 0 and not args.policy_port and not args.policy_socket and not args.reset_contact_audit)
+            or (args.ticks > 0 and not args.policy_port and not args.policy_socket and not args.reset_contact_audit and not args.native_action_replay)
             or (args.reset_contact_audit and (args.ticks != 10 or args.policy_port is not None or args.policy_socket is not None))):
         parser.error('Use0..1500 controls, positive episode and valid seed/loopback port; motion requires N1.6 service or explicit ten-control contact audit')
     if args.initial_collision_audit and (not args.run_source or args.policy_port or args.policy_socket or (args.ticks != 0 and not args.reset_contact_audit)):
@@ -550,6 +605,30 @@ def main():
     if args.body_contract_audit and (not args.run_source or not args.reset_contact_audit
             or args.source_profile != 'release_0_2_1' or args.initial_collision_audit or args.scene_overlap_audit):
         parser.error('Body contract reading requires released-source ten-control no-VLA fixture without collision/query changes')
+    if args.background_owner_audit and (not args.run_source or args.ticks != 0
+            or args.source_profile != 'release_0_2_1' or args.policy_port or args.policy_socket
+            or args.initial_collision_audit or args.scene_overlap_audit or args.body_contract_audit):
+        parser.error('Background owner reading requires released zero-control fixture without other queries or models')
+    if bool(args.native_action_replay) != bool(args.native_action_replay_sha256):
+        parser.error('Native action diagnostic file/hash must be paired')
+    replay = None
+    if args.native_action_replay:
+        if (not args.run_source or args.source_profile != 'release_0_2_1' or args.ticks != 100
+                or args.policy_port or args.policy_socket or args.reset_contact_audit or args.body_contract_audit
+                or args.initial_collision_audit or args.background_owner_audit or args.scene_overlap_audit
+                or args.native_action_replay.stat().st_size > 256*1024
+                or digest(args.native_action_replay) != args.native_action_replay_sha256):
+            parser.error('Replay is exactly one hash-bound released 100-control source-only diagnostic without models/queries')
+        replay=json.loads(args.native_action_replay.read_text())
+        if (replay.get('schema') != 'g1_native_t2_actions_diagnostic_v1' or replay.get('qualified') is not False
+                or len(replay.get('chunks',[]))!=2):
+            raise ValueError('Wrong frozen native action diagnostic identity')
+        for chunk in replay['chunks']:
+            validate_reply({key:chunk[key] for key in ('profile','sequence_id','observation')},chunk)
+    if args.contact_settings_audit and (not args.run_source or args.source_profile!='release_0_2_1' or args.ticks!=0
+            or args.policy_port or args.policy_socket or args.reset_contact_audit or args.initial_collision_audit
+            or args.background_owner_audit or args.scene_overlap_audit or args.body_contract_audit or args.native_action_replay):
+        parser.error('Effective contact query requires exclusive released zero-step scene')
     arena_rev, lab_rev, expected_runtime = SOURCE_PROFILES[args.source_profile]
     if bool(args.source_tree_receipt) != bool(args.source_tree_sha256):
         parser.error('Source-tree receipt and its frozen SHA256 must be provided together')
@@ -606,6 +685,10 @@ def main():
     if args.body_contract_audit:
         receipt.update(scope='test-private released Homie numerical contract: five stand and five walk controls, fixed reset upper targets; no VLA, wait fallback or native qualification',
                        body_contract_diagnostic=True)
+    if replay is not None:
+        receipt.update(scope='source-only identical native action replay for causal comparison; not autonomous/VLA success',
+            native_action_replay_sha256=args.native_action_replay_sha256, action_replay_controls=100,
+            action_replay_chunks=replay['chunks'])
     with args.output.open('x') as output:
         def save():
             output.seek(0); output.truncate()

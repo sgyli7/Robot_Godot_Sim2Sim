@@ -13,7 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
-from pxr import Gf, Usd, UsdGeom, UsdShade
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from unitree_g1_task_asset_query import digest
 from unitree_g1_task_visual_export import geometry
@@ -121,14 +121,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--usd", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--mobile-background", type=Path, help="byte-bound native T2 physics definition; enables mobile visuals")
     args = parser.parse_args()
+    mobile = args.mobile_background is not None
+    physics_sha = digest(args.mobile_background) if mobile else None
+    if mobile:
+        physical = json.loads(args.mobile_background.read_text())
+        if physical["schema"] != "native_g1_released_t2_background_v1" or physical["source_background_sha256"] != USD_SHA or physical["physics_parity_qualified"]:
+            raise ValueError("Mobile visual source does not match the original T2 background")
     if digest(args.usd) != USD_SHA:
         raise ValueError("Original background USD identity changed")
     stage = Usd.Stage.Open(str(args.usd))
     stage.SetEditTarget(stage.GetSessionLayer())
     root = stage.GetDefaultPrim()
     disabled = []
-    for relative in DEACTIVATE:
+    for relative in (() if mobile else DEACTIVATE):
         prim = stage.GetPrimAtPath(str(root.GetPath()) + "/" + relative)
         if not prim.IsValid():
             raise ValueError("Original static background deactivation path disappeared")
@@ -137,12 +144,12 @@ def main():
     # Original LibraryBackground pose (4.420,1.408,-.795), followed by the
     # same disclosed +.795 native environment translation as the physics world.
     offset = Gf.Matrix4d().SetTranslate(Gf.Vec3d(4.420, 1.408, 0.))
-    region_min, region_max = [-.25, -1.2, 0.], [1.6, 1.2, 2.5]
+    region_min, region_max = ([-1.5,-3.5,0.],[2.5,1.5,2.5]) if mobile else ([-.25,-1.2,0.],[1.6,1.2,2.5])
     bounds = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
     cache = UsdGeom.XformCache()
     meshes, skipped, omitted = [], [], []
 
-    def append_mesh(prim, material_prim, transform, selected=None):
+    def append_mesh(prim, material_prim, transform, selected=None, owner_path=None):
         try:
             material = surface(material_prim, args.usd, prim)
         except ValueError as error:
@@ -152,7 +159,7 @@ def main():
         # Geometry validation remains fatal. Unsupported materials are disclosed
         # coverage gaps; invalid source geometry is never silently accepted.
         meshes.append({"path": str(material_prim.GetPath()), "material": material,
-                       "source_face_subset": selected, **geometry(prim, transform, selected)})
+                       "source_face_subset": selected, **({"owner_path":owner_path} if mobile else {}), **geometry(prim, transform, selected)})
     for prim in Usd.PrimRange(root):
         if not (prim.IsA(UsdGeom.Mesh) or prim.IsA(UsdGeom.Cube)):
             continue
@@ -174,6 +181,22 @@ def main():
         transform = cache.GetLocalToWorldTransform(prim) * offset
         if transform.GetDeterminant() <= 0:
             raise ValueError("Background reflection needs a separate winding audit")
+        owner_path = None
+        if mobile:
+            owner = prim
+            while owner and not owner.HasAPI(UsdPhysics.RigidBodyAPI):
+                owner = owner.GetParent()
+            if owner:
+                # Keep the authored owner scale baked into body-local mesh
+                # vertices. Owner poses are supplied by actual native frames.
+                owner_transform = Gf.Transform(cache.GetLocalToWorldTransform(owner))
+                owner_rigid = Gf.Matrix4d(1)
+                owner_rigid.SetRotate(owner_transform.GetRotation())
+                owner_rigid.SetTranslateOnly(owner_transform.GetTranslation())
+                transform = cache.GetLocalToWorldTransform(prim) * owner_rigid.GetInverse()
+                owner_path = str(owner.GetPath()).replace(str(root.GetPath()), '/World/envs/env_0/galileo_locomanip', 1)
+                if owner_path not in {body['path'] for body in physical['bodies'] if body['dynamic']}:
+                    raise ValueError('Original dynamic visual owner is absent from frozen physics')
         subsets = UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
         if subsets:
             covered = set()
@@ -182,33 +205,35 @@ def main():
                 if covered.intersection(selected):
                     raise ValueError("Overlapping source material subsets")
                 covered.update(selected)
-                append_mesh(prim, subset.GetPrim(), transform, selected)
+                append_mesh(prim, subset.GetPrim(), transform, selected, owner_path)
             all_faces = set(range(len(UsdGeom.Mesh(prim).GetFaceVertexCountsAttr().Get())))
             remaining = sorted(all_faces - covered)
             if remaining:
                 omitted.append({"path": str(prim.GetPath()), "reason": "unbound faces outside original material subsets",
                                 "face_indices": remaining})
         else:
-            append_mesh(prim, prim, transform)
-    if not meshes or len(meshes) > 128 or digest(args.usd) != USD_SHA:
+            append_mesh(prim, prim, transform, owner_path=owner_path)
+    if not meshes or len(meshes) > (256 if mobile else 128) or digest(args.usd) != USD_SHA:
         raise ValueError("Background geometry is empty, unbounded or modified")
     if sum("/TaskAssets/shelf/" in mesh["path"] for mesh in meshes) != 3:
         raise ValueError("All three original task shelf surfaces are required")
     document = {
-        "schema": "native_g1_static_background_visual_v1", "units": "metres_z_up",
+        "schema": "native_g1_mobile_background_visual_v1" if mobile else "native_g1_static_background_visual_v1", "units": "metres_z_up",
         "source_usd_sha256": USD_SHA, "exporter_sha256": digest(Path(__file__)),
         "source_arena_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
         "source_deactivated_prims": disabled,
         "source_background_translation": [4.420, 1.408, -.795],
         "native_environment_translation": [0., 0., .795],
         "selection_region_min": region_min, "selection_region_max": region_max,
-        "mesh_selection": "whole source meshes intersecting disclosed static-task region",
+        "mesh_selection": "whole source meshes intersecting disclosed mobile-task region" if mobile else "whole source meshes intersecting disclosed static-task region",
         "material_scope": "authored basic PBR inputs; MDL defaults/effects and lighting parity unproven",
         "source_renderer_parity_proven": False, "physics_integrations": 0,
         "background_physics_registered": False, "skipped_outside_region": skipped,
         "omitted_unmapped_geometry": omitted,
         "meshes": meshes,
     }
+    if mobile:
+        document["source_t2_background_sha256"] = physics_sha
     with args.output.open("x") as output:
         json.dump(document, output, separators=(",", ":"), allow_nan=False)
         output.write("\n")

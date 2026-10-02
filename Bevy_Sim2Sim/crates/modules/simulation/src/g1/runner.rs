@@ -173,6 +173,35 @@ impl G1Runner {
         })
     }
 
+    /// One explicit released T2 convergence candidate; normal loading stays at
+    /// one PGS sweep. Requires the complete original background and force motors.
+    #[cfg(any(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn enable_mobile_constraint_diagnostic(&mut self) -> Result<(), RobotError> {
+        if self.simulation.integration_count != 0
+            || self.progress_counts().inference_attempt_count != 0
+            || self.actuator_backend != G1ActuatorBackend::NativeForceBased
+            || self
+                .task_objects
+                .as_ref()
+                .is_none_or(|scene| !scene.has_source_t2_background())
+            || self
+                .simulation
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations
+                != 1
+        {
+            return Err(error(
+                "mobile convergence candidate requires a fresh released T2 scene and native force motors",
+            ));
+        }
+        self.simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = 4;
+        Ok(())
+    }
+
     pub fn initial_frame(&self) -> Result<G1BodyFrame, RobotError> {
         self.completed_frame(&self.simulation.snapshot())
     }
@@ -488,6 +517,104 @@ mod tests {
             !rows.is_empty(),
             "no real physics boundary completed: {reason}"
         );
+    }
+
+    #[test]
+    #[ignore = "requires frozen G1_T2_NATIVE_CONFIG and fresh G1_T0_OUTPUT; one 150-Tick complete-scene contact diagnostic"]
+    fn real_released_t2_scene_contact_diagnostic() {
+        use std::io::Write;
+        let config_bytes = fs::read(env::var("G1_T2_NATIVE_CONFIG").unwrap()).unwrap();
+        let config_value: serde_json::Value = serde_json::from_slice(&config_bytes).unwrap();
+        let config: G1RunnerConfig = serde_json::from_slice(&config_bytes).unwrap();
+        let output = PathBuf::from(env::var("G1_T0_OUTPUT").unwrap());
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .unwrap();
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output.with_extension("jsonl"))
+            .unwrap();
+        let mut runner = G1Runner::load(&config).unwrap();
+        let initial = runner.task_object_frame().unwrap().unwrap();
+        let background = initial.source_t2_background.as_ref().unwrap();
+        assert_eq!(background.bodies.len(), 3);
+        assert_eq!(
+            background
+                .bodies
+                .iter()
+                .map(|b| b.collider_count)
+                .sum::<usize>(),
+            250
+        );
+        assert_eq!(background.bodies.iter().filter(|b| b.dynamic).count(), 2);
+        assert_eq!(initial.world_counts.bodies, 59);
+        assert_eq!(initial.world_counts.colliders, 305);
+        assert_eq!(runner.progress_counts().integration_count, 0);
+        assert_eq!(
+            runner
+                .simulation
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations,
+            1
+        );
+        // Verify malformed mass data fails during preparation without a partial
+        // background insert into this actual owner world.
+        let bg_config = config
+            .task_objects
+            .as_ref()
+            .unwrap()
+            .source_t2_background
+            .as_ref()
+            .unwrap();
+        let mut bad_config = bg_config.clone();
+        bad_config.definition = env::var("G1_T2_INVALID_BACKGROUND").unwrap().into();
+        bad_config.definition_sha256 = env::var("G1_T2_INVALID_BACKGROUND_SHA256").unwrap();
+        let before = runner.counts();
+        assert!(bad_config.prepare(&runner.simulation).is_err());
+        assert_eq!(runner.counts(), before);
+        runner.enable_mobile_constraint_diagnostic().unwrap();
+        let mut termination = "completed".to_owned();
+        let mut rows = 0;
+        let mut minimum_upright = 1_f32;
+        for _ in 0..150 {
+            let step = match runner.step(&G1Command::default()) {
+                Ok(s) => s,
+                Err(e) => {
+                    termination = e.to_string();
+                    break;
+                }
+            };
+            rows += 1;
+            minimum_upright = minimum_upright.min(step.root_upright_cosine);
+            assert_eq!(step.integration_count, rows);
+            assert_eq!(step.torque_update_count, rows);
+            assert_eq!(step.step_configuration.physics_hz, 50);
+            assert_eq!(step.step_configuration.num_solver_iterations, 1);
+            assert_eq!(step.step_configuration.num_internal_pgs_iterations, 4);
+            assert_eq!(step.step_configuration.max_ccd_substeps, 1);
+            serde_json::to_writer(&mut trace, &step).unwrap();
+            writeln!(trace).unwrap();
+            trace.flush().unwrap();
+            if step.root_upright_cosine < 0.5 || step.root_position_source[2] < 0.35 {
+                termination = "fell".into();
+                break;
+            }
+        }
+        let report = serde_json::json!({"qualified":false,"scope":"one complete released native T2 scene contact diagnostic, no VLA and no navigation",
+            "code_commit":env::var("G1_CODE_COMMIT").unwrap(),"config":config_value,"initial":initial,
+            "minimum_upright":minimum_upright,"completed_integrations":rows,"termination":termination,"counts":runner.progress_counts(),
+            "final":runner.task_object_frame().unwrap(),"native_frequency_hz":50,"integrations_per_tick":1,
+            "nonintegrating_pgs_candidate":4,"public_default_pgs":1,"vla_calls":0,"task_success":false});
+        serde_json::to_writer(&mut file, &report).unwrap();
+        writeln!(file).unwrap();
+        println!(
+            "G1_RELEASED_T2_SCENE integrations={rows} termination={termination} upright={minimum_upright}"
+        );
+        assert!(rows > 0, "no actual native scene step");
     }
 
     /// Single bounded baseline for the released T2 body, without task objects.

@@ -282,3 +282,155 @@ it does not establish native scene contact or placement success.
 
 [contact_reports]: https://docs.omniverse.nvidia.com/dev-guide/latest/programmer_ref/physics/rb_physics.html
 [cooking]: https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/extensions/runtime/source/omni.physx/docs/api/python.html
+
+
+## Released background in the native owner (2026-10-02, cases 0119–0126)
+
+`task_background.rs` now prepares the full released background before any
+mutation, then adds 246 static colliders on one fixed group and four colliders
+on the actual dynamic drill/table owners. It reuses the existing owner floor;
+with G1, brown box and blue bin the same Rapier world has 59 bodies and 305
+colliders. The only scene offset is `[0,0,0.795]`, including props, robot, floor
+and dynamic owner poses. No runtime pose repair, anchor, grasp constraint or
+object truth input was introduced.
+
+The SDK6.0 query completed at zero controls/integrations, with zero original USD
+writes and zero dynamic-state change. Its 251 collision nodes comprise 130
+fitted boxes, 106 authored triangle meshes, 13 convex/decomposition meshes,
+one analytic cube and the existing plane. The SDK cooked 294 convex parts.
+The static property query initially failed because it requires a rigid body;
+its convex-representation interface also explicitly rejects fitted boxes.
+Both failures remain in cases 0119/0120. The successful query uses an isolated,
+unattached and never-integrated stage containing exact mesh/approximation/
+world-transform copies solely to read SDK fitted-box properties. It does not
+add rigid-body APIs to the live source background. Copy cooking is not a claim
+of full source-world physics parity.
+
+The table's authored `[1,1,0.7]` scale is baked into its collision and visual
+vertices, while measured rigid poses contain no scale. Actual reset table/drill
+poses and velocities, including their source startup settling, are retained.
+Measured table/drill masses are 220.4559021 and 0.89999998 kg. Actual COM-frame
+principal axes diagonalize the measured link-frame inertia; the exporter
+checks that basis rather than treating the nine inertia components as a diagonal.
+Native materials preserve the original bindings/combine rules. T2 does **not**
+receive T1's prestartup finger friction override: the released source call is
+confined to the static-task environment. Source G1 IdealPD gains/effort limits
+still agree with `g1/actuator.rs`; no gain or friction sweep was performed.
+
+Frozen external files (outside ordinary Git):
+
+- Background query SHA256: `5e08ee1046f1b81df0d2e914973be246fdb995de7a4cb376545da530cc7fd323`.
+- `native_t2_background_sdk60_v1.json` SHA256:
+  `0ecc6d502967d7cca82bd208b2338dedf86505c781bf5d47551b186fa73b86e6`.
+- `native_t2_background_visual_v1.json` SHA256:
+  `e77c76cf3b78146da33e845f746218b009121f7aba6d1ca0b78b32892a7bb9b6`.
+
+The physics exporter preserves SDK fitted-box pose/volume without inflating
+boxes. Maximum authored-vertex enclosure difference is 0.095701 mm; maximum
+relative box-volume difference is 1.042e-6. Static meshes use 113097 authored
+polygon-fan triangles, **not an export of the SDK's cooked triangle topology**.
+That parity remains unverified. Native contact qualification is false. Visuals
+include 122 meshes/17 textures, bind the frozen physics background and update
+the table/drill from immutable actual owner frames. Their disclosed mobile
+region is `[-1.5,-3.5,0] .. [2.5,1.5,2.5]`; 46 unmapped surfaces remain omitted,
+and MDL/lighting/renderer parity is false. The earlier static visual profile
+and its three deactivations remain distinct.
+
+Case 0123 exercised exactly 150 real Homie inferences, motor updates and native
+20ms integrations with all background contacts. It survived three simulated
+seconds (minimum upright cosine 0.9990059), with actual box/shelf support impulse
+about 0.01962 N·s and settled bin/table support. It was headless and faster than
+wall time; it does not qualify T0, carrying or 1× time. A negative measured mass
+file was rejected before adding any partial background to that real world.
+
+The optional mobile diagnostic factory selects the existing **4 nonintegrating
+PGS sweep candidate** only for a fresh Homie_v2/N1.6 owner with complete released
+background and native force motors. Public loading stays at one sweep. The
+render diagnostic uses `diagnostic_constraint_sweeps: 4`, without T1 predictive
+limits. There is no 8/16-sweep mobile path or frequency change.
+
+Case 0124 saved actual 640×480 ego RGB and a 1920×1080/MSAA8 window with zero
+inferences/integrations. Case 0125 then made two genuine local N1.6 calls and
+100 native physics boundaries; case 0126 made eight genuine calls and 400
+boundaries. Every saved policy PNG matches the model's RGB byte input exactly,
+and captured model inputs contain only ego RGB and the five named joint groups.
+Body-policy counts, motor updates and integrations agree at every Tick, with
+one 20ms integration and CCD maximum one. Both runs pause between chunks for
+camera/model inference, and do **not** claim 1× continuous timing.
+
+Neither run picked up the box. Both had twelve solver-active robot/box pair Ticks,
+but final box displacement was only about 0.086 mm and it remained supported by
+the original shelf. The eight-call run stayed upright (minimum cosine 0.9937149)
+but moved 0.459677 m from its reset XY as the policy began turning toward the bin.
+Grasp/transport/stable release and formal T2 8/10 remain unpassed. The owned
+N1.6 services were closed after each finite run; failures are not relabeled as
+safe-stop task success. No longer repetition is justified before the identical-
+action source/native and contact/actuator comparisons resolve the missed grasp.
+
+Reproduction examples (run from `Bevy_Sim2Sim` with frozen files installed):
+
+```bash
+flock /tmp/sai-g1-cargo.lock env CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target cargo build -p bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_constraint_diagnostic
+/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target/debug/bevy_sim2sim --scene g1_camera_diagnostic --robot g1 --g1-config .scratch/g1/t2_native_live_rgb_20261002_0125/config.json --g1-ticks 100 --output .scratch/g1/NEW_T2_LIVE_OUTPUT
+```
+
+Start the one original local N1.6 owner first using the exact `model_command`
+in case 0125/0126 `execution.json` with a fresh capture directory; do not reuse a
+foreign process at port5558. Close only that owned process after the finite test.
+The preserved drivers contain the exact preparation, source query/export,
+start/stop, binary/config/source identities, budgets and result locations.
+
+
+Case 0127 isolates the action stream from visual decisions: exactly the two
+actual native N1.6 output chunks from case 0125 were executed for 100 released
+source controls / 400 original200Hz reference integrations, with **zero new
+model calls**. This is explicitly a causal action replay, not autonomy, a VLA
+rollout, task recovery or qualified success. Both streams retain their original
+50-frame/20ms action identity. The original source stayed upright (minimum
+0.9962804), but the source box moved 13.7639 mm while the native box moved only
+0.0859 mm. Source final box height after the disclosed offset was 0.8794577 m,
+versus native 0.8657259 m. Final root positions differed by about
+`[-.011707,-.010039,.004160]` m, and canonical joint state differences reached
+0.220898 rad (left-arm deltas up to about0.0233rad). No grasp qualification is
+inferred from that source movement. Contact outcome differs under identical
+commands; actual shape rest/contact offsets and contact-force/pose mapping must
+be checked before selecting a corrective change. This evidence does not justify
+changing gains, formal frequency, replaying a success trajectory or repeating
+longer native runs.
+
+
+Cases 0128/0129 queried the original SDK contact/material and explicit actuator
+inputs at reset, with zero integrations, model calls, schema writes or physical
+state change. The first query failed to encode the schema's automatic `-inf`
+offset sentinel; the corrected query preserves it as a tagged value, never a
+finite physical offset. All 52 robot shapes use friction0.5/restitution0;
+box friction5, bin friction1; all effective rest offsets are0. Source effective
+contact offsets range0.0004905–0.00285431m for the robot,0.004m for the box and
+0.001060592m for the bin. These are **not** Rapier contact skins or its0.02m
+prediction distance. Source gain/effort/velocity values cover all43 joints and
+agree with the frozen Homie parameter table; equal inputs do not establish
+implicit50Hz/native versus explicit200Hz/source actuator equivalence.
+
+A closer independent read of cases0125/0126 shows their twelve reported
+robot/box pair Ticks were **speculative**, with positive gaps about15–25mm and
+exactly zero normal impulse. They do not demonstrate touch or gripping. In the
+identical-action source replay the box already rises from the first control,
+reaching8.762mm above reset at control50; the13.764mm final movement must not be
+credited to grasping. Cases0130/0131 retain actual SDK link poses under the same
+100 commands: palm origins differ from native by up to37.7mm, distal finger
+origins by up to45.8mm. No model/truth contract was changed or new VLA call made.
+
+Original contact-report APIs were already present; observing them made zero
+schema writes but returned no callback events. A second read-only contact tensor
+view bound the actual box and all16 hand bodies, with zero state/counter change.
+Its **support-force positive control failed**: net box force was also zero while
+the box was physically supported. Therefore neither callback absence nor zero
+hand force is treated as proof of no source contact. This instrumentation remains
+explicit acceptance-only evidence and cannot qualify grasp or policy recovery.
+
+The actual reset RGB comparison then exposed a deterministic visual exporter
+error: all49 source body visual meshes have bound `UsdPreviewSurface` materials
+(48white and onegray), but the old exporter read only absent `displayColor`,
+substituting gray-purple. This source-authored material omission is the next
+bounded correction. Tracking/cooked-shape and timing gaps remain independently
+open; no friction/gain/PGS/frequency or longer-run sweep follows this observation.

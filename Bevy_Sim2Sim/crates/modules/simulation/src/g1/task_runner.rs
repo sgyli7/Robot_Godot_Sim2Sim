@@ -354,6 +354,21 @@ impl ArenaTaskRunner {
         Ok(owner)
     }
 
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn load_mobile_constraint_diagnostic(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        if config.body.profile() != TaskProfile::MobileBox {
+            return Err(error("mobile convergence candidate requires Homie_v2/N1.6"));
+        }
+        let mut owner = Self::load(config)?;
+        let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
+            return Err(error("mobile candidate body mismatch"));
+        };
+        body.enable_mobile_constraint_diagnostic()?;
+        Ok(owner)
+    }
+
     pub fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
         config.limits.validate().map_err(error)?;
         let (path, hash) = config.body.definition_identity();

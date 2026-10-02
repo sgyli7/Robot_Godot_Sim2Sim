@@ -20,6 +20,9 @@ use robot_minigame::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::task_background::{
+    T2SourceBackground, T2SourceBackgroundConfig, T2SourceBackgroundSample,
+};
 use super::task_shelf::{T1SourceShelf, T1SourceShelfConfig, T1SourceShelfSample};
 use crate::SimulationWorld;
 
@@ -210,6 +213,8 @@ pub struct TaskObjectSceneConfig {
     pub placements: Vec<TaskObjectPlacement>,
     #[serde(default)]
     pub source_t1_shelf: Option<T1SourceShelfConfig>,
+    #[serde(default)]
+    pub source_t2_background: Option<T2SourceBackgroundConfig>,
 }
 
 impl TaskObjectSceneConfig {
@@ -236,6 +241,18 @@ impl TaskObjectSceneConfig {
             }
             shelf.validate()?;
         }
+        let background = if let Some(config) = &self.source_t2_background {
+            if supported != [TaskObjectKind::BrownBox, TaskObjectKind::BlueBin]
+                || self.source_t1_shelf.is_some()
+            {
+                return Err(invalid(
+                    "original T2 background is incompatible with this task profile",
+                ));
+            }
+            Some(config.prepare(world)?)
+        } else {
+            None
+        };
         let mut scene =
             TaskObjectScene::insert_in_owner_world(world, &definition, &self.placements)?;
         if let Some(config) = &self.source_t1_shelf {
@@ -243,6 +260,7 @@ impl TaskObjectSceneConfig {
             scene.initial_robot_shelf_overlap = shelf.initial_robot_overlap(world)?;
             scene.source_t1_shelf = Some(shelf);
         }
+        scene.source_t2_background = background.map(|prepared| prepared.insert(world));
         Ok(scene)
     }
 }
@@ -259,6 +277,7 @@ pub struct TaskObjectScene {
     definition_sha256: String,
     instances: Vec<Instance>,
     source_t1_shelf: Option<T1SourceShelf>,
+    source_t2_background: Option<T2SourceBackground>,
     initial_robot_shelf_overlap: Vec<serde_json::Value>,
 }
 
@@ -277,6 +296,7 @@ pub struct TaskObjectContactSample {
     pub other_body_handle: Option<[u32; 2]>,
     pub other_robot_body_index: Option<usize>,
     pub other_task_kind: Option<TaskObjectKind>,
+    pub other_background_collider_path: Option<String>,
     pub manifold_count: usize,
     pub solver_points: usize,
     pub min_solver_distance_m: Option<f32>,
@@ -314,11 +334,16 @@ pub struct TaskObjectFrame {
     pub contact_recycling: bool,
     pub world_counts: crate::WorldCounts,
     pub source_t1_shelf: Option<T1SourceShelfSample>,
+    pub source_t2_background: Option<T2SourceBackgroundSample>,
     pub initial_robot_shelf_overlap: Vec<serde_json::Value>,
     pub objects: Vec<TaskObjectSample>,
 }
 
 impl TaskObjectScene {
+    pub(super) fn has_source_t2_background(&self) -> bool {
+        self.source_t2_background.is_some()
+    }
+
     /// The ignored diagnostic may isolate this one contact pair class at startup.
     #[cfg(test)]
     pub(super) fn diagnostic_shelf_collider(&self) -> Option<ColliderHandle> {
@@ -434,6 +459,7 @@ impl TaskObjectScene {
             definition_sha256: definition.file_sha256.clone(),
             instances,
             source_t1_shelf: None,
+            source_t2_background: None,
             initial_robot_shelf_overlap: Vec::new(),
         })
     }
@@ -492,6 +518,11 @@ impl TaskObjectScene {
                         .flat_map(|m| m.data.solver_contacts.iter().map(|p| p.dist))
                         .reduce(f32::min);
                     TaskObjectContactSample {
+                        other_background_collider_path: self
+                            .source_t2_background
+                            .as_ref()
+                            .and_then(|b| b.collider_path(other))
+                            .map(str::to_owned),
                         other_body_handle,
                         other_robot_body_index: None,
                         other_task_kind: self
@@ -537,7 +568,12 @@ impl TaskObjectScene {
                 convex_parts: instance.convex_parts,
                 dynamic: body.is_dynamic(),
                 active_contact_pairs: last_solve_contacts.len(),
-                source_shelf_contact: self.source_t1_shelf.as_ref().is_some_and(|shelf| {
+                source_shelf_contact: last_solve_contacts.iter().any(|contact| {
+                    contact
+                        .other_background_collider_path
+                        .as_ref()
+                        .is_some_and(|p| p.contains("/TaskAssets/shelf/"))
+                }) || self.source_t1_shelf.as_ref().is_some_and(|shelf| {
                     world
                         .world
                         .narrow_phase
@@ -559,6 +595,11 @@ impl TaskObjectScene {
                 .source_t1_shelf
                 .as_ref()
                 .map(|shelf| shelf.sample(world))
+                .transpose()?,
+            source_t2_background: self
+                .source_t2_background
+                .as_ref()
+                .map(|background| background.sample(world))
                 .transpose()?,
             initial_robot_shelf_overlap: self.initial_robot_shelf_overlap.clone(),
             objects,
