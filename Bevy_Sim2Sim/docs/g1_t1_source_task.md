@@ -74,7 +74,9 @@ Admission and emission metadata expose actual observation ages.
 commands in canonical physical upper-body order. Both original WBC configs give
 the waist to the lower-body policy. Decoded waist joint angles are retained as
 evidence and never converted to torso RPY; the original GR00T torso command is
-zero. This adapter is not yet a registered native task executor.
+zero. `ArenaTaskWorker` now admits these chunks in the same background owner
+that runs WBC, motors and Rapier. The live development camera entry uses it;
+production game/UI task registration and task qualification remain pending.
 
 `unitree_g1_source_material_cache.py` caches only original relative USD/MDL file
 references, with bounded downloads and SHA-256 receipts. The closed file graph
@@ -93,3 +95,33 @@ mislabel the reset state as the terminal physical pose.
 
 No source task outcome qualifies the required native ≥8/10 scores or the
 two-second released-object acceptance test. These remain independent gates.
+
+## Reset camera diagnosis and source task reproduction
+
+The original Lab 6 RTX update cache is keyed by simulator identity and physics
+step count. The reset changes robot state at the same count; the first RGB could
+therefore describe the pre-reset hand pose while its measured joints describe
+the reset pose. A render-only reset pump plus the public camera cache reset now
+refreshes that image before any policy request. Both SDK counters and all
+robot/object physical state are asserted unchanged; no integration or pose write
+is used. This refresh is enabled for every source harness run.
+
+With the same matched ONNX model, original scene and seed 42, the refreshed
+source runs triggered Arena's success at Tick 132 and Tick 140, each with four
+real complete VLA calls. Actual SDK integration counts were 528 and 560. The
+second run also verified a normal bridge shutdown and model close after early
+termination. The former timeout runs and failed first cleanup remain evidence.
+
+Original dataset action replay independently triggered the source success at
+Tick 120 (480 actual integrations), with the robot upright. Dataset revision is
+`37ba80a99486a4c308477854f54b4e82e77777dc`; it is an open-loop diagnostic,
+not autonomous perception. It uses the original Arena action mapping and never
+writes body poses. Upstream success ends/reset the episode immediately and
+does not prove the required two-second released-object stability criterion.
+
+The frozen N1.7 release image helper always letterboxes its RGB, including when
+its saved configuration says false. Its published ONNX black padding is
+consistent with that release helper. Current-main preprocessing must not be
+substituted for the matched release. The optional root PyTorch checkpoint has
+been hash-verified in the shared cache; its gated base processor is not needed
+to run the already validated complete ONNX source path.

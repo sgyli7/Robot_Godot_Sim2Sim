@@ -7,7 +7,7 @@ science station and does not qualify standing, grasping or either task.
 From the integration `Bevy_Sim2Sim` directory, prepare a new configuration:
 
 ```bash
-python3 crates/dev_tools/python/unitree_g1_camera_config.py \
+python3 crates/dev_tools/python/scripts/unitree_g1_camera_config.py \
   --model-dir /home/ethan/models/unitree_g1/homie_v2 \
   --ort /home/ethan/models/unitree_g1/homie_v2/tools_env/lib/python3.12/site-packages/onnxruntime/capi/libonnxruntime.so.1.30.0 \
   --output .scratch/g1_camera/config.json
@@ -54,3 +54,38 @@ and 43 measured joint positions/velocities. Evidence is frozen under
 `/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/g1_completed_boundary_camera_001/manifest.json`.
 This proves a synchronized running native camera boundary for the floor-only
 scene; it does not qualify science-station contact or task behavior.
+
+## Live matched-policy diagnostic
+
+The same entry also accepts an `ArenaTaskRunnerConfig` in `runner` and a
+`policy` object with `endpoint`, `max_calls` and `timeout_ms`. Both must be
+supplied together. The endpoint is IPv4 localhost `/infer`; the profile selects
+the separate static or mobile client. This mode permits one to three complete
+chunks only, and `--g1-ticks` must exactly equal the selected model's horizon
+times `max_calls`. The runner requires an explicit wall-clock image age limit.
+
+Prepare and start the verified local service separately, for example:
+
+```bash
+/home/ethan/models/unitree_g1/envs/policy_onnx_cu13/bin/python \
+  crates/dev_tools/python/scripts/unitree_g1_static_server.py \
+  --receipt /home/ethan/Projects/Sai_Lab/.scratch/unitree_g1/policy/static_apple_files.json \
+  --device cuda --port 5557 --capture-dir .scratch/NEW_CASE/server_captures
+```
+
+Only actual RGB and the measured named joint state enter inference. Each reply
+resumes the same owner/world/controller history for its complete action chunk;
+no reset, pose replay, object coordinate input or acquisition restamp occurs.
+Between chunks the simulator explicitly pauses for camera and inference. This
+is a live diagnostic, not qualification of continuous real-time task execution
+or a physically verified holding/stopping controller. The procedural support
+is displayed using the actual owner-world cuboid, with a disclosed diagnostic
+material; original background renderer parity is not claimed.
+
+The 2026-10-02 run at `ba42cab` completed three actual local VLA calls and 120
+body-control calls, torque updates and integrations. Active simulation/wall
+ratio was 0.99593, with zero pending ticks/deadline misses; pause intervals are
+excluded. Matching RGB/self-state/action receipts and completed boundaries at
+Ticks 40/80/120 were retained. G1 stayed upright, but the apple was not lifted.
+This closes the live input-to-actuation seam only. All T1/T2 acceptance gates
+remain open. `live_policy_*` counts are separate from WBC inference counts.
