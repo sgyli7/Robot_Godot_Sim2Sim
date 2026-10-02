@@ -150,3 +150,12 @@ comparison still did not grasp; its active ratio was 0.9944 with no pending
 Tick. Removing that shadow is therefore insufficient to resolve the task.
 Neither flag changes the existing science-station lighting or establishes
 equivalence to the original eight rectangular ceiling lights.
+
+`render_only_environment_translation: [0, 0, 0.795]` is restricted to a fresh
+legacy static apple/plate capture with zero requested Ticks, no physical shelf,
+no policy service and no solver diagnostics. It allows the original background
+to be rendered at externally measured source poses for the causal comparison
+described in `g1_t1_source_task.md`. Normal background loading still requires
+the frozen physical source-shelf profile. An actual zero-Tick preflight passed
+all robot/prop pose checks; a nonzero-Tick invocation failed before creating a
+capture or loading a world. Receipts label this mode as external-pose rendering.

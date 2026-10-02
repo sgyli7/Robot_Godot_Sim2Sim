@@ -63,6 +63,43 @@ def policy_reply(path, body):
     return result
 
 
+def renderer_reply(path, body):
+    """Private diagnostic IPC, distinct from the RGB/self-state policy wire."""
+    data = json.dumps(body, allow_nan=False).encode()
+    if not 0 < len(data) <= 2_097_152:
+        raise ValueError('Renderer pose request exceeds finite bound')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(90)
+        connection.connect(str(path))
+        connection.sendall(len(data).to_bytes(4, 'big') + data)
+        def exact(length):
+            value = bytearray()
+            while len(value) < length:
+                part = connection.recv(length - len(value))
+                if not part:
+                    raise ValueError('Diagnostic renderer disconnected')
+                value.extend(part)
+            return bytes(value)
+        size = int.from_bytes(exact(4), 'big')
+        if not 0 < size <= 2_097_152:
+            raise ValueError('Renderer reply exceeds finite bound')
+        result = json.loads(exact(size))
+    if result.get('error'):
+        raise ValueError(f"Diagnostic renderer failed: {result['error']}")
+    if (result['schema'] != 'g1_source_renderer_rgb_v1'
+            or result['episode_id'] != body['episode_id']
+            or result['control_tick'] != body['control_tick']
+            or not result['pose_correspondence_passed']
+            or result['native_integrations'] != 0
+            or result['native_controller_updates'] != 0
+            or result['native_policy_calls'] != 0):
+        raise ValueError('Renderer identity/zero-integration contract changed')
+    now = time.time_ns() // 1_000_000
+    if not 0 <= now - result['captured_at_unix_ms'] <= 15_000:
+        raise ValueError('Renderer returned an old/future image')
+    return result
+
+
 def run(args, receipt, output):
     from isaaclab_arena.cli.isaaclab_arena_cli import get_isaaclab_arena_cli_parser
     from isaaclab_arena.utils.isaaclab_utils.simulation_app import SimulationAppContext
@@ -243,11 +280,51 @@ def run(args, receipt, output):
                         if rgb.shape != (480, 640, 3) or rgb.dtype != np.uint8:
                             raise ValueError('Original camera did not produce 640x480 uint8 RGB')
                         Image.fromarray(rgb).save(captures / f'head_{tick:04}.png')
+                        captured_at_unix_ms = time.time_ns() // 1_000_000
+                        if args.renderer_socket and tick < args.ticks:
+                            # Measured simulator truth goes only to the separate
+                            # renderer, never into the task-policy request. The
+                            # original source physics remains the sole task
+                            # owner and is blocked without advancing here.
+                            def renderer_state():
+                                return {
+                                    'q': measured(robot.data.joint_pos).copy(),
+                                    'dq': measured(robot.data.joint_vel).copy(),
+                                    'root': measured(robot.data.root_link_pose_w).copy(),
+                                    **{name: measured(raw.scene[name].data.root_state_w).copy()
+                                       for name in (launch.object, launch.destination)}}
+                            before = renderer_state()
+                            counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                            render_request = {'schema': 'g1_source_renderer_pose_v1',
+                                'episode_id': args.episode_id, 'control_tick': tick,
+                                'environment_translation_source': [0., 0., .795],
+                                'joint_kinematics': audit,
+                                'task_objects': sample['acceptance_truth_only']}
+                            render_started = time.monotonic()
+                            rendered = renderer_reply(args.renderer_socket, render_request)
+                            after = renderer_state()
+                            error = max(float(np.abs(after[key] - value).max())
+                                        for key, value in before.items())
+                            after_counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                            if error != 0 or counters != after_counters:
+                                raise ValueError('Renderer request advanced or changed source physical state')
+                            pixels = base64.b64decode(rendered.pop('camera_rgb_b64'), validate=True)
+                            if len(pixels) != 640 * 480 * 3 or hashlib.sha256(pixels).hexdigest() != rendered['rgb_sha256']:
+                                raise ValueError('Renderer RGB dimensions/hash changed')
+                            rgb = np.frombuffer(pixels, dtype=np.uint8).reshape(480, 640, 3)
+                            Image.fromarray(rgb).save(captures / f'bevy_head_{tick:04}.png')
+                            captured_at_unix_ms = rendered['captured_at_unix_ms']
+                            rendered.update(source_before_sdk_counters=counters,
+                                source_after_sdk_counters=after_counters,
+                                source_physical_state_max_abs_change=error,
+                                render_request_seconds=time.monotonic() - render_started)
+                            (captures / f'renderer_{tick:04}.json').write_text(json.dumps(rendered, allow_nan=False))
+                            receipt.setdefault('renderer_requests', []).append(rendered)
                         state = {key: q[value].tolist() for key, value in indices.items()}
                         # Use the numerically verified training order; published
                         # preprocess_state element_names incorrectly say thumb first.
                         stamp = {'episode_id': args.episode_id, 'frame_id': tick,
-                            'sim_time_ns': tick * 20_000_000, 'captured_at_unix_ms': time.time_ns() // 1_000_000}
+                            'sim_time_ns': tick * 20_000_000, 'captured_at_unix_ms': captured_at_unix_ms}
                         sequence += 1
                         request = {'schema': 'unitree_g1_static_observation_v2', 'profile': 'static_apple',
                             'sequence_id': sequence, 'observation': stamp,
@@ -315,6 +392,8 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--policy-socket', type=Path)
     mode.add_argument('--expert-sequence', type=Path)
+    parser.add_argument('--renderer-socket', type=Path,
+                        help='Diagnostic only: source physics plus zero-Tick Bevy render of its measured poses')
     parser.add_argument('--expert-sha256')
     parser.add_argument('--joint-kinematics-audit', action='store_true',
                         help='Read-only SDK Jacobian/body-pose evidence at existing 40-Tick boundaries')
@@ -325,6 +404,10 @@ def main():
         parser.error('Use 1..300 ticks within the original six-second episode and a positive episode identity')
     if bool(args.expert_sequence) != bool(args.expert_sha256):
         parser.error('Expert diagnostics require both sequence and its SHA-256 identity')
+    if args.renderer_socket:
+        if not args.policy_socket:
+            parser.error('Renderer comparison requires the original local policy bridge')
+        args.joint_kinematics_audit = True
     if args.expert_sequence:
         load_sequence(args.expert_sequence, args.expert_sha256)
     receipt = {'schema': 'g1_t1_original_source_task_v1', 'qualified': False,
@@ -334,6 +417,9 @@ def main():
         'policy_calls': 0, 'requested_control_ticks': args.ticks, 'seed': args.seed,
         'episode_id': args.episode_id, 'environment_translation': [0, 0, 0],
         'scope': 'original full T1 scene/camera; optional local ONNX or expert diagnostic; no native qualification'}
+    if args.renderer_socket:
+        receipt.update(scope='original source physics/control with external zero-Tick Bevy-rendered observations; causal renderer diagnostic only',
+                       external_renderer_diagnostic=True, source_renderer=str(args.renderer_socket))
     with args.output.open('x') as output:
         for name, expected in [('usd', USD_SHA), ('urdf', URDF_SHA), ('agile', AGILE_SHA),
                 ('background', BACKGROUND_SHA), ('apple', APPLE_SHA), ('plate', PLATE_SHA)]:

@@ -192,3 +192,26 @@ four-sweep final state drifted outside the plate at 0.11897 m/s. Whole-object
 containment and two continuous released/stable seconds were not established,
 and neither offline action replay is autonomous task success. The larger sweep
 count also does not eliminate the measured transient contact penetrations.
+
+## Causal renderer comparison
+
+`--renderer-socket` is a finite diagnostic with the original source physics,
+AGILE controller, self-state, action timing and ONNX policy unchanged. At each
+existing 40-Tick policy boundary a separate
+`unitree_g1_source_render_bridge.py` initializes a fresh native **zero-Tick**
+assembly from the measured SDK robot/prop poses and returns actual Bevy RGB.
+The original SDK image is retained alongside the image used by the policy.
+All 53 links, named joint coordinates and both prop frames are independently
+checked; source q/dq/root/prop state and integration counters must remain
+unchanged across the blocked render request. Simulator truth reaches only the
+renderer and evidence files. The policy wire remains RGB plus named self-state.
+
+This is explicitly external-pose render initialization, not native task
+execution or a controller. The native capture receipt must report zero WBC,
+torque, task-policy calls and integrations. The source camera stamp records
+the actual native image acquisition wall time and the stationary measured
+source boundary; both renderer identities remain in separate evidence. Neither
+side's frequency changes, and this paused comparison cannot qualify 1× runtime.
+The comparison freezes the current original-background/EV11.7/no-directional-
+shadow renderer candidate and matched 6.0 prop definition. Its outcome is not
+known until the original source task has executed these observations.

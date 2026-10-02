@@ -92,6 +92,10 @@ struct CaptureConfiguration {
     diagnostic_constraint_sweeps: Option<u32>,
     #[serde(default)]
     background_visual: Option<BackgroundVisualConfiguration>,
+    /// Renderer comparison only: a fresh zero-Tick world may be initialized
+    /// at measured external poses. This never admits actions or steps physics.
+    #[serde(default)]
+    render_only_environment_translation: Option<[f64; 3]>,
 }
 
 #[derive(Deserialize)]
@@ -311,6 +315,7 @@ pub fn run_capture_from_file(
         config.predictive_limit_diagnostic,
         config.diagnostic_constraint_sweeps,
         config.background_visual,
+        config.render_only_environment_translation,
     )
 }
 
@@ -370,6 +375,7 @@ pub struct G1CaptureReceipt {
     pub factory_verified_predictive_limit_joints: usize,
     pub factory_verified_diagnostic_constraint_sweeps: Option<u32>,
     pub background_visual_status: Option<G1BackgroundVisualStatus>,
+    pub external_pose_render_only: bool,
     pub unqualified: Vec<&'static str>,
 }
 
@@ -478,6 +484,7 @@ impl G1CaptureReceipt {
             factory_verified_predictive_limit_joints: 0,
             factory_verified_diagnostic_constraint_sweeps: None,
             background_visual_status: None,
+            external_pose_render_only: false,
             unqualified: vec![
                 "standing_stability",
                 "science_station_contact_geometry",
@@ -570,6 +577,7 @@ pub fn run_capture(
         false,
         None,
         None,
+        None,
     )
 }
 
@@ -585,19 +593,52 @@ fn run_capture_owner(
     predictive_limit_diagnostic: bool,
     diagnostic_constraint_sweeps: Option<u32>,
     background_visual: Option<BackgroundVisualConfiguration>,
+    render_only_environment_translation: Option<[f64; 3]>,
 ) -> Result<G1CaptureReceipt, String> {
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
     let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
         return Err("diagnostic exposure must be finite EV100 in 0..=20".into());
     }
+    if let Some(translation) = render_only_environment_translation {
+        let valid_static_scene = match &config {
+            CaptureRunnerConfig::Static(c) => c.task_objects.as_ref().is_some_and(|objects| {
+                objects.source_t1_shelf.is_none()
+                    && objects.placements.len() == 2
+                    && objects
+                        .placements
+                        .iter()
+                        .any(|p| p.kind == TaskObjectKind::Apple)
+                    && objects
+                        .placements
+                        .iter()
+                        .any(|p| p.kind == TaskObjectKind::Plate)
+            }),
+            _ => false,
+        };
+        if translation != [0., 0., 0.795]
+            || options.ticks != 0
+            || policy.is_some()
+            || predictive_limit_diagnostic
+            || diagnostic_constraint_sweeps.is_some()
+            || !valid_static_scene
+            || background_visual.is_none()
+        {
+            return Err("external-pose renderer comparison requires zero ticks, the static apple/plate scene without a physical shelf, original background and translation [0,0,0.795]; actions and solver diagnostics are forbidden".into());
+        }
+    }
     let background_model = background_visual
         .map(|background| {
-            let translation = config
-                .task_objects()
-                .and_then(|c| c.source_t1_shelf.as_ref())
-                .ok_or("original background needs the frozen source static shelf profile")?
-                .environment_translation_source;
+            let translation = match render_only_environment_translation {
+                Some(translation) => translation,
+                None => {
+                    config
+                        .task_objects()
+                        .and_then(|c| c.source_t1_shelf.as_ref())
+                        .ok_or("original background needs the frozen source static shelf profile")?
+                        .environment_translation_source
+                }
+            };
             G1BackgroundVisualModel::load(&background.path, &background.sha256, translation)
         })
         .transpose()?;
@@ -683,6 +724,11 @@ fn run_capture_owner(
         task_model.as_ref().map(|m| m.file_sha256.clone());
     outcome.0.lock().unwrap().camera_exposure_ev100 = exposure_ev100;
     outcome.0.lock().unwrap().diagnostic_directional_shadow_maps = directional_shadow_maps;
+    if render_only_environment_translation.is_some() {
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.scope = "external_measured_pose_initialized_zero_tick_renderer_comparison";
+        receipt.external_pose_render_only = true;
+    }
     if live_policy.is_some() {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.scope = "native_live_rgb_to_matched_policy_to_same_owner_diagnostic";
