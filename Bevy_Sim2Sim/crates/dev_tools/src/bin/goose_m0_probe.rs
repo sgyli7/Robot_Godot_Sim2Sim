@@ -36,6 +36,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .position(|value| value == name)
             .and_then(|index| arguments.get(index + 1))
     };
+    let performance_profile = arguments
+        .iter()
+        .any(|argument| argument == "--performance-profile");
+    if performance_profile && !cfg!(feature = "live_physics_profile") {
+        return Err("--performance-profile requires live_physics_profile".into());
+    }
     let plant_path = PathBuf::from(option("--plant").ok_or("--plant is required")?);
     let output = PathBuf::from(option("--output").ok_or("--output is required")?);
     if output.exists() {
@@ -169,6 +175,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "combined is experimental: zero first block plus signed relative second block, one native implicit-mass response; existing relative-row cancellation guard; original detection/filtering unchanged"
     );
     receipt["native_trace_enabled"] = json!(cfg!(feature = "sim2sim_limit_row_trace"));
+    if performance_profile {
+        receipt["performance_profile"] = json!({
+            "native_counters_enabled":true,
+            "snapshot_measurement":"one additional read-only SimulationWorld::snapshot per tick; not a renderer or channel publication measurement",
+            "scope":"unchanged prescribed-effort physics; no runtime or physical parameter optimization"
+        });
+    }
     receipt["compact_trace_scope"] = json!(
         "compact omits per-joint-update serialization only; original native tracing and physical stepping unchanged"
     );
@@ -188,6 +201,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut failures = Vec::new();
     for reset in 0..resets {
         let mut simulation = SimulationWorld::new_with_profile(PhysicsClockProfile::Goose50);
+        if performance_profile {
+            simulation.enable_rapier_counters();
+        }
         simulation
             .world
             .integration_parameters
@@ -310,6 +326,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .collect();
             let mut torque = [0.0; 18];
             torque[5] = if tick < 25 { 0.24 } else { 0.0 };
+            let assembly_step_started = performance_profile.then(Instant::now);
             let snapshot = match assembly.step(&mut simulation, torque) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
@@ -317,10 +334,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
             };
+            let assembly_step_wall_ms =
+                assembly_step_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
             let physics_wall_ms = started.elapsed().as_secs_f64() * 1000.0;
             times.push(physics_wall_ms);
             completed += 1;
+            let state_started = performance_profile.then(Instant::now);
             let state = assembly.state(&simulation)?;
+            let state_wall_ms =
+                state_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
+            let performance_sample = if performance_profile {
+                let snapshot_started = Instant::now();
+                let reread_snapshot = simulation.snapshot();
+                let snapshot_wall_ms = snapshot_started.elapsed().as_secs_f64() * 1000.0;
+                if reread_snapshot.integration_count != snapshot.integration_count
+                    || reread_snapshot.torque_update_count != snapshot.torque_update_count
+                    || reread_snapshot.global_step != snapshot.global_step
+                {
+                    return Err("read-only snapshot changed step counters".into());
+                }
+                let native = &simulation.world.physics_pipeline.counters;
+                Some(json!({
+                    "assembly_step_wall_ms":assembly_step_wall_ms,
+                    "state_read_wall_ms":state_wall_ms,
+                    "snapshot_reread_wall_ms":snapshot_wall_ms,
+                    "rapier":simulation.rapier_counter_sample(),
+                    "solver_resolution_ns":native.solver.velocity_resolution_time.time().as_nanos(),
+                    "solver_assembly_ns":native.solver.velocity_assembly_time.time().as_nanos(),
+                    "solver_velocity_update_ns":native.solver.velocity_update_time.time().as_nanos(),
+                    "solver_writeback_ns":native.solver.velocity_writeback_time.time().as_nanos(),
+                    "solver_contacts":native.solver.ncontacts,
+                    "solver_constraints":native.solver.nconstraints
+                }))
+            } else {
+                None
+            };
             let pin_error = assembly.jaw_pin_error_m(&simulation);
             maximum_pin_error = maximum_pin_error.max(pin_error);
             let link_geometry: Vec<_> = assembly
@@ -420,6 +468,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "body_link_geometry_post_integration":link_geometry,
                 "pad_ground_geometry_post_integration":pad_ground_geometry,
                 "physics_wall_ms":physics_wall_ms}));
+            if let Some(performance_sample) = performance_sample {
+                trace.last_mut().unwrap()["performance"] = performance_sample;
+            }
             #[cfg(feature = "sim2sim_limit_row_trace")]
             {
                 let root = simulation

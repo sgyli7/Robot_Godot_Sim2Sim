@@ -101,9 +101,11 @@ def build_candidate(parent_model: Path, parent_contract: Path, destination: Path
     return model_path, path
 
 
-def advance(model, data, *, predictive=True):
+def advance(model, data, *, predictive=True, prepare_constraints=None):
     """Prepare native H, correct bounds, solve, and perform one actual advance."""
     _require_platform()
+    if prepare_constraints is not None and not predictive:
+        raise ValueError("Constraint preparation requires the corrected solve")
     if (model.opt.timestep != DT or model.opt.integrator != int(mujoco.mjtIntegrator.mjINT_DISCRETE)
             or model.opt.solver != int(mujoco.mjtSolver.mjSOL_NEWTON)
             or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
@@ -136,6 +138,7 @@ def advance(model, data, *, predictive=True):
                 data.iefc_D[index] = 1./regularizer
                 data.iefc_aref[index] = data.efc_aref[row]
             changed += 1
+        preparation = prepare_constraints(model, data) if prepare_constraints is not None else None
         mujoco.mj_fwdConstraint(model, data)
         # The preview may have populated lazy RNE for force sensors.
         # Match native step2: refresh it for the corrected constraint result.
@@ -148,8 +151,11 @@ def advance(model, data, *, predictive=True):
     mujoco.mj_Euler(model, data)
     if preview_time != before or pre_advance_time != before or abs(data.time-before-DT) > 1e-12:
         raise RuntimeError("Not exactly one 20ms integration")
-    return {"preview_constraint_solves": 1, "corrected_constraint_solves": int(predictive),
-            "integrations": 1, "corrected_limit_rows": changed, "coordinate_writes": 0}
+    receipt = {"preview_constraint_solves": 1, "corrected_constraint_solves": int(predictive),
+               "integrations": 1, "corrected_limit_rows": changed, "coordinate_writes": 0}
+    if prepare_constraints is not None:
+        receipt["constraint_preparation"] = preparation
+    return receipt
 
 
 class GoosePredictiveDiscreteRuntime(GooseSourceRuntime):

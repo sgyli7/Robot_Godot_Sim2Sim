@@ -2,7 +2,7 @@
 
 版本：2026-10-02。实施分支：`codex/goose50_training`。
 
-当前停留在 M0，GPU／优化器使用为零。原 33 体的显式 CPU 候选 `goose_460_full50_discrete_limits_exact_v5` 已完成 9,600 次脚垫、2,000 次整机冷重置积分，并经 1,620 次积分核对原生推进映射；脚垫行程通过，嘴销误差降至约 0.70 μm，但接触穿透仍未准入，不能启动训练。最新入口为 [预测限位与精确对角检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/discrete_exact_limits_checkpoint.json)。共同压缩 v4 的左右无摩擦足底证据保持有效。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
+当前停留在源端 M0，GPU／优化器使用为零。按用户确认，主线收回到 **统一 MJCF → 原生 MuJoCo 基线 → mjlab／RSL-RL 基础训练 → Rapier／Bevy 迁移验收**。已有 CPU 自定义接触／离散实验收口为诊断档案，不继续作为默认训练内核扩展。原 33 体 v5 限位与嘴销改善，但源端接触仍未准入；v6 冷重置地面穿透约 2.504 mm、CPU P95 约 180 ms，仍未合格。最新诊断入口为 [地面实验收口检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/ground_discrete_diagnostic_checkpoint.json)。所有自研代码按 [唯一工程规范](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/bevy_engineering_rules.md)落点，实验产物只保存在项目备份目录。
 
 ## 1. 目标与当前基线
 
@@ -50,6 +50,11 @@ Rapier 的 `num_solver_iterations=1`、每体 `additional_solver_iterations=0`�
 
 **MuJoCo 50 Hz → mjlab／MuJoCo Warp + RSL-RL PPO → Rapier 零样本评估 → 必要的有界目标微调 → Bevy CPU ONNX 独立验收。**
 
+- 当前执行顺序先完成源端模型和成熟链路。复用 MicroDuck 的 `MjSpec`／`EntityCfg`、任务配置／注册、原生 VecEnv、上游 PPO、复载与导出组织方式；Goose 只增加必要的模型、65／18 控制适配及任务项，不另写训练器、通用环境框架或求解器。MicroDuck 的 BAM、轴序、身体尺度和奖励数值不直接移植。
+- 统一 MJCF 从已核验交付派生：显式质量与完整惯量、关节坐标、18 轴驱动、嘴闭环及来源映射只有一份权威；视觉细节与任务碰撞代理分开。原约 15,715 凸块不能直接作为成熟批量训练模型。代理保留空腔及脚／嘴／外壳关键接触面，经几何与载荷短检查再采用。
+- 源端优先原生 `mj_step` 和上游已支持的积分器／约束。v2–v6 的自定义 CPU 修正仅用于解释历史失败；未经独立兼容检查不进入 mjlab／Warp，不为保留某个局部方案继续改内核。
+- 明确设定 `timestep=0.02`、`decimation=1`，力矩与策略同频；不能沿用常见的 5 ms×4 配置。依赖首先对齐 MicroDuck 实际采用的 mjlab 1.3.0、Warp 1.12.0 与 RSL-RL 5.0.1，再锁定解析得到的兼容 MuJoCo／Warp 后端；3.13 CPU 诊断环境不等于训练依赖。
+- 物理准入分为 **M0-S 源端** 和 **M0-T 目标端**。源端物理及 GPU 小批量链路通过后，可先做有界源端站立／移动基础训练，保留 `target_qualified=false`。源策略形成后执行零样本目标评估；M0-T 未过不做目标训练或授予 Bevy 能力资格。两侧和最终行为验收门槛保持不变，不用源成绩代替迁移成绩。
 - GPU 小批量验证完整惯量、约束、驱动、接触容量和步进，才扩大并行数；CUDA 网络不等于 GPU 物理。
 - 新增 Rapier 持久无头 batch worker 与 RSL VecEnv，训练和游戏复用物理步、驱动、观测与重置。
 - 分别报告源端、零样本迁移、目标适配后、Bevy 游戏四层成绩。
@@ -68,8 +73,8 @@ Rapier 的 `num_solver_iterations=1`、每体 `additional_solver_iterations=0`�
 
 | 里程碑 | 工作 | 退出依据 |
 | --- | --- | --- |
-| M0 物理接入 | 两种本体、逐轴、嘴约束、软底载荷、碰撞代理；同步地面可达性与带载静力筛查 | 同版本至少一份源/目标均过物理门槛 |
-| M1 链路 | 锁依赖、小 batch GPU rollout、真实 PPO 更新、复载、ONNX 对照、Rapier batch | 真实积分和优化器更新、有限数值与完整收据 |
+| M0 物理接入 | M0-S：统一 MJCF、原生源端逐轴／嘴／足底／接触短检查；M0-T：目标端同版本复核 | 分别报告源／目标资格；整体 M0 仍要求同版本两侧通过 |
+| M1 链路 | 优先锁源端依赖、小 batch GPU rollout、一次真实 PPO 更新、复载与 ONNX 对照；目标 batch 后续按需要接入 | 源端物理已通过，真实积分和优化器更新、有限数值与完整收据；目标资格单列 |
 | M2 平地 | 站立→低速前后→横移→转向→启停反向→混合指令 | 独立移动验收，首个可操作 Bevy 候选 |
 | M3 恢复 | 四类倒地→随机初态→真实扰动→继续移动 | 完整链通过，自然跌倒与直接倒地分别报告 |
 | M4 地形 | 5/10/20 mm、正反缓坡、小台阶、方向变化与停止 | 各档达标，终点稳定 |
@@ -109,13 +114,13 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 - 首轮5–15分钟 pilot 测吞吐、内存和接触容量，再定 batch/更新；记录真实物理样本、优化器更新和资源消耗。
 - G1 与 Goose 平等共享 DGX：仅 GPU PPO 开始前和释放时简短通知预计窗口并排队；不停止他人任务、不日常跨聊天问进度。等待用低频调度。
 - 两次受控实验无改善就回查物理、初态、观测、终止和奖励分项，避免局部死循环。
-- 保存模型/合同/代码/依赖/配置/seed/策略哈希；候选显式指定，不用 latest。M0未过禁止长训，数值/约束/容量异常停止该批。
+- 保存模型/合同/代码/依赖/配置/seed/策略哈希；候选显式指定，不用 latest。M0-S 和源 GPU 链路未过禁止源端长训，M0-T 未过禁止目标训练；数值/约束/容量异常停止该批。
 - 每关交付通过/失败/适用范围、录像、算力和下一实验，基于真实吞吐滚动估时。
-- 当前实施聊天的 `Goose ProjectManager` heartbeat 每两小时检查阶段产出和失焦，不新建聊天；首检查点是计划、50 Hz合同和首次M0真实证据，下个检查点是门槛矩阵、失败归因和下一候选。
+- 当前实施聊天的 `Goose ProjectManager` heartbeat 每两小时检查产出与主线进度，不新建聊天。用户授权的单一 `bevy_performance` 子 agent 持续处理目标端性能；每周期有界测量、对照与回归，完成后闲置，下一周期再派工。性能工作不得改碰撞形状／过滤、求解配置、物理参数或观测／动作合同来凑速度。
 
 当前M0实施中，尚未启动PPO。原始产物归档 `/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/`；本页为唯一计划和状态入口。最终交付冻结策略、本体/合同、Bevy包、复现命令、三主线报告及未通过清单。制造/电气/实物载荷仍由机器人工程侧维护；仿真资格不自动等于实物资格。
 
-当前优先项是原 33 体候选的接触准入：地面预测接触短对照已定位激活距离的影响，下一批把法则和真实边界冻结成独立候选，补接触反力、释放／冲击、逐轴和自碰撞检查，并核对任务碰撞代理来源与性能，再配对同版本 Rapier。共同压缩路线的摩擦和任意接触方向仍未通过，保留其拓扑守卫；不重复 PGS、局部嘴部或微小精度扫描。M0 门槛不变，PPO 尚未启动。
+当前优先项是成熟源训练链路的可运行最小闭环：**复用并锁定依赖 → 统一任务 MJCF／碰撞代理 → 原生源端准入 → 小批量 PPO 与导出 → 首个站立／移动源策略 → 目标迁移**。Bevy 性能并行推进。每周期只选能解锁下一阶段的一个问题；局部实验达到诊断目的即收口，连续两次无改善就回到模型或成熟流程，不追加求解器分支。下方历史检查点中的“下一批”只记录当时决定，以本段现行顺序为准。
 
 ## 6. 实施检查点：M0 未通过
 
@@ -373,6 +378,26 @@ MuJoCo **3.13.0** 新增原生 `discrete`，让线性刚度、阻尼与约束在
 
 独立进程重算 100 个完成姿态的 FK／碰撞，没有新增积分或修改轨迹。足底地面最大穿透仍为 **13.048 mm**，自碰撞最大 **3.432 mm**，最深配对为右胫骨惰轮叉板与右脚装饰件；两者分别保留；**源端接触与 M0 未通过**。末帧直立度约 0.9992、COM 高度约 0.28393 m，只是重复名义出生的 2 秒无 Actor 诊断，不能授予 60 秒站立或移动／恢复资格。此前颈部壳体来源审查确认它是厂商尺寸圆柱包络而非厂商 CAD，不能凭猜测开空腔、删碰撞体或扩大排除名单。
 
-两个新地面接触实验各 **100 次积分**，明确改变地面接触法则，未修改冻结 v5 模型或授予新候选资格。只加强已激活接触时，积分前穿地增至 **18.389 mm**；保持同一法则，仅增加 **10 mm 检测激活余量**并仍以真实表面距离为法向边界，降至 **0.328 mm**。后一实验 P95 约 **21.19 ms**，仍未达到目标预算。这是一次名义短对照，不能外推所有落地速度、摩擦、倾斜、自碰撞或目标引擎；[协议、轨迹与收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/discrete_ground_predictive_activation_diagnostic_v2/receipt.json)保留，下一批先冻结完整接触合同并检查实际反力与代理开销，不继续扫正则强度。
+两个新地面接触实验各 **100 次积分**，改变地面接触法则，未修改冻结 v5 或授予资格。只加强已激活接触时穿地达 **18.389 mm**；运行时改写检测余量的短对照曾记录 **0.328 mm／21.19 ms**。[原收据](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/diagnostics/discrete_ground_predictive_activation_diagnostic_v2/receipt.json)保留，但后续独立审查发现 `body_margin` 广相缓存未更新，只检测到 48 个地面接触；正确编译的 10 mm 余量检测到 608 个，独立刷新缓存后接触签名与编译版本一致。因此这组较好数字**不能作为完整编译接触配置的证据**，由下方 v6 结果替代其推论。
 
 本轮旧引擎 Goose 回归 **70 项通过、7 项新引擎检查跳过**，新引擎专项 **4 项通过、1 项旧引擎检查跳过**；[552 项结构检查](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/engineering_structure_discrete_exact_checkpoint.json)通过。代码和测试位于 `crates/dev_tools/python/`，运行时合同仍为 [robot/src/goose/contract.rs](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/modules/robot/src/goose/contract.rs)。实验模型、脚本、日志、收据和执行快照全部在项目备份目录。**GPU、PPO、优化器更新为零，长期目标尚未完成。**
+
+### 接触实验收口与成熟源链路切换
+
+`goose_460_full50_discrete_ground_v6` 将 10 mm 检测余量写入 XML 后编译，保持真实表面为接触边界，仅修改静态地面的约束参考与正则；原椭圆摩擦锥比例、刚体和驱动参数保留。新守卫拒绝缓存不一致的配置。[收口检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/ground_discrete_diagnostic_checkpoint.json)核对 **2,500 帧实际积分轨迹及哈希**：v5 控制 100、v6 名义冷重置 2,000、三种冲击 300、缓存守卫后复核 100。
+
+v6 冷重置地面穿透 **2.504 mm**、源 CPU 物理加控制器 P95 **180.17 ms**；冲击最大 **3.333 mm／120.40 ms**。已测法向非黏附、摩擦锥及线性化完成速度下的切向耗散检查通过，但不能由此推断完整能量、原物理等价或物理准入。守卫前后的名义物理轨迹逐值一致。历史 v5 约 13 mm 地面和 3.43 mm 自碰撞来自 **MuJoCo CPU**，不当作 Bevy 游戏实测。Rapier 构造已采用逐块 `convex_hull` 和 compound；MuJoCo 常规 mesh 也使用凸包碰撞，见 [MuJoCo mesh 说明](https://mujoco.readthedocs.io/en/3.13.0/XMLreference.html#asset-mesh)。问题不是未打开 convex。
+
+本分支到此冻结为 CPU 诊断，不继续增加自定义地面法则或扫参数。新原生参考复用已存在的凝聚 MJCF 和质量合并，只采用成熟栈支持的 `implicitfast`，保持 `training_release=false`；先接通 `MjSpec`／`EntityCfg` 原生模型，再整理可训练碰撞代理与源端物理准入。流程依据 [MicroDuck 源配置](/home/ethan/ProjectBackups/2026-10-01/Sai_Lab/microduck_official_velstand_source_001/source_5946/pyproject.toml)、[mjlab 架构](https://mujocolab.github.io/mjlab/main/source/architecture_overview.html)和 [官方自定义机器人示例](https://github.com/mujocolab/anymal_c_velocity)，只增加 Goose 必需的适配。
+
+用户授权的 Bevy 性能子 agent 首轮 [报告](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_bevy_performance_001/cycle_01_report.md)使用相同前 20 Tick 的两次测量：原生 step 均值 **210.93 ms**，约束组装约 **80.1%**，快照仅 **0.215 ms**。计时开／关完整状态、力矩、接触逐值一致，5 项原生回归通过；只增加开发探针可选计时，未修改运行时算法。下一性能周期跟随主线冻结的新本体／代理，避免无收益的小优化。**M0-S／M0-T 尚未通过，PPO／GPU／优化器使用为零。**
+
+### 原生 mjlab 模型接线检查点
+
+[mjlab_baseline.py](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/crates/dev_tools/python/src/bevy_microduck_tools/goose/mjlab_baseline.py)复用冻结的 21 体凝聚 MJCF，通过上游 `MjSpec`／`EntityCfg`／`XmlActuatorCfg` 接入；场景平面交给任务场景，XML 电机保持 effort 输入。按实际电机目标绑定 18 轴，第六轴为 `beak_input_rotor`，不把嘴输出关节误作驱动轴。65 维观测及目标动作控制器仍沿用 Goose 合同，尚未接入 PPO 任务注册。
+
+已锁定 Python 3.12、mjlab 1.3.0、MuJoCo 3.10.0、MuJoCo Warp 3.8.1、Warp 1.12.0、RSL-RL 5.0.1、Torch 2.9.1。依赖与锁文件归属现有开发工具 Python 包；本地验证采用隔离 CPU 环境，DGX 的 aarch64 Torch 指向官方 cu129 索引，尚未使用 GPU。旧 CPU 3.13 实验保留独立环境，不能通过改依赖混入原生训练链路。
+
+[接线检查点](/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/mjlab_baseline_001/bootstrap_checkpoint.json)中，新参考的 22 组物理数组与原生凝聚父模型一致，上游 Entity 封装后的 18 组身体、关节、机构和驱动数组一致，电机名称／顺序不变。质量仍为 **10.430762603 kg**，21 体、18 主动轴、2 被动坐标。沿用 Goose 控制器完成 **10 次 20 ms 原生积分及 10 次力矩更新**，65 维观测有限，无数值警告。这只有 0.2 秒接线证据，未授予站立或源端物理资格；原碰撞几何和未校准足底仍待处理。
+
+最终 **76 项 Goose Python 回归通过、11 项专属新引擎检查跳过**；5 项 Bevy 原生回归、Rust 格式和工程结构检查通过。下一项明确是**从已核验来源整理任务碰撞代理并冻结一份原生训练 MJCF**，保持总质量／完整惯量、支撑轮廓、嘴接触与空腔；完成有界源端物理筛查后接上游任务管理和一次 PPO smoke。不上新的通用框架，不继续扩展 CPU 地面修正。
