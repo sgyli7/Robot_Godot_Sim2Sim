@@ -221,6 +221,60 @@ fn real_mobile_source_grasp_window_diagnostic() -> Result<(), RobotError> {
     Ok(())
 }
 
+/// The original body selects stand below 0.05 command norm. Keep turning to
+/// half the acceptance tolerance before switching policies; only resume past
+/// the unchanged outer tolerance. This avoids switching on every gait sway.
+#[derive(Default)]
+struct DiagnosticTurnController {
+    settling: bool,
+}
+
+impl DiagnosticTurnController {
+    fn navigation(&mut self, error: f32) -> f32 {
+        if self.settling {
+            if error.abs() >= 0.06 {
+                self.settling = false;
+            }
+        } else if error.abs() <= 0.03 {
+            self.settling = true;
+        }
+        if self.settling {
+            0.
+        } else {
+            error.signum() * (0.8 * error.abs()).clamp(0.06, 0.4)
+        }
+    }
+}
+
+#[test]
+fn turn_navigation_does_not_stall_in_original_stand_deadband() {
+    use robot_minigame::g1::contract::G1Command;
+    for error in [-0.07, 0.07] {
+        let mut controller = DiagnosticTurnController::default();
+        let command = G1Command {
+            navigation: [0., 0., controller.navigation(error)],
+            ..Default::default()
+        };
+        assert!(!command.standing());
+        assert_eq!(command.navigation[2].signum(), error.signum());
+    }
+    // Recorded failure crossed 0.06 repeatedly while never reaching 0.03.
+    // It must keep the walk/turn body active through those samples.
+    for sign in [-1., 1.] {
+        let mut controller = DiagnosticTurnController::default();
+        for magnitude in [0.07, 0.054, 0.052, 0.064, 0.05, 0.031] {
+            let yaw = controller.navigation(sign * magnitude);
+            assert!(yaw.abs() >= 0.06);
+            assert_eq!(yaw.signum(), sign);
+        }
+        assert_eq!(controller.navigation(sign * 0.03), 0.);
+        for magnitude in [0.04, 0.059, 0.05] {
+            assert_eq!(controller.navigation(sign * magnitude), 0.);
+        }
+        assert!(controller.navigation(sign * 0.06).abs() >= 0.06);
+    }
+}
+
 /// A different causal question from the VLA rollout: after the same proven
 /// source grasp, can the body keep its last upper targets during a fixed turn,
 /// clear-aisle walk and stop? Saved commands are diagnostic fixtures, not live
@@ -272,10 +326,50 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
         "" => false,
         _ => return Err(error("unsupported fixed grip navigation comparison")),
     };
-    let tick_budget = if feedback_navigation { 2050 } else { 1050 };
+    let refresh_contacts = match std::env::var("G1_MOBILE_GRIP_CONTACT_REFRESH").as_deref() {
+        Ok("disable_after_200") => true,
+        Err(_) => false,
+        _ => return Err(error("unsupported contact-freshness comparison")),
+    };
+    let upper_override: Option<[f32; robot_minigame::g1::contract::UPPER_COUNT]> =
+        if std::env::var_os("G1_MOBILE_GRIP_UPPER_TARGETS").is_some() {
+            Some(
+                serde_json::from_slice(&read_bound("G1_MOBILE_GRIP_UPPER_TARGETS")?)
+                    .map_err(error)?,
+            )
+        } else {
+            None
+        };
+    if refresh_contacts && upper_override.is_some() {
+        return Err(error(
+            "grip comparison cannot change contacts and targets together",
+        ));
+    }
+    let full_grip_stage = match std::env::var("G1_MOBILE_GRIP_TARGET_PHASE").as_deref() {
+        Ok("full_body_carry_2050")
+            if upper_override.is_some() && feedback_navigation && !refresh_contacts =>
+        {
+            true
+        }
+        Err(_) => false,
+        _ => {
+            return Err(error(
+                "unsupported calibrated grip stage/profile combination",
+            ));
+        }
+    };
+    let retention_only = (refresh_contacts || upper_override.is_some()) && !full_grip_stage;
+    let tick_budget = if retention_only {
+        600
+    } else if feedback_navigation {
+        2050
+    } else {
+        1050
+    };
     let mut navigation_stage = "turn";
     let mut navigation_stage_ticks = 0_u64;
     let mut heading_ready_ticks = 0_u64;
+    let mut turn_controller = DiagnosticTurnController::default();
     let mut own_velocity_odometry = [0_f32; 2];
     let mut feedback_completed = false;
     let mut held_heading = None;
@@ -285,6 +379,30 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
     let ArenaControllerCommand::MobileHomieV2(mut held_command) = admitted.controller else {
         return Err(error("fixed grip body profile mismatch"));
     };
+    if let Some(targets) = upper_override {
+        let (definition_path, identity) = config.body.definition_identity();
+        let definition = G1Definition::load(definition_path, identity)?;
+        for (i, &value) in targets.iter().enumerate() {
+            let name = robot_minigame::g1::contract::JOINT_NAMES
+                [robot_minigame::g1::contract::LOWER_COUNT + i];
+            let joint = definition
+                .model()
+                .joints
+                .iter()
+                .find(|j| j.name == name)
+                .ok_or_else(|| error("grip target lacks original joint identity"))?;
+            if !value.is_finite()
+                || value < joint.limits[0] as f32
+                || value > joint.limits[1] as f32
+                || (value - held_command.upper_positions[i]).abs() > 0.1
+            {
+                return Err(error(
+                    "bounded grip geometry candidate exceeds original joint limit/change",
+                ));
+            }
+        }
+        held_command.upper_positions = targets;
+    }
     let output = PathBuf::from(std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(error)?);
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -342,6 +460,9 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
                 let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
                     return Err(error("fixed grip lost mobile owner"));
                 };
+                if refresh_contacts && tick == 201 {
+                    body.diagnostic_refresh_contacts_after_grasp()?;
+                }
                 let phase = if feedback_navigation {
                     let own_state = body.measurement()?;
                     let [w, x, y, z] = own_state.root_rotation_wxyz;
@@ -369,7 +490,7 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
                                 return Err(error("proprioceptive turn deadline missed"));
                             }
                             held_command.navigation =
-                                [0., 0., (0.8 * heading_error).clamp(-0.4, 0.4)];
+                                [0., 0., turn_controller.navigation(heading_error)];
                             "feedback_fixed_grip_turn"
                         }
                         "walk" => {
@@ -380,7 +501,11 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
                                     own_state.root_velocity_source[k] * 0.02;
                             }
                             let distance = own_velocity_odometry[0].hypot(own_velocity_odometry[1]);
-                            if distance >= 2. {
+                            // Case0178 measured 1.992m before braking and1.974m
+                            // after settling at a2m velocity-odometry threshold.
+                            // A5cm command margin preserves the independent2m
+                            // displacement requirement rather than relaxing it.
+                            if distance >= 2.05 {
                                 navigation_stage = "stop";
                                 navigation_stage_ticks = 0;
                                 held_command.navigation = [0.; 3];
@@ -501,21 +626,34 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
     })();
     trace.flush().map_err(error)?;
     let passed = result.is_ok()
-        && maximum_walk_displacement >= 2.
-        && if feedback_navigation {
-            feedback_completed && held_suffix >= 350
+        && if retention_only {
+            actual_ticks == 600 && held_suffix == 400
         } else {
-            held_suffix == 850
+            maximum_walk_displacement >= 2.
+                && if feedback_navigation {
+                    feedback_completed && held_suffix >= 350
+                } else {
+                    held_suffix == 850
+                }
         };
+    let navigation_control = serde_json::json!({
+        "odometry_goal_m":2.05,"independent_physical_displacement_requirement_m":2.,
+        "turn_stand_entry_error_rad":0.03,"turn_resume_error_rad":0.06,
+        "turn_acceptance_error_rad":0.06,"turn_acceptance_consecutive_ticks":20,
+    });
     serde_json::to_writer_pretty(&mut file,&serde_json::json!({
         "schema":"g1_fixed_grip_body_carry_diagnostic_v1","qualified":false,
         "autonomous_execution":false,"task_success_verified":false,"one_x_qualified":false,
         "actual_vla_inferences":0,"code_commit":std::env::var("G1_CODE_COMMIT").map_err(error)?,
         "source_actions_sha256":std::env::var("G1_MOBILE_REPLAY_ACTIONS_SHA256").map_err(error)?,
         "config_sha256":std::env::var("G1_MOBILE_REPLAY_CONFIG_SHA256").map_err(error)?,
-        "original_upper_targets_unchanged_after_grasp":true,"no_runtime_pose_or_object_writes":true,
-        "feedback_navigation":feedback_navigation,"navigation_mode":navigation_mode,"maximum_physical_tick_budget":tick_budget,
+        "original_upper_targets_unchanged_after_grasp":upper_override.is_none(),
+        "classical_upper_target_override_sha256":std::env::var("G1_MOBILE_GRIP_UPPER_TARGETS_SHA256").ok(),"no_runtime_pose_or_object_writes":true,
+        "feedback_navigation":feedback_navigation,"navigation_mode":navigation_mode,
+        "full_calibrated_grip_body_stage":full_grip_stage,
+        "contact_recycling_disabled_only_after_matched200Ticks":refresh_contacts,"maximum_physical_tick_budget":tick_budget,
         "own_velocity_odometry_xy_m":own_velocity_odometry,"feedback_completed":feedback_completed,
+        "navigation_control":navigation_control,
         "fixed_phases_ticks":{"saved_source_grasp":200,"turn":if feedback_navigation {750} else {400},"walk":if feedback_navigation {1000} else {350},"stop":100},
         "fixed_commands":{"turn_max_yaw_rate":0.4,"walk_forward_speed":0.3,"walk_max_yaw_rate":0.25,"stop":[0.,0.,0.]},
         "physics_hz":50,"integrations_per_tick":1,"actual_ticks":actual_ticks,
@@ -523,7 +661,8 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
         "error":result.as_ref().err().map(ToString::to_string),"minimum_upright":minimum_upright,
         "maximum_box_displacement_m":maximum_box_displacement,"final_box_position_source":final_position,
         "maximum_root_walk_phase_displacement_m":maximum_walk_displacement,
-        "final_manual_phase_held_suffix_ticks":held_suffix,"fixed_grip_2m_walk_passed":passed,
+        "final_manual_phase_held_suffix_ticks":held_suffix,"fixed_grip_2m_walk_passed":!retention_only && passed,
+        "bounded_600_tick_grip_retention_passed":retention_only && passed,
         "wall_seconds":start.elapsed().as_secs_f64(),
         "scope":"one finite source-grasp/manual-body mechanical comparison; no RGB/VLA/Qwen/task release qualification",
     })).map_err(error)?;
@@ -532,7 +671,7 @@ fn real_mobile_fixed_grip_body_carry_diagnostic() -> Result<(), RobotError> {
     result?;
     if !passed {
         return Err(error(
-            "fixed grip body test did not preserve grasp over2m walk/stop",
+            "fixed grip body comparison did not satisfy its frozen retention or2m walk/stop rule",
         ));
     }
     Ok(())

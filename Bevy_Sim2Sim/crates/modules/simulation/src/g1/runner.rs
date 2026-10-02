@@ -219,7 +219,35 @@ impl G1Runner {
             .transpose()
     }
 
-    /// Read only; loading a world never manufactures an inferred or stepped state.
+    /// Test-only causal comparison after an exactly matched200Tick grasp.
+    /// Forces fresh contact geometry; no solver iterations, gains, time step,
+    /// body pose or motor target is altered.
+    #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn diagnostic_refresh_contacts_after_grasp(&mut self) -> Result<(), RobotError> {
+        if self.progress_counts().integration_count != 200
+            || !self
+                .task_objects
+                .as_ref()
+                .is_some_and(|s| s.has_source_t2_background())
+            || self.simulation.world.integration_parameters.dt != 0.02
+            || self
+                .simulation
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations
+                != 4
+        {
+            return Err(error(
+                "contact-refresh comparison requires matched200Tick mobile grasp",
+            ));
+        }
+        self.simulation
+            .world
+            .integration_parameters
+            .contact_recycling = false;
+        Ok(())
+    }
+
     pub fn measurement(&self) -> Result<G1Measurement, RobotError> {
         let state = self.assembly.state(&self.simulation.world)?;
         Ok(G1Measurement {

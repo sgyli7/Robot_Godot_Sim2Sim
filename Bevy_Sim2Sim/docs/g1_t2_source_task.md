@@ -857,3 +857,56 @@ above them. Native total positive robot normal impulse is0.743422N.s versus
 source0.562707N.s, so "just insufficient lateral squeeze" is not established.
 The next diagnosis examines actual wrist/contact geometry and retention;
 there is no new lighting/gain/friction/PGS/long-VLA sweep.
+
+The offline geometry audit0174 evaluates the frozen G1 joint frames and
+validates forward kinematics against all53actual native body poses (maximum
+position error2.59e-7m). The source-grasp desired palm gap is0.156043m; the
+native-grasp desired gap is0.125295m despite an actual gap0.234067m. Thus simply
+increasing closing pressure is not justified. A single contact-cache
+counterfactual0175 disables recycling only after the identical200Tick grasp:
+it drops earlier, at453rather than473Ticks. This negative remains recorded;
+normal cache behavior is retained.
+
+A classical grip candidate0176 instead uses the measured source desired gap,
+preserves the native desired palm midpoint and both orientations, and solves
+only the two seven-joint arms within original joint limits. Lower and finger
+targets remain unchanged. Maximum target change is0.042889rad; position and
+orientation residuals are below1e-6. The28target file SHA256 is
+`8b03a5513d15c941452535f7f38ef9ef759c1e4af0b382cf1e94ec7d6d5be784`.
+This is explicitly a traditional controller correction, not original VLA
+output. It is not registered in the production task/UI.
+
+The600Tick retention test0176 still **fails** its unchanged400consecutive
+held-Tick rule: brief source-scene box contact ends at359, leaving only241
+final held Ticks. It does retain the box through the former473Tick drop point.
+The longer bounded body test0177 retains it for590final Ticks but fails the
+unchanged750Tick turn deadline at949. Its recorded last150Ticks switch between
+stand and turn14times at the0.06rad acceptance boundary; only6consecutive
+samples meet the20sample requirement. Original Homie selects stand below a
+strict0.05 command norm.
+
+A test-only turn controller now enters stand at0.03rad and resumes turning at
+0.06rad, keeping the acceptance tolerance0.06rad,20consecutive samples, and
+750Tick deadline unchanged. Its regression covers both turn directions and
+the observed boundary oscillation. Trial0178 completes turn/walk/stop with
+continuous hand contact but correctly fails physical distance: walk1.991714m,
+settled1.974342m, although own-velocity odometry reaches2m. The old failed
+result is preserved. A5cm control margin, derived from this measured stopping
+and odometry discrepancy, changes the command goal to2.05m; independent
+physical acceptance stays2m. Attempt0179 fails compilation before any model
+or integration (oversized JSON receipt macro); splitting that receipt fixes
+compilation without increasing crate recursion limits.
+
+The single corrected trial0180 completes1391actual Homie calls, torque
+updates and native20ms integrations,0new VLA calls. Independent pre-walk root
+position audit measures2.041199m walking and2.027090m after100stop Ticks.
+All694walk/stop samples have positive original palm/finger support, no other
+robot-body or scene support, box height at least0.821997m, and minimum upright
+0.992599. Trace SHA256:
+`139262d1f87dabc0108a318ec14d7626b865a28a34a896eacab04f7c32f361fa`.
+This passes only the disclosed saved-grasp/classical-grip/self-state-navigation
+mechanical2m check. It does not establish live-RGB autonomous carry, movement
+toward the source bin, release, formal8/10, science-station/Qwen execution,
+terrain or1x timing. All cases retain one integration/Tick,50Hz, original
+masses, force gains, friction, default contact caching and the same4PGS
+nonintegrating diagnostic setting. No training or further live VLA is run.
