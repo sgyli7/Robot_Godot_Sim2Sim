@@ -954,3 +954,34 @@ The first background-test compilation lacked timing serialization; that
 zero-step failure log is preserved. Final checks0186 pass62simulation checks
 with the explicit diagnostic feature (33ignored real-fixture checks), and
 56default checks (25ignored); no default assist or physical setting changes.
+
+The separate `g1_mobile_assist_diagnostic` Bevy entry admits a maximum2050
+native Ticks and exactly four **fresh** RGB N1.6 grasp calls, then requests an
+actual ego image at the200Tick boundary before admitting one manually specified
+2m clear-aisle goal. It has no saved-action/upper-target fixture input. The
+same typed worker computes the traditional correction from actual self state,
+navigates and auto-pauses; raw VLA replies remain unchanged and classical
+commands/receipts are explicitly separated in every owner record. The goal
+origin is manual diagnostic configuration, not Qwen selection or model output.
+All normal camera/static/carry entries retain their existing budgets. This
+entry does not qualify source-bin placement, autonomous goal choice, formal
+8/10, continuous rendered1x or UI execution.
+
+Startup validation0187 passes three CLI checks and three actual early-rejection
+cases: missing goal, a five-call budget and assist configuration supplied to a
+normal camera scene. They reject before world/model/output creation. The
+initial CLI check revealed its older per-argument1500ceiling; the failed log is
+retained and scene-specific bounds now pass independently of argument order.
+The app builds with source-light and constraint diagnostic features; ordinary
+`dev_tools` also checks without the assist feature. Legacy render/physics input
+and MicroDuck contracts remain unchanged.
+
+```bash
+cargo run -p bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_source_lighting,dev_tools_minigame/g1_constraint_diagnostic -- --scene g1_mobile_assist_diagnostic --robot g1 --g1-config /absolute/four_call_mobile_assist_config.json --g1-ticks 2050 --output /absolute/new_evidence_directory
+```
+
+The additional `mobile_assist` configuration holds only
+`heading_yaw_source_rad` and `relative_distance_m` (exactly2for this finite
+entry). Observation/episode/frame/time identities are supplied by the actual
+native camera handoff, never fabricated in configuration. The independent
+physics ledger records actual completion Ticks, which may be below2050.

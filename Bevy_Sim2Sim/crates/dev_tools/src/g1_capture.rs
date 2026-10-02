@@ -68,8 +68,8 @@ use task_minigame::{
 use super::g1_source_lighting::{SourceLightingReceipt, SourceRectLighting};
 
 /// Explicit evidence settings. Zero ticks captures the native initialized world
-/// without inference or integration. A nonzero budget performs at most 3 seconds
-/// of the unqualified real standing candidate and also records any failure.
+/// without inference or integration. Nonzero budgets are bounded by the
+/// explicitly selected development scene and retain actual failures.
 pub struct G1CaptureOptions {
     pub output: PathBuf,
     pub ticks: u32,
@@ -122,6 +122,37 @@ struct CaptureConfiguration {
     render_only_environment_translation: Option<[f64; 3]>,
     #[serde(default)]
     task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
+    #[serde(default)]
+    mobile_assist: Option<MobileAssistCaptureConfiguration>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MobileAssistCaptureConfiguration {
+    heading_yaw_source_rad: f32,
+    relative_distance_m: f32,
+}
+
+struct MobileAssistCaptureRuntime {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    configuration: MobileAssistCaptureConfiguration,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    submitted: bool,
+    completed: bool,
+}
+
+impl MobileAssistCaptureRuntime {
+    fn new(configuration: MobileAssistCaptureConfiguration) -> Self {
+        #[cfg(not(feature = "g1_constraint_diagnostic"))]
+        let _ = configuration;
+        Self {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            configuration,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            submitted: false,
+            completed: false,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -183,7 +214,29 @@ impl CaptureRunnerConfig {
         self,
         predictive_limit_diagnostic: bool,
         diagnostic_constraint_sweeps: Option<u32>,
+        assisted_carry: bool,
     ) -> Result<CaptureWorker, String> {
+        if assisted_carry {
+            let Self::Task(config) = self else {
+                return Err("assisted carry requires a matched mobile task owner".into());
+            };
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            {
+                return simulation_minigame::g1::worker::MobileAssistWorker::spawn_mobile_assist(
+                    config,
+                )
+                .map(CaptureWorker::AssistedMobile)
+                .map_err(|e| e.to_string());
+            }
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
+            {
+                let _ = config;
+                return Err(
+                    "assisted carry requires the explicit g1_constraint_diagnostic build feature"
+                        .into(),
+                );
+            }
+        }
         if diagnostic_constraint_sweeps == Some(4) && !predictive_limit_diagnostic {
             let Self::Task(config) = self else {
                 return Err(
@@ -258,6 +311,8 @@ impl CaptureRunnerConfig {
 
 enum CaptureWorker {
     Task(ArenaTaskWorker),
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    AssistedMobile(simulation_minigame::g1::worker::MobileAssistWorker),
     Mobile(G1Worker),
     Static {
         worker: AgileWorker,
@@ -274,6 +329,8 @@ struct CaptureSnapshot {
     task_objects: Option<Arc<TaskObjectFrame>>,
     timing: G1WorkerTiming,
     task_step: Option<Arc<ArenaTaskStep>>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    assist_step: Option<Arc<simulation_minigame::g1::mobile_assist::MobileAssistStep>>,
 }
 impl CaptureSnapshot {
     fn from_worker<S>(s: &WorkerSnapshot<S>) -> Self {
@@ -286,12 +343,25 @@ impl CaptureSnapshot {
             task_objects: s.task_objects.clone(),
             timing: s.timing.clone(),
             task_step: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            assist_step: None,
         }
     }
 }
 impl CaptureWorker {
     fn take_latest(&self) -> Option<Arc<CaptureSnapshot>> {
         match self {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::AssistedMobile(w) => w.take_latest().map(|s| {
+                let mut snapshot=CaptureSnapshot::from_worker(&s);
+                snapshot.assist_step=s.step.clone();
+                if let Some(step)=&s.step {
+                    if let simulation_minigame::g1::mobile_assist::MobileAssistExecution::OriginalVla(execution)=&step.execution {
+                        snapshot.task_step=Some(Arc::new(ArenaTaskStep {execution:execution.clone(),body:step.body.clone()}));
+                    }
+                }
+                Arc::new(snapshot)
+            }),
             Self::Task(w) => w.take_latest().map(|s| {
                 let mut snapshot = CaptureSnapshot::from_worker(&s);
                 snapshot.task_step = s.step.clone();
@@ -307,6 +377,8 @@ impl CaptureWorker {
     }
     fn pause(&self) {
         match self {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::AssistedMobile(w) => w.pause(),
             Self::Task(w) => w.pause(),
             Self::Mobile(w) => w.pause(),
             Self::Static { worker, .. } => worker.pause(),
@@ -316,6 +388,10 @@ impl CaptureWorker {
         let valid_until_sim_ns = u64::from(ticks) * 20_000_000;
         let valid_until_wall = Instant::now() + Duration::from_secs(8);
         match self {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::AssistedMobile(_) => {
+                return Err("assisted mobile owner requires typed VLA/carry requests".into());
+            }
             Self::Task(_) => return Err("task owner requires actual matched policy output".into()),
             Self::Mobile(w) => w.submit(TimedG1Command {
                 episode_id,
@@ -331,6 +407,29 @@ impl CaptureWorker {
             }),
         }
         .map_err(|e| e.to_string())
+    }
+}
+
+impl CaptureWorker {
+    fn submit_live_chunk(&self, timed: TimedArenaTaskCommand) -> Result<(), String> {
+        match self {
+            Self::Task(worker) => worker.submit(timed).map_err(|e| e.to_string()),
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::AssistedMobile(worker) => worker
+                .submit(simulation_minigame::g1::worker::TimedCommand {
+                    episode_id: timed.episode_id,
+                    valid_until_sim_ns: timed.valid_until_sim_ns,
+                    valid_until_wall: timed.valid_until_wall,
+                    command:
+                        simulation_minigame::g1::mobile_assist::MobileAssistCommand::OriginalVla(
+                            timed.command,
+                        ),
+                })
+                .map_err(|e| e.to_string()),
+            Self::Mobile(_) | Self::Static { .. } => {
+                Err("live task lost its unique typed owner".into())
+            }
+        }
     }
 }
 
@@ -351,11 +450,21 @@ pub fn run_mobile_carry_from_file(
     run_from_file(path, options, CaptureMode::MobileCarry)
 }
 
+/// Four fresh native RGB/VLA grasp chunks, then one explicitly traditional
+/// clear-aisle carry goal. No replay input or qualified task claim is admitted.
+pub fn run_mobile_assist_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileAssist)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
     TaskLab,
     MobileCarry,
+    MobileAssist,
 }
 
 /// Interactive development entry; it never advertises unqualified execution.
@@ -411,6 +520,7 @@ fn run_from_file(
         config.background_visual,
         config.render_only_environment_translation,
         config.task_lab,
+        config.mobile_assist,
         mode,
     )
 }
@@ -476,6 +586,7 @@ pub struct G1CaptureReceipt {
     pub live_policy_successes: u32,
     pub live_action_chunks: Vec<serde_json::Value>,
     pub pauses_for_camera_and_policy: bool,
+    pub mobile_assist_handoff: Option<serde_json::Value>,
     pub camera_exposure_ev100: f32,
     pub diagnostic_directional_shadow_maps: bool,
     pub camera_ambient_brightness: f32,
@@ -602,6 +713,7 @@ impl G1CaptureReceipt {
             live_policy_successes: 0,
             live_action_chunks: Vec::new(),
             pauses_for_camera_and_policy: false,
+            mobile_assist_handoff: None,
             camera_exposure_ev100: Exposure::default().ev100,
             diagnostic_directional_shadow_maps: true,
             camera_ambient_brightness: 450.,
@@ -741,6 +853,10 @@ pub(super) struct CaptureRuntime {
     main_saved: Arc<Mutex<Result<bool, String>>>,
     live_policy: Option<LivePolicyRuntime>,
     owner_evidence: Option<OwnerEvidence>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    assist_evidence:
+        Option<OwnerEvidence<simulation_minigame::g1::mobile_assist::MobileAssistStep>>,
+    mobile_assist: Option<MobileAssistCaptureRuntime>,
     interactive: bool,
 }
 
@@ -762,6 +878,8 @@ impl CaptureRuntime {
         self.worker.pause();
         let episode_id = self.episode_id.checked_add(1).ok_or("episode exhausted")?;
         match &self.worker {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            CaptureWorker::AssistedMobile(worker) => worker.reset(),
             CaptureWorker::Task(worker) => worker.reset(),
             CaptureWorker::Mobile(worker) => worker.reset(),
             CaptureWorker::Static { worker, .. } => worker.reset(),
@@ -811,14 +929,39 @@ impl CaptureRuntime {
 }
 
 /// Development-only file output. No consumer I/O runs on the physics thread.
-struct OwnerEvidence {
-    trace: OwnerStepTrace<ArenaTaskStep>,
+trait CapturedTaskStep {
+    type Execution: Serialize;
+    fn execution(&self) -> &Self::Execution;
+    fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep;
+}
+impl CapturedTaskStep for ArenaTaskStep {
+    type Execution = simulation_minigame::g1::task_runner::ArenaTaskExecution;
+    fn execution(&self) -> &Self::Execution {
+        &self.execution
+    }
+    fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep {
+        &self.body
+    }
+}
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl CapturedTaskStep for simulation_minigame::g1::mobile_assist::MobileAssistStep {
+    type Execution = simulation_minigame::g1::mobile_assist::MobileAssistExecution;
+    fn execution(&self) -> &Self::Execution {
+        &self.execution
+    }
+    fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep {
+        &self.body
+    }
+}
+
+struct OwnerEvidence<S = ArenaTaskStep> {
+    trace: OwnerStepTrace<S>,
     output: BufWriter<fs::File>,
     records: u64,
     first_boundary_wall_ms: Option<f64>,
 }
 
-impl OwnerEvidence {
+impl<S: CapturedTaskStep> OwnerEvidence<S> {
     fn drain(&mut self, receipt: &mut G1CaptureReceipt) -> Result<(), String> {
         for record in self.trace.drain() {
             let value = serde_json::json!({
@@ -836,8 +979,8 @@ impl OwnerEvidence {
                 "control_deadlines_missed": record.timing.control_deadlines_missed,
                 "last_boundary_wall_ms": record.timing.last_boundary_wall_ms,
                 "last_boundary_duration_ms": record.timing.last_boundary_duration_ms,
-                "execution": record.step.execution,
-                "body": record.step.body,
+                "execution": record.step.execution(),
+                "body": record.step.body(),
                 "scope": "independent_actual_owner_step_truth_never_model_input",
             });
             serde_json::to_writer(&mut self.output, &value).map_err(|e| e.to_string())?;
@@ -893,6 +1036,7 @@ pub fn run_capture(
         None,
         None,
         None,
+        None,
         CaptureMode::Camera,
     )
 }
@@ -917,10 +1061,38 @@ fn run_capture_owner(
     background_visual: Option<BackgroundVisualConfiguration>,
     render_only_environment_translation: Option<[f64; 3]>,
     task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
+    mobile_assist: Option<MobileAssistCaptureConfiguration>,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
+    let assisted_carry = mode == CaptureMode::MobileAssist;
+    if assisted_carry != mobile_assist.is_some() {
+        return Err("mobile_assist configuration requires its explicit development scene".into());
+    }
+    if assisted_carry
+        && (!cfg!(feature = "g1_constraint_diagnostic")
+            || options.ticks != 2050
+            || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::MobileBox)
+            || config
+                .task_objects()
+                .is_none_or(|c| c.source_t2_background.is_none())
+            || policy
+                .as_ref()
+                .is_none_or(|p| p.max_calls != 4 || p.prefetch_after_ticks.is_some())
+            || diagnostic_constraint_sweeps != Some(4)
+            || predictive_limit_diagnostic
+            || diagnostic_source_rect_lighting.is_none()
+            || !diagnostic_aces_fitted
+            || task_lab.is_some()
+            || mobile_assist.as_ref().is_some_and(|c| {
+                !c.heading_yaw_source_rad.is_finite()
+                    || c.heading_yaw_source_rad.abs() > std::f32::consts::PI
+                    || c.relative_distance_m != 2.
+            }))
+    {
+        return Err("mobile assist entry requires2050maximumTicks,4liveoriginalgrasp chunks,2m explicit goal and the matched mobile scene/source-light/4PGS profile".into());
+    }
     if mobile_carry
         && (!matches!(options.ticks, 1000 | 1500)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
@@ -1047,7 +1219,9 @@ fn run_capture_owner(
             }
         })
         .transpose()?;
-    let tick_limit = if mobile_carry {
+    let tick_limit = if assisted_carry {
+        2050
+    } else if mobile_carry {
         1500
     } else if matches!(config, CaptureRunnerConfig::Task(_)) {
         400
@@ -1068,7 +1242,7 @@ fn run_capture_owner(
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
                 || policy.max_calls > if mobile_carry { 30 } else { 8 }
-                || (!interactive && options.ticks != policy.max_calls * horizon)
+                || (!interactive && !assisted_carry && options.ticks != policy.max_calls * horizon)
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
                 || config.max_observation_wall_age_ms == 0
@@ -1169,10 +1343,18 @@ fn run_capture_owner(
         outcome.0.lock().unwrap().scope =
             "native_mobile_bounded_carry_stage_diagnostic_not_qualified";
     }
+    if assisted_carry {
+        outcome.0.lock().unwrap().scope =
+            "native_actual_rgb_vla_grasp_then_explicit_classical_carry_diagnostic_not_qualified";
+    }
     if interactive {
         outcome.0.lock().unwrap().scope = "native_local_qwen_interactive_lab_no_qualified_executor";
     }
-    let worker = config.spawn(predictive_limit_diagnostic, diagnostic_constraint_sweeps)?;
+    let worker = config.spawn(
+        predictive_limit_diagnostic,
+        diagnostic_constraint_sweeps,
+        assisted_carry,
+    )?;
     let owner_evidence = match &worker {
         CaptureWorker::Task(worker) => Some(OwnerEvidence {
             trace: worker.subscribe_steps(512).map_err(|e| e.to_string())?,
@@ -1187,6 +1369,24 @@ fn run_capture_owner(
             first_boundary_wall_ms: None,
         }),
         CaptureWorker::Mobile(_) | CaptureWorker::Static { .. } => None,
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        CaptureWorker::AssistedMobile(_) => None,
+    };
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    let assist_evidence = match &worker {
+        CaptureWorker::AssistedMobile(worker) => Some(OwnerEvidence {
+            trace: worker.subscribe_steps(512).map_err(|e| e.to_string())?,
+            output: BufWriter::new(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output.join("owner_steps.jsonl"))
+                    .map_err(|e| e.to_string())?,
+            ),
+            records: 0,
+            first_boundary_wall_ms: None,
+        }),
+        _ => None,
     };
     if predictive_limit_diagnostic {
         outcome
@@ -1231,6 +1431,9 @@ fn run_capture_owner(
             main_saved: Arc::new(Mutex::new(Ok(false))),
             live_policy,
             owner_evidence,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            assist_evidence,
+            mobile_assist: mobile_assist.map(MobileAssistCaptureRuntime::new),
             interactive,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
@@ -1496,6 +1699,155 @@ fn submit_live_observation(
     Ok(())
 }
 
+fn drive_bounded_task(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    if runtime.mobile_assist.is_some() {
+        let grasp_done = runtime
+            .live_policy
+            .as_ref()
+            .is_some_and(|live| live.submitted_chunks == 4)
+            && runtime
+                .latest
+                .as_ref()
+                .is_some_and(|latest| latest.timing.episode_integrations >= 200);
+        if grasp_done {
+            drive_mobile_assist(runtime, outcome, port)
+        } else {
+            drive_live_policy(runtime, outcome, port)?;
+            Ok(false)
+        }
+    } else {
+        drive_live_policy(runtime, outcome, port)
+    }
+}
+
+#[cfg(not(feature = "g1_constraint_diagnostic"))]
+fn drive_mobile_assist(
+    _: &mut CaptureRuntime,
+    _: &CaptureOutcome,
+    _: &G1CameraPort,
+) -> Result<bool, String> {
+    Err("mobile assist requires its explicit build feature".into())
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_mobile_assist(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    use simulation_minigame::g1::{
+        mobile_assist::{MobileAssistCommand, MobileAssistExecution},
+        mobile_navigation::MobileCarryGoal,
+        worker::TimedCommand,
+    };
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("missing assisted owner snapshot")?
+        .clone();
+    if latest.phase == G1WorkerPhase::Failed {
+        return Err(latest
+            .reason
+            .clone()
+            .unwrap_or("assisted owner failed".into()));
+    }
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("missing bounded assist configuration")?;
+    if assist.completed {
+        return Ok(true);
+    }
+    if assist.submitted {
+        let completed=latest.phase==G1WorkerPhase::Paused && latest.assist_step.as_ref().is_some_and(|step|
+            matches!(&step.execution,MobileAssistExecution::ClassicalCarry {navigation,..} if navigation.completed));
+        if completed {
+            runtime.mobile_assist.as_mut().unwrap().completed = true;
+            let mut receipt = outcome.0.lock().unwrap();
+            if let Some(handoff) = &mut receipt.mobile_assist_handoff {
+                handoff["completed_at_actual_tick"] = latest.timing.episode_integrations.into();
+                handoff["task_qualified"] = false.into();
+            }
+        }
+        return Ok(completed);
+    }
+    if latest.phase != G1WorkerPhase::Paused || latest.timing.episode_integrations != 200 {
+        return Ok(false);
+    }
+    if !runtime.requested {
+        port.request()?;
+        runtime.requested = true;
+        return Ok(false);
+    }
+    let Some(frame) = port.take() else {
+        return Ok(false);
+    };
+    let frame = frame?;
+    if frame.stamp.source != CameraPoseSource::PhysicsBody
+        || frame.stamp.episode_id != runtime.episode_id
+        || frame.stamp.source_ticks != [200; 2]
+        || frame.stamp.sim_time_ns != 4_000_000_000
+    {
+        return Err("assisted handoff RGB is foreign to the exact native grasp boundary".into());
+    }
+    frame
+        .stamp
+        .native_state
+        .as_ref()
+        .ok_or("handoff RGB lacks native self state")?
+        .validate()?;
+    let camera = task_minigame::decision::CameraRgb::from_rgb(
+        "native_ego",
+        frame.width,
+        frame.height,
+        frame.rgb,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        runtime.options.output.join("carry_handoff_ego.png"),
+        camera.png(),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        runtime.options.output.join("carry_handoff_stamp.json"),
+        serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let goal = MobileCarryGoal {
+        observation: ObservationStamp {
+            episode_id: runtime.episode_id,
+            frame_id: frame.stamp.capture_sequence,
+            sim_time_ns: frame.stamp.sim_time_ns,
+            captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
+        },
+        heading_yaw_source_rad: assist.configuration.heading_yaw_source_rad,
+        relative_distance_m: assist.configuration.relative_distance_m,
+    };
+    let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+        return Err("handoff lost its unique typed assisted owner".into());
+    };
+    owner
+        .submit(TimedCommand {
+            episode_id: runtime.episode_id,
+            valid_until_sim_ns: 41_000_000_000,
+            valid_until_wall: Instant::now() + Duration::from_secs(40),
+            command: MobileAssistCommand::ClassicalCarry(goal.clone()),
+        })
+        .map_err(|e| e.to_string())?;
+    outcome.0.lock().unwrap().mobile_assist_handoff = Some(serde_json::json!({
+        "goal":goal,"goal_origin":"explicit_manual_clear_aisle_diagnostic",
+        "original_vla_grasp_chunks":4,"actual_rgb_handoff":true,"traditional_grip_navigation":true,
+        "object_truth_in_command":false,"task_qualified":false,"autonomous_goal_selection":false,
+    }));
+    runtime.mobile_assist.as_mut().unwrap().submitted = true;
+    runtime.requested = false;
+    Ok(false)
+}
+
 fn drive_live_policy(
     runtime: &mut CaptureRuntime,
     outcome: &CaptureOutcome,
@@ -1537,9 +1889,6 @@ fn drive_live_policy(
             .next_boundary_tick
             .checked_add(horizon)
             .ok_or("live tick overflow")?;
-        let CaptureWorker::Task(owner) = &runtime.worker else {
-            return Err("live task lost its unique physical owner".into());
-        };
         fs::write(
             runtime
                 .options
@@ -1548,8 +1897,9 @@ fn drive_live_policy(
             serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        owner
-            .submit(TimedArenaTaskCommand {
+        runtime
+            .worker
+            .submit_live_chunk(TimedArenaTaskCommand {
                 episode_id: runtime.episode_id,
                 valid_until_sim_ns: end_tick
                     .checked_mul(ARENA_ACTION_PERIOD_NS)
@@ -1818,6 +2168,10 @@ fn drive_capture(
         if let Some(evidence) = &mut runtime.owner_evidence {
             evidence.drain(&mut outcome.0.lock().unwrap())?;
         }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(evidence) = &mut runtime.assist_evidence {
+            evidence.drain(&mut outcome.0.lock().unwrap())?;
+        }
         if let Some(error) = health.snapshot().error {
             return Err(error);
         }
@@ -1961,7 +2315,7 @@ fn drive_capture(
         if !render_ready && !prefetch_running {
             return Ok(());
         }
-        if runtime.live_policy.is_some() && !drive_live_policy(&mut runtime, &outcome, &port)? {
+        if runtime.live_policy.is_some() && !drive_bounded_task(&mut runtime, &outcome, &port)? {
             return Ok(());
         }
         if runtime.live_policy.is_none() && !runtime.command_submitted && runtime.options.ticks > 0
@@ -1972,7 +2326,13 @@ fn drive_capture(
             runtime.command_submitted = true;
             return Ok(());
         }
-        let capture_boundary = if runtime.options.ticks == 0 {
+        let capture_boundary = if runtime
+            .mobile_assist
+            .as_ref()
+            .is_some_and(|assist| assist.completed)
+        {
+            latest.phase == G1WorkerPhase::Paused
+        } else if runtime.options.ticks == 0 {
             latest.phase == G1WorkerPhase::Paused && latest.timing.total_integrations == 0
         } else {
             latest.phase == G1WorkerPhase::Failed
@@ -2007,7 +2367,13 @@ fn drive_capture(
             receipt.task_visual_status = task_status.as_deref().cloned();
             receipt.background_visual_status = background_status.as_deref().cloned();
             if latest.phase != G1WorkerPhase::Failed {
-                receipt.physics_outcome = if runtime.options.ticks == 0 {
+                receipt.physics_outcome = if runtime
+                    .mobile_assist
+                    .as_ref()
+                    .is_some_and(|assist| assist.completed)
+                {
+                    "bounded_classical_carry_skill_complete_not_task_qualified"
+                } else if runtime.options.ticks == 0 {
                     "native_initialization_zero_integrations"
                 } else {
                     "bounded_candidate_ticks_complete"
@@ -2094,6 +2460,15 @@ fn drive_capture(
                 evidence.drain(&mut outcome.0.lock().unwrap())?;
                 if !outcome.0.lock().unwrap().owner_step_trace_complete {
                     return Err("owner evidence did not cover every actual integration".into());
+                }
+            }
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            if let Some(evidence) = &mut runtime.assist_evidence {
+                evidence.drain(&mut outcome.0.lock().unwrap())?;
+                if !outcome.0.lock().unwrap().owner_step_trace_complete {
+                    return Err(
+                        "assisted owner evidence did not cover every actual integration".into(),
+                    );
                 }
             }
             outcome.0.lock().unwrap().capture_succeeded = true;

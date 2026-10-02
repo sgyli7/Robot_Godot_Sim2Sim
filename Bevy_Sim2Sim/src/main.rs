@@ -42,7 +42,12 @@ fn run() -> Result<(), String> {
     };
     if matches!(
         arguments.scene.as_deref(),
-        Some("g1_camera_diagnostic" | "g1_task_lab" | "g1_mobile_carry_diagnostic")
+        Some(
+            "g1_camera_diagnostic"
+                | "g1_task_lab"
+                | "g1_mobile_carry_diagnostic"
+                | "g1_mobile_assist_diagnostic"
+        )
     ) {
         if arguments.robot.as_deref() != Some("g1")
             || arguments.headless
@@ -158,6 +163,7 @@ fn run() -> Result<(), String> {
 fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     let interactive = arguments.scene.as_deref() == Some("g1_task_lab");
     let mobile_carry = arguments.scene.as_deref() == Some("g1_mobile_carry_diagnostic");
+    let mobile_assist = arguments.scene.as_deref() == Some("g1_mobile_assist_diagnostic");
     if interactive && arguments.g1_ticks.is_some() {
         return Err(
             "g1_task_lab admits UI intentions; --g1-ticks automatic execution is forbidden".into(),
@@ -170,12 +176,18 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     let options = dev_tools_minigame::g1_capture::G1CaptureOptions {
         output,
         ticks: arguments.g1_ticks.unwrap_or(0),
-        timeout: Duration::from_secs(if mobile_carry { 120 } else { 75 }),
+        timeout: Duration::from_secs(if mobile_carry || mobile_assist {
+            120
+        } else {
+            75
+        }),
     };
     let receipt = if interactive {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
     } else if mobile_carry {
         dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
+    } else if mobile_assist {
+        dev_tools_minigame::g1_capture::run_mobile_assist_from_file(&path, options)
     } else {
         dev_tools_minigame::g1_capture::run_capture_from_file(&path, options)
     }?;
@@ -281,13 +293,13 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab or g1_mobile_carry_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_carry_diagnostic or g1_mobile_assist_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification or G1 diagnostic directory\n\
                      --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
-                     --g1-ticks N    camera 0..400 (standing max150); explicit mobile carry1000/1500\n\
+                     --g1-ticks N    camera 0..400 (standing max150); mobile carry1000/1500; assisted carry maximum2050\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -314,8 +326,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                 let ticks = value()?
                     .parse::<u32>()
                     .map_err(|_| "--g1-ticks requires a nonnegative integer")?;
-                if ticks > 1500 {
-                    return Err("--g1-ticks must be at most1500".into());
+                if ticks > 2050 {
+                    return Err("--g1-ticks must be at most2050 before scene validation".into());
                 }
                 options.g1_ticks = Some(ticks);
             }
@@ -338,14 +350,54 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
         if !matches!(options.g1_ticks, Some(1000 | 1500)) {
             return Err("mobile carry scene requires --g1-ticks1000 or1500".into());
         }
+    } else if options.scene.as_deref() == Some("g1_mobile_assist_diagnostic") {
+        if options.g1_ticks != Some(2050) {
+            return Err("mobile assist scene requires --g1-ticks2050 as its finite maximum".into());
+        }
     } else if options.g1_ticks.is_some_and(|ticks| ticks > 400) {
-        return Err("--g1-ticks must be at most400 outside the explicit mobile carry scene".into());
+        return Err(
+            "--g1-ticks must be at most400 outside the explicit mobile development scenes".into(),
+        );
     }
     Ok(Some(options))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mobile_assist_admits_only_its_separate_maximum_in_either_argument_order() {
+        for args in [
+            [
+                "--g1-ticks",
+                "2050",
+                "--scene",
+                "g1_mobile_assist_diagnostic",
+            ],
+            [
+                "--scene",
+                "g1_mobile_assist_diagnostic",
+                "--g1-ticks",
+                "2050",
+            ],
+        ] {
+            assert!(super::parse_arguments(args.into_iter().map(str::to_owned)).is_ok());
+        }
+        for ticks in ["0", "200", "400", "1000", "1500", "2051"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_mobile_assist_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+    }
     use super::*;
 
     #[test]
