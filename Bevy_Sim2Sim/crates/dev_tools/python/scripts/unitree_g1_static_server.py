@@ -53,7 +53,7 @@ def exact_keys(value, keys, label):
 
 def decode_request(body: dict):
     exact_keys(body, {"schema", "profile", "sequence_id", "observation", "camera_rgb_b64", "state_groups"}, "Request")
-    if body["schema"] != "unitree_g1_static_observation_v1" or body["profile"] != "static_apple":
+    if body["schema"] != "unitree_g1_static_observation_v2" or body["profile"] != "static_apple":
         raise ValueError("Only the fixed static_apple profile is supported")
     stamp = body["observation"]
     exact_keys(stamp, STAMP_KEYS, "Observation stamp")

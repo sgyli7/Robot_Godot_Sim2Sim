@@ -44,17 +44,17 @@ impl PolicyObservation {
         Ok(())
     }
 
-    /// The static export's state-input hand orders are not its output orders.
+    /// The numerical static preprocess graph uses the original training hand
+    /// order. Its graph.yaml input element_names incorrectly advertise thumb
+    /// first; the percentile normalization probe verifies this discrepancy.
     pub fn static_onnx_state(&self) -> Result<StaticOnnxState, PolicyObservationError> {
         self.validate()?;
         let q = &self.measured_joint_positions_rad;
         Ok(StaticOnnxState {
             left_arm: q[..7].try_into().expect("fixed range"),
             right_arm: q[7..14].try_into().expect("fixed range"),
-            // thumb(3), middle(2), index(2)
-            left_hand: [q[18], q[19], q[20], q[16], q[17], q[14], q[15]],
-            // thumb(3), index(2), middle(2)
-            right_hand: [q[25], q[26], q[27], q[21], q[22], q[23], q[24]],
+            left_hand: q[14..21].try_into().expect("fixed range"),
+            right_hand: q[21..28].try_into().expect("fixed range"),
             waist: q[28..31].try_into().expect("fixed range"),
         })
     }
@@ -144,7 +144,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn simulator_order_and_export_hand_order_are_distinct() {
+    fn arbitrary_simulator_order_maps_to_the_numerically_verified_training_order() {
         let names: Vec<String> = ACTION_JOINT_NAMES
             .iter()
             .rev()
@@ -164,8 +164,8 @@ mod tests {
             measured_joint_positions_rad: map_measured_joints(&names, &values).unwrap(),
         };
         let state = observation.static_onnx_state().unwrap();
-        assert_eq!(state.left_hand, [18.0, 19.0, 20.0, 16.0, 17.0, 14.0, 15.0]);
-        assert_eq!(state.right_hand, [25.0, 26.0, 27.0, 21.0, 22.0, 23.0, 24.0]);
+        assert_eq!(state.left_hand, [14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0]);
+        assert_eq!(state.right_hand, [21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0]);
         assert_eq!(state.waist, [28.0, 29.0, 30.0]);
     }
 

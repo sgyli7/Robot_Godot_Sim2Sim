@@ -2,8 +2,9 @@
 """Run the pinned static-apple ONNX graph on RGB + measured joint observations.
 
 Input NPZ keys are ego_view [1,480,640,3] and left_arm/right_arm/left_hand/
-right_hand [1,7], waist [1,3], all float32. Hand ordering is exactly graph.yaml's
-preprocess_state interface, not decode_action's interface. --smoke substitutes
+right_hand [1,7], waist [1,3], all float32. Both hands use the numerically verified
+training order index(2), middle(2), thumb(3). graph.yaml's preprocess_state hand
+element_names disagree with its normalization constants. --smoke substitutes
 zero inputs and is only a numerical smoke test, never task-performance evidence.
 Requires numpy, PyYAML and onnxruntime (or a compatible onnxruntime-gpu).
 """

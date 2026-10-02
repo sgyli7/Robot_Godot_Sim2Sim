@@ -73,7 +73,7 @@ impl StaticPolicyClient {
             .static_onnx_state()
             .map_err(PolicyInferenceError::InvalidObservation)?;
         let wire = StaticWireRequest {
-            schema: "unitree_g1_static_observation_v1",
+            schema: "unitree_g1_static_observation_v2",
             profile: request.profile,
             sequence_id: request.sequence_id,
             observation: &request.observation.stamp,

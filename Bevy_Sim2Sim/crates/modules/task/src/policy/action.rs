@@ -59,8 +59,9 @@ pub fn profile_contract(profile: TaskProfile) -> PolicyProfileContract {
 
 /// Decoded absolute joint targets in radians and base commands in SI units.
 ///
-/// Each hand uses index(2), middle(2), thumb(3), matching the *output* groups
-/// of the matched static export. Its ONNX state input has a different hand order.
+/// Each hand uses index(2), middle(2), thumb(3), matching the training statistics
+/// and numerical ONNX state/action graphs. Static graph.yaml input labels differ
+/// from the actual numerical normalization; see the recorded contract probe.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyActionFrame {

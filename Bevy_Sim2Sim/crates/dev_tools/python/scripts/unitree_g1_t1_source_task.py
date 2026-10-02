@@ -161,14 +161,12 @@ def run(args, receipt, output):
                             raise ValueError('Original camera did not produce 640x480 uint8 RGB')
                         Image.fromarray(rgb).save(captures / f'head_{tick:04}.png')
                         state = {key: q[value].tolist() for key, value in indices.items()}
-                        # The static export's two input hand orders differ from
-                        # each other and from its decoded output joint order.
-                        state['left_hand'] = [state['left_hand'][i] for i in (4, 5, 6, 2, 3, 0, 1)]
-                        state['right_hand'] = [state['right_hand'][i] for i in (4, 5, 6, 0, 1, 2, 3)]
+                        # Use the numerically verified training order; published
+                        # preprocess_state element_names incorrectly say thumb first.
                         stamp = {'episode_id': args.episode_id, 'frame_id': tick,
                             'sim_time_ns': tick * 20_000_000, 'captured_at_unix_ms': time.time_ns() // 1_000_000}
                         sequence += 1
-                        request = {'schema': 'unitree_g1_static_observation_v1', 'profile': 'static_apple',
+                        request = {'schema': 'unitree_g1_static_observation_v2', 'profile': 'static_apple',
                             'sequence_id': sequence, 'observation': stamp,
                             'camera_rgb_b64': base64.b64encode(rgb.tobytes()).decode(), 'state_groups': state}
                         (captures / f'request_{tick:04}.json').write_text(json.dumps(request, allow_nan=False))
