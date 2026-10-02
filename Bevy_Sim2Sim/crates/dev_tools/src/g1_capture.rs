@@ -339,7 +339,23 @@ pub fn run_capture_from_file(
     path: &Path,
     options: G1CaptureOptions,
 ) -> Result<G1CaptureReceipt, String> {
-    run_from_file(path, options, false)
+    run_from_file(path, options, CaptureMode::Camera)
+}
+
+/// One fixed1000Tick/20chunk original mobile carry-stage diagnostic. This does
+/// not widen the ordinary camera/static-task budgets or qualify task execution.
+pub fn run_mobile_carry_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileCarry)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    Camera,
+    TaskLab,
+    MobileCarry,
 }
 
 /// Interactive development entry; it never advertises unqualified execution.
@@ -347,14 +363,15 @@ pub fn run_task_lab_from_file(
     path: &Path,
     options: G1CaptureOptions,
 ) -> Result<G1CaptureReceipt, String> {
-    run_from_file(path, options, true)
+    run_from_file(path, options, CaptureMode::TaskLab)
 }
 
 fn run_from_file(
     path: &Path,
     options: G1CaptureOptions,
-    interactive: bool,
+    mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
+    let interactive = mode == CaptureMode::TaskLab;
     let config: CaptureConfiguration = serde_json::from_slice(
         &fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
     )
@@ -394,6 +411,7 @@ fn run_from_file(
         config.background_visual,
         config.render_only_environment_translation,
         config.task_lab,
+        mode,
     )
 }
 
@@ -875,6 +893,7 @@ pub fn run_capture(
         None,
         None,
         None,
+        CaptureMode::Camera,
     )
 }
 
@@ -898,8 +917,27 @@ fn run_capture_owner(
     background_visual: Option<BackgroundVisualConfiguration>,
     render_only_environment_translation: Option<[f64; 3]>,
     task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
+    mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
-    let interactive = task_lab.is_some();
+    let interactive = mode == CaptureMode::TaskLab;
+    let mobile_carry = mode == CaptureMode::MobileCarry;
+    if mobile_carry
+        && (options.ticks != 1000
+            || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
+            || config
+                .task_objects()
+                .is_none_or(|c| c.source_t2_background.is_none())
+            || policy
+                .as_ref()
+                .is_none_or(|p| p.max_calls != 20 || p.prefetch_after_ticks.is_some())
+            || diagnostic_constraint_sweeps != Some(4)
+            || predictive_limit_diagnostic
+            || diagnostic_source_rect_lighting.is_none()
+            || !diagnostic_aces_fitted
+            || task_lab.is_some())
+    {
+        return Err("mobile carry entry requires exactly1000Ticks/20original chunks, matched T2 scene/source-light profile and the existing4PGS candidate; static/UI/prefetch modes are forbidden".into());
+    }
     if diagnostic_render_hz.is_some_and(|hz| hz != 60) {
         return Err(
             "renderer contention comparison permits only an explicit 60 Hz display limit".into(),
@@ -1009,7 +1047,9 @@ fn run_capture_owner(
             }
         })
         .transpose()?;
-    let tick_limit = if matches!(config, CaptureRunnerConfig::Task(_)) {
+    let tick_limit = if mobile_carry {
+        1000
+    } else if matches!(config, CaptureRunnerConfig::Task(_)) {
         400
     } else {
         150
@@ -1027,7 +1067,7 @@ fn run_capture_owner(
             let profile = config.body.profile();
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
-                || policy.max_calls > 8
+                || policy.max_calls > if mobile_carry { 20 } else { 8 }
                 || (!interactive && options.ticks != policy.max_calls * horizon)
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
@@ -1037,7 +1077,7 @@ fn run_capture_owner(
                     profile != TaskProfile::StaticApple || tick != 10 || policy.max_calls < 2
                 })
             {
-                return Err("live diagnostic requires 1..=8 whole chunks, exact tick budget and bounded image/inference age <=20s".into());
+                return Err("live diagnostic requires its bounded whole-chunk count, exact tick budget and image/inference age <=20s".into());
             }
             let timeout = Duration::from_millis(policy.timeout_ms);
             let worker = match profile {
@@ -1124,6 +1164,10 @@ fn run_capture_owner(
             .as_ref()
             .and_then(|live| live.prefetch_after_ticks);
         receipt.pauses_for_camera_and_policy = receipt.diagnostic_prefetch_after_ticks.is_none();
+    }
+    if mobile_carry {
+        outcome.0.lock().unwrap().scope =
+            "native_mobile_1000_tick_carry_stage_diagnostic_not_qualified";
     }
     if interactive {
         outcome.0.lock().unwrap().scope = "native_local_qwen_interactive_lab_no_qualified_executor";

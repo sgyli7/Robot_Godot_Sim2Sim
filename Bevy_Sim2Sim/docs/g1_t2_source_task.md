@@ -725,3 +725,33 @@ actual frozen-panel energy/basis comparison. Zero-step0162 also passes the
 legacy station shader configuration at1920x1080: actual HDR=false,
 tonemapping=none, original450ambient/15000directional, and no source-panel
 profile. No physics or model calls occur in that legacy GPU check.
+
+The independent contact-ID audit0160 maps every positive supporting body in
+ticks186–200 to original left/right palm or finger links; both hands support
+the object throughout those15ticks, with no torso/root/leg support. It is
+acceptance data only and is not sent to the policy.
+
+Case0163 records an admission failure: the old CLI rejects1000Ticks before
+renderer/physics/model inference (the owned service had been loaded, then
+closed with0successful calls). Case0164 instead uses the existing400Tick/eight
+call budget without parameter changes. It preserves a214Tick consecutive
+held-lift interval through tick400, with minimum upright0.994079. The box moves
+0.598388m mainly while the body turns; root XY displacement remains below
+0.137949m. Walk-body policy is selected at236ticks, including200held ticks.
+This proves sustained grip through turning/control transitions, not a2m carry
+or release. All400integrations/control/body calls and eight realRGB model
+inputs are verified; the owned service closes after60.22s. Trace SHA256:
+`5717e16d93f91a896878f219e9707c3f5021e119b4d2f0a1c054b602da40dc89`.
+
+The separate `g1_mobile_carry_diagnostic` entry now admits exactly1000Ticks and
+20original50frame chunks, with a finite120s application timeout. It requires
+the matched mobile T2 physics/background, the verified source-light profile,
+the existing4PGS development candidate and no UI/static/prefetch combination.
+The normal camera/static budgets remain400/150; CLI argument ordering cannot
+bypass them. Two CLI checks pass, including ordinary-scene rejection of1000
+and carry-scene rejection of other budgets. This is a bounded stage entry,
+not a registration of qualified user-facing execution.
+
+```bash
+cargo run -p bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_source_lighting,dev_tools_minigame/g1_constraint_diagnostic -- --scene g1_mobile_carry_diagnostic --robot g1 --g1-config /absolute/mobile_20_chunk_config.json --g1-ticks 1000 --output /absolute/new_evidence_directory
+```

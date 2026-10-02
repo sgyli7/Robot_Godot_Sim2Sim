@@ -42,7 +42,7 @@ fn run() -> Result<(), String> {
     };
     if matches!(
         arguments.scene.as_deref(),
-        Some("g1_camera_diagnostic" | "g1_task_lab")
+        Some("g1_camera_diagnostic" | "g1_task_lab" | "g1_mobile_carry_diagnostic")
     ) {
         if arguments.robot.as_deref() != Some("g1")
             || arguments.headless
@@ -55,9 +55,7 @@ fn run() -> Result<(), String> {
         return capture_g1_diagnostic(arguments);
     }
     if arguments.g1_config.is_some() || arguments.g1_ticks.is_some() {
-        return Err(
-            "G1 diagnostic options require --scene g1_camera_diagnostic or g1_task_lab".into(),
-        );
+        return Err("G1 diagnostic options require an explicit G1 development scene".into());
     }
     let robot = arguments.robot.as_deref().unwrap_or("none");
     if robot != "none" {
@@ -159,6 +157,7 @@ fn run() -> Result<(), String> {
 #[cfg(feature = "dev_tools")]
 fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     let interactive = arguments.scene.as_deref() == Some("g1_task_lab");
+    let mobile_carry = arguments.scene.as_deref() == Some("g1_mobile_carry_diagnostic");
     if interactive && arguments.g1_ticks.is_some() {
         return Err(
             "g1_task_lab admits UI intentions; --g1-ticks automatic execution is forbidden".into(),
@@ -171,10 +170,12 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     let options = dev_tools_minigame::g1_capture::G1CaptureOptions {
         output,
         ticks: arguments.g1_ticks.unwrap_or(0),
-        timeout: Duration::from_secs(75),
+        timeout: Duration::from_secs(if mobile_carry { 120 } else { 75 }),
     };
     let receipt = if interactive {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
+    } else if mobile_carry {
+        dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
     } else {
         dev_tools_minigame::g1_capture::run_capture_from_file(&path, options)
     }?;
@@ -280,13 +281,13 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic or g1_task_lab\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab or g1_mobile_carry_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification or G1 diagnostic directory\n\
                      --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
-                     --g1-ticks N    diagnostic Tick budget, 0..400 (standing max 150)\n\
+                     --g1-ticks N    camera 0..400 (standing max150); explicit mobile carry exactly1000\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -312,9 +313,9 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--g1-ticks" => {
                 let ticks = value()?
                     .parse::<u32>()
-                    .map_err(|_| "--g1-ticks requires an integer 0..400")?;
-                if ticks > 400 {
-                    return Err("--g1-ticks must be at most 400".into());
+                    .map_err(|_| "--g1-ticks requires a nonnegative integer")?;
+                if ticks > 1000 {
+                    return Err("--g1-ticks must be at most1000".into());
                 }
                 options.g1_ticks = Some(ticks);
             }
@@ -333,6 +334,13 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             value => return Err(format!("unknown argument '{value}'")),
         }
     }
+    if options.scene.as_deref() == Some("g1_mobile_carry_diagnostic") {
+        if options.g1_ticks != Some(1000) {
+            return Err("mobile carry scene requires exactly --g1-ticks1000".into());
+        }
+    } else if options.g1_ticks.is_some_and(|ticks| ticks > 400) {
+        return Err("--g1-ticks must be at most400 outside the explicit mobile carry scene".into());
+    }
     Ok(Some(options))
 }
 
@@ -345,5 +353,44 @@ mod tests {
         assert!(parse_arguments(["--robot".to_owned()].into_iter()).is_err());
         assert!(parse_arguments(["--unknown".to_owned()].into_iter()).is_err());
         assert!(parse_arguments(["--frames".to_owned(), "0".to_owned()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn longer_mobile_budget_cannot_escape_its_scene_or_depend_on_argument_order() {
+        for args in [
+            [
+                "--g1-ticks",
+                "1000",
+                "--scene",
+                "g1_mobile_carry_diagnostic",
+            ],
+            [
+                "--scene",
+                "g1_mobile_carry_diagnostic",
+                "--g1-ticks",
+                "1000",
+            ],
+        ] {
+            assert_eq!(
+                parse_arguments(args.map(str::to_owned).into_iter())
+                    .unwrap()
+                    .unwrap()
+                    .g1_ticks,
+                Some(1000)
+            );
+        }
+        for args in [
+            ["--scene", "g1_camera_diagnostic", "--g1-ticks", "1000"],
+            ["--scene", "g1_task_lab", "--g1-ticks", "1000"],
+            [
+                "--scene",
+                "g1_mobile_carry_diagnostic",
+                "--g1-ticks",
+                "1001",
+            ],
+            ["--scene", "g1_mobile_carry_diagnostic", "--g1-ticks", "400"],
+        ] {
+            assert!(parse_arguments(args.map(str::to_owned).into_iter()).is_err());
+        }
     }
 }
