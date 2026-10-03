@@ -11,7 +11,7 @@ pytest.importorskip("mjlab")
 
 from bevy_microduck_tools.goose.artifacts import CANDIDATES, sha256
 from bevy_microduck_tools.goose.mjlab_baseline import (
-    NATIVE_PARENTS, _read_native_contract, build_reference, make_entity_cfg)
+    EULER_CANDIDATE, NATIVE_PARENTS, _read_native_contract, build_reference, make_entity_cfg)
 from bevy_microduck_tools.goose.runtime import GooseSourceRuntime
 from test_goose_50hz import fixture_runtime
 
@@ -24,6 +24,25 @@ def parent(tmp_path, monkeypatch, request):
     contract.update(candidate=request.param, torque_updates_per_tick=1, policy_calls_per_tick=1)
     path.write_text(json.dumps(contract))
     return tmp_path / "robot.xml", path
+
+
+def make_euler_reference(model, path):
+    """Give the small wiring fixture the selected native numerical profile."""
+    tree = ET.fromstring(model.read_text())
+    option = tree.find("option")
+    option.set("integrator", "Euler")
+    flag = option.find("flag")
+    if flag is None:
+        flag = ET.SubElement(option, "flag")
+    flag.set("eulerdamp", "disable")
+    model.write_text(ET.tostring(tree, encoding="unicode"))
+    contract = json.loads(path.read_text())
+    contract.update(candidate=EULER_CANDIDATE, integrator="Euler", model_sha256=sha256(model),
+        native_integration_flow={"revision": "goose_native_euler_eulerdamp_disabled_v1",
+            "dt_s": .02, "decimation": 1, "integrations_per_tick": 1,
+            "physical_dampers_enabled": True, "implicit_joint_damping_integration_enabled": False})
+    path.write_text(json.dumps(contract))
+    return model, path
 
 
 @pytest.mark.parametrize("field", ["native_discrete", "numerical_metric", "ground_contact"])
@@ -85,6 +104,26 @@ def test_full_body_and_unknown_parents_cannot_enter_condensed_reference(parent, 
         with pytest.raises(ValueError, match="condensed native parent"):
             build_reference(model, path, tmp_path / "rejected_reference")
         assert not (tmp_path / "rejected_reference").exists()
+
+
+@pytest.mark.parametrize("mutation", ["compiled_integrator", "implicit_damping", "physical_damping",
+                                     "declared_integrator", "missing_profile", "wrong_revision"])
+def test_euler_reference_rejects_mislabeled_or_changed_integration_flow(parent, tmp_path, mutation):
+    model, path = build_reference(*parent, tmp_path / "reference")
+    make_euler_reference(model, path)
+    tree = ET.fromstring(model.read_text())
+    contract = json.loads(path.read_text())
+    if mutation == "compiled_integrator": tree.find("option").set("integrator", "implicitfast")
+    elif mutation == "implicit_damping": tree.find("./option/flag").set("eulerdamp", "enable")
+    elif mutation == "physical_damping": tree.find("./option/flag").set("damper", "disable")
+    elif mutation == "declared_integrator": contract["integrator"] = "implicitfast"
+    elif mutation == "missing_profile": contract.pop("native_integration_flow")
+    else: contract["native_integration_flow"]["revision"] = "unknown"
+    model.write_text(ET.tostring(tree, encoding="unicode"))
+    contract["model_sha256"] = sha256(model)
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="reference|integration profile"):
+        make_entity_cfg(model, path)
 
 
 def test_c_failure_flag_does_not_block_warp_or_enable_native_recovery(parent, tmp_path):

@@ -164,7 +164,12 @@ class GooseDevelopmentEnv(ManagerBasedRlEnv):
                 or metric.func is not physics_tick_metric or event is None
                 or event.func is not commit_history or event.mode != "step"):
             raise ValueError("Goose requires its pre-forward guard and post-step commit")
-        _read_native_contract(action.model_path, action.contract_path)
+        contract = _read_native_contract(action.model_path, action.contract_path)
+        if (cfg.sim.mujoco.integrator != contract["integrator"].lower()
+                or contract["integrator"] == "Euler" and (
+                    "eulerdamp" not in cfg.sim.mujoco.disableflags
+                    or "damper" in cfg.sim.mujoco.disableflags)):
+            raise ValueError("Goose development integration profile changed")
         super().__init__(cfg, device, **kwargs)
 
     def reset(self, **kwargs):
@@ -183,7 +188,7 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
     No reward or PPO configuration is attached to this integration profile.
     """
     require_upstream_stack()
-    _read_native_contract(model_path, contract_path)
+    contract = _read_native_contract(model_path, contract_path)
     native = mujoco.MjModel.from_xml_path(str(model_path))
     entity = make_entity_cfg(model_path, contract_path)
     if development_initial_qpos is not None:
@@ -216,7 +221,7 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
             priority=int(native.geom_priority[ground]), solmix=float(native.geom_solmix[ground]))
 
     opt = native.opt
-    sim_options = MujocoCfg(timestep=DT, integrator="implicitfast", impratio=float(opt.impratio),
+    sim_options = MujocoCfg(timestep=DT, integrator=contract["integrator"].lower(), impratio=float(opt.impratio),
         cone="elliptic" if int(opt.cone) else "pyramidal",
         jacobian={0: "dense", 1: "sparse", 2: "auto"}[int(opt.jacobian)],
         solver={0: "pgs", 1: "cg", 2: "newton"}[int(opt.solver)],

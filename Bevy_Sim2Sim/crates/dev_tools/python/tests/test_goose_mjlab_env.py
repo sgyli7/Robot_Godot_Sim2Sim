@@ -14,6 +14,7 @@ from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv, make_devel
 from bevy_microduck_tools.goose.runtime import GooseSourceRuntime
 from test_goose_50hz import fixture_runtime
 from test_goose_batch_drive import nominal_graph
+from test_goose_mjlab_baseline import make_euler_reference
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +22,8 @@ def native_logs_stay_in_test_temp_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
 
-@pytest.fixture
-def reference(tmp_path):
+@pytest.fixture(params=("implicitfast", "Euler"))
+def reference(tmp_path, request):
     original, path = fixture_runtime(tmp_path)
     model = tmp_path / "robot.xml"
     tree = ET.fromstring(model.read_text())
@@ -38,7 +39,8 @@ def reference(tmp_path):
     contract.update(candidate=CANDIDATES[1], model_sha256=sha256(model),
                     torque_updates_per_tick=1, policy_calls_per_tick=1)
     path.write_text(json.dumps(contract))
-    return build_reference(model, path, tmp_path / "reference")
+    reference = build_reference(model, path, tmp_path / "reference")
+    return make_euler_reference(*reference) if request.param == "Euler" else reference
 
 
 def test_upstream_loop_commits_once_and_matches_native_drive_and_actor(reference):
@@ -103,6 +105,17 @@ def test_invalid_development_configuration_is_rejected_before_environment_mutati
         payload["joints"][0]["kp_nm_rad"] *= 2
         contract.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="50 Hz|identity changed"):
+        GooseDevelopmentEnv(cfg, "cpu")
+
+
+@pytest.mark.parametrize("mutation", ["integrator", "implicit_damping", "physical_damping"])
+def test_euler_configuration_cannot_override_its_contract_before_environment_creation(reference, mutation):
+    model, contract = make_euler_reference(*reference)
+    cfg = make_development_env_cfg(model, contract)
+    if mutation == "integrator": cfg.sim.mujoco.integrator = "implicitfast"
+    elif mutation == "implicit_damping": cfg.sim.mujoco.disableflags = ()
+    else: cfg.sim.mujoco.disableflags += ("damper",)
+    with pytest.raises(ValueError, match="integration profile changed"):
         GooseDevelopmentEnv(cfg, "cpu")
 
 
@@ -175,6 +188,7 @@ def test_scene_preserves_native_material_options_and_distinguishes_default_and_l
     assert loaded_cfg.scene.entities["robot"].init_state.pos[2] == pytest.approx(loaded[2])
     wrapped = Scene(cfg.scene, "cpu").compile()
     cfg.sim.mujoco.apply(wrapped)
+    assert cfg.sim.mujoco.integrator == json.loads(contract.read_text())["integrator"].lower()
     assert wrapped.narena == native.narena
     for field in dir(native.opt):
         if not field.startswith("_") and not callable(value := getattr(native.opt, field)):

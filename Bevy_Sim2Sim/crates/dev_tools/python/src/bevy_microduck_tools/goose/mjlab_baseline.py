@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from .artifacts import CANDIDATES, DT, JOINT_ORDER, sha256, write_json
 
 CANDIDATE = "goose_460_condensed_mjlab50_reference_v1"
+EULER_CANDIDATE = "goose_task_collision_condensed_connect50_euler_reference_v1"
 NATIVE_PARENTS = {
     CANDIDATES[1]: CANDIDATE,
     "goose_task_collision_v1_condensed50":
@@ -98,12 +99,28 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
     contract = _read_native_contract(model_path, contract_path)
-    if (contract["candidate"] not in NATIVE_PARENTS.values()
-            or contract["integrator"] != "implicitfast"):
+    is_euler = contract["candidate"] == EULER_CANDIDATE
+    expected_integrator = "Euler" if is_euler else "implicitfast"
+    if (not is_euler and contract["candidate"] not in NATIVE_PARENTS.values()
+            or contract["integrator"] != expected_integrator):
         raise ValueError("Explicit native mjlab reference required")
     model = mujoco.MjModel.from_xml_path(str(model_path))
     if model.nu != 18 or model.opt.timestep != DT:
         raise ValueError("Native model does not expose the Goose 18 motors at 50 Hz")
+    expected_enum = (mujoco.mjtIntegrator.mjINT_EULER if is_euler
+                     else mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
+    if model.opt.integrator != expected_enum:
+        raise ValueError("Compiled native integration profile differs from its contract")
+    if is_euler:
+        flow = contract.get("native_integration_flow", {})
+        required = {"revision": "goose_native_euler_eulerdamp_disabled_v1",
+                    "dt_s": DT, "decimation": 1, "integrations_per_tick": 1,
+                    "physical_dampers_enabled": True,
+                    "implicit_joint_damping_integration_enabled": False}
+        if (any(flow.get(key) != value for key, value in required.items())
+                or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
+                or model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_DAMPER)):
+            raise ValueError("Native Euler integration profile must retain physical damping")
     positions = {model.joint(i).name: float(model.qpos0[model.jnt_qposadr[i]])
                  for i in range(model.njnt) if model.jnt_type[i] in (2, 3)}
     positions.update({joint["name"]: joint["q_neutral_rad"] for joint in contract["joints"]})
