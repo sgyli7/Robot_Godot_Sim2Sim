@@ -7,6 +7,9 @@ use simulation_minigame::g1::static_environment::{
 };
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod static_preload;
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct G1StationConfiguration {
@@ -202,11 +205,31 @@ mod tests {
         ] {
             let mut owner = ArenaTaskRunner::load_static_predictive_constraint_diagnostic(&config)
                 .map_err(|e| e.to_string())?;
+            let mut preload = None;
             for tick in 1..=160 {
+                let mut applied = if tick > 60 {
+                    Some(commands[tick as usize - 61].clone())
+                } else {
+                    None
+                };
+                if tick > 140
+                    && label == "oracle_translation_candidate"
+                    && fixture["candidate_hold_self_preload"] == true
+                {
+                    let measurement = owner.measurement().map_err(|e| e.to_string())?;
+                    if preload.is_none() {
+                        preload = Some(super::static_preload::StaticFingerPreload::new(
+                            commands[79].clone(),
+                            config.limits.clone(),
+                            &measurement,
+                        )?);
+                    }
+                    applied = Some(preload.as_mut().unwrap().next(&measurement)?);
+                }
                 let step = if tick <= 60 {
                     owner.diagnostic_static_startup_step(&mut || Ok(()))
                 } else {
-                    owner.diagnostic_static_alignment_step(&commands[tick as usize - 61])
+                    owner.diagnostic_static_alignment_step(applied.as_ref().unwrap())
                 }
                 .map_err(|e| e.to_string())?;
                 let ArenaBodyStep::StaticAgile(body) = &step else {
@@ -221,6 +244,8 @@ mod tests {
                     return Err("alignment changed clock/body update counts".into());
                 }
                 writeln!(log,"{}",serde_json::json!({"label":label,"body":step,
+                    "applied_offline_command":applied,
+                    "candidate_hold_self_preload":fixture["candidate_hold_self_preload"],
                     "phase":if tick<=60 {"explicit_static_startup"} else if tick<=140 {"saved_or_explicitly_aligned_command"} else {"explicit20Tick_last_target_hold"},
                     "fresh_images":0,"fresh_vla_calls":0,"oracle_diagnostic_only":true,
                     "autonomous_task_qualified":false})).map_err(|e|e.to_string())?;

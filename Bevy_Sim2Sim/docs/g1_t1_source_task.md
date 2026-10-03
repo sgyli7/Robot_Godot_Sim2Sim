@@ -503,3 +503,15 @@ The first alignment attempt (`0322`) stops after62actual ticks because its
 initial zero-navigation guard rejects an original -0.000629rad/s yaw output.
 No candidate world has run. Its partial trace stays retained; only that guard
 is corrected, with unchanged saved commands, oracle delta and grasp thresholds.
+
+The corrected320Tick comparison (`0323`) reproduces all140reference body steps
+exactly. Oracle translation prolongs hand-only contact, but both20Tick waits
+lose the apple: reference retains support1/20ticks, candidate9/20; neither meets
+the frozen height/displacement/standing/contact hold rule. It is not a fix.
+An optional test-only20Tick finger-preload candidate then uses only original
+joint encoders: flexion closes at1rad/s within source joint limits, and stops
+incrementing a target at0.08rad directional position error. The4Nm/rad source
+stiffness and5Nm motor caps do not change. Error is a load proxy, not proof of
+object contact. The candidate has no runtime/UI path and no autonomous score.
+Its paired worlds start with the same prior oracle-aligned prefix, allowing the
+independent auditor to isolate this feedback change and retain any failure.
