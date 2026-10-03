@@ -549,3 +549,35 @@ Each control update must advance exactly4original integrations, at most640.
 Object poses/velocities are recorded only for the independent auditor. This
 entry does not change native50Hz or establish contact retention, visual task
 success or formal task acceptance by itself.
+
+The initial source launch (`0327`) has0integrations: the SDK container's UID1234
+could not write its newly created output directory. Only that run directory's
+ACL is corrected for the retained retry (`0328`); no global permissions or
+foreign process changes occur. The retry completes160original controls and
+640original integrations with the same saved commands. Initial robot joints
+and apple/plate poses match, but source startup moves the robot and apple by
+approximately20mm while native startup does not. The source apple stays above
+the shelf during the20Tick wait, but moves36.9mm and fails the frozen25mm wait
+component. Source contact support is not measured by this pose-only probe;
+neither case is a qualified grasp or autonomous task score. The different
+post-startup geometry prevents attributing the outcome to one contact setting.
+
+A separate `static_marker_assets` camera configuration now admits only the
+explicit original AGILE station0/60Tick no-policy diagnostic with16nonintegrating
+solver iterations and predictive limits. It loads the published
+`assets/g1_fiducials/static_apple_plate.json` labels: IDs31/32, black square
+sizes20/60mm, overall white-margin sizes25/75mm, fixed object-local centers
+[.002,0,.046] and[0,0,.0045] metres, both facing source+Z. They are declared
+render-only planar labels; physics geometry/materials/mass do not change.
+Existing mobile labels and their activation gates retain their original values.
+Original unmarked VLA entries reject this new static calibration mode.
+
+`unitree_g1_static_vision.py` reads actual640x480PNG and a whitelisted
+`g1_static_marker_observation_v1` of original pinhole calibration,43joint
+encoders and IMU/self velocities. It rejects object poses, world-root position,
+contacts, saved actions and unknown fields. Public label PnP plus original
+self-FK yields root-relative apple/plate transforms; duplicate IDs, short edges
+(<8px), bad reprojection(>1px), wrong calibration and nonfinite data are rejected.
+This classical localization tool neither proposes actuation nor earns a task
+success. An actual native view must verify detections and pose error before
+any live task controller may consume them.

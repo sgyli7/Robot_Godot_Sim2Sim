@@ -1,4 +1,4 @@
-//! Disclosed render-only printed markers on the original mobile box/bin.
+//! Disclosed render-only printed markers on the original task objects.
 //! They inherit renderer object transforms and never modify physics. Visibility
 //! has a legacy Tick200minimum. Continuous routes add a logical owner gate
 //! after the four original unmarked grasp observations actually complete.
@@ -35,6 +35,9 @@ pub enum G1FiducialLayoutProfile {
     /// Fixed public layout validated in geometry control0236. These labels
     /// and the auxiliary sensor never enter original learned grasp images.
     AuxiliaryGripTargets,
+    /// Public small labels for a static RGB localization diagnostic. This
+    /// profile never silently enters original unmarked model observations.
+    StaticApplePlate,
 }
 
 /// Asset identities only. Marker dimensions/mounts are a public fixed contract.
@@ -71,6 +74,12 @@ pub struct G1TaskFiducialReceipt {
     pub asset_sha256: String,
     pub physics_modified: bool,
     pub original_grasp_images_marked: bool,
+    #[serde(skip_serializing_if = "unmarked")]
+    pub static_localization_images_marked: bool,
+}
+
+fn unmarked(value: &bool) -> bool {
+    !*value
 }
 
 impl G1TaskFiducialModel {
@@ -78,16 +87,24 @@ impl G1TaskFiducialModel {
         let bytes = checked_bytes(path, sha256, 16 * 1024)?;
         let document: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if document.schema != "g1_task_fiducials_v1" || document.dictionary != "DICT_4X4_50" {
-            return Err("unsupported mobile printed-marker contract".into());
+            return Err("unsupported original-task printed-marker contract".into());
         }
+        let png_path = |name: &str| {
+            let png = Path::new(name);
+            if png.is_absolute() {
+                png.to_path_buf()
+            } else {
+                path.parent().unwrap_or(Path::new(".")).join(png)
+            }
+        };
         let pngs = [
             checked_bytes(
-                Path::new(&document.png_paths[0]),
+                &png_path(&document.png_paths[0]),
                 &document.png_sha256[0],
                 1024 * 1024,
             )?,
             checked_bytes(
-                Path::new(&document.png_paths[1]),
+                &png_path(&document.png_paths[1]),
                 &document.png_sha256[1],
                 1024 * 1024,
             )?,
@@ -112,24 +129,44 @@ impl G1TaskFiducialModel {
             pngs,
             receipt: G1TaskFiducialReceipt {
                 layout_profile: document.layout_profile,
-                schema: "g1_mobile_disclosed_printed_markers_v1",
+                schema: if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate {
+                    "g1_static_disclosed_printed_markers_v1"
+                } else {
+                    "g1_mobile_disclosed_printed_markers_v1"
+                },
                 dictionary: "DICT_4X4_50",
-                marker_ids: [21, 22],
+                marker_ids: if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate
+                {
+                    [31, 32]
+                } else {
+                    [21, 22]
+                },
                 printed_black_square_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.16, 0.10],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.16, 0.06],
+                    G1FiducialLayoutProfile::StaticApplePlate => [0.02, 0.06],
                 },
                 white_margin_overall_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.20, 0.125],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.20, 0.075],
+                    G1FiducialLayoutProfile::StaticApplePlate => [0.025, 0.075],
                 },
-                object_kinds: ["t2_bin", "t2_box"],
+                object_kinds: if document.layout_profile
+                    == G1FiducialLayoutProfile::StaticApplePlate
+                {
+                    ["t1_apple", "t1_plate"]
+                } else {
+                    ["t2_bin", "t2_box"]
+                },
                 object_local_center_source_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => {
                         [[0.008351, 0.0113635, 0.0045], [0.1005, 0., 0.]]
                     }
                     G1FiducialLayoutProfile::AuxiliaryGripTargets => {
                         [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
+                    }
+                    G1FiducialLayoutProfile::StaticApplePlate => {
+                        [[0.002, 0., 0.046], [0., 0., 0.0045]]
                     }
                 },
                 object_local_rotation_wxyz: match document.layout_profile {
@@ -140,11 +177,20 @@ impl G1TaskFiducialModel {
                         [0.70710677, 0.70710677, 0., 0.],
                         [0.70710677, 0., 0.70710677, 0.],
                     ],
+                    G1FiducialLayoutProfile::StaticApplePlate => [[1., 0., 0., 0.]; 2],
                 },
-                activation_tick: 200,
+                activation_tick: if document.layout_profile
+                    == G1FiducialLayoutProfile::StaticApplePlate
+                {
+                    0
+                } else {
+                    200
+                },
                 asset_sha256: sha256.into(),
                 physics_modified: false,
                 original_grasp_images_marked: false,
+                static_localization_images_marked: document.layout_profile
+                    == G1FiducialLayoutProfile::StaticApplePlate,
             },
         })
     }
@@ -175,7 +221,7 @@ fn spawn(
     for marker in 0..2 {
         let index = objects
             .object_index(model.receipt.object_kinds[marker])
-            .expect("validated original mobile object kind");
+            .expect("validated original task object kind");
         let (parent, _) = roots
             .iter()
             .find(|(_, root)| root.0 == index)
@@ -234,7 +280,11 @@ fn spawn(
                 MeshMaterial3d(material),
                 Transform {
                     translation: Vec3::new(x, z, -y),
-                    rotation: if marker == 1 {
+                    rotation: if model.receipt.layout_profile
+                        == G1FiducialLayoutProfile::StaticApplePlate
+                    {
+                        Quat::IDENTITY
+                    } else if marker == 1 {
                         Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
                     } else if model.receipt.layout_profile
                         == G1FiducialLayoutProfile::AuxiliaryGripTargets
@@ -285,4 +335,30 @@ fn checked_bytes(path: &Path, hash: &str, limit: u64) -> Result<Vec<u8>, String>
         return Err("printed-marker asset SHA256 mismatch".into());
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod static_profile_tests {
+    use super::*;
+
+    #[test]
+    fn repository_static_labels_bind_relative_pixels_and_publish_exact_mounts() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/g1_fiducials/static_apple_plate.json");
+        let hash = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
+        let model = G1TaskFiducialModel::load(&path, &hash).unwrap();
+        assert_eq!(model.receipt.marker_ids, [31, 32]);
+        assert_eq!(model.receipt.object_kinds, ["t1_apple", "t1_plate"]);
+        assert_eq!(model.receipt.printed_black_square_size_m, [0.02, 0.06]);
+        assert_eq!(model.receipt.white_margin_overall_size_m, [0.025, 0.075]);
+        assert_eq!(
+            model.receipt.object_local_center_source_m,
+            [[0.002, 0., 0.046], [0., 0., 0.0045]]
+        );
+        assert_eq!(model.receipt.activation_tick, 0);
+        assert!(!model.receipt.physics_modified);
+        assert!(!model.receipt.original_grasp_images_marked);
+        assert!(model.receipt.static_localization_images_marked);
+        assert!(G1TaskFiducialModel::load(&path, &"0".repeat(64)).is_err());
+    }
 }

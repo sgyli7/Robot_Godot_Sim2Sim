@@ -101,6 +101,10 @@ struct CaptureConfiguration {
     /// the first fresh image. Never enabled implicitly or on model failure.
     #[serde(default)]
     static_startup: bool,
+    /// Separate no-policy static RGB calibration entry. Never inferred from
+    /// task identity or mixed into the original unmarked VLA profile.
+    #[serde(default)]
+    static_marker_assets: Option<BackgroundVisualConfiguration>,
     #[serde(default)]
     exposure_ev100: Option<f32>,
     #[serde(default)]
@@ -858,6 +862,7 @@ fn run_from_file(
         config.mobile_scan,
         config.station,
         config.static_startup,
+        config.static_marker_assets,
         mode,
     )
 }
@@ -1479,6 +1484,7 @@ pub fn run_capture(
         None,
         None,
         false,
+        None,
         CaptureMode::Camera,
     )
 }
@@ -1507,6 +1513,7 @@ fn run_capture_owner(
     mobile_scan: Option<MobileScanCaptureConfiguration>,
     station: Option<super::g1_station_environment::G1StationConfiguration>,
     static_startup: bool,
+    static_marker_assets: Option<BackgroundVisualConfiguration>,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
@@ -1616,14 +1623,33 @@ fn run_capture_owner(
     if let Some(vision) = mobile_scan.as_ref().and_then(|c| c.vision.as_ref()) {
         vision.validate()?;
     }
+    if static_marker_assets.is_some()
+        && (mode != CaptureMode::Camera
+            || !matches!(&config, CaptureRunnerConfig::Static(_))
+            || policy.is_some()
+            || static_startup
+            || mobile_scan.is_some()
+            || task_visual.is_none()
+            || station.is_none()
+            || !matches!(options.ticks, 0 | 60)
+            || !predictive_limit_diagnostic
+            || diagnostic_constraint_sweeps != Some(16))
+    {
+        return Err("static labels require their explicit0/60Tick no-policy original AGILE station RGB diagnostic".into());
+    }
+    let static_labels = static_marker_assets.is_some();
     let fiducial_model = mobile_scan
         .as_ref()
-        .map(|c| G1TaskFiducialModel::load(&c.fiducial_assets.path, &c.fiducial_assets.sha256))
+        .map(|c| &c.fiducial_assets)
+        .or(static_marker_assets.as_ref())
+        .map(|c| G1TaskFiducialModel::load(&c.path, &c.sha256))
         .transpose()?;
     if let Some(model) = &fiducial_model {
         let auxiliary_labels = model.receipt.layout_profile
             == rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryGripTargets;
-        if auxiliary_labels != auxiliary_view {
+        let static_profile = model.receipt.layout_profile
+            == rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::StaticApplePlate;
+        if auxiliary_labels != auxiliary_view || static_profile != static_labels {
             return Err(
                 "auxiliary printed labels require their separate fixed-sensor view entry".into(),
             );
