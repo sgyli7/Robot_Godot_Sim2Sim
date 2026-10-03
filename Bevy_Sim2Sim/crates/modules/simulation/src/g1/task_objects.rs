@@ -304,10 +304,20 @@ pub struct TaskObjectContactSample {
     /// Unlike cached solver distances this belongs to this exact sample Tick.
     /// Zero means intersection/touch; None means the query was unsupported.
     pub geometric_distance_after_step_m: Option<f32>,
+    /// Legacy sum over all cached manifold points, including points no longer
+    /// selected by the solver. It must not establish present support alone.
     pub normal_impulse_n_s: f32,
-    /// Last-solve normal impulse acting on this object, in source Z-up axes.
-    /// Tangential/friction impulse is excluded; acceptance-only evidence.
+    /// Legacy cached-normal vector; cached points/normals may be stale.
+    /// Tangential/friction impulse is excluded; never a controller input.
     pub normal_impulse_on_object_source: [f32; 3],
+    /// Sum over current solver-contact identities only. None means the active
+    /// list is unavailable; it is not substituted with cached legacy impulses.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub active_solver_normal_impulse_n_s: Option<f32>,
+    /// Active impulses along stored solver-manifold normals, in source axes.
+    /// This is not a post-step surface-normal query.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub active_solver_normal_impulse_on_object_source: Option<[f32; 3]>,
     /// Diagnostic cache/impulse records. Solver-basis friction components are
     /// not world-space forces, and cached anchors are not fresh shape queries.
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -587,6 +597,11 @@ impl TaskObjectScene {
                             instance.collider,
                         ),
                         #[cfg(feature = "g1_constraint_diagnostic")]
+                        active_solver_normal_impulse_n_s: active_solver_normal_impulse(pair),
+                        #[cfg(feature = "g1_constraint_diagnostic")]
+                        active_solver_normal_impulse_on_object_source:
+                            active_solver_normal_vector(pair, instance.collider),
+                        #[cfg(feature = "g1_constraint_diagnostic")]
                         diagnostic_solver_contacts: diagnostic_solver_contacts(
                             pair,
                             instance.collider,
@@ -673,6 +688,44 @@ fn normal_impulse_on_collider(
         })
         .to_array(),
     )
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn active_solver_normal_impulse(pair: &rapier3d::geometry::ContactPair) -> Option<f32> {
+    let mut count = 0;
+    let mut total = 0.;
+    for manifold in &pair.manifolds {
+        for contact in &manifold.data.solver_contacts {
+            let index = (contact.contact_id[0] & !rapier3d::geometry::NEW_CONTACT_BIT) as usize;
+            let impulse = manifold.points.get(index)?.data.impulse;
+            if !impulse.is_finite() || impulse < 0. {
+                return None;
+            }
+            total += impulse;
+            count += 1;
+        }
+    }
+    (count > 0 && total.is_finite()).then_some(total)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn active_solver_normal_vector(
+    pair: &rapier3d::geometry::ContactPair,
+    object: ColliderHandle,
+) -> Option<[f32; 3]> {
+    active_solver_normal_impulse(pair)?;
+    let mut impulse = Vector::ZERO;
+    for manifold in &pair.manifolds {
+        let mut magnitude = 0.;
+        for contact in &manifold.data.solver_contacts {
+            let index = (contact.contact_id[0] & !rapier3d::geometry::NEW_CONTACT_BIT) as usize;
+            magnitude += manifold.points.get(index)?.data.impulse;
+        }
+        impulse += manifold.data.normal * magnitude;
+    }
+    let sign = if pair.collider1 == object { -1. } else { 1. };
+    let result = engine_to_source_vector((impulse * sign).to_array());
+    result.iter().all(|v| v.is_finite()).then_some(result)
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -886,6 +939,26 @@ mod tests {
             assert!(!samples.is_empty());
             let normal_sum: f32 = samples.iter().map(|s| s.normal_impulse_n_s).sum();
             assert!((normal_sum - pair.total_impulse_magnitude()).abs() < 1e-6);
+            assert!((active_solver_normal_impulse(pair).unwrap() - normal_sum).abs() < 1e-6);
+            let active_vector = active_solver_normal_vector(pair, collider).unwrap();
+            assert!(active_vector[2] > 0.01);
+            // Reproduce a stale unselected manifold point at the actual API
+            // seam: legacy aggregation sees it, active solver evidence must not.
+            let mut cached = pair.clone();
+            let mut stale = cached.manifolds[0].points[0].clone();
+            stale.data.impulse = 123.;
+            cached.manifolds[0].points.push(stale);
+            assert!(cached.total_impulse_magnitude() > 123.);
+            assert!((active_solver_normal_impulse(&cached).unwrap() - normal_sum).abs() < 1e-6);
+            assert_eq!(
+                active_solver_normal_vector(&cached, collider).unwrap(),
+                active_vector
+            );
+            for manifold in &mut cached.manifolds {
+                manifold.data.solver_contacts.clear();
+            }
+            assert!(active_solver_normal_impulse(&cached).is_none());
+            assert!(active_solver_normal_vector(&cached, collider).is_none());
             assert!(samples.iter().any(|s| {
                 let [x, y] = s
                     .tangent_impulse_solver_basis_n_s

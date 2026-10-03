@@ -17,7 +17,8 @@ from pathlib import Path
 
 import numpy as np
 from unitree_g1_static_placement_audit import (
-    DEFINITION_SHA, body_rotation, digest, footprint, robot_contact_blocks_release,
+    DEFINITION_SHA, active_normal_impulse, body_rotation, digest, footprint,
+    robot_contact_blocks_release,
 )
 
 FLOOR_PART = 2
@@ -64,9 +65,9 @@ def evaluate(definition, rows):
         released = not any(robot_contact_blocks_release(c) for c in contacts)
         support_z = 0.
         for contact in contacts:
-            if contact['other_task_kind'] == 't2_bin' and contact['normal_impulse_n_s'] > 0.:
+            if contact['other_task_kind'] == 't2_bin' and (active_normal_impulse(contact) or 0.) > 0.:
                 # Earlier traces lack direction; do not infer upward support.
-                vector = np.asarray(contact['normal_impulse_on_object_source'])
+                vector = np.asarray(contact.get('active_solver_normal_impulse_on_object_source'))
                 if vector.shape != (3,) or not np.isfinite(vector).all():
                     raise ValueError('Missing/nonfinite bin support direction')
                 support_z += float(vector[2])
@@ -90,10 +91,11 @@ def evaluate(definition, rows):
         previous = tick
     if not samples:
         raise ValueError('Empty physical trace')
-    return {'schema': 'g1_independent_mobile_placement_audit_v1',
+    return {'schema': 'g1_independent_mobile_placement_audit_v2',
         'diagnostic_release_window_passed': maximum >= 101,
         'autonomous_task_qualified': False, 'formal_ten_episode_acceptance_passed': False,
         'target_rule_frozen_for_formal_suite': False,
+        'contact_evidence_rule': 'current solver-point identities required; legacy all-point cache totals cannot prove support; unavailable active impulse blocks robot release',
         'target_rule': 'upward prism over frozen original bin interior flat floor convex part2; every box vertex inside; bin normal impulse upward in source world Z',
         'target_floor_bin_local_xy': polygon.tolist(), 'target_floor_lowest_local_z_m': floor_bottom,
         'box_collision_vertices': len(box_points),

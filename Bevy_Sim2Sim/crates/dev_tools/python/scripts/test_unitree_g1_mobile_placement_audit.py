@@ -19,7 +19,9 @@ def fixture(count=101):
         'rotation_engine_xyzw': [0., 0., 0., 1.],
         'linear_velocity_source': [0., 0., 0.], 'angular_velocity_source': [0., 0., 0.],
         'last_solve_contacts': [{'other_task_kind': 't2_bin', 'other_robot_body_index': None,
-            'normal_impulse_n_s': .01962, 'normal_impulse_on_object_source': [0., 0., .01962]}]}
+            'normal_impulse_n_s': .01962, 'normal_impulse_on_object_source': [0., 0., .01962],
+            'active_solver_normal_impulse_n_s': .01962,
+            'active_solver_normal_impulse_on_object_source': [0., 0., .01962]}]}
     bin_object = {'kind': 't2_bin', 'position_source': [0., 0., 0.],
         'rotation_engine_xyzw': [0., 0., 0., 1.]}
     rows = []
@@ -65,7 +67,7 @@ class MobilePlacementTests(unittest.TestCase):
         d, rows = fixture()
         for row in rows:
             body(row)['task_objects']['objects'][0]['last_solve_contacts'][0][
-                'normal_impulse_on_object_source'] = [.01962, 0., 0.]
+                'active_solver_normal_impulse_on_object_source'] = [.01962, 0., 0.]
         self.assertFalse(evaluate(d, rows)['diagnostic_release_window_passed'])
 
     def test_unknown_or_touching_robot_distance_blocks_release(self):
@@ -74,7 +76,8 @@ class MobilePlacementTests(unittest.TestCase):
             for row in rows:
                 body(row)['task_objects']['objects'][0]['last_solve_contacts'].append({
                     'other_task_kind': None, 'other_robot_body_index': 28,
-                    'geometric_distance_after_step_m': distance, 'normal_impulse_n_s': 0.})
+                    'geometric_distance_after_step_m': distance, 'normal_impulse_n_s': 0.,
+                    'active_solver_normal_impulse_n_s': 0.})
             self.assertEqual(evaluate(d, rows)['diagnostic_release_window_passed'], distance == .001)
 
     def test_fall_remains_failure_after_standing_recovers(self):
@@ -95,6 +98,21 @@ class MobilePlacementTests(unittest.TestCase):
                 body(changed[50])['task_objects']['episode_id'] = 43
             with self.assertRaises(ValueError):
                 evaluate(d, changed)
+
+    def test_stale_positive_cache_cannot_certify_bin_support(self):
+        for active in (0., None):
+            d, rows = fixture()
+            for row in rows:
+                body(row)['task_objects']['objects'][0]['last_solve_contacts'][0][
+                    'active_solver_normal_impulse_n_s'] = active
+            self.assertFalse(evaluate(d, rows)['diagnostic_release_window_passed'])
+
+    def test_legacy_only_contact_is_unverifiable(self):
+        d, rows = fixture()
+        for row in rows:
+            del body(row)['task_objects']['objects'][0]['last_solve_contacts'][0][
+                'active_solver_normal_impulse_n_s']
+        self.assertFalse(evaluate(d, rows)['diagnostic_release_window_passed'])
 
 
 if __name__ == '__main__':

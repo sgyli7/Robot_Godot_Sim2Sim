@@ -2041,3 +2041,22 @@ point records therefore preserve active contact identities, raw solver-basis
 friction impulses and cached lever arms/anchors without feeding them to control.
 Cached anchors and normals are explicitly distinct from fresh post-step shape
 queries and from measured world-space friction forces.
+
+Read-only point reproduction0344 (7c0add4) matches all1460complete legacy
+records exactly after stripping only the added diagnostic output. It records
+1460new native/WBC updates,0fresh RGB/VLA/Qwen calls and unchanged4PGS/50Hz.
+All box/robot points use the supported pointwise Coulomb path; ordinary
+rigid-body simplified friction explicitly reports pointwise actual tangent
+impulses as unavailable instead of reporting a misleading zero.
+
+At1281, the legacy cache still reports0.090455N.s on hand bodies32/30, while
+the selected solver points report zero. Thus the earlier1282 "support loss"
+was one Tick late. This is an evidence-aggregation defect, not a changed
+physical trajectory. New diagnostic fields sum only current solver-contact
+identities and keep legacy totals separately labelled; unavailable active
+evidence is never replaced by the cache. Static/mobile placement auditors
+require this active evidence for support and conservative release, retaining
+geometry/speed/two-second thresholds. Eighteen adversarial Python checks and
+the actual-engine sliding/stale-point regression pass. Old cached-only task
+scores remain historical and require revalidation; they do not establish
+present qualification. The matched SDK contact-force matrix audit is separate.

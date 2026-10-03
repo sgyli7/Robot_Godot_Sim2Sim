@@ -48,6 +48,16 @@ def body_rotation(sample):
     return BASIS.T @ rotation([w, x, y, z]) @ BASIS
 
 
+def active_normal_impulse(contact):
+    """Current solver-point evidence; legacy cache totals cannot prove support."""
+    impulse = contact.get('active_solver_normal_impulse_n_s')
+    if impulse is None:
+        return None
+    if not np.isfinite(impulse) or impulse < 0.:
+        raise ValueError('Invalid active solver contact impulse')
+    return float(impulse)
+
+
 def robot_contact_blocks_release(contact):
     """Positive separated zero-force speculative pairs are not physical touch.
 
@@ -59,9 +69,9 @@ def robot_contact_blocks_release(contact):
     if 'geometric_distance_after_step_m' not in contact:
         raise ValueError('Release audit requires same-Tick post-integration shape distances')
     distance = contact['geometric_distance_after_step_m']
-    impulse = contact['normal_impulse_n_s']
-    if not np.isfinite(impulse) or impulse < 0:
-        raise ValueError('Invalid independent contact impulse')
+    impulse = active_normal_impulse(contact)
+    if impulse is None:
+        return True
     if distance is None:
         return True
     if not np.isfinite(distance):
@@ -114,7 +124,8 @@ def evaluate(definition, rows):
         contact = apple['last_solve_contacts']
         no_candidate_pair = not any(c['other_robot_body_index'] is not None for c in contact)
         released = not any(robot_contact_blocks_release(c) for c in contact)
-        supported = any(c['other_task_kind'] == 't1_plate' and c['normal_impulse_n_s'] > 0 for c in contact)
+        supported = any(c['other_task_kind'] == 't1_plate'
+                        and (active_normal_impulse(c) or 0.) > 0. for c in contact)
         linear = float(np.linalg.norm(apple['linear_velocity_source']))
         angular = float(np.linalg.norm(apple['angular_velocity_source']))
         standing = body['root_upright_cosine'] > .95 and body['root_position_source'][2] >= .35
@@ -139,7 +150,7 @@ def evaluate(definition, rows):
         previous_tick = tick
     if not samples:
         raise ValueError('Empty physical trace')
-    return {'schema': 'g1_independent_static_placement_audit_v3',
+    return {'schema': 'g1_independent_static_placement_audit_v4',
         'diagnostic_release_window_passed': maximum >= 101,
         'autonomous_task_qualified': False, 'formal_ten_episode_acceptance_passed': False,
         'target_rule': 'vertical prism over convex outer footprint of frozen original plate collision geometry; physical plate support required separately',
@@ -149,7 +160,8 @@ def evaluate(definition, rows):
         'max_continuous_placement_seconds': max(maximum - 1, 0) / 50.,
         'candidate_pair_only_max_continuous_seconds': max(candidate_maximum - 1, 0) / 50.,
         'final_continuous_placement_seconds': max(suffix - 1, 0) / 50.,
-        'release_rule': 'no robot pair with unresolved/nonpositive same-Tick post-integration shape distance or positive last-solve normal impulse; cached solver distances never establish release',
+        'contact_evidence_rule': 'current solver-point identities required; legacy all-point cache totals cannot prove support; unavailable active impulse blocks robot release',
+        'release_rule': 'no robot pair with unresolved/nonpositive same-Tick post-integration shape distance or positive active solver normal impulse; cached solver distances never establish release',
         'minimum_margin_during_ready_samples_m': minimum_margin if minimum_margin != float('inf') else None,
         'scope': 'read-only diagnostic truth; no model input, control, pose write or autonomous qualification'}
 

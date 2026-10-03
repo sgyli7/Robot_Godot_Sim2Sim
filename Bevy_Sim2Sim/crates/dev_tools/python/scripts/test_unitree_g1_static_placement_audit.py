@@ -1,12 +1,13 @@
 """Release-criterion regressions; these are not physical task qualifications."""
 import unittest
 
-from unitree_g1_static_placement_audit import robot_contact_blocks_release
+from unitree_g1_static_placement_audit import active_normal_impulse, robot_contact_blocks_release
 
 
 class ReleaseDistanceTests(unittest.TestCase):
     def sample(self, geometric=.016, impulse=0., cached=.0196):
         return {'other_robot_body_index': 35, 'normal_impulse_n_s': impulse,
+                'active_solver_normal_impulse_n_s': impulse,
                 'min_solver_distance_m': cached,
                 'geometric_distance_after_step_m': geometric}
 
@@ -33,6 +34,17 @@ class ReleaseDistanceTests(unittest.TestCase):
             robot_contact_blocks_release(self.sample(geometric=float('nan')))
         with self.assertRaises(ValueError):
             robot_contact_blocks_release(self.sample(impulse=float('nan')))
+
+    def test_stale_cached_force_cannot_block_separated_zero_active_force(self):
+        sample = self.sample()
+        sample['normal_impulse_n_s'] = .09
+        self.assertFalse(robot_contact_blocks_release(sample))
+
+    def test_missing_active_identity_is_not_support_or_release_evidence(self):
+        sample = self.sample(impulse=.09)
+        del sample['active_solver_normal_impulse_n_s']
+        self.assertIsNone(active_normal_impulse(sample))
+        self.assertTrue(robot_contact_blocks_release(sample))
 
 
 if __name__ == '__main__':
