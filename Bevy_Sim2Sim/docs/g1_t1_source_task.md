@@ -581,3 +581,13 @@ self-FK yields root-relative apple/plate transforms; duplicate IDs, short edges
 This classical localization tool neither proposes actuation nor earns a task
 success. An actual native view must verify detections and pose error before
 any live task controller may consume them.
+
+A preparation-time inspection catches a marker-entry mismatch before any
+launch: the ordinary standalone AGILE worker cannot select the required
+predictive16solver owner. The unused0329config/build are retained with0real
+steps. The marker entry therefore uses the existing typed static task owner
+with no policy, and60Tick views reuse its exact explicit startup command and
+self-state gate. The startup helper is shared with the original live profile;
+no new physics method or altered startup command is introduced.0Tick views
+initialize that same owner and perform no integration. Any policy combined
+with static labels, other profile or different Tick budget remains rejected.

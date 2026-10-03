@@ -826,7 +826,9 @@ fn run_from_file(
     if config.task_visual_path.is_some() != config.task_visual_sha256.is_some() {
         return Err("task visual path/hash must both be supplied".into());
     }
-    if matches!(config.runner, CaptureRunnerConfig::Task(_)) != config.policy.is_some() {
+    if matches!(config.runner, CaptureRunnerConfig::Task(_)) != config.policy.is_some()
+        && !(config.static_marker_assets.is_some() && config.policy.is_none())
+    {
         return Err("task owner and live policy configuration must be supplied together".into());
     }
     if config.task_lab.is_some() != interactive
@@ -1537,9 +1539,13 @@ fn run_capture_owner(
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
             || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
-            || policy
-                .as_ref()
-                .is_none_or(|p| p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait))
+            || if static_marker_assets.is_some() {
+                policy.is_some() || options.ticks != 60
+            } else {
+                policy
+                    .as_ref()
+                    .is_none_or(|p| p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait)
+            })
     {
         return Err("explicit static startup requires bounded T1 camera/live-policy mode, predictive 16-sweep owner and no prefetch".into());
     }
@@ -1625,9 +1631,9 @@ fn run_capture_owner(
     }
     if static_marker_assets.is_some()
         && (mode != CaptureMode::Camera
-            || !matches!(&config, CaptureRunnerConfig::Static(_))
+            || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some()
-            || static_startup
+            || static_startup != (options.ticks == 60)
             || mobile_scan.is_some()
             || task_visual.is_none()
             || station.is_none()
@@ -3760,10 +3766,10 @@ fn marker_observation(stamp: &G1CaptureStamp) -> Result<serde_json::Value, Strin
     Ok(observation)
 }
 
-fn drive_live_policy(
+/// Shared explicit initialization; no task-model call or hidden physics step.
+fn drive_static_startup(
     runtime: &mut CaptureRuntime,
     outcome: &CaptureOutcome,
-    port: &G1CameraPort,
 ) -> Result<bool, String> {
     #[cfg(feature = "g1_constraint_diagnostic")]
     if runtime.startup_ticks != 0 {
@@ -3832,6 +3838,17 @@ fn drive_live_policy(
                 "original_vla_output":false,"task_qualified":false,
             }));
         }
+    }
+    Ok(true)
+}
+
+fn drive_live_policy(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    if !drive_static_startup(runtime, outcome)? {
+        return Ok(false);
     }
     if runtime
         .live_policy
@@ -4596,9 +4613,15 @@ fn drive_capture(
         }
         if runtime.live_policy.is_none() && !runtime.command_submitted && runtime.options.ticks > 0
         {
-            runtime
-                .worker
-                .submit_stand(runtime.episode_id, runtime.options.ticks)?;
+            if runtime.startup_ticks != 0 {
+                if !drive_static_startup(&mut runtime, &outcome)? {
+                    return Ok(());
+                }
+            } else {
+                runtime
+                    .worker
+                    .submit_stand(runtime.episode_id, runtime.options.ticks)?;
+            }
             runtime.command_submitted = true;
             return Ok(());
         }
