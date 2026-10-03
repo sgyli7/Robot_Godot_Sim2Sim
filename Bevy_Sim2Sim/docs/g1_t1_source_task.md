@@ -617,3 +617,26 @@ despite0.172px reprojection RMS; P3apple is visible in RGB but not decoded.
 Plate errors in all five views remain below4mm. These are perception failures,
 not task successes or permission to actuate. The original 10mm gate is retained;
 native frozen T1 remains2/10 and full-task qualification remains false.
+
+The retained RGB corner audit (`0333`) finds0.8-1.3px contour errors on the
+16-19px apple label; the P3quadrilateral is found but fails dictionary decoding.
+A full public-pattern registration prototype (`0334`) reduces errors for the
+four decoded labels but incorrectly selects a nearly uniform rejected contour
+for P3. That negative result is retained. Explicit positive contrast, exact
+36cell pattern agreement and per-cell confidence reject this false candidate
+(`0335`); offline apple errors then range0.355-6.494mm on the same five images.
+No native Tick, model call, mount, camera, physics setting or gate changes.
+
+`unitree_g1_static_label_fit.py` implements this declared classical correction
+as a separate bounded RGB module. It fits the full disclosed apple pattern,
+models raster samples at half-pixel centers and returns continuous projection
+corners using the original camera calibration. Fits move observed corners at
+most3px, have at most100optimizer evaluations, and inspect at most16rejected
+quadrilaterals. Positive contrast>=0.5, normalized residual<=0.15, exact payload
+and black-border bits, and cell confidence>=0.15 are required. Uniform/wrong
+patterns, clipped/small contours, duplicate admitted labels and excessive
+candidate counts are rejected. The existing PnP edge/reprojection and external
+10mm position gates remain unchanged. The plate path is unchanged; self sensor
+whitelisting, public asset hashes and no-actuation/task-unqualified outputs are
+retained. This tool needs the already-used OpenCV/NumPy/SciPy runtime and does
+not modify or feed marked images into the original learned grasp profile.

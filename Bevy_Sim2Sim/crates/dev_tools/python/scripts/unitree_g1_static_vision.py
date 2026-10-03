@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from unitree_g1_mobile_vision import DEFINITION_SHA256, root_from_camera, rotation
+from unitree_g1_static_label_fit import apple_label
 
 LAYOUT = {31: ('t1_apple', .02, [.002, 0., .046]), 32: ('t1_plate', .06, [0., 0., .0255])}
 
@@ -83,7 +84,12 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
     parameters=cv2.aruco.DetectorParameters();parameters.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_SUBPIX
     detector=cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),parameters)
     corners,ids,rejected=detector.detectMarkers(image);detections=[];seen=set()
-    for points,marker_id in zip(corners,[] if ids is None else ids.flatten()):
+    # The apple's full public pattern validates/refines accepted and rejected
+    # contours. Plate localization retains the existing original corner path.
+    refined=apple_label(image,corners,ids,rejected)
+    candidates=[(p,int(i),None) for p,i in zip(corners,[] if ids is None else ids.flatten()) if int(i)!=31]
+    if refined is not None:candidates.append((refined[0],31,refined[1]))
+    for points,marker_id,registration in candidates:
         marker_id=int(marker_id)
         if marker_id not in LAYOUT:continue
         if marker_id in seen:raise ValueError('Duplicate static target identity in actual RGB')
@@ -104,8 +110,10 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
         if error>1:continue
         object_marker=np.eye(4);object_marker[:3,3]=mount
         root_object=root_camera@pose@np.linalg.inv(object_marker)
-        detections.append({'marker_id':marker_id,'object_kind':kind,'corners_px':pixels.tolist(),
-            'minimum_edge_px':edge,'reprojection_rms_px':error,'root_from_object':root_object.tolist()})
+        detection={'marker_id':marker_id,'object_kind':kind,'corners_px':pixels.tolist(),
+            'minimum_edge_px':edge,'reprojection_rms_px':error,'root_from_object':root_object.tolist()}
+        if registration is not None:detection['pixel_registration']=registration
+        detections.append(detection)
     return {'schema':'g1_static_actual_rgb_localization_v1','observation':value['stamp'],
         'source':'actual_rgb_printed_label_pnp_and_original_self_FK',
         'image_sha256':sha(image_path),'input_sha256':sha(observation_path),
