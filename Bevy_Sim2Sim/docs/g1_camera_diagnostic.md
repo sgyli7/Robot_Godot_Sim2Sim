@@ -320,3 +320,22 @@ marker worker identities, and invoke the ordinary app with
 `--scene g1_static_memory_place_diagnostic --robot g1 --g1-config CONFIG
 --g1-ticks 715 --output NEW_DIRECTORY`. The exact budget belongs only to this
 entry; ordinary camera, task-lab and other transfer budgets remain unchanged.
+
+
+The actual live placement at `7abf56b` completed 715 native/WBC ticks, two fresh
+matched N1.7 calls and five distinct actual camera captures. All 390 prefix body
+records matched the preceding held-transfer experiment (episode identity apart).
+The 390-Tick grasp estimate used 5 simulated seconds / 5137 wall ms of disclosed
+140-Tick memory; independent position errors were 8.175 mm (apple) and 1.031 mm
+(plate). The unchanged independent v4 physical audit found 3.56 continuous seconds
+of released, plate-supported, contained, slow placement and continuous standing.
+All owned model/app/CPU children were reaped. This is one explicitly paused live
+diagnostic, not Qwen execution, uninterrupted 1x or formal ten-case acceptance.
+
+The actual final 715-Tick near-table image still has the forearm covering both
+printed target patterns. The unchanged read-only CPU detector found zero target
+roles. Physical success does not establish final visual feedback. This negative
+result is retained; further camera-angle search is stopped. A bounded physical
+observation withdrawal must be preflighted against current self state before
+another fresh final visual observation can be evaluated. Existing evidence is
+scratch case 0364 (live/physical) and 0365 (read-only final visibility).
