@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from unitree_g1_mobile_vision import DEFINITION_SHA256, root_from_camera, original_self_body_frames, rotation
-from unitree_g1_static_label_fit import apple_label
+from unitree_g1_static_label_fit import apple_label, register as register_public_label
 
 SIDE_LAYOUT = {33:([-.030,0.,.014],[2**-.5,0.,-2**-.5,0.]),34:([.002,-.031,.014],[2**-.5,2**-.5,0.,0.]),35:([.033,0.,.014],[2**-.5,0.,2**-.5,0.]),36:([.002,.031,.014],[2**-.5,-2**-.5,0.,0.]),37:([.002,0.,-.017],[0.,1.,0.,0.])}
 LAYOUT = {31: ('t1_apple', .02, [.002, 0., .046]), 32: ('t1_plate', .06, [0., 0., .0255])}
@@ -155,7 +155,16 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
     # The apple's full public pattern validates/refines accepted and rejected
     # contours. Plate localization retains the existing original corner path.
     refined=apple_label(image,corners,ids,rejected)
-    candidates=[(p,int(i),None) for p,i in zip(corners,[] if ids is None else ids.flatten()) if int(i)!=31]
+    gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
+    candidates=[]
+    for p,i in zip(corners,[] if ids is None else ids.flatten()):
+        marker_id=int(i)
+        if marker_id==31:continue
+        if marker_id in SIDE_LAYOUT and marker_id in public_assets.layout:
+            fit=register_public_label(gray,p.reshape(4,2),marker_id=marker_id)
+            if fit is None:continue
+            candidates.append((fit[0],marker_id,fit[1]))
+        else:candidates.append((p,marker_id,None))
     if refined is not None:candidates.append((refined[0],31,refined[1]))
     for points,marker_id,registration in candidates:
         marker_id=int(marker_id)
@@ -182,20 +191,57 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
             'minimum_edge_px':edge,'reprojection_rms_px':error,'root_from_object':root_object.tolist()}
         if registration is not None:detection['pixel_registration']=registration
         detections.append(detection)
-    # One visible physical marker per semantic object; choose the largest
-    # projected minimum edge, then the lower residual and stable physical ID.
-    # Original two-marker output order and geometry remain unchanged.
-    best={}
-    for detection in detections:
-        kind=detection['object_kind'];score=(-detection['minimum_edge_px'],detection['reprojection_rms_px'],detection['marker_id'])
-        if kind not in best or score<best[kind][0]:best[kind]=(score,detection)
-    detections=[entry[1] for entry in best.values()]
+    # The original calibration has one physical marker per object and retains
+    # its exact output. Multi-face calibration jointly uses all admitted apple
+    # faces; a largest-contour heuristic cannot resolve their depth uncertainty.
+    if len(public_assets.layout)>2:
+        apples=[d for d in detections if d['object_kind']=='t1_apple']
+        others=[d for d in detections if d['object_kind']!='t1_apple']
+        if len(apples)>1:
+            joint=multi_face_apple_pose(apples,public_assets,root_camera,K)
+            detections=others+([] if joint is None else [joint])
+        else:detections=others+apples
     return {'schema':'g1_static_actual_rgb_localization_v1','observation':value['stamp'],
         'source':'actual_rgb_printed_label_pnp_and_original_self_FK',
         'image_sha256':sha(image_path),'input_sha256':sha(observation_path),
         'definition_sha256':DEFINITION_SHA256,'fiducial_sha256':fiducial_sha256,
         'camera_profile':camera_profile,'detections':detections,'rejected_marker_candidates':len(rejected),
         'world_or_contact_truth_input':False,'actuation_proposed':False,'task_qualified':False}
+
+
+def multi_face_apple_pose(entries, public_assets, root_camera, K):
+    """Joint rigid PnP of public noncoplanar printed faces, using pixels only."""
+    points=[];pixels=[]
+    for entry in entries:
+        marker_id=entry['marker_id'];_,size,mount,R=public_assets.layout[marker_id];h=size/2
+        quad=np.array([[-h,h,0],[h,h,0],[h,-h,0],[-h,-h,0]])
+        points.extend((quad@R.T+mount).tolist());pixels.extend(entry['corners_px'])
+    points=np.array(points,np.float64);pixels=np.array(pixels,np.float64)
+    ok,rvecs,tvecs,_=cv2.solvePnPGeneric(points,pixels,K,None,flags=cv2.SOLVEPNP_SQPNP)
+    solutions=[]
+    if ok:
+        for rv,tv in zip(rvecs,tvecs):
+            R=cv2.Rodrigues(rv)[0];t=tv.reshape(3)
+            depths=(points@R.T+t)[:,2]
+            if not np.all((depths>.1)&(depths<5.)):continue
+            front=True
+            for entry in entries:
+                _,_,mount,mountR=public_assets.layout[entry['marker_id']]
+                if float((R@mountR)[:,2]@(R@np.array(mount)+t))>=0:front=False
+            if not front:continue
+            projected=cv2.projectPoints(points,rv,tv,K,None)[0].reshape(-1,2)
+            error=float(np.sqrt(np.mean(np.sum((projected-pixels)**2,axis=1))))
+            if error>1.:continue
+            pose=np.eye(4);pose[:3,:3]=R;pose[:3,3]=t;solutions.append((error,root_camera@pose))
+    if not solutions:return None
+    error,pose=min(solutions,key=lambda q:q[0])
+    primary=next((e for e in entries if e['marker_id']==31),min(entries,key=lambda e:e['marker_id']))
+    result=dict(primary)
+    result.update(root_from_object=pose.tolist(),reprojection_rms_px=error,
+        minimum_edge_px=min(e['minimum_edge_px'] for e in entries),
+        physical_marker_ids_used=sorted(e['marker_id'] for e in entries),
+        pose_method='public_nonplanar_multi_face_pattern_pnp_v1')
+    return result
 
 
 def main():

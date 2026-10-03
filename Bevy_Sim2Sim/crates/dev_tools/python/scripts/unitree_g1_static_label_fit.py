@@ -16,8 +16,10 @@ SQUARE = np.array([[-.5,.5],[.5,.5],[.5,-.5],[-.5,-.5]], np.float32)
 MAX_REJECTED_QUADS = 16
 
 
-def register(gray, points):
+def register(gray, points, *, marker_id=31):
     """Refine one image quadrilateral; reject uniform, wrong or ambiguous bits."""
+    if marker_id not in (31,33,34,35,36,37):
+        return None
     pts = np.asarray(points, dtype=np.float64)
     if (gray.shape != (480,640) or pts.shape != (4,2)
             or not np.isfinite(pts).all()
@@ -35,7 +37,7 @@ def register(gray, points):
     coordinates = np.stack([xx.ravel()+.5,yy.ravel()+.5,np.ones(xx.size)])
     observed = gray[yy,xx].ravel()/255.
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    bits = (cv2.aruco.generateImageMarker(dictionary,31,60)[5::10,5::10]>127)
+    bits = (cv2.aruco.generateImageMarker(dictionary,marker_id,60)[5::10,5::10]>127)
     black = np.argwhere(~bits)
     cell_origins = -.5 + np.arange(6)/6
     sigma = .45/np.linalg.norm(pts-np.roll(pts,-1,axis=0),axis=1).mean()
@@ -93,7 +95,7 @@ def register(gray, points):
     if (bit_errors or confidence < .15 or not np.isfinite(refined).all()
             or np.linalg.norm(refined-np.roll(refined,-1,axis=0),axis=1).min()<8):
         return None
-    return refined, {'method':METHOD,'template_contrast':contrast,
+    return refined, {'method':METHOD if marker_id==31 else 'public_static_side_label_full_pattern_registration_v1','template_contrast':contrast,
         'printed_cell_bit_errors':bit_errors,'minimum_bit_confidence':confidence,
         'residual_rms_normalized':rms,'valid_pixels':int(valid.sum()),
         'optimizer_evaluations':result.nfev,'maximum_corner_adjustment_px':3.}

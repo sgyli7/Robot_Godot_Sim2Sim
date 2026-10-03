@@ -468,6 +468,27 @@ fn validate_reply(
         };
         let pose: [[f64; 4]; 4] = serde_json::from_value(detection["root_from_object"].clone())
             .map_err(|e| e.to_string())?;
+        if let Some(ids) = detection.get("physical_marker_ids_used") {
+            let ids = ids
+                .as_array()
+                .ok_or("multi-face marker IDs are not an array")?;
+            let primary = detection["marker_id"].as_u64().unwrap();
+            let valid = ids
+                .iter()
+                .all(|id| matches!(id.as_u64(), Some(31 | 33..=37)));
+            let unique: std::collections::HashSet<_> =
+                ids.iter().filter_map(Value::as_u64).collect();
+            if config.calibration_version != 3
+                || index != 0
+                || !(2..=6).contains(&ids.len())
+                || !valid
+                || unique.len() != ids.len()
+                || !unique.contains(&primary)
+                || detection["pose_method"] != "public_nonplanar_multi_face_pattern_pnp_v1"
+            {
+                return Err("foreign or duplicated multi-face localization provenance".into());
+            }
+        }
         if admitted[index]
             || pose[3] != [0., 0., 0., 1.]
             || !pose.iter().flatten().all(|v| v.is_finite())
@@ -643,5 +664,19 @@ mod tests {
         reply["detections"][0]["object_kind"] = json!("t1_apple");
         reply["detections"][0]["minimum_edge_px"] = json!(7.9);
         assert!(validate_reply(&reply, &pending, &config).is_err());
+    }
+
+    #[test]
+    fn joint_pose_requires_its_actual_unique_public_marker_ids() {
+        let (mut config, pending, mut reply) = fixture();
+        reply["detections"][0]["physical_marker_ids_used"] = json!([31, 33]);
+        reply["detections"][0]["pose_method"] = json!("public_nonplanar_multi_face_pattern_pnp_v1");
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        config.calibration_version = 3;
+        assert!(validate_reply(&reply, &pending, &config).is_ok());
+        for ids in [json!([31, 31]), json!([31, 99]), json!([33, 34])] {
+            reply["detections"][0]["physical_marker_ids_used"] = ids;
+            assert!(validate_reply(&reply, &pending, &config).is_err());
+        }
     }
 }
