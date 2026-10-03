@@ -2060,3 +2060,21 @@ geometry/speed/two-second thresholds. Eighteen adversarial Python checks and
 the actual-engine sliding/stale-point regression pass. Old cached-only task
 scores remain historical and require revalidation; they do not establish
 present qualification. The matched SDK contact-force matrix audit is separate.
+
+The fixed500Tick station continuation0345 (c2ed4b4) keeps the original command,
+one-PGS setting and all150physical prefix samples from0339 exactly. It remains
+upright for10simulated seconds (minimum0.993638,height0.743875m), but drifts
+0.345226m by the end; the final2second horizontal-speed median is0.084182m/s.
+Current active impulse evidence identifies only foot bodies7/14 when available;
+unavailable point lists remain explicitly unverified. This unpaced mechanical
+test establishes neither stationary placement nor real-time carrying.
+
+One source-contract-preserving self-velocity feedback comparison0346 (0abcad5)
+changes only navigation after the exact150Tick prefix. It rotates named self
+velocity through measured yaw, sends its negative with unit gain and the existing
+0.3m/s bound, and retains the original0.05stand/walk selection. No world position,
+task/contact input, upper target or physical parameter changes. Final drift drops
+to0.243029m, but final2second median speed rises to0.091339m/s: the frozen joint
+improvement rule fails. The candidate is not installed or tuned further. Its
+500native/WBC steps, original negative result and trace are retained; it grants
+no task, stationary hold, model or real-time qualification.
