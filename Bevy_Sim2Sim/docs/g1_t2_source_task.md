@@ -1447,3 +1447,29 @@ support,63stable samples and final self speed0.011316m/s; total1543Ticks,
 zero fresh VLA/camera calls. Trace SHA256:
 `92f43f4498d8796ea2d2b01497d0bf860555122fa38a3608aef2e5e090604bd6`.
 No grip targets, gains, masses, friction or frequency are changed by holding.
+
+Fresh0246 executes four original-camera VLA calls and1560single50Hz Ticks,
+but loses hand-only support at1385 before any opening. The post-hold current
+RGB correctly rejects release: box-to-measured-palm distance0.399150m exceeds
+the0.25m necessary grip-region guard. No release Tick executes and independent
+strict placement duration is0seconds. Active sim/wall0.999302, zero misses/debt;
+this paused diagnostic is not continuous1x qualification. Trace SHA256:
+`71836354cdc5d464847683d4127f35cb541a2aef9c04b6aa721fde2764b06a40`.
+The driver session exits143 before writing final health/exit/cleanup fields;
+those fields remain unknown. A separate timestamped recovery record confirms
+the owned app/model processes and localhost5558 listener are absent, without
+inventing a cleanup signal or changing the initial driver receipt.
+
+Comparing0243 and0246 gives identical physical trajectories through1342Ticks.
+Both already have more than25mm downward box motion relative to the measured
+palm midpoint at1335, while walking.0246 first selects stand at1360 and loses
+support25Ticks later. The initial slip therefore cannot be attributed solely
+to stopping. Saved-action control0247 reproduces all1560physical body samples
+at identical native f32 bits/f64 simulation times and adds only the existing
+read-only completed-solve background auditor. There are zero non-floor
+robot/background impulse contacts. No collision refresh, physics parameter
+change, new VLA call or current rendered image is used. Completing its hold is
+not successful gripping. Trace SHA256:
+`5ce4f807da6b235c3f651d48c732082443f8096f2ab95682d8b76c39078b0751`.
+The next finite causal comparison changes only the requested fine walking
+speed; it does not promote a controller remedy or relax placement/grip gates.

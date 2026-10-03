@@ -712,7 +712,7 @@ mod tests {
         hold: MobileHoldGoal,
     }
     #[test]
-    #[ignore = "frozen actual1443Tick prefix then bounded standing;0freshVLA/renderer work"]
+    #[ignore = "frozen actual finite prefix then bounded standing;0freshVLA/renderer work"]
     fn real_mobile_auxiliary_hold_diagnostic() -> Result<(), RobotError> {
         let config: ArenaTaskRunnerConfig =
             serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
@@ -772,7 +772,12 @@ mod tests {
                 loop {
                     let step = owner.step_with_guard(&command, &mut || Ok(()))?;
                     ticks += 1;
-                    serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
+                    let mut record =
+                        serde_json::to_value(&step).map_err(|e| invalid(e.to_string()))?;
+                    record["diagnostic_robot_background_contacts"] =
+                        serde_json::json!(owner.owner.diagnostic_robot_background_contacts());
+                    serde_json::to_writer(&mut trace, &record)
+                        .map_err(|e| invalid(e.to_string()))?;
                     writeln!(trace).map_err(|e| invalid(e.to_string()))?;
                     if owner.completed_skill() {
                         break;
@@ -790,7 +795,7 @@ mod tests {
             .open(&output)
             .map_err(|e| invalid(e.to_string()))?;
         serde_json::to_writer_pretty(file,&serde_json::json!({"qualified":false,"actual_integrations":ticks,
-            "fresh_vla_calls":0,"saved_actual1443prefix":true,"new_current_camera_used":false,"completed_hold":result.is_ok(),
+            "fresh_vla_calls":0,"saved_actual_prefix":true,"new_current_camera_used":false,"completed_hold":result.is_ok(),
             "error":result.as_ref().err().map(ToString::to_string),"scope":"mechanical standing only; no fresh navigation/release/task qualification"})).map_err(|e|invalid(e.to_string()))?;
         result
     }
