@@ -5203,9 +5203,17 @@ fn drive_capture(
                 let observed_grasp=runtime.static_observed_grasp;
                 let pair_secondary=runtime.static_grasp_pair_secondary;
                 let placement_started=runtime.static_observed_place_target_tick.is_some();
+                let passive_pair=runtime.static_grasp_fixed_camera_pair;
                 if let Some(worker) = &mut runtime.static_marker_worker {
                     if observed_grasp {
-                        if !pair_secondary && !placement_started {worker.submit_grip_capture(&frame)?;}
+                        if !pair_secondary && !placement_started {
+                            // A passive published second view must remain available
+                            // when the first view misses the apple. This receipt
+                            // cannot actuate; placement still requires both roles
+                            // from the separate strict current paired-RGB result.
+                            if passive_pair {worker.submit_unverified_grip_capture(&frame)?;}
+                            else {worker.submit_grip_capture(&frame)?;}
+                        }
                     } else {worker.submit_capture(&frame)?;}
                 }
             }
