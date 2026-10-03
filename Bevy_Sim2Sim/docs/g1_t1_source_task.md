@@ -751,3 +751,19 @@ placement now requires impulses from the current solver contact selection;
 missing active evidence does not fall back to the cached total. Consequently
 the historical cached-contact T1 result of 2/10 requires revalidation and is
 not a currently verified formal score. Raw historical runs are retained.
+
+The no-policy native label capture accepts an optional `static_marker_vision`
+configuration with hash-bound `python_path`, `worker_path`, `localizer_path`,
+`definition_path` and `fiducial_path` (each paired with its `_sha256`). Its
+calibration must equal the labels actually installed in that scene. This port
+has a distinct static protocol, one owned CPU process and one final image;
+it cannot substitute for a mobile task or run alongside the original static
+VLA in this diagnostic. Preparation precedes image submission. Bevy polls a
+bounded reply channel while the separate physical owner completes its original
+Tick budget. Only actual RGB and matching joint/IMU/velocity sensors enter
+`static_vision_input`; body/object world poses remain outside that directory.
+The `static_marker_localization` receipt retains the original image stamp,
+pixel/input hashes, process provenance, round-trip time and full image-to-result
+wall age. Three-second preparation/request limits and rejection of foreign,
+missing or duplicated targets remain explicit. This does not enable task UI
+execution or qualify physical tasks. Forty-seven development tests pass.

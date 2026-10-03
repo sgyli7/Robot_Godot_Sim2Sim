@@ -102,6 +102,9 @@ mod persistent;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub(super) use persistent::PersistentMarkerWorker;
 
+mod static_worker;
+pub(crate) use static_worker::{StaticMarkerVisionConfiguration, StaticMarkerWorker};
+
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod worker {
     use super::*;

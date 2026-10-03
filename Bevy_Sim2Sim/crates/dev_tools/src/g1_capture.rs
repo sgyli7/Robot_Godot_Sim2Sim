@@ -72,6 +72,7 @@ use task_minigame::{
 };
 
 use super::g1_marker_vision::MarkerVisionConfiguration;
+use super::g1_marker_vision::{StaticMarkerVisionConfiguration, StaticMarkerWorker};
 #[cfg(feature = "g1_constraint_diagnostic")]
 use super::g1_marker_vision::{MarkerTargetMemory, MarkerVisionJob};
 use super::g1_source_lighting::{SourceLightingReceipt, SourceRectLighting};
@@ -105,6 +106,9 @@ struct CaptureConfiguration {
     /// task identity or mixed into the original unmarked VLA profile.
     #[serde(default)]
     static_marker_assets: Option<BackgroundVisualConfiguration>,
+    /// Separate static-only CPU localization of the actual final native image.
+    #[serde(default)]
+    static_marker_vision: Option<StaticMarkerVisionConfiguration>,
     #[serde(default)]
     exposure_ev100: Option<f32>,
     #[serde(default)]
@@ -865,6 +869,7 @@ fn run_from_file(
         config.station,
         config.static_startup,
         config.static_marker_assets,
+        config.static_marker_vision,
         mode,
     )
 }
@@ -941,6 +946,8 @@ pub struct G1CaptureReceipt {
     pub pauses_for_camera_and_policy: bool,
     pub mobile_assist_handoff: Option<serde_json::Value>,
     pub disclosed_fiducials: Option<G1TaskFiducialReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_marker_localization: Option<serde_json::Value>,
     pub camera_exposure_ev100: f32,
     pub diagnostic_directional_shadow_maps: bool,
     pub camera_ambient_brightness: f32,
@@ -1075,6 +1082,7 @@ impl G1CaptureReceipt {
             pauses_for_camera_and_policy: false,
             mobile_assist_handoff: None,
             disclosed_fiducials: None,
+            static_marker_localization: None,
             camera_exposure_ev100: Exposure::default().ev100,
             diagnostic_directional_shadow_maps: true,
             camera_ambient_brightness: 450.,
@@ -1280,6 +1288,7 @@ pub(super) struct CaptureRuntime {
     interactive: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     continuous_route: Option<mobile_continuous::ContinuousMobileRoute>,
+    static_marker_worker: Option<StaticMarkerWorker>,
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1503,6 +1512,7 @@ pub fn run_capture(
         None,
         false,
         None,
+        None,
         CaptureMode::Camera,
     )
 }
@@ -1532,6 +1542,7 @@ fn run_capture_owner(
     station: Option<super::g1_station_environment::G1StationConfiguration>,
     static_startup: bool,
     static_marker_assets: Option<BackgroundVisualConfiguration>,
+    static_marker_vision: Option<StaticMarkerVisionConfiguration>,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
@@ -1660,6 +1671,16 @@ fn run_capture_owner(
         return Err("static labels require their explicit0/60Tick no-policy original AGILE station RGB diagnostic".into());
     }
     let static_labels = static_marker_assets.is_some();
+    if let Some(vision) = &static_marker_vision {
+        if !static_labels || interactive || policy.is_some() {
+            return Err("static CPU localization requires the separate no-policy native label capture".into());
+        }
+        vision.validate()?;
+        let labels = static_marker_assets.as_ref().unwrap();
+        if labels.path != vision.fiducial_path || labels.sha256 != vision.fiducial_sha256 {
+            return Err("static CPU calibration differs from the actually printed scene labels".into());
+        }
+    }
     let fiducial_model = mobile_scan
         .as_ref()
         .map(|c| &c.fiducial_assets)
@@ -2124,6 +2145,9 @@ fn run_capture_owner(
         .lock()
         .unwrap()
         .factory_verified_diagnostic_constraint_sweeps = diagnostic_constraint_sweeps;
+    let static_marker_worker = static_marker_vision
+        .map(|c| StaticMarkerWorker::spawn(c, &options.output, episode_id))
+        .transpose()?;
     let mut app = App::new();
     // Default mode uses the scene's enamel configuration only. Explicit station
     // mode below spawns the matching static meshes with the robot's main camera.
@@ -2183,6 +2207,7 @@ fn run_capture_owner(
             interactive,
             #[cfg(feature = "g1_constraint_diagnostic")]
             continuous_route,
+            static_marker_worker,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .add_plugins(
@@ -4441,6 +4466,11 @@ fn drive_capture(
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
+        if let Some(worker) = &mut runtime.static_marker_worker {
+            if let Some(localization) = worker.poll()? {
+                outcome.0.lock().unwrap().static_marker_localization = Some(localization);
+            }
+        }
         if let Some(lighting) = &station_illumination {
             if let Some(error) = lighting.0.get("error").and_then(|e| e.as_str()) {
                 return Err(error.into());
@@ -4696,6 +4726,9 @@ fn drive_capture(
                     && latest.timing.total_integrations == u64::from(runtime.options.ticks))
         };
         if capture_boundary && !runtime.requested {
+            if runtime.static_marker_worker.as_ref().is_some_and(|w| !w.ready()) {
+                return Ok(());
+            }
             if latest.timing.total_integrations > u64::from(runtime.options.ticks) {
                 return Err("worker exceeded the capture integration budget".into());
             }
@@ -4800,6 +4833,9 @@ fn drive_capture(
                 return Err("RGB and completed native measurements do not match".into());
             }
             frame.stamp.native_state.as_ref().unwrap().validate()?;
+            if let Some(worker) = &mut runtime.static_marker_worker {
+                worker.submit_capture(&frame)?;
+            }
             if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
                 // Deliberately omit world camera/body poses and all task objects.
                 // Perception receives actual RGB plus original self sensors only.
@@ -4846,6 +4882,11 @@ fn drive_capture(
                 .as_ref()
                 .map_err(Clone::clone)?
         {
+            if runtime.static_marker_worker.is_some()
+                && outcome.0.lock().unwrap().static_marker_localization.is_none()
+            {
+                return Ok(());
+            }
             if let Some(evidence) = &mut runtime.owner_evidence {
                 evidence.drain(&mut outcome.0.lock().unwrap())?;
                 if !outcome.0.lock().unwrap().owner_step_trace_complete {
