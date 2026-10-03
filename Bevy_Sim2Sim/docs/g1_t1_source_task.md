@@ -640,3 +640,21 @@ candidate counts are rejected. The existing PnP edge/reprojection and external
 whitelisting, public asset hashes and no-actuation/task-unqualified outputs are
 retained. This tool needs the already-used OpenCV/NumPy/SciPy runtime and does
 not modify or feed marked images into the original learned grasp profile.
+
+The committed full-pattern module (`0336`,6c9ab24) reprocesses the same five
+byte-bound native RGB/self-state pairs without additional simulation or camera
+captures. All five unchanged external perception gates pass; apple errors are
+0.486-6.494mm and plate errors are unchanged. NineCPUadmission/isolation tests
+pass. Candidate scanning takes2.16s P50/3.16s P95on this machine, so this result
+does not qualify a live moving-object controller or replace task acceptance.
+
+Static startup can now select the existing explicit prefetch diagnostic. Its
+first actual observation and action slot start at Tick60rather than Tick0;
+future40frame chunks retain original image timestamps and fixed starts. The
+same typed startup owner admits future chunks through its existing original
+VLA command wrapper, with no second world or controller. Requests still begin
+10Ticks into the active chunk, matching the existing static prefetch window;
+the resulting observation age is measured, not erased. Late replies or missed
+replacement slots pause explicitly; no chunk is rebased. This changes the
+observation/execution schedule and must be separately tested for task behavior;
+the paused2/10profile is neither overwritten nor promoted.

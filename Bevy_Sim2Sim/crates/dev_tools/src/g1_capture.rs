@@ -1544,10 +1544,10 @@ fn run_capture_owner(
             } else {
                 policy
                     .as_ref()
-                    .is_none_or(|p| p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait)
+                    .is_none_or(|p| p.boundary_images_with_wait)
             })
     {
-        return Err("explicit static startup requires bounded T1 camera/live-policy mode, predictive 16-sweep owner and no prefetch".into());
+        return Err("explicit static startup requires bounded T1 camera/live-policy mode and predictive 16-sweep owner without mobile boundary waits".into());
     }
     let startup_ticks = if static_startup { 60 } else { 0 };
     if policy.as_ref().is_some_and(|p| p.boundary_images_with_wait)
@@ -4202,6 +4202,7 @@ fn drive_prefetched_policy(
         .as_mut()
         .ok_or("missing prefetch model worker")?;
     let tick = latest.timing.episode_integrations;
+    let initial_tick = runtime.startup_ticks;
     let horizon = profile_contract(live.profile).action_horizon as u64;
     if latest.phase == G1WorkerPhase::Failed {
         return Err(latest
@@ -4209,7 +4210,7 @@ fn drive_prefetched_policy(
             .clone()
             .unwrap_or("prefetch physical owner failed".into()));
     }
-    if tick > 0 && latest.phase == G1WorkerPhase::Paused {
+    if tick > initial_tick && latest.phase == G1WorkerPhase::Paused {
         if live.submitted_chunks == live.max_calls && tick == u64::from(runtime.options.ticks) {
             let step = latest
                 .task_step
@@ -4232,7 +4233,7 @@ fn drive_prefetched_policy(
         if live.pending.take() != Some(reply.observation)
             || reply.profile != live.profile
             || reply.sequence_id + 1 != live.next_sequence
-            || (initial && (tick != 0 || latest.phase != G1WorkerPhase::Paused))
+            || (initial && (tick != initial_tick || latest.phase != G1WorkerPhase::Paused))
             || (!initial && tick >= start_tick)
         {
             return Err(
@@ -4248,9 +4249,6 @@ fn drive_prefetched_policy(
         let end_tick = start_tick
             .checked_add(horizon)
             .ok_or("prefetch tick overflow")?;
-        let CaptureWorker::Task(owner) = &runtime.worker else {
-            return Err("prefetch lost its sole physical owner".into());
-        };
         fs::write(
             runtime
                 .options
@@ -4259,8 +4257,9 @@ fn drive_prefetched_policy(
             serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        owner
-            .submit(TimedArenaTaskCommand {
+        runtime
+            .worker
+            .submit_live_chunk(TimedArenaTaskCommand {
                 episode_id: runtime.episode_id,
                 valid_until_sim_ns: end_tick
                     .checked_mul(ARENA_ACTION_PERIOD_NS)
@@ -4293,7 +4292,7 @@ fn drive_prefetched_policy(
     }
     let initial = live.submitted_chunks == 0;
     let trigger_tick = if initial {
-        0
+        initial_tick
     } else {
         live.next_boundary_tick - horizon + u64::from(live.prefetch_after_ticks.unwrap())
     };
@@ -4340,7 +4339,7 @@ fn drive_prefetched_policy(
             || frame.stamp.episode_id != runtime.episode_id
             || frame.stamp.source_ticks != [frame_tick; 2]
             || frame.stamp.sim_time_ns != frame_tick * ARENA_ACTION_PERIOD_NS
-            || (initial && frame_tick != 0)
+            || (initial && frame_tick != initial_tick)
             || (!initial && frame_tick >= live.next_boundary_tick)
         {
             return Err(
