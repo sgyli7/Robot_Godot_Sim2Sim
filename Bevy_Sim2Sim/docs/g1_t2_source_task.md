@@ -1769,3 +1769,22 @@ cargo build --bin bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_constr
 # the original local N1.6service must already be loaded on its declared endpoint.
 /path/to/bevy_sim2sim --scene g1_mobile_wait_grasp_diagnostic --robot g1 --g1-config /path/to/frozen.json --g1-ticks 1000 --output /path/to/new_evidence
 ```
+
+
+Fresh0274passes the bounded continuous original grasp/standing preflight: four
+new official N1.6inferences,200unchanged original frames and518explicit waiting
+integrations,718single50Hzsteps in total. New actual image Ticks are0/149/333/436;
+actual owner chunk starts are0/185/365/468. Image admission ages are0/720/640/
+640ms with no restamping or assigned-slot rebasing. The active sim/wall ratio
+is0.999817943and the continuous first-to-last-boundary ratio is1.000085186,
+with zero missed control deadlines/debt and a complete718record trace. Minimum
+upright is0.993803382; the final200wait samples retain hand-only support. The
+owned N1.6service closes bySIGINT. Trace SHA256:
+`58c8ff426e01f5a98ecbae643811016652e65e0c2b72a0911604e0a2a6b3628a`.
+
+This establishes continuous timing and physical grasp in the source-near
+preflight. Classical carry/release image admission still uses the earlier
+paused-boundary interface and must be upgraded before claiming continuous
+full-task operation. Qwen/scientific station/frozen10episodes/faults/terrain/
+coexistence/fullvideo/runbook remain open; neither goal nor main branch is
+complete.
