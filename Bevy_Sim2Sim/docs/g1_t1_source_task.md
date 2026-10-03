@@ -310,3 +310,28 @@ placement rule: its terminal step automatically resets the source environment.
 Neither run qualifies native T1 or the ten-episode scores. The different
 baseline completion Tick also failed an exploratory exact-repeat check against
 an earlier control-146 run; that failed check is retained separately.
+
+
+## Native scientific-station preparation
+
+An explicit optional `station` capture configuration pins model, manifest and
+layout SHA256. Static station visual surfaces and collision shapes are derived
+from the same checked `StationScene` read, in engine Y-up metres. Immutable
+Rapier shapes and mass properties are prepared before the owner clock starts.
+T1 AGILE installs these static colliders into its existing robot/task world and
+removes the original40×40m floor before any integration. The source shelf,
+apple, plate, recurrent controller, actuator parameters and task profile are
+unchanged. No extra world, runtime pose adjustment, hidden floor or substep is
+added. Unrelated movable station props are omitted from both display and physics.
+The G1 scene retains1080p/MSAA8 and owns its main camera; station materials and
+static geometry use their existing rendering path.
+
+This initial station seam admits the independent T1 AGILE owner only. T2's full
+warehouse background is rejected because overlaying it would create unrelated
+or invisible contacts. Existing explicit T1 predictive-limit and16nonintegrating
+PGS diagnostics remain available; the ordinary AGILE default stays4. The earlier
+320Tick visual release evidence used the explicit16PGS factory, not that default.
+Every station owner step records public environment identity, collider coverage,
+zero preparation integrations and original-floor removal. Integration, rendering
+and strict task acceptance must be tested separately; this preparation alone is
+not station task success or frozen8of10 qualification.

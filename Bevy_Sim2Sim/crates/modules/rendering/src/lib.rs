@@ -141,16 +141,22 @@ impl Default for StationCameraControl {
 }
 #[derive(Component)]
 struct StationCamera;
+/// A native robot scene already owns its main camera. Station materials and
+/// geometry retain their usual rendering path without spawning another camera.
+#[derive(Resource)]
+pub struct StationExternalCamera;
 /// Station materials, meshes and camera, independent of the physics backend.
 pub struct StationVisualPlugin;
 impl Plugin for StationVisualPlugin {
     fn build(&self, app: &mut App) {
         signage::install_bake_lifecycle(app);
+        if !app.is_plugin_added::<MaterialPlugin<StationMaterial>>() {
+            app.add_plugins(MaterialPlugin::<StationMaterial>::default());
+        }
+        if !app.is_plugin_added::<MaterialPlugin<InkMaterial>>() {
+            app.add_plugins(MaterialPlugin::<InkMaterial>::default());
+        }
         app.init_resource::<StationCameraControl>()
-            .add_plugins((
-                MaterialPlugin::<StationMaterial>::default(),
-                MaterialPlugin::<InkMaterial>::default(),
-            ))
             .add_systems(
                 Startup,
                 (
@@ -180,6 +186,7 @@ fn setup_station(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StationMaterial>>,
     mut inks: ResMut<Assets<InkMaterial>>,
+    external_camera: Option<Res<StationExternalCamera>>,
 ) {
     let ink = inks.add(InkMaterial::default());
     let mut material_handles = std::collections::BTreeMap::new();
@@ -303,20 +310,22 @@ fn setup_station(
         )),
     ));
     let (eye, target, fov) = control.view.shot(&scene.0.layout);
-    commands.spawn((
-        Camera3d::default(),
-        StationCamera,
-        Msaa::Sample8,
-        Tonemapping::None,
-        Projection::Perspective(PerspectiveProjection {
-            fov: fov.to_radians(),
-            near: 0.015,
-            far: 500.,
-            ..default()
-        }),
-        Transform::from_translation(Vec3::from_array(eye))
-            .looking_at(Vec3::from_array(target), Vec3::Y),
-    ));
+    if external_camera.is_none() {
+        commands.spawn((
+            Camera3d::default(),
+            StationCamera,
+            Msaa::Sample8,
+            Tonemapping::None,
+            Projection::Perspective(PerspectiveProjection {
+                fov: fov.to_radians(),
+                near: 0.015,
+                far: 500.,
+                ..default()
+            }),
+            Transform::from_translation(Vec3::from_array(eye))
+                .looking_at(Vec3::from_array(target), Vec3::Y),
+        ));
+    }
     info!(surfaces=scene.0.surfaces.len(),colliders=scene.0.colliders.len(),props=scene.0.props.len(),labels=scene.0.labels.len(),model_sha256=%scene.0.model_sha256,manifest_sha256=%scene.0.manifest_sha256,layout_sha256=%scene.0.layout_sha256,layout=%scene.0.layout.identity,"STATION_GEOMETRY_READY");
 }
 fn update_camera(

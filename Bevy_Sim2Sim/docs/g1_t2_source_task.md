@@ -1970,3 +1970,15 @@ actual RGB frame before turning. The ordinary placement hold remains100minimum
 Ticks. No force, friction, joint gain, frequency, hidden integration or forward
 translation changes. This is disclosed traditional control; fresh continuous
 carry/release, local Qwen, scientific station and frozen8of10 remain unqualified.
+
+
+Fresh settled route0292 executes1460single50Hz Ticks and4fresh original calls.
+The50Tick grip-settling phase and442Tick scan retain support, but support is lost
+atTick1282 during the388Tick walking segment. Box net displacement is1.30671m;
+strict placement is0seconds. Active/continuous clock ratios0.999861/1.000111 and
+zero misses/debt pass this finite timing check only. Both owned inference children
+are reaped. Full trace SHA256:
+`81ed6a6a1d66321b1acd69124b752d6647c6688a76f706754a815f7fea7393e0`.
+The handoff remedy does not establish walking robustness. No repeated frequency,
+gain, force or material search follows from this result. Station/Qwen integration
+continues independently while actual pre-drop grip/contact changes are audited.

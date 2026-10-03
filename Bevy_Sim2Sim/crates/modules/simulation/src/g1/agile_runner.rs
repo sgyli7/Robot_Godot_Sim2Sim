@@ -4,7 +4,7 @@
 //! in actor/root-link axes. A COM is a point, not principal-inertia orientation.
 //! No principal-axis rotation, input normalization or Homie policy is applied.
 
-use std::{cell::Cell, path::PathBuf};
+use std::{cell::Cell, path::PathBuf, sync::Arc};
 
 use rapier3d::prelude::*;
 use robot_minigame::{
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     assembly::{self, G1Assembly},
     runner::{G1Measurement, G1ProgressCounts},
+    static_environment::{PreparedStaticEnvironment, StaticEnvironmentReceipt},
     task_objects::{TaskObjectFrame, TaskObjectKind, TaskObjectScene, TaskObjectSceneConfig},
 };
 use crate::{SimulationWorld, StepConfiguration, WorldCounts};
@@ -53,6 +54,10 @@ pub struct AgileRunnerConfig {
     pub default_positions: Vec<f32>,
     #[serde(default)]
     pub task_objects: Option<TaskObjectSceneConfig>,
+    /// Prepared from the same hash-checked station read as rendering. Runtime
+    /// JSON cannot inject geometry through this owner-only preparation slot.
+    #[serde(skip)]
+    pub startup_environment: Option<Arc<PreparedStaticEnvironment>>,
 }
 
 impl AgileRunnerConfig {
@@ -127,6 +132,8 @@ pub struct AgileStep {
     pub frame: G1BodyFrame,
     pub measurement: G1Measurement,
     pub task_objects: Option<TaskObjectFrame>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_static_environment: Option<StaticEnvironmentReceipt>,
     pub source_t1_finger_material_bodies: Vec<usize>,
     pub inference: AgileResult,
     pub root_position_source: [f32; 3],
@@ -150,6 +157,7 @@ pub struct AgileRunner {
     simulation: SimulationWorld,
     assembly: G1Assembly,
     task_objects: Option<TaskObjectScene>,
+    native_static_environment: Option<StaticEnvironmentReceipt>,
     source_t1_finger_material_bodies: Vec<usize>,
     policy: AgilePolicy,
     parameters: [IdealPd; JOINT_COUNT],
@@ -257,11 +265,17 @@ impl AgileRunner {
                 )
             })
             .transpose()?;
+        let native_static_environment = config
+            .startup_environment
+            .as_ref()
+            .map(|environment| environment.replace_startup_floor(&mut simulation, floor))
+            .transpose()?;
         let runner = Self {
             episode_id: config.episode_id,
             simulation,
             assembly,
             task_objects,
+            native_static_environment,
             source_t1_finger_material_bodies,
             policy,
             parameters,
@@ -479,6 +493,7 @@ impl AgileRunner {
             frame,
             measurement: measurement.clone(),
             task_objects: self.task_object_frame()?,
+            native_static_environment: self.native_static_environment.clone(),
             source_t1_finger_material_bodies: self.source_t1_finger_material_bodies.clone(),
             inference,
             root_position_source: engine_to_source_vector(root.translation().to_array()),
@@ -747,6 +762,7 @@ mod tests {
             floor_contact_friction: 1.,
             default_positions: vec![0.; JOINT_COUNT],
             task_objects: None,
+            startup_environment: None,
         }
     }
 

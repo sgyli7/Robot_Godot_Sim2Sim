@@ -22,6 +22,7 @@ pub mod mobile_restore;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_wait;
 pub mod runner;
+pub mod static_environment;
 pub mod task_background;
 pub mod task_objects;
 pub mod task_policy;

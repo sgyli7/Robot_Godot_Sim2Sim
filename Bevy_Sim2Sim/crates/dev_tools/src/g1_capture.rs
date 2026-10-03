@@ -1,9 +1,9 @@
 //! Bounded native G1 camera evidence in the runner's actual simple floor world.
 //!
-//! This development scene does not load scientific-station geometry. Its sole
-//! environment mesh is the same 40 x 0.5 x 40 metre floor as G1Runner. Real RGB
-//! and measured self state can therefore be tested before station task physics
-//! is integrated. Neither initialization nor these captures qualify standing,
+//! The default scene retains the same 40 x 0.5 x 40 metre native floor. Explicit
+//! station configuration binds T1 display and static collisions to one checked
+//! station read and removes that floor before the owner starts. Neither
+//! initialization nor these captures qualify standing,
 //! manipulation, locomotion or a visual decision loop.
 
 use std::{
@@ -135,6 +135,8 @@ struct CaptureConfiguration {
     mobile_assist: Option<MobileAssistCaptureConfiguration>,
     #[serde(default)]
     mobile_scan: Option<MobileScanCaptureConfiguration>,
+    #[serde(default)]
+    station: Option<super::g1_station_environment::G1StationConfiguration>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -794,6 +796,7 @@ fn run_from_file(
         config.task_lab,
         config.mobile_assist,
         config.mobile_scan,
+        config.station,
         mode,
     )
 }
@@ -815,6 +818,8 @@ pub struct G1CaptureReceipt {
     pub capture_succeeded: bool,
     pub task_qualified: bool,
     pub environment: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_station_preparation: Option<serde_json::Value>,
     pub floor_center_engine: [f32; 3],
     pub floor_full_extents_m: [f32; 3],
     pub floor_contact_friction: f32,
@@ -946,6 +951,7 @@ impl G1CaptureReceipt {
             capture_succeeded: false,
             task_qualified: false,
             environment: "source_near_simple_floor_not_science_station",
+            native_station_preparation: None,
             floor_center_engine: [0., -0.25, 0.],
             floor_full_extents_m: [40., 0.5, 40.],
             floor_contact_friction: floor_friction,
@@ -1336,12 +1342,13 @@ pub fn run_capture(
         None,
         None,
         None,
+        None,
         CaptureMode::Camera,
     )
 }
 
 fn run_capture_owner(
-    config: CaptureRunnerConfig,
+    mut config: CaptureRunnerConfig,
     visual_path: &Path,
     visual_sha256: &str,
     task_visual: Option<(&Path, &str)>,
@@ -1362,6 +1369,7 @@ fn run_capture_owner(
     task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
     mobile_assist: Option<MobileAssistCaptureConfiguration>,
     mobile_scan: Option<MobileScanCaptureConfiguration>,
+    station: Option<super::g1_station_environment::G1StationConfiguration>,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
@@ -1700,7 +1708,35 @@ fn run_capture_owner(
         _ => return Err("live policy requires the matched task owner".into()),
     };
     let assets = validate_render_asset_root(&default_asset_root())?;
-    let scene = StationScene::load(&assets)?;
+    let mut scene = StationScene::load(&assets)?;
+    let mut station_preparation = None;
+    if let Some(station) = &station {
+        if background_model.is_some()
+            || render_only_environment_translation.is_some()
+            || assisted_carry
+            || source_rect_lighting.is_some()
+        {
+            return Err("station T1 preparation rejects source background overlays, render-only poses or mobile factories".into());
+        }
+        let body = match &mut config {
+            CaptureRunnerConfig::Static(body) => body,
+            CaptureRunnerConfig::Task(task) => {
+                let ArenaTaskBodyConfig::StaticAgile(body) = &mut task.body else {
+                    return Err("initial scientific-station integration requires the independent T1 AGILE profile".into());
+                };
+                body
+            }
+            _ => return Err(
+                "initial scientific-station integration requires the independent T1 AGILE profile"
+                    .into(),
+            ),
+        };
+        let (static_scene, environment, receipt) =
+            super::g1_station_environment::prepare(&scene, station, body.floor_contact_friction)?;
+        body.startup_environment = Some(environment);
+        scene = static_scene;
+        station_preparation = Some(receipt);
+    }
     let model = G1VisualModel::load(visual_path, visual_sha256)?;
     let source_pbr_body = model.source_material_mesh_count() == model.mesh_count();
     let task_model = match (config.task_objects(), task_visual) {
@@ -1779,6 +1815,13 @@ fn run_capture_owner(
     if continuous {
         outcome.0.lock().unwrap().scope = "native_bounded_continuous_actual_rgb_grasp_classical_carry_release_source_scene_not_qualified";
     }
+    if let Some(preparation) = station_preparation {
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.environment = "scientific_station_native_static_world_t1_development";
+        receipt.native_station_preparation = Some(preparation);
+        receipt.floor_center_engine = [0.; 3];
+        receipt.floor_full_extents_m = [0.; 3];
+    }
     let worker = config.spawn(
         predictive_limit_diagnostic,
         diagnostic_constraint_sweeps,
@@ -1830,8 +1873,8 @@ fn run_capture_owner(
         .unwrap()
         .factory_verified_diagnostic_constraint_sweeps = diagnostic_constraint_sweeps;
     let mut app = App::new();
-    // Scene supplies the existing enamel configuration only. Its meshes, props,
-    // fixtures and camera shots are not spawned in this floor diagnostic.
+    // Default mode uses the scene's enamel configuration only. Explicit station
+    // mode below spawns the matching static meshes with the robot's main camera.
     app.insert_resource(scene)
         .insert_resource(DiagnosticPhotometry {
             exposure_ev100,
@@ -1890,7 +1933,11 @@ fn run_capture_owner(
                 })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "G1 native camera diagnostic — unqualified floor candidate".into(),
+                        title: if station.is_some() {
+                            "G1 科学站任务验证".into()
+                        } else {
+                            "G1 native camera diagnostic — unqualified floor candidate".into()
+                        },
                         resolution: (1920, 1080).into(),
                         present_mode: if diagnostic_vsync {
                             bevy::window::PresentMode::AutoVsync
@@ -1917,6 +1964,11 @@ fn run_capture_owner(
                 .chain()
                 .in_set(CaptureSystems::OwnerSnapshot),
         );
+    if station.is_some() {
+        app.insert_resource(super::g1_station_environment::G1StationSceneActive)
+            .insert_resource(rendering_minigame::StationExternalCamera)
+            .add_plugins(rendering_minigame::StationVisualPlugin);
+    }
     if let Some(model) = task_model {
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
     }
@@ -2079,38 +2131,41 @@ fn setup_floor_scene(
     background: Option<Res<G1BackgroundVisualModel>>,
     shadows: Res<DiagnosticDirectionalShadows>,
     illumination: Res<DiagnosticIllumination>,
+    station: Option<Res<super::g1_station_environment::G1StationSceneActive>>,
 ) {
-    commands.spawn((
-        Name::new("g1_runner_actual_floor"),
-        Mesh3d(meshes.add(Cuboid::new(40., 0.5, 40.))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.45, 0.48, 0.5),
-            perceptual_roughness: 0.9,
-            ..default()
-        })),
-        Transform::from_xyz(0., -0.25, 0.),
-        if background.is_some() {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        },
-    ));
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: illumination.ambient_brightness,
-        ..default()
-    });
-    if let Some(source) = &illumination.source_rect_lighting {
-        source.spawn(&mut commands, &mut images);
-    } else {
+    if station.is_none() {
         commands.spawn((
-            DirectionalLight {
-                illuminance: illumination.directional_illuminance,
-                shadow_maps_enabled: shadows.0,
+            Name::new("g1_runner_actual_floor"),
+            Mesh3d(meshes.add(Cuboid::new(40., 0.5, 40.))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.45, 0.48, 0.5),
+                perceptual_roughness: 0.9,
                 ..default()
+            })),
+            Transform::from_xyz(0., -0.25, 0.),
+            if background.is_some() {
+                Visibility::Hidden
+            } else {
+                Visibility::Visible
             },
-            Transform::from_xyz(3., 5., 2.).looking_at(Vec3::ZERO, Vec3::Y),
         ));
+        commands.insert_resource(GlobalAmbientLight {
+            color: Color::WHITE,
+            brightness: illumination.ambient_brightness,
+            ..default()
+        });
+        if let Some(source) = &illumination.source_rect_lighting {
+            source.spawn(&mut commands, &mut images);
+        } else {
+            commands.spawn((
+                DirectionalLight {
+                    illuminance: illumination.directional_illuminance,
+                    shadow_maps_enabled: shadows.0,
+                    ..default()
+                },
+                Transform::from_xyz(3., 5., 2.).looking_at(Vec3::ZERO, Vec3::Y),
+            ));
+        }
     }
     commands.spawn((
         Camera3d::default(),
