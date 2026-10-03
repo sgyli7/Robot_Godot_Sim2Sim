@@ -16,6 +16,7 @@ use simulation_minigame::g1::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Grasp,
+    GripSettle,
     Scan,
     Coarse,
     Fine,
@@ -173,10 +174,13 @@ impl ContinuousMobileRoute {
                 .is_some_and(|p| p.submitted_chunks == 4)
                 && ready
             {
-                self.stage = Stage::Scan;
+                self.stage = Stage::GripSettle;
                 outcome.0.lock().unwrap().mobile_assist_handoff = Some(serde_json::json!({
                     "mode":"continuous_source_rgb_classical_route_not_qualified","original_vla_grasp_chunks":4,
                     "marker_activation_requires_actual_fourth_chunk_completion":true,
+                    "pre_transport_grip_settle_minimum_ticks":50,
+                    "pre_transport_grip_settle_maximum_ticks":250,
+                    "pre_transport_grip_settle_stable_self_velocity_samples":20,
                     "actual_grasp_wait_ready_tick":tick,"qwen_target_selection":false,"world_or_contact_truth_input":false,
                     "traditional_public_map_heading_rad":self.search_heading,"events":[],"task_qualified":false,
                     "persistent_cpu_worker":self.worker.as_ref().unwrap().provenance(),
@@ -277,7 +281,13 @@ impl ContinuousMobileRoute {
         let Some((observation, directory)) = self.capture(runtime, port)? else {
             return Ok(false);
         };
-        if self.stage == Stage::Scan {
+        if self.stage == Stage::GripSettle {
+            self.submit(
+                runtime,
+                outcome,
+                MobileObservedSkill::GripSettle(MobileHoldGoal { observation }),
+            )?;
+        } else if self.stage == Stage::Scan {
             self.submit(
                 runtime,
                 outcome,
@@ -311,6 +321,7 @@ impl ContinuousMobileRoute {
             return Err("continuous skill awaits actual owner acceptance".into());
         }
         let next_stage = match &skill {
+            MobileObservedSkill::GripSettle(_) => Stage::Scan,
             MobileObservedSkill::Scan(_) => Stage::Coarse,
             MobileObservedSkill::Carry(_) => Stage::Fine,
             MobileObservedSkill::Hold(_) => Stage::Placement,
@@ -319,12 +330,14 @@ impl ContinuousMobileRoute {
         let increments_fine_goal =
             self.stage == Stage::Fine && matches!(&skill, MobileObservedSkill::Carry(_));
         let observation = match &skill {
+            MobileObservedSkill::GripSettle(g) => g.observation,
             MobileObservedSkill::Carry(g) => g.observation,
             MobileObservedSkill::Scan(g) => g.observation,
             MobileObservedSkill::Hold(g) => g.observation,
             MobileObservedSkill::Release(g) => g.observation,
         };
         match &skill {
+            MobileObservedSkill::GripSettle(g) => g.validate(),
             MobileObservedSkill::Carry(g) => g.validate(),
             MobileObservedSkill::Scan(g) => g.validate(),
             MobileObservedSkill::Hold(g) => g.validate(),

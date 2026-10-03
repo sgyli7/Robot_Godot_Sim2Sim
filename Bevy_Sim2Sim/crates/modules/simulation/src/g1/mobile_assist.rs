@@ -49,6 +49,7 @@ pub enum MobileAssistCommand {
     ClassicalRaise(MobileRaiseGoal),
     ClassicalRelease(MobileReleaseGoal),
     ClassicalRestore(MobileRestoreGoal),
+    ClassicalGripSettle(MobileHoldGoal),
     ClassicalHold(MobileHoldGoal),
     ClassicalModelWait(MobileWaitGoal),
 }
@@ -57,6 +58,7 @@ pub enum MobileAssistCommand {
 pub enum MobileObservedSkill {
     Carry(MobileCarryGoal),
     Scan(MobileScanGoal),
+    GripSettle(MobileHoldGoal),
     Hold(MobileHoldGoal),
     Release(MobileReleaseGoal),
 }
@@ -65,6 +67,7 @@ impl MobileObservedSkill {
         match self {
             Self::Carry(g) => g.observation,
             Self::Scan(g) => g.observation,
+            Self::GripSettle(g) => g.observation,
             Self::Hold(g) => g.observation,
             Self::Release(g) => g.observation,
         }
@@ -73,6 +76,7 @@ impl MobileObservedSkill {
         match self {
             Self::Carry(g) => MobileAssistCommand::ClassicalCarry(g.clone()),
             Self::Scan(g) => MobileAssistCommand::ClassicalScan(g.clone()),
+            Self::GripSettle(g) => MobileAssistCommand::ClassicalGripSettle(g.clone()),
             Self::Hold(g) => MobileAssistCommand::ClassicalHold(g.clone()),
             Self::Release(g) => MobileAssistCommand::ClassicalRelease(g.clone()),
         }
@@ -99,6 +103,7 @@ impl MobileAssistCommand {
             Self::ClassicalRaise(goal) => goal.validate(),
             Self::ClassicalRelease(goal) => goal.validate(),
             Self::ClassicalRestore(goal) => goal.validate(),
+            Self::ClassicalGripSettle(goal) => goal.validate(),
             Self::ClassicalHold(goal) => goal.validate(),
             Self::ClassicalModelWait(goal) => goal.validate(),
         }
@@ -143,6 +148,11 @@ pub enum MobileAssistExecution {
         goal: MobileRestoreGoal,
         restoring: MobileRestoreStep,
     },
+    ClassicalGripSettle {
+        goal: MobileHoldGoal,
+        holding: MobileHoldStep,
+        grip: MobileGripReceipt,
+    },
     ClassicalHold {
         goal: MobileHoldGoal,
         holding: MobileHoldStep,
@@ -182,6 +192,7 @@ pub struct MobileAssistRunner {
     raise: Option<MobileGripRaising>,
     release: Option<MobileGripRelease>,
     restore: Option<MobileGripRestoring>,
+    grip_settle: Option<GripSettleState>,
     hold: Option<MobileGripHolding>,
     original_transport_command: Option<G1Command>,
     halted: bool,
@@ -196,6 +207,11 @@ struct CarryState {
 struct ScanState {
     navigator: MobileScanNavigator,
     command: G1Command,
+    grip: MobileGripReceipt,
+}
+
+struct GripSettleState {
+    holding: MobileGripHolding,
     grip: MobileGripReceipt,
 }
 
@@ -227,6 +243,7 @@ impl MobileAssistRunner {
             raise: None,
             release: None,
             restore: None,
+            grip_settle: None,
             hold: None,
             original_transport_command: None,
             halted: false,
@@ -276,6 +293,10 @@ impl MobileAssistRunner {
             lower.completed()
         } else if let Some(hold) = &self.hold {
             hold.completed()
+        } else if self.carry.is_none() && self.scan.is_none() {
+            self.grip_settle
+                .as_ref()
+                .is_some_and(|s| s.holding.completed())
         } else {
             self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
         }
@@ -291,6 +312,10 @@ impl MobileAssistRunner {
                 .scan
                 .as_ref()
                 .is_some_and(|s| s.navigator.goal() == g && s.navigator.completed()),
+            MobileObservedSkill::GripSettle(g) => self
+                .grip_settle
+                .as_ref()
+                .is_some_and(|s| s.holding.goal() == g && s.holding.completed()),
             MobileObservedSkill::Hold(g) => self
                 .hold
                 .as_ref()
@@ -319,6 +344,13 @@ impl MobileAssistRunner {
         observation: &task_minigame::types::ObservationStamp,
         state: &G1Measurement,
     ) -> Result<(G1Command, MobileGripReceipt), RobotError> {
+        if self
+            .grip_settle
+            .as_ref()
+            .is_some_and(|s| !s.holding.completed())
+        {
+            return Err(invalid("cannot replace active grip settling"));
+        }
         if self.hold.as_ref().is_some_and(|h| !h.completed()) {
             return Err(invalid("cannot replace an active stationary hold"));
         }
@@ -385,6 +417,14 @@ impl MobileAssistRunner {
             }
             return Ok((scan.command.clone(), scan.grip.clone()));
         }
+        if let Some(settle) = &self.grip_settle {
+            if observation.frame_id <= settle.holding.goal().observation.frame_id {
+                return Err(invalid(
+                    "transport turn requires a new image after grip settling",
+                ));
+            }
+            return Ok((settle.holding.command().clone(), settle.grip.clone()));
+        }
         let original = self
             .last_vla_command
             .as_ref()
@@ -431,7 +471,10 @@ impl MobileAssistRunner {
                 MobileAssistExecution::ClassicalRestore { restoring, .. } => {
                     restoring.command.clone()
                 }
-                MobileAssistExecution::ClassicalHold { holding, .. } => holding.command.clone(),
+                MobileAssistExecution::ClassicalHold { holding, .. }
+                | MobileAssistExecution::ClassicalGripSettle { holding, .. } => {
+                    holding.command.clone()
+                }
                 MobileAssistExecution::ClassicalModelWait { waiting, .. } => {
                     waiting.command.clone()
                 }
@@ -680,6 +723,10 @@ impl MobileAssistRunner {
                         .is_some_and(|r| !r.navigator.completed())
                     || self.restore.as_ref().is_some_and(|r| !r.completed())
                     || self.hold.as_ref().is_some_and(|h| !h.completed())
+                    || self
+                        .grip_settle
+                        .as_ref()
+                        .is_some_and(|s| !s.holding.completed())
                 {
                     return Err(invalid(
                         "cannot replace active classical carry with a VLA chunk",
@@ -697,6 +744,7 @@ impl MobileAssistRunner {
                 self.release = None;
                 self.restore = None;
                 self.hold = None;
+                self.grip_settle = None;
                 self.waiting = None;
                 self.original_transport_command = None;
                 Ok(MobileAssistStep {
@@ -905,6 +953,45 @@ impl MobileAssistRunner {
                     execution: MobileAssistExecution::ClassicalRestore {
                         goal: goal.clone(),
                         restoring,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalGripSettle(goal) => {
+                if self.carry.is_some() || self.scan.is_some() || self.release.is_some() {
+                    return Err(invalid("grip settling belongs only before first transport"));
+                }
+                let state = self.owner.measurement()?;
+                if self.grip_settle.is_none() {
+                    let (mut command, grip) = self.prepare_classical(&goal.observation, &state)?;
+                    // Original VLA navigation is not a stationary-hold command.
+                    command.navigation = [0.; 3];
+                    let admission = self.classical_admission(goal.observation, &state)?;
+                    self.grip_settle = Some(GripSettleState {
+                        holding: MobileGripHolding::new_grip_settle_with_admission(
+                            goal.clone(),
+                            &state,
+                            command,
+                            &admission,
+                        )?,
+                        grip,
+                    });
+                }
+                let settle = self.grip_settle.as_mut().unwrap();
+                if settle.holding.goal() != goal {
+                    return Err(invalid("grip-settling goal changed during execution"));
+                }
+                let holding = settle.holding.update(&state)?;
+                let grip = settle.grip.clone();
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&holding.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalGripSettle {
+                        goal: goal.clone(),
+                        holding,
+                        grip,
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
@@ -1191,6 +1278,195 @@ mod tests {
         scan: MobileScanGoal,
         maximum_ticks: u64,
         preserve_executed_grasp: bool,
+    }
+
+    #[test]
+    #[ignore = "one saved RGB-derived forward correction versus unchanged grip, identical prefix and manual scan; no fresh perception/task qualification"]
+    fn real_mobile_saved_visual_forward_grip_diagnostic() -> Result<(), RobotError> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Comparison {
+            chunks: Vec<PolicyActionChunk>,
+            prefix_sequence_ids: Vec<usize>,
+            source_image: ObservationStamp,
+            forward_distance_m: f64,
+            correction_ticks: u32,
+            enable_translation: bool,
+            #[serde(default)]
+            typed_grip_settle: bool,
+            fixed_scan_navigation: Vec<[f32; 3]>,
+            settle_ticks: u32,
+        }
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        let mut fixture: Comparison =
+            serde_json::from_slice(&read("G1_MOBILE_VISUAL_FORWARD_FIXTURE")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        if fixture.chunks.len() != 4
+            || fixture.prefix_sequence_ids.is_empty()
+            || fixture.prefix_sequence_ids.len() > 1000
+            || fixture
+                .prefix_sequence_ids
+                .iter()
+                .any(|i| !(1..=4).contains(i))
+            || !fixture.forward_distance_m.is_finite()
+            || !(0. ..=0.05).contains(&fixture.forward_distance_m)
+            || fixture.correction_ticks != 50
+            || (fixture.typed_grip_settle && fixture.enable_translation)
+            || fixture.settle_ticks != 50
+            || fixture.fixed_scan_navigation.is_empty()
+            || fixture.fixed_scan_navigation.len() > 600
+            || fixture
+                .fixed_scan_navigation
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite())
+        {
+            return Err(invalid(
+                "forward comparison exceeds its one fixed bounded candidate",
+            ));
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        for chunk in &mut fixture.chunks {
+            chunk.observation.captured_at_unix_ms = now;
+        }
+        let output =
+            std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::new(&output).with_extension("jsonl"))
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut owner = MobileAssistRunner::load(&config)?;
+        for &sequence in &fixture.prefix_sequence_ids {
+            let command = MobileAssistCommand::OriginalVlaBoundaryImageThenWait(ArenaTaskCommand {
+                chunk: Arc::new(fixture.chunks[sequence - 1].clone()),
+                scheduled_start_sim_ns: None,
+            });
+            let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+            serde_json::to_writer(
+                &mut trace,
+                &serde_json::json!({"phase":"saved_boundary_prefix","body":step.body}),
+            )
+            .map_err(|e| invalid(e.to_string()))?;
+            writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+        }
+        let state = owner.measurement()?;
+        let saved_sim_proof = owner
+            .waiting
+            .as_ref()
+            .ok_or_else(|| invalid("forward fixture has no standing self history"))?
+            .admit_observed_skill(
+                fixture.source_image,
+                &state,
+                &owner.calibration,
+                owner.maximum_observation_age_ns,
+            )?;
+        let previous = owner
+            .last_controller_command
+            .as_ref()
+            .ok_or_else(|| invalid("forward fixture lacks actual original command"))?;
+        let calibrated = owner.calibration.correct(&state, previous)?;
+        let mut command = calibrated.command;
+        command.navigation = [0.; 3];
+        let mut observed_goal = fixture.source_image;
+        // Offline saved proof only: refresh wall admission in the diagnostic;
+        // the historical simulation/frame identity and original input stay pinned.
+        observed_goal.captured_at_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let settle = MobileAssistCommand::ObservedSkillThenWait(MobileObservedSkill::GripSettle(
+            MobileHoldGoal {
+                observation: observed_goal,
+            },
+        ));
+        for i in 0..fixture.correction_ticks {
+            let state = owner.measurement()?;
+            if fixture.typed_grip_settle {
+                let step = owner.step_with_guard(&settle, &mut || Ok(()))?;
+                let MobileAssistExecution::ClassicalGripSettle { holding, .. } = &step.execution
+                else {
+                    return Err(invalid(
+                        "typed grip settle unexpectedly entered another phase",
+                    ));
+                };
+                if serde_json::to_value(&holding.command).unwrap()
+                    != serde_json::to_value(&command).unwrap()
+                    || holding.holding_ticks != i + 1
+                {
+                    return Err(invalid(
+                        "typed grip settle changed the comparison command or Tick count",
+                    ));
+                }
+                serde_json::to_writer(
+                    &mut trace,
+                    &serde_json::json!({
+                        "phase":"typed_grip_settle", "index":i, "body":step.body,
+                        "holding":holding, "saved_proof_only":true,
+                    }),
+                )
+                .map_err(|e| invalid(e.to_string()))?;
+                writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+                continue;
+            }
+            let correction = if fixture.enable_translation {
+                let changed = owner.calibration.translate(
+                    &state,
+                    &command,
+                    [
+                        fixture.forward_distance_m / f64::from(fixture.correction_ticks),
+                        0.,
+                        0.,
+                    ],
+                )?;
+                command = changed.command;
+                Some(changed.receipt)
+            } else {
+                None
+            };
+            let body = owner
+                .owner
+                .step_mobile_assist_with_guard(&command, &mut || Ok(()))?;
+            serde_json::to_writer(&mut trace, &serde_json::json!({"phase":"fixed_preparation","index":i,"body":body,
+                "manual_saved_command":command,"correction":correction,"autonomous_execution":false})).map_err(|e| invalid(e.to_string()))?;
+            writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+        }
+        for (i, navigation) in fixture
+            .fixed_scan_navigation
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n([0.; 3], fixture.settle_ticks as usize))
+            .enumerate()
+        {
+            command.navigation = navigation;
+            let body = owner
+                .owner
+                .step_mobile_assist_with_guard(&command, &mut || Ok(()))?;
+            serde_json::to_writer(
+                &mut trace,
+                &serde_json::json!({"phase":"identical_fixed_navigation","index":i,"body":body,
+                "manual_saved_command":command,"autonomous_execution":false}),
+            )
+            .map_err(|e| invalid(e.to_string()))?;
+            writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+        }
+        trace.flush().map_err(|e| invalid(e.to_string()))?;
+        fs::write(output, serde_json::to_vec_pretty(&serde_json::json!({
+            "schema":"g1_saved_rgb_forward_grip_comparison_v1","qualified":false,"autonomous_execution":false,
+            "fresh_rgb":0,"fresh_vla_calls":0,"counts":owner.progress_counts(),"source_image":fixture.source_image,
+            "saved_sim_self_proof":saved_sim_proof,"fresh_wall_age_qualified":false,
+            "enabled_translation":fixture.enable_translation,"forward_distance_m":fixture.forward_distance_m,
+            "typed_grip_settle":fixture.typed_grip_settle,
+            "correction_ticks":fixture.correction_ticks,"fixed_navigation_ticks":fixture.fixed_scan_navigation.len(),
+            "settle_ticks":fixture.settle_ticks,"source_gap_correction":calibrated.receipt,"no_parameter_sweep":true,
+            "scope":"exact saved native prefix, one actual-RGB-derived target translation, fixed identical manual navigation; independent contact audit required",
+        })).map_err(|e| invalid(e.to_string()))?).map_err(|e| invalid(e.to_string()))?;
+        Ok(())
     }
 
     #[test]
@@ -2072,6 +2348,7 @@ mod tests {
                     | MobileAssistExecution::ClassicalReobserve { .. }
                     | MobileAssistExecution::ClassicalRestore { .. }
                     | MobileAssistExecution::ClassicalHold { .. }
+                    | MobileAssistExecution::ClassicalGripSettle { .. }
                     | MobileAssistExecution::ClassicalLower { .. }
                     | MobileAssistExecution::ClassicalRaise { .. }
                     | MobileAssistExecution::ClassicalRelease { .. } => {
@@ -2206,6 +2483,7 @@ mod worker_diagnostic {
                         | MobileAssistExecution::ClassicalReobserve { .. }
                         | MobileAssistExecution::ClassicalRestore { .. }
                         | MobileAssistExecution::ClassicalHold { .. }
+                        | MobileAssistExecution::ClassicalGripSettle { .. }
                         | MobileAssistExecution::ClassicalLower { .. }
                         | MobileAssistExecution::ClassicalRaise { .. }
                         | MobileAssistExecution::ClassicalRelease { .. } => {

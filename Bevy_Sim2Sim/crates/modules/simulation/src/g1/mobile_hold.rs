@@ -42,6 +42,7 @@ pub struct MobileGripHolding {
     command: G1Command,
     holding_ticks: u32,
     stable_velocity_ticks: u32,
+    minimum_ticks: u32,
     completed: bool,
 }
 impl MobileGripHolding {
@@ -59,11 +60,30 @@ impl MobileGripHolding {
         command: G1Command,
         admission: &MobileImageAdmission,
     ) -> Result<Self, RobotError> {
+        Self::bounded(goal, state, command, admission, 100)
+    }
+    /// Fixed one-second contact-settling phase before the first transport turn.
+    /// Placement retains its separate two-second minimum.
+    pub(super) fn new_grip_settle_with_admission(
+        goal: MobileHoldGoal,
+        state: &G1Measurement,
+        command: G1Command,
+        admission: &MobileImageAdmission,
+    ) -> Result<Self, RobotError> {
+        Self::bounded(goal, state, command, admission, 50)
+    }
+    fn bounded(
+        goal: MobileHoldGoal,
+        state: &G1Measurement,
+        command: G1Command,
+        admission: &MobileImageAdmission,
+        minimum_ticks: u32,
+    ) -> Result<Self, RobotError> {
         goal.validate()?;
         command.validate()?;
         if !admission.matches(goal.observation, state) || command.navigation != [0.; 3] {
             return Err(invalid(
-                "hold requires a fresh completed stationary carry boundary",
+                "standing hold requires a fresh stationary skill boundary",
             ));
         }
         Ok(Self {
@@ -72,6 +92,7 @@ impl MobileGripHolding {
             command,
             holding_ticks: 0,
             stable_velocity_ticks: 0,
+            minimum_ticks,
             completed: false,
         })
     }
@@ -107,7 +128,8 @@ impl MobileGripHolding {
         } else {
             0
         };
-        self.completed = self.holding_ticks >= 100 && self.stable_velocity_ticks >= 20;
+        self.completed =
+            self.holding_ticks >= self.minimum_ticks && self.stable_velocity_ticks >= 20;
         if self.holding_ticks >= 250 && !self.completed {
             return Err(invalid(
                 "bounded standing hold did not attain20stable self-velocity samples; pause required",
@@ -191,5 +213,28 @@ mod tests {
             );
         }
         assert!(h.update(&state(249, 0.04)).is_err());
+    }
+    #[test]
+    fn grip_settle_has_a_distinct_minimum_and_requires_consecutive_self_stability() {
+        let placement = hold();
+        let admission =
+            MobileImageAdmission::at_current_boundary(placement.goal.observation, &state(0, 0.))
+                .unwrap();
+        let mut h = MobileGripHolding::new_grip_settle_with_admission(
+            placement.goal,
+            &state(0, 0.),
+            placement.command,
+            &admission,
+        )
+        .unwrap();
+        for tick in 0..50 {
+            let speed = if tick == 40 { 0.04 } else { 0. };
+            assert!(!h.update(&state(tick, speed)).unwrap().completed);
+        }
+        for tick in 50..60 {
+            assert!(!h.update(&state(tick, 0.)).unwrap().completed);
+        }
+        assert!(h.update(&state(60, 0.)).unwrap().completed);
+        assert!(h.update(&state(61, 0.)).is_err());
     }
 }

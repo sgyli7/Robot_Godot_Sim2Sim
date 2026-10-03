@@ -1936,3 +1936,37 @@ zero fresh RGB/VLA calls. This verifies rejection semantics only. Initial test
 compile and an incorrect assertion about the halt latch are retained separately.
 Current79simulation tests/42ignored and42development tests/3ignored pass, as does
 the default app compile. Fresh perception/carry/release acceptance remains open.
+
+
+The next fresh route0287 stops for a different cause:887single50Hz Ticks,
+four fresh original calls, and grip support lost atTick816 during the scan,
+before any coarse localization, carry or stale-image recovery. Active and
+continuous clock ratios are0.999880/1.000095 with zero missed/due Ticks;
+placement is0seconds. Full trace SHA256 is
+`5725e0dd303d4e15dae469cf377707cce566f5a979ea2d8fb5f049617b7f1800`.
+This failure is not evidence that cached perception or image rejection caused
+the loss of grip.
+
+A bounded mechanical comparison0289/0290 reuses the exact373Tick prefix and
+464manual scan commands from0287. Both insert50zero-navigation preparation
+Ticks after the same source-gap calibration. One keeps that calibrated command;
+the other adds50bounded Cartesian increments totalling0.02604676m forward,
+derived from the actual pre-scan box marker image and public native calibration.
+Both937Tick trajectories retain hand-only support throughout. Thus forward
+translation is not established as a remedy and is not installed in production.
+The shared contact-settling time is the next causal candidate. Marker projection
+and independent FK agree with the image; the pre-scan box estimate differs from
+auditor truth by0.000204m. Auditor geometry stays outside the decision chain.
+The reference calibration is a native50Hz replay of original source actions,
+not a measurement of the upstream PhysX runtime.
+
+The continuous development route now has a separately recorded `GripSettle`
+phase before its first scan: fixed minimum50single20ms Ticks, zero navigation,
+unchanged source-gap calibrated upper targets, and20consecutive named-self
+velocity samples below0.03m/s. Failure to settle by250Ticks halts. It uses the
+same private current-image/self-history admission as other observed skills.
+After completion it enters the existing finite200Tick wait and requests a new
+actual RGB frame before turning. The ordinary placement hold remains100minimum
+Ticks. No force, friction, joint gain, frequency, hidden integration or forward
+translation changes. This is disclosed traditional control; fresh continuous
+carry/release, local Qwen, scientific station and frozen8of10 remain unqualified.
