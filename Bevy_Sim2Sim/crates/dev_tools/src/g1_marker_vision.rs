@@ -417,7 +417,10 @@ mod worker {
                             if placement_view_only {
                                 validate_release_reply(&reply, observation, &geometry.sha256)?;
                             }
-                        } else if !reply["clearance_proposal"].is_null() {
+                            if !reply["fine_approach_proposal"].is_null() {
+                                validate_fine_reply(&reply, observation, &geometry.sha256)?;
+                            }
+                        } else if !reply["clearance_proposal"].is_null() || !reply["fine_approach_proposal"].is_null() {
                             return Err("unrequested public-geometry clearance reply".into());
                         }
                         Ok(reply)
@@ -649,6 +652,56 @@ mod worker {
             || !(0.1..=2.5).contains(&distance)
         {
             return Err("invalid visual navigation proposal".into());
+        }
+        Ok(())
+    }
+
+    fn validate_fine_reply(
+        reply: &serde_json::Value,
+        observation: ObservationStamp,
+        geometry_hash: &str,
+    ) -> Result<(), String> {
+        let p = &reply["fine_approach_proposal"];
+        let actual: ObservationStamp =
+            serde_json::from_value(p["observation"].clone()).map_err(|e| e.to_string())?;
+        let interval: [f64; 2] =
+            serde_json::from_value(p["physical_containment_distance_interval_m"].clone())
+                .map_err(|e| e.to_string())?;
+        let selected = p["selected_physical_distance_m"]
+            .as_f64()
+            .ok_or("fine distance absent")?;
+        let margin = p["predicted_floor_margin_m"]
+            .as_f64()
+            .ok_or("fine margin absent")?;
+        let goal: simulation_minigame::g1::mobile_navigation::MobileCarryGoal =
+            serde_json::from_value(p["goal"].clone()).map_err(|e| e.to_string())?;
+        goal.validate().map_err(|e| e.to_string())?;
+        if p["schema"] != "g1_visible_marker_fine_carry_v1"
+            || actual != observation
+            || p["source_geometry_sha256"] != geometry_hash
+            || p["world_or_contact_truth_input"] != false
+            || p["task_qualified"] != false
+            || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+            || !interval.iter().all(|n| n.is_finite())
+            || interval[0] < 0.15
+            || interval[1] > 0.70
+            || interval[1] - interval[0] < 0.04
+            || !selected.is_finite()
+            || (selected - (interval[0] + interval[1]) * 0.5).abs() > 1e-7
+            || p["existing_navigation_stop_margin_m"] != 0.05
+            || !margin.is_finite()
+            || margin < 0.02
+            || goal.observation != observation
+            || (f64::from(goal.relative_distance_m) + 0.05 - selected).abs() > 1e-6
+            || !(0.1..=0.65).contains(&goal.relative_distance_m)
+            || (f64::from(goal.heading_yaw_source_rad)
+                - reply["navigation_proposal"]["heading_yaw_source_rad"]
+                    .as_f64()
+                    .ok_or("fine heading absent")?)
+            .abs()
+                > 1e-6
+        {
+            return Err("foreign/unsafe current whole-object fine interval".into());
         }
         Ok(())
     }
@@ -919,6 +972,32 @@ mod worker {
             reply["release_proposal"]["release_admitted"] = false.into();
             reply["release_proposal"]["release_goal"] = serde_json::Value::Null;
             assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
+        }
+        #[test]
+        fn fine_interval_cannot_detach_from_current_image_or_navigation() {
+            let (mut reply, stamp) = fixture();
+            reply["camera_mount_profile"] = "auxiliary_grip_overview".into();
+            reply["fine_approach_proposal"] = serde_json::json!({
+                "schema":"g1_visible_marker_fine_carry_v1","observation":stamp,
+                "source_geometry_sha256":"geometry","world_or_contact_truth_input":false,"task_qualified":false,
+                "physical_containment_distance_interval_m":[0.56,0.68],"selected_physical_distance_m":0.62,
+                "existing_navigation_stop_margin_m":0.05,"predicted_floor_margin_m":0.08,
+                "goal":{"observation":stamp,"heading_yaw_source_rad":-1.57,"relative_distance_m":0.57},
+            });
+            assert!(validate_fine_reply(&reply, stamp, "geometry").is_ok());
+            for mutation in 0..6 {
+                let mut bad = reply.clone();
+                let p = &mut bad["fine_approach_proposal"];
+                match mutation {
+                    0 => p["observation"]["episode_id"] = 1.into(),
+                    1 => p["source_geometry_sha256"] = "foreign".into(),
+                    2 => p["selected_physical_distance_m"] = 0.69.into(),
+                    3 => p["existing_navigation_stop_margin_m"] = 0.1.into(),
+                    4 => p["predicted_floor_margin_m"] = 0.019.into(),
+                    _ => p["goal"]["heading_yaw_source_rad"] = (-1.5).into(),
+                }
+                assert!(validate_fine_reply(&bad, stamp, "geometry").is_err());
+            }
         }
         fn memory_fixture() -> (MarkerTargetMemory, ObservationStamp) {
             let current = ObservationStamp {

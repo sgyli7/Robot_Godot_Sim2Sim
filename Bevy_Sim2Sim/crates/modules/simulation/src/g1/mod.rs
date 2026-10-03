@@ -6,6 +6,8 @@ pub mod mobile_assist;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_grip;
 #[cfg(feature = "g1_constraint_diagnostic")]
+pub mod mobile_hold;
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_lowering;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_navigation;

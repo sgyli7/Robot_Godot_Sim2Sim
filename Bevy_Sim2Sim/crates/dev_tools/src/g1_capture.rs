@@ -177,6 +177,8 @@ struct MobileAssistCaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    hold_submitted: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     auxiliary_view_completed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     restore_submitted: bool,
@@ -236,6 +238,8 @@ impl MobileAssistCaptureRuntime {
             fine_goal_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            hold_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             auxiliary_view_completed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2128,6 +2132,15 @@ fn drive_mobile_assist(
         if assist.auxiliary_release
             && carry_complete
             && assist.fine_goal_submitted
+            && !assist.hold_submitted
+        {
+            return drive_auxiliary_hold(runtime, outcome, port);
+        }
+        let hold_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
+            .is_some_and(|s| matches!(&s.execution, MobileAssistExecution::ClassicalHold { holding, .. } if holding.completed));
+        if assist.auxiliary_release
+            && hold_complete
+            && assist.hold_submitted
             && !assist.release_submitted
         {
             return drive_auxiliary_release(runtime, outcome, port);
@@ -2340,20 +2353,10 @@ fn drive_auxiliary_fine_approach(
                     .into(),
             );
         }
-        let distance = reply["navigation_proposal"]["relative_distance_m"]
-            .as_f64()
-            .ok_or("fine visual distance absent")?
-            - 0.12;
-        if !(0.1..=0.65).contains(&distance) {
-            return Err("fine waypoint outside its fixed bounded envelope".into());
-        }
-        let goal = MobileCarryGoal {
-            observation,
-            heading_yaw_source_rad: reply["navigation_proposal"]["heading_yaw_source_rad"]
-                .as_f64()
-                .ok_or("fine visual heading absent")? as f32,
-            relative_distance_m: distance as f32,
-        };
+        let goal: MobileCarryGoal = serde_json::from_value(
+            reply["fine_approach_proposal"]["goal"].clone(),
+        )
+        .map_err(|e| format!("current whole-object containment interval unavailable: {e}"))?;
         goal.validate().map_err(|e| e.to_string())?;
         let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
             return Err("fine approach lost sole native owner".into());
@@ -2373,7 +2376,7 @@ fn drive_auxiliary_fine_approach(
             .mobile_assist_handoff
             .as_mut()
             .ok_or("fine provenance absent")?["visual_fine_approach"] = serde_json::json!({
-            "actual_localization":reply,"executed_goal":goal,"reobservation_margin_m":0.12,
+                "actual_localization":reply,"executed_goal":goal,"whole_object_containment_interval":true,
             "same_owner_boundary_tick":latest.timing.episode_integrations,
             "localization_wall_ms":job.started.elapsed().as_secs_f64()*1000.,
             "object_truth_in_command":false,"task_qualified":false,
@@ -2385,6 +2388,48 @@ fn drive_auxiliary_fine_approach(
         return Ok(false);
     }
     start_marker_job(runtime, port, "visual_fine_approach")?;
+    Ok(false)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_auxiliary_hold(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    use simulation_minigame::g1::{
+        mobile_assist::MobileAssistCommand, mobile_hold::MobileHoldGoal, worker::TimedCommand,
+    };
+    let Some((observation, _)) = capture_current_marker_frame(runtime, port, "stationary_hold")?
+    else {
+        return Ok(false);
+    };
+    let goal = MobileHoldGoal { observation };
+    goal.validate().map_err(|e| e.to_string())?;
+    let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+        return Err("standing hold lost sole owner".into());
+    };
+    owner
+        .submit(TimedCommand {
+            episode_id: runtime.episode_id,
+            valid_until_sim_ns: observation.sim_time_ns + 6_000_000_000,
+            valid_until_wall: Instant::now() + Duration::from_secs(8),
+            command: MobileAssistCommand::ClassicalHold(goal.clone()),
+        })
+        .map_err(|e| e.to_string())?;
+    outcome
+        .0
+        .lock()
+        .unwrap()
+        .mobile_assist_handoff
+        .as_mut()
+        .ok_or("hold provenance absent")?["stationary_hold"] = serde_json::json!({
+        "executed_goal":goal,"same_owner_boundary_tick":observation.sim_time_ns/20_000_000,
+        "maximum_ticks":250,"minimum_ticks":100,"consecutive_self_speed_samples":20,
+        "maximum_stable_self_speed_m_s":0.03,"object_truth_in_command":false,"task_qualified":false,
+    });
+    runtime.mobile_assist.as_mut().unwrap().hold_submitted = true;
+    runtime.requested = false;
     Ok(false)
 }
 

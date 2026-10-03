@@ -1427,3 +1427,23 @@ future fine targets must use the actual whole-object floor containment interval.
 The completed100Tick navigation stop also retains measurable root motion;
 additional standing must be a separately bounded real owner action and require
 new current RGB afterward. Neither admission threshold is relaxed.
+
+The release entry now derives its fine carry goal from the whole-object
+containment interval along the current RGB navigation heading, choosing its
+midpoint. It explicitly accounts for the existing0.05m navigation stop margin;
+that controller is unchanged. At the actual0243coarse image, the physical
+interval is[0.567917,0.695419]m, selected0.631668m, commanded0.581668m,
+predicted floor margin0.083587m. This is a geometric prediction requiring
+another current placement image, never automatic release admission.
+
+Before that placement image, the same owner executes `ClassicalHold`: exactly
+the existing stationary carry command, at least100 and at most250Ticks,
+requiring20consecutive original self-root speed samples<=0.03m/s. It reads no
+object/contact truth and integrates once per formal50HzTick. A timeout requires
+explicit pause. Release requires a newer post-hold image. Mechanical control0245
+repeats the1443physical prefix at identical native f32 bits/f64 simulation times
+(JSON float encodings differ), then100real hold Ticks. All100retain hand-only
+support,63stable samples and final self speed0.011316m/s; total1543Ticks,
+zero fresh VLA/camera calls. Trace SHA256:
+`92f43f4498d8796ea2d2b01497d0bf860555122fa38a3608aef2e5e090604bd6`.
+No grip targets, gains, masses, friction or frequency are changed by holding.

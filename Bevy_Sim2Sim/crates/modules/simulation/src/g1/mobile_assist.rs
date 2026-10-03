@@ -15,6 +15,7 @@ use task_minigame::{
 
 use super::{
     mobile_grip::{MobileGripCalibration, MobileGripReceipt},
+    mobile_hold::{MobileGripHolding, MobileHoldGoal, MobileHoldStep},
     mobile_lowering::{MobileGripLowering, MobileLowerGoal, MobileLowerStep},
     mobile_navigation::{
         MobileCarryGoal, MobileCarryNavigator, MobileNavigationStep, MobileScanGoal,
@@ -42,6 +43,7 @@ pub enum MobileAssistCommand {
     ClassicalRaise(MobileRaiseGoal),
     ClassicalRelease(MobileReleaseGoal),
     ClassicalRestore(MobileRestoreGoal),
+    ClassicalHold(MobileHoldGoal),
 }
 
 impl MobileAssistCommand {
@@ -61,6 +63,7 @@ impl MobileAssistCommand {
             Self::ClassicalRaise(goal) => goal.validate(),
             Self::ClassicalRelease(goal) => goal.validate(),
             Self::ClassicalRestore(goal) => goal.validate(),
+            Self::ClassicalHold(goal) => goal.validate(),
         }
     }
 }
@@ -103,6 +106,10 @@ pub enum MobileAssistExecution {
         goal: MobileRestoreGoal,
         restoring: MobileRestoreStep,
     },
+    ClassicalHold {
+        goal: MobileHoldGoal,
+        holding: MobileHoldStep,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -126,6 +133,7 @@ pub struct MobileAssistRunner {
     raise: Option<MobileGripRaising>,
     release: Option<MobileGripRelease>,
     restore: Option<MobileGripRestoring>,
+    hold: Option<MobileGripHolding>,
     original_transport_command: Option<G1Command>,
     halted: bool,
 }
@@ -164,6 +172,7 @@ impl MobileAssistRunner {
             raise: None,
             release: None,
             restore: None,
+            hold: None,
             original_transport_command: None,
             halted: false,
         })
@@ -199,6 +208,8 @@ impl MobileAssistRunner {
             raise.completed()
         } else if let Some(lower) = &self.lower {
             lower.completed()
+        } else if let Some(hold) = &self.hold {
+            hold.completed()
         } else {
             self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
         }
@@ -209,6 +220,9 @@ impl MobileAssistRunner {
         observation: &task_minigame::types::ObservationStamp,
         state: &G1Measurement,
     ) -> Result<(G1Command, MobileGripReceipt), RobotError> {
+        if self.hold.as_ref().is_some_and(|h| !h.completed()) {
+            return Err(invalid("cannot replace an active stationary hold"));
+        }
         if self.restore.as_ref().is_some_and(|r| !r.completed()) {
             return Err(invalid(
                 "cannot replace active transport-posture restoration",
@@ -245,6 +259,9 @@ impl MobileAssistRunner {
         if let Some(carry) = &self.carry {
             if !carry.navigator.completed() {
                 return Err(invalid("cannot replace an active carry"));
+            }
+            if let Some(hold) = &self.hold {
+                return Ok((hold.command().clone(), carry.grip.clone()));
             }
             if let Some(restore) = &self.restore {
                 return Ok((restore.command().clone(), carry.grip.clone()));
@@ -319,6 +336,7 @@ impl MobileAssistRunner {
                         .as_ref()
                         .is_some_and(|r| !r.navigator.completed())
                     || self.restore.as_ref().is_some_and(|r| !r.completed())
+                    || self.hold.as_ref().is_some_and(|h| !h.completed())
                 {
                     return Err(invalid(
                         "cannot replace active classical carry with a VLA chunk",
@@ -343,6 +361,7 @@ impl MobileAssistRunner {
                 self.raise = None;
                 self.release = None;
                 self.restore = None;
+                self.hold = None;
                 self.original_transport_command = None;
                 Ok(MobileAssistStep {
                     execution: MobileAssistExecution::OriginalVla(step.execution),
@@ -381,6 +400,7 @@ impl MobileAssistRunner {
                     self.raise = None;
                     self.reobserve = None;
                     self.restore = None;
+                    self.hold = None;
                 }
                 let carry = self.carry.as_mut().unwrap();
                 if carry.navigator.goal() != goal {
@@ -544,11 +564,43 @@ impl MobileAssistRunner {
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
             }
+            MobileAssistCommand::ClassicalHold(goal) => {
+                if self.release.is_some() {
+                    return Err(invalid("hold after release requires a new grasp/reset"));
+                }
+                let state = self.owner.measurement()?;
+                if self.hold.is_none() {
+                    if self.carry.as_ref().is_none_or(|c| !c.navigator.completed()) {
+                        return Err(invalid("hold requires completed carry"));
+                    }
+                    let (command, _) = self.prepare_classical(&goal.observation, &state)?;
+                    self.hold = Some(MobileGripHolding::new(goal.clone(), &state, command)?);
+                }
+                let hold = self.hold.as_mut().unwrap();
+                if hold.goal() != goal {
+                    return Err(invalid("hold goal changed during execution"));
+                }
+                let holding = hold.update(&state)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&holding.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalHold {
+                        goal: goal.clone(),
+                        holding,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
             MobileAssistCommand::ClassicalRelease(goal) => {
                 let state = self.owner.measurement()?;
                 if self.release.is_none() {
                     if self.carry.as_ref().is_none_or(|c| !c.navigator.completed())
                         || self.raise.as_ref().is_some_and(|r| !r.completed())
+                        || self.hold.as_ref().is_some_and(|h| {
+                            !h.completed()
+                                || goal.observation.frame_id <= h.goal().observation.frame_id
+                        })
                     {
                         return Err(invalid("release requires completed stationary carry"));
                     }
@@ -651,6 +703,96 @@ mod tests {
     struct Sequence {
         schema: String,
         chunks: Vec<PolicyActionChunk>,
+    }
+    #[derive(Deserialize)]
+    struct AuxiliaryHoldFixture {
+        scan: MobileScanGoal,
+        coarse: MobileCarryGoal,
+        fine: MobileCarryGoal,
+        hold: MobileHoldGoal,
+    }
+    #[test]
+    #[ignore = "frozen actual1443Tick prefix then bounded standing;0freshVLA/renderer work"]
+    fn real_mobile_auxiliary_hold_diagnostic() -> Result<(), RobotError> {
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        let sequence: Sequence = serde_json::from_slice(&read("G1_MOBILE_REPLAY_ACTIONS")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut goals: AuxiliaryHoldFixture =
+            serde_json::from_slice(&read("G1_MOBILE_AUX_HOLD_GOALS")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        if sequence.schema != "g1_saved_native_mobile_action_sequence_v1"
+            || sequence.chunks.len() != 4
+        {
+            return Err(invalid(
+                "auxiliary hold requires four frozen actual native replies",
+            ));
+        }
+        let output =
+            std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::new(&output).with_extension("jsonl"))
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut owner = MobileAssistRunner::load(&config)?;
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let mut ticks = 0;
+        let result = (|| -> Result<(), RobotError> {
+            for mut chunk in sequence.chunks {
+                chunk.observation.captured_at_unix_ms = now();
+                let command = MobileAssistCommand::OriginalVla(ArenaTaskCommand {
+                    chunk: Arc::new(chunk),
+                    scheduled_start_sim_ns: None,
+                });
+                for _ in 0..50 {
+                    let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+                    ticks += 1;
+                    serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
+                    writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+                }
+            }
+            goals.scan.observation.captured_at_unix_ms = now();
+            goals.coarse.observation.captured_at_unix_ms = now();
+            goals.fine.observation.captured_at_unix_ms = now();
+            goals.hold.observation.captured_at_unix_ms = now();
+            let commands = [
+                MobileAssistCommand::ClassicalScan(goals.scan),
+                MobileAssistCommand::ClassicalCarry(goals.coarse),
+                MobileAssistCommand::ClassicalCarry(goals.fine),
+                MobileAssistCommand::ClassicalHold(goals.hold),
+            ];
+            for command in commands {
+                loop {
+                    let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+                    ticks += 1;
+                    serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
+                    writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+                    if owner.completed_skill() {
+                        break;
+                    }
+                    if ticks >= 1700 {
+                        return Err(invalid("auxiliary hold exceeded1700Tick fixture budget"));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(file,&serde_json::json!({"qualified":false,"actual_integrations":ticks,
+            "fresh_vla_calls":0,"saved_actual1443prefix":true,"new_current_camera_used":false,"completed_hold":result.is_ok(),
+            "error":result.as_ref().err().map(ToString::to_string),"scope":"mechanical standing only; no fresh navigation/release/task qualification"})).map_err(|e|invalid(e.to_string()))?;
+        result
     }
     fn read(name: &str) -> Result<Vec<u8>, RobotError> {
         let path = std::env::var(name).map_err(|e| invalid(e.to_string()))?;
@@ -924,6 +1066,7 @@ mod tests {
                     MobileAssistExecution::ClassicalScan { .. }
                     | MobileAssistExecution::ClassicalReobserve { .. }
                     | MobileAssistExecution::ClassicalRestore { .. }
+                    | MobileAssistExecution::ClassicalHold { .. }
                     | MobileAssistExecution::ClassicalLower { .. }
                     | MobileAssistExecution::ClassicalRaise { .. }
                     | MobileAssistExecution::ClassicalRelease { .. } => {
@@ -1054,6 +1197,7 @@ mod worker_diagnostic {
                         MobileAssistExecution::ClassicalScan { .. }
                         | MobileAssistExecution::ClassicalReobserve { .. }
                         | MobileAssistExecution::ClassicalRestore { .. }
+                        | MobileAssistExecution::ClassicalHold { .. }
                         | MobileAssistExecution::ClassicalLower { .. }
                         | MobileAssistExecution::ClassicalRaise { .. }
                         | MobileAssistExecution::ClassicalRelease { .. } => {
