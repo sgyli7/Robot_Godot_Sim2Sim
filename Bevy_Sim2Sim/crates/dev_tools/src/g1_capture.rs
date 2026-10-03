@@ -295,6 +295,8 @@ struct LivePolicyConfiguration {
     timeout_ms: u64,
     #[serde(default)]
     prefetch_after_ticks: Option<u32>,
+    #[serde(default)]
+    in_flight_images_with_wait: bool,
 }
 
 struct LivePolicyRuntime {
@@ -307,6 +309,8 @@ struct LivePolicyRuntime {
     next_boundary_tick: u64,
     prefetch_after_ticks: Option<u32>,
     wait_after_chunks: bool,
+    in_flight_images_with_wait: bool,
+    in_flight_image_window: Option<[u64; 2]>,
     wait_image_min_tick: Option<u64>,
     completed: bool,
 }
@@ -1215,6 +1219,9 @@ trait CapturedTaskStep {
     type Execution: Serialize;
     fn execution(&self) -> &Self::Execution;
     fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep;
+    fn image_admission(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
+        Ok(None)
+    }
 }
 impl CapturedTaskStep for ArenaTaskStep {
     type Execution = simulation_minigame::g1::task_runner::ArenaTaskExecution;
@@ -1234,6 +1241,12 @@ impl CapturedTaskStep for simulation_minigame::g1::mobile_assist::MobileAssistSt
     fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep {
         &self.body
     }
+    fn image_admission(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
+        self.image_admission
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+    }
 }
 
 struct OwnerEvidence<S = ArenaTaskStep> {
@@ -1246,7 +1259,7 @@ struct OwnerEvidence<S = ArenaTaskStep> {
 impl<S: CapturedTaskStep> OwnerEvidence<S> {
     fn drain(&mut self, receipt: &mut G1CaptureReceipt) -> Result<(), String> {
         for record in self.trace.drain() {
-            let value = serde_json::json!({
+            let mut value = serde_json::json!({
                 "schema": "g1_owner_completed_step_evidence_v1",
                 "episode_id": record.episode_id,
                 "generation": record.generation,
@@ -1265,6 +1278,9 @@ impl<S: CapturedTaskStep> OwnerEvidence<S> {
                 "body": record.step.body(),
                 "scope": "independent_actual_owner_step_truth_never_model_input",
             });
+            if let Some(admission) = record.step.image_admission().map_err(|e| e.to_string())? {
+                value["image_admission"] = admission;
+            }
             serde_json::to_writer(&mut self.output, &value).map_err(|e| e.to_string())?;
             self.output.write_all(b"\n").map_err(|e| e.to_string())?;
             self.records += 1;
@@ -1363,6 +1379,18 @@ fn run_capture_owner(
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
+    if policy
+        .as_ref()
+        .is_some_and(|p| p.in_flight_images_with_wait)
+        && (!waited_grasp
+            || policy
+                .as_ref()
+                .is_some_and(|p| p.prefetch_after_ticks.is_some()))
+    {
+        return Err(
+            "in-flight original images require the explicit finite waited mobile scene".into(),
+        );
+    }
     let mobile_prefetch = matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
         && policy
             .as_ref()
@@ -1664,6 +1692,8 @@ fn run_capture_owner(
                 next_boundary_tick: 0,
                 prefetch_after_ticks: policy.prefetch_after_ticks,
                 wait_after_chunks: waited_grasp,
+                in_flight_images_with_wait: policy.in_flight_images_with_wait,
+                in_flight_image_window: None,
                 wait_image_min_tick: None,
                 completed: false,
             })
@@ -3592,7 +3622,18 @@ fn drive_waited_mobile_policy(
             "finite standing wait expired before replacement; owner explicitly paused".into(),
         );
     }
-    if let Some(reply) = live.worker.try_take_reply() {
+    let reply_boundary = live.submitted_chunks == 0
+        || waiting.is_some_and(|(g, w)| {
+            g.request_id == u64::from(live.submitted_chunks)
+                && !w.completed
+                && (live.in_flight_images_with_wait || w.observation_ready)
+        });
+    let reply = if reply_boundary {
+        live.worker.try_take_reply()
+    } else {
+        None
+    };
+    if let Some(reply) = reply {
         let initial = live.submitted_chunks == 0;
         if live.pending.take() != Some(reply.observation)
             || reply.profile != TaskProfile::MobileBox
@@ -3601,7 +3642,7 @@ fn drive_waited_mobile_policy(
             || (!initial
                 && !waiting.is_some_and(|(g, w)| {
                     g.request_id == u64::from(live.submitted_chunks)
-                        && w.observation_ready
+                        && (live.in_flight_images_with_wait || w.observation_ready)
                         && !w.completed
                 }))
         {
@@ -3627,15 +3668,21 @@ fn drive_waited_mobile_policy(
         let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
             return Err("waited grasp lost its unique native owner".into());
         };
+        let original = ArenaTaskCommand {
+            chunk: Arc::new(chunk),
+            scheduled_start_sim_ns: None,
+        };
+        let command = if live.in_flight_images_with_wait {
+            MobileAssistCommand::OriginalVlaInFlightThenWait(original)
+        } else {
+            MobileAssistCommand::OriginalVlaThenWait(original)
+        };
         owner
             .submit(TimedCommand {
                 episode_id: runtime.episode_id,
                 valid_until_sim_ns: u64::from(runtime.options.ticks) * ARENA_ACTION_PERIOD_NS,
                 valid_until_wall: Instant::now() + Duration::from_secs(6),
-                command: MobileAssistCommand::OriginalVlaThenWait(ArenaTaskCommand {
-                    chunk: Arc::new(chunk),
-                    scheduled_start_sim_ns: None,
-                }),
+                command,
             })
             .map_err(|e| e.to_string())?;
         let mut receipt = outcome.0.lock().unwrap();
@@ -3646,6 +3693,7 @@ fn drive_waited_mobile_policy(
             "frame_count":50,"original_frame_interval_ns":ARENA_ACTION_PERIOD_NS,
             "following_classical_wait_maximum_ticks":200,"observation_restamped":false,
             "future_slot_rebased":false,"same_owner_world":true,"task_qualified":false,
+            "in_flight_predecessor_image":live.in_flight_images_with_wait && !initial,
         }));
         live.submitted_chunks += 1;
         return Ok(false);
@@ -3655,6 +3703,7 @@ fn drive_waited_mobile_policy(
     }
     let initial = live.submitted_chunks == 0;
     if !initial
+        && !live.in_flight_images_with_wait
         && !waiting.is_some_and(|(g, w)| {
             g.request_id == u64::from(live.submitted_chunks) && w.observation_ready && !w.completed
         })
@@ -3662,14 +3711,29 @@ fn drive_waited_mobile_policy(
         return Ok(false);
     }
     if !runtime.requested {
-        let sequence = port.request_physics_frame(runtime.episode_id, tick)?;
-        live.wait_image_min_tick = Some(tick);
+        let image_min_tick = if !initial && live.in_flight_images_with_wait {
+            let Some(MobileAssistExecution::OriginalVla(execution)) =
+                latest.assist_step.as_ref().map(|s| &s.execution)
+            else {
+                return Ok(false);
+            };
+            if execution.sequence_id != u64::from(live.submitted_chunks) {
+                return Ok(false);
+            }
+            let start = execution.execution_start_sim_ns / ARENA_ACTION_PERIOD_NS;
+            live.in_flight_image_window = Some([start + 25, start + 50]);
+            start + 25
+        } else {
+            tick
+        };
+        let sequence = port.request_physics_frame(runtime.episode_id, image_min_tick)?;
+        live.wait_image_min_tick = Some(image_min_tick);
         runtime.requested = true;
         let mut receipt = outcome.0.lock().unwrap();
         if receipt.prefetch_image_events.len() >= 16 {
             return Err("waited image event budget exhausted".into());
         }
-        receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_request","capture_sequence":sequence,"minimum_physics_tick":tick,"submitted_chunks":live.submitted_chunks,"runtime_elapsed_ms":runtime.started.elapsed().as_millis()}));
+        receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_request","capture_sequence":sequence,"minimum_physics_tick":image_min_tick,"in_flight_predecessor_window":live.in_flight_image_window,"submitted_chunks":live.submitted_chunks,"runtime_elapsed_ms":runtime.started.elapsed().as_millis()}));
         return Ok(false);
     }
     if let Some(frame) = port.take() {
@@ -3685,6 +3749,11 @@ fn drive_waited_mobile_policy(
                     .ok_or("standing image minimum boundary absent")?
             || frame_tick > tick
             || (initial && frame_tick != 0)
+            || (!initial
+                && live.in_flight_images_with_wait
+                && live
+                    .in_flight_image_window
+                    .is_none_or(|[start, end]| frame_tick < start || frame_tick >= end))
         {
             return Err(
                 "standing RGB/self stamp is foreign, pipelined old or future; no restamping".into(),

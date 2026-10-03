@@ -1823,3 +1823,32 @@ Validation passes78simulation tests/40ignored,35rendering/3ignored,
 42development/2ignored,14CLI tests and default compilation. The original
 17system-parameter compile error is repaired by grouping the two camera/gate
 resources, not by changing scheduling or physics.
+
+The first continuous full-route candidate0276 completes1078actual50Hz single
+integrations, four fresh original model calls and200unchanged action frames.
+Its active and uninterrupted boundary sim/wall ratios are0.999907and1.000262,
+with zero control misses or Tick debt. It loses hand-only support at807during
+the initial scan; the actual auxiliary image correctly rejects the absent box
+marker. Strict placement remains0seconds. Trace SHA256:
+`00d9b7bdd6281b838d14b04a60df3da875a185bb4d21f5a33f41e6e1414d36f4`.
+The owner image proof was retained internally but omitted by the development
+trace projection; subsequent traces now explicitly serialize it. This failed
+run is not full-route or Qwen/science-station qualification.
+
+A fixed saved-input comparison0277reproduces all1078native f32physical samples
+and the807loss. Comparison0278preserves the actually executed original upper
+command instead of applying the source palm-gap correction, with an identical
+590Tick prefix and unchanged motors, contacts and navigation; support ends
+earlier at776. The alternative is not promoted. Both have0freshRGB/VLA and
+are mechanical diagnostics, not autonomous trials. Thus simply retaining the
+narrower original target is not an established remedy.
+
+Entry0279adds an explicitly selected timing candidate: the next original VLA
+image may be acquired in the completed predecessor's second half, while its
+unchanged50frames execute. A single model reply remains buffered until that
+chunk completes; finite standing handles late arrival. Admission preserves
+the real image identity, allows no active-chunk replacement or future slot,
+and keeps the1second image-age bound. Classical geometry still requires the
+separate stationary self-history proof with5mm/0.01rad bounds. The earlier
+stationary-only and fixed scheduled diagnostics retain their original guards.
+This opt-in pipeline is not qualified until fresh physical evidence exists.

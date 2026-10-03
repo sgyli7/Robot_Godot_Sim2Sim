@@ -37,6 +37,10 @@ pub enum MobileAssistCommand {
     /// Original50frames, then a separately recorded traditional standing wait.
     /// The owner transitions without pausing or repeating a VLA frame.
     OriginalVlaThenWait(ArenaTaskCommand),
+    /// Same unchanged original frames and finite wait, but the next original
+    /// image may be acquired during the second half of its predecessor chunk.
+    /// Geometric classical skills still require stationary self admission.
+    OriginalVlaInFlightThenWait(ArenaTaskCommand),
     ObservedSkillThenWait(MobileObservedSkill),
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
@@ -79,7 +83,9 @@ impl MobileAssistCommand {
     pub(crate) fn validate(&self) -> Result<(), RobotError> {
         match self {
             Self::ObservedSkillThenWait(skill) => skill.command().validate(),
-            Self::OriginalVla(command) | Self::OriginalVlaThenWait(command) => {
+            Self::OriginalVla(command)
+            | Self::OriginalVlaThenWait(command)
+            | Self::OriginalVlaInFlightThenWait(command) => {
                 command.validate()?;
                 if command.chunk.profile != TaskProfile::MobileBox {
                     return Err(invalid("assisted mobile owner rejects static VLA"));
@@ -442,6 +448,7 @@ impl MobileAssistRunner {
             command,
             MobileAssistCommand::ClassicalModelWait(_)
                 | MobileAssistCommand::OriginalVlaThenWait(_)
+                | MobileAssistCommand::OriginalVlaInFlightThenWait(_)
                 | MobileAssistCommand::ObservedSkillThenWait(_)
         ) {
             self.waiting = None;
@@ -486,7 +493,11 @@ impl MobileAssistRunner {
                 }
                 self.step_inner(&skill.command(), guard)
             }
-            MobileAssistCommand::OriginalVlaThenWait(command) => {
+            MobileAssistCommand::OriginalVlaThenWait(vla)
+            | MobileAssistCommand::OriginalVlaInFlightThenWait(vla) => {
+                let in_flight =
+                    matches!(command, MobileAssistCommand::OriginalVlaInFlightThenWait(_));
+                let command = vla;
                 if command.scheduled_start_sim_ns.is_some() {
                     return Err(invalid(
                         "waited VLA uses current owner admission, not a future action slot",
@@ -513,6 +524,17 @@ impl MobileAssistRunner {
                             );
                             return self
                                 .step_inner(&MobileAssistCommand::ClassicalModelWait(goal), guard);
+                        }
+                    } else if in_flight {
+                        if !in_flight_image_window(
+                            previous,
+                            &state,
+                            command,
+                            self.maximum_observation_age_ns,
+                        ) {
+                            return Err(invalid(
+                                "next original image is not from the completed predecessor second-half window",
+                            ));
                         }
                     } else if self.waiting.as_ref().is_none_or(|w| {
                         !w.admits_image(&state, command.chunk.observation.sim_time_ns)
@@ -957,6 +979,33 @@ fn invalid(message: impl Into<String>) -> RobotError {
     RobotError::Contract(message.into())
 }
 
+fn in_flight_image_window(
+    previous: &ArenaTaskExecution,
+    state: &G1Measurement,
+    next: &ArenaTaskCommand,
+    maximum_age_ns: u64,
+) -> bool {
+    let image = next.chunk.observation;
+    previous.frame_index == 49
+        && previous.sequence_id.checked_add(1) == Some(next.chunk.sequence_id)
+        && image.episode_id == state.episode_id
+        && image.frame_id > previous.observation.frame_id
+        && state.source_tick.checked_mul(20_000_000) == Some(state.sim_time_ns)
+        && previous
+            .execution_start_sim_ns
+            .checked_add(1_000_000_000)
+            .is_some_and(|end| state.sim_time_ns >= end && image.sim_time_ns < end)
+        && previous
+            .execution_start_sim_ns
+            .checked_add(500_000_000)
+            .is_some_and(|start| image.sim_time_ns >= start)
+        && image.sim_time_ns % 20_000_000 == 0
+        && state
+            .sim_time_ns
+            .checked_sub(image.sim_time_ns)
+            .is_some_and(|age| age <= maximum_age_ns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,6 +1017,212 @@ mod tests {
     struct Sequence {
         schema: String,
         chunks: Vec<PolicyActionChunk>,
+    }
+
+    #[test]
+    fn in_flight_original_reply_cannot_replace_an_active_or_foreign_chunk() {
+        let stamp = ObservationStamp {
+            episode_id: 1,
+            frame_id: 1,
+            sim_time_ns: 0,
+            captured_at_unix_ms: 1,
+        };
+        let mut previous = ArenaTaskExecution {
+            profile: TaskProfile::MobileBox,
+            sequence_id: 1,
+            frame_index: 49,
+            observation: stamp,
+            execution_start_sim_ns: 0,
+            observation_age_ns: 0,
+            observation_wall_age_ms: 0,
+            decoded_waist_targets_rad: [0.; 3],
+            admitted_chunks: 1,
+        };
+        let mut state = G1Measurement {
+            episode_id: 1,
+            source_tick: 50,
+            sim_time_ns: 1_000_000_000,
+            joint_positions: vec![0.; 43],
+            joint_velocities: vec![0.; 43],
+            root_rotation_wxyz: [1., 0., 0., 0.],
+            root_velocity_source: [0.; 3],
+            root_angular_velocity_body: [0.; 3],
+        };
+        let mut chunk = PolicyActionChunk {
+            profile: TaskProfile::MobileBox,
+            sequence_id: 2,
+            observation: ObservationStamp {
+                frame_id: 2,
+                sim_time_ns: 500_000_000,
+                ..stamp
+            },
+            model_revision: String::new(),
+            action_period_ns: 20_000_000,
+            frames: vec![],
+        };
+        let command = |c: &PolicyActionChunk| ArenaTaskCommand {
+            chunk: Arc::new(c.clone()),
+            scheduled_start_sim_ns: None,
+        };
+        assert!(in_flight_image_window(
+            &previous,
+            &state,
+            &command(&chunk),
+            1_000_000_000
+        ));
+        previous.frame_index = 48;
+        assert!(!in_flight_image_window(
+            &previous,
+            &state,
+            &command(&chunk),
+            1_000_000_000
+        ));
+        previous.frame_index = 49;
+        for tick in [24, 50] {
+            chunk.observation.sim_time_ns = tick * 20_000_000;
+            assert!(!in_flight_image_window(
+                &previous,
+                &state,
+                &command(&chunk),
+                1_000_000_000
+            ));
+        }
+        chunk.observation.sim_time_ns = 500_000_000;
+        chunk.sequence_id = 3;
+        assert!(!in_flight_image_window(
+            &previous,
+            &state,
+            &command(&chunk),
+            1_000_000_000
+        ));
+        chunk.sequence_id = 2;
+        chunk.observation.episode_id = 2;
+        assert!(!in_flight_image_window(
+            &previous,
+            &state,
+            &command(&chunk),
+            1_000_000_000
+        ));
+        chunk.observation.episode_id = 1;
+        state.source_tick = 76;
+        state.sim_time_ns = 1_520_000_000;
+        assert!(!in_flight_image_window(
+            &previous,
+            &state,
+            &command(&chunk),
+            1_000_000_000
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct SavedContinuousScan {
+        chunks: Vec<PolicyActionChunk>,
+        prefix_sequence_ids: Vec<usize>,
+        scan: MobileScanGoal,
+        maximum_ticks: u64,
+        preserve_executed_grasp: bool,
+    }
+
+    #[test]
+    #[ignore = "one frozen continuous prefix and scan handoff comparison; no fresh RGB/VLA or autonomous qualification"]
+    fn real_mobile_saved_continuous_scan_handoff_diagnostic() -> Result<(), RobotError> {
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        let mut fixture: SavedContinuousScan =
+            serde_json::from_slice(&read("G1_MOBILE_CONTINUOUS_SCAN_FIXTURE")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        if fixture.chunks.len() != 4
+            || fixture.prefix_sequence_ids.is_empty()
+            || fixture.prefix_sequence_ids.len() > 1000
+            || fixture
+                .prefix_sequence_ids
+                .iter()
+                .any(|i| !(1..=4).contains(i))
+            || fixture.maximum_ticks > 1500
+            || fixture.maximum_ticks <= fixture.prefix_sequence_ids.len() as u64
+        {
+            return Err(invalid(
+                "continuous scan fixture exceeds fixed bounded comparison",
+            ));
+        }
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        for chunk in &mut fixture.chunks {
+            chunk.observation.captured_at_unix_ms = now();
+        }
+        fixture.scan.observation.captured_at_unix_ms = now();
+        let output =
+            std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::new(&output).with_extension("jsonl"))
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut owner = MobileAssistRunner::load(&config)?;
+        for &sequence in &fixture.prefix_sequence_ids {
+            let command = MobileAssistCommand::OriginalVlaThenWait(ArenaTaskCommand {
+                chunk: Arc::new(fixture.chunks[sequence - 1].clone()),
+                scheduled_start_sim_ns: None,
+            });
+            let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+            serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
+            writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+        }
+        let state = owner.measurement()?;
+        let proof = owner
+            .waiting
+            .as_ref()
+            .ok_or_else(|| invalid("saved scan has no current waiting history"))?
+            .admit_observed_skill(
+                fixture.scan.observation,
+                &state,
+                &owner.calibration,
+                owner.maximum_observation_age_ns,
+            )?;
+        let mut navigator =
+            MobileScanNavigator::new_with_admission(fixture.scan.clone(), &state, &proof)?;
+        let original = owner
+            .last_controller_command
+            .as_ref()
+            .ok_or_else(|| invalid("saved prefix lacks executed upper command"))?;
+        let mut command = if fixture.preserve_executed_grasp {
+            original.clone()
+        } else {
+            owner.calibration.correct(&state, original)?.command
+        };
+        let mut actual_ticks = fixture.prefix_sequence_ids.len() as u64;
+        while actual_ticks < fixture.maximum_ticks {
+            let state = owner.measurement()?;
+            let navigation = if navigator.completed() {
+                None
+            } else {
+                Some(navigator.update(&state)?)
+            };
+            command.navigation = navigation.as_ref().map_or([0.; 3], |n| n.navigation);
+            let body = owner
+                .owner
+                .step_mobile_assist_with_guard(&command, &mut || Ok(()))?;
+            serde_json::to_writer(&mut trace, &serde_json::json!({
+                "body": body, "manual_saved_scan_command":command, "navigation":navigation,
+                "image_admission":proof, "diagnostic_saved_fixture":true,"autonomous_execution":false,
+            })).map_err(|e| invalid(e.to_string()))?;
+            writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+            actual_ticks += 1;
+        }
+        trace.flush().map_err(|e| invalid(e.to_string()))?;
+        fs::write(output, serde_json::to_vec_pretty(&serde_json::json!({
+            "schema":"g1_saved_continuous_scan_handoff_comparison_v1","actual_ticks":actual_ticks,
+            "counts":owner.progress_counts(),"preserve_executed_grasp":fixture.preserve_executed_grasp,
+            "scan_completed":navigator.completed(),"fresh_rgb":0,"fresh_vla_calls":0,
+            "qualified":false,"autonomous_execution":false,"parameter_sweeps":0,
+            "scope":"exact saved prefix, one fixed handoff alternative; independent truth audit required",
+        })).map_err(|e| invalid(e.to_string()))?).map_err(|e| invalid(e.to_string()))?;
+        Ok(())
     }
 
     #[test]
