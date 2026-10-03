@@ -628,6 +628,22 @@ mod worker {
             return Err("unrequested static target memory".into());
         }
         let proposal = &reply["navigation_proposal"];
+        if proposal.is_null() {
+            let fine = &reply["fine_approach_proposal"];
+            if memory.is_some()
+                || fine["state"] != "aligned"
+                || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+            {
+                return Err("missing navigation requires current whole-box alignment".into());
+            }
+            // The owned worker binds this declared geometry hash to its pinned
+            // configuration after this general image/self-state validation.
+            let hash = fine["source_geometry_sha256"]
+                .as_str()
+                .ok_or("alignment geometry absent")?;
+            validate_fine_reply(reply, observation, hash)?;
+            return Ok(());
+        }
         let stamp: ObservationStamp =
             serde_json::from_value(proposal["observation"].clone()).map_err(|e| e.to_string())?;
         let heading = proposal["heading_yaw_source_rad"]
@@ -1038,10 +1054,19 @@ mod worker {
             p["goal"] = serde_json::Value::Null;
             p["physical_containment_distance_interval_m"] = serde_json::json!([0., 0.1]);
             assert!(validate_fine_reply(&reply, stamp, "geometry").is_ok());
+            reply["navigation_proposal"] = serde_json::Value::Null;
+            assert!(validate_reply(&reply, stamp, "image", "input", "definition").is_ok());
+            let mut foreign_camera = reply.clone();
+            foreign_camera["camera_mount_profile"] = "arena_ego".into();
+            assert!(
+                validate_reply(&foreign_camera, stamp, "image", "input", "definition")
+                    .is_err()
+            );
             let mut bad = reply.clone();
             bad["fine_approach_proposal"]["current_floor_margin_m"] = 0.019.into();
             bad["fine_approach_proposal"]["predicted_floor_margin_m"] = 0.019.into();
             assert!(validate_fine_reply(&bad, stamp, "geometry").is_err());
+            assert!(validate_reply(&bad, stamp, "image", "input", "definition").is_err());
             bad["fine_approach_proposal"]["state"] = "blocked".into();
             assert!(validate_fine_reply(&bad, stamp, "geometry").is_ok());
         }

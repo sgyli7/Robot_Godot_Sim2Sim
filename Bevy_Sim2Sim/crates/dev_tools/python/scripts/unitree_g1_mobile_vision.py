@@ -341,6 +341,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     if len({d["marker_id"] for d in detections}) != len(detections):
         raise ValueError("duplicate identity in actual marker image")
     proposal = None
+    fine_proposal = None
     by_id = {d["marker_id"]: np.array(d["root_from_marker"]) for d in detections}
     memory_estimate = propagate_target_memory(memory_path, observation) if memory_path is not None else None
     used_memory = memory_estimate is not None and 21 not in by_id
@@ -366,11 +367,17 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         box_world = root_rotation @ box_p
         heading = float(np.arctan2(bin_world[1], bin_world[0]))
         distance = float(np.linalg.norm(bin_world[:2])-np.linalg.norm(box_world[:2]))
+        if camera_profile == "auxiliary_grip_overview" and geometry_path is not None and memory_path is None:
+            fine_proposal = fine_from_visible_markers(detections, observation, geometry_path, marker_mounts, heading)
         if not (0.1 <= distance <= 2.5):
-            raise ValueError("visual approach lies outside bounded navigation envelope")
-        proposal = {"observation": stamp, "heading_yaw_source_rad": heading,
-                    "relative_distance_m": distance, "source": "actual_box_rgb_and_static_target_memory_self_velocity" if used_memory else "actual_rgb_marker_pnp_and_original_self_fk",
-                    "target_identity": 21, "task_qualified": False, "automatically_executed": False}
+            # Whole-box current containment admits no walking command. The
+            # original navigation minimum remains in force for all movement.
+            if fine_proposal is None or fine_proposal["state"] != "aligned":
+                raise ValueError("visual approach lies outside bounded navigation envelope")
+        else:
+            proposal = {"observation": stamp, "heading_yaw_source_rad": heading,
+                        "relative_distance_m": distance, "source": "actual_box_rgb_and_static_target_memory_self_velocity" if used_memory else "actual_rgb_marker_pnp_and_original_self_fk",
+                        "target_identity": 21, "task_qualified": False, "automatically_executed": False}
     result = {"schema":"g1_mobile_actual_marker_localization_v1", "observation":stamp,
             "image_sha256":sha(image_path), "input_sha256":sha(observation_path),
             "robot_definition_sha256":DEFINITION_SHA256, "opencv_version":cv2.__version__,
@@ -397,8 +404,8 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["target_memory_used"] = used_memory
     if geometry_path is not None and not used_memory:
         result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts)
-        if camera_profile == "auxiliary_grip_overview" and not placement_view_only and proposal is not None:
-            result["fine_approach_proposal"] = fine_from_visible_markers(detections, observation, geometry_path, marker_mounts, proposal["heading_yaw_source_rad"])
+        if camera_profile == "auxiliary_grip_overview" and not placement_view_only:
+            result["fine_approach_proposal"] = fine_proposal
     if placement_view_only:
         result["placement_view_only"] = True
         result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts)

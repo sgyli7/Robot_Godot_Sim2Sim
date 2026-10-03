@@ -1516,3 +1516,27 @@ advance, final step, already aligned, minimum-step blockage and a passed
 containment interval. The0.02m release gate and strict physical acceptance
 rules remain unchanged. Actual closed-loop physical release still requires
 a new live test; these entry checks do not qualify it.
+
+Fresh0251 executes four original VLA calls and four independently observed
+fine segments. All1609post-grasp samples retain hand-only support through1809
+single50Hz Ticks, with upright>=0.992144 and zero misses/debt. The final actual
+image is captured, but the worker rejects its radial navigation distance below
+0.1m before reporting containment. Independent whole-box floor margin is
+0.079202m; the box remains held, so hold/opening0Ticks and strict placement
+0seconds. The driver records the actual terminal app2/modelSIGINT−2 and closes
+the owned model. Trace SHA256:
+`b2358c6d7ed9ecda1cd2e950189b7f41a708b17ee00a6d5a11de3832176d4e13`.
+This is a software arrival-gate failure after retained grip, not controlled
+release success.
+
+Entry0252 evaluates that exact final image/self-state: current full-box marker
+geometry yields0.083087m estimated margin and an aligned result with no walking
+goal or navigation proposal. This explicit geometry-only arrival may pass the
+general image protocol before the normal motion-distance envelope. Movement
+still requires the original0.1m minimum, and removing the pinned geometry still
+rejects the same image. Foreign camera, incomplete containment and movement
+under an aligned result remain rejected. The owned worker independently binds
+the declared geometry to its pinned configuration before returning any reply.
+The actual saved-RGB Rust/Python round trip and41development tests/2ignored
+pass with0physics/models. Hold and newer placement-only image are still
+required before opening; no criterion is relaxed.
