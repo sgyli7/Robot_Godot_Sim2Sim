@@ -333,6 +333,14 @@ impl StaticObservedGraspRoute {
             predicted.sim_time_ns += 20_000_000;
         }
         let target = 100 + goal.increments.len() as u64;
+        let maximum = if runtime.static_observed_place {
+            400
+        } else {
+            u64::from(runtime.options.ticks)
+        };
+        if target > maximum {
+            return Err("observed grasp path exceeds its finite pre-placement budget".into());
+        }
         let report = serde_json::json!({"schema":"g1_live_observed_grasp_joint_preflight_v1","observation":observation,
             "reference_template_sha256":self.reference_sha256,"alignment_ticks":alignment_ticks,
             "acquisition_ticks":acquisition_ticks,"lift_ticks":50,"hold_ticks":50,"target_tick":target,
