@@ -117,6 +117,10 @@ struct CaptureConfiguration {
     static_marker_vision: Option<StaticMarkerVisionConfiguration>,
     #[serde(default)]
     static_grasp_template: Option<BackgroundVisualConfiguration>,
+    /// A single extra actual RGB view at the unchanged completed grasp Tick.
+    /// Uses the two existing fixed mounts; never advances the physical world.
+    #[serde(default)]
+    static_grasp_fixed_camera_pair: bool,
     #[serde(default)]
     exposure_ev100: Option<f32>,
     #[serde(default)]
@@ -940,6 +944,7 @@ fn run_from_file(
         config.static_marker_assets,
         config.static_marker_vision,
         config.static_grasp_template,
+        config.static_grasp_fixed_camera_pair,
         mode,
     )
 }
@@ -1372,6 +1377,8 @@ pub(super) struct CaptureRuntime {
     static_unheld_regrasp: bool,
     static_pregrasp: bool,
     static_observed_grasp: bool,
+    static_grasp_fixed_camera_pair: bool,
+    static_grasp_pair_secondary: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     static_observed_grasp_route: Option<static_observed_grasp::StaticObservedGraspRoute>,
     static_regrasp_started: bool,
@@ -1621,6 +1628,7 @@ pub fn run_capture(
         None,
         None,
         None,
+        false,
         CaptureMode::Camera,
     )
 }
@@ -1652,6 +1660,7 @@ fn run_capture_owner(
     static_marker_assets: Option<BackgroundVisualConfiguration>,
     static_marker_vision: Option<StaticMarkerVisionConfiguration>,
     static_grasp_template: Option<BackgroundVisualConfiguration>,
+    static_grasp_fixed_camera_pair: bool,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
@@ -1660,6 +1669,7 @@ fn run_capture_owner(
     let static_unheld_regrasp = mode == CaptureMode::StaticUnheldRegrasp;
     let static_pregrasp = mode == CaptureMode::StaticPregrasp;
     let static_observed_grasp = mode == CaptureMode::StaticObservedGrasp;
+    if static_grasp_fixed_camera_pair && !static_observed_grasp {return Err("fixed camera pair requires the explicit observed-grasp entry".into());}
     if static_grasp_template.is_some()!=static_observed_grasp {return Err("observed grasp template requires its explicit entry".into());}
     let static_memory_place = matches!(mode,CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
     let static_transfer_placement = matches!(mode, CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
@@ -2375,6 +2385,8 @@ fn run_capture_owner(
             static_unheld_regrasp,
             static_pregrasp,
             static_observed_grasp,
+            static_grasp_fixed_camera_pair,
+            static_grasp_pair_secondary: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             static_observed_grasp_route,
             static_regrasp_started: false,
@@ -4938,7 +4950,7 @@ fn drive_capture(
         if runtime.live_policy.is_some() && !drive_bounded_task(&mut runtime, &outcome, &port)? {
             return Ok(());
         }
-        if runtime.static_observed_grasp && latest.phase==G1WorkerPhase::Paused && camera_mount.0==G1CameraMountProfile::ArenaEgo {
+        if runtime.static_observed_grasp && !runtime.static_grasp_pair_secondary && latest.phase==G1WorkerPhase::Paused && camera_mount.0==G1CameraMountProfile::ArenaEgo {
             camera_mount.0=G1CameraMountProfile::StaticPlacementOverview;
             runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
             return Ok(());
@@ -5110,7 +5122,9 @@ fn drive_capture(
                     .is_some_and(|r| r.needs_auxiliary_view());
             if frame.stamp.source != CameraPoseSource::PhysicsBody
                 || frame.stamp.mount_profile
-                    != if runtime.static_transfer_placement || runtime.static_observed_grasp {
+                    != if runtime.static_grasp_pair_secondary {
+                        G1CameraMountProfile::ArenaEgo
+                    } else if runtime.static_transfer_placement || runtime.static_observed_grasp {
                         G1CameraMountProfile::StaticPlacementOverview
                     } else if use_auxiliary {
                         G1CameraMountProfile::AuxiliaryGripOverview
@@ -5129,8 +5143,11 @@ fn drive_capture(
             frame.stamp.native_state.as_ref().unwrap().validate()?;
             if !runtime.static_visual_transfer {
                 let observed_grasp=runtime.static_observed_grasp;
+                let pair_secondary=runtime.static_grasp_pair_secondary;
                 if let Some(worker) = &mut runtime.static_marker_worker {
-                    if observed_grasp {worker.submit_grip_capture(&frame)?;} else {worker.submit_capture(&frame)?;}
+                    if observed_grasp {
+                        if !pair_secondary {worker.submit_grip_capture(&frame)?;}
+                    } else {worker.submit_capture(&frame)?;}
                 }
             }
             if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
@@ -5143,6 +5160,19 @@ fn drive_capture(
                 )
                 .map_err(|e| e.to_string())?;
             }
+            let image_directory = if runtime.static_grasp_pair_secondary {
+                let directory = runtime.options.output.join("static_grip_secondary_vision_input");
+                fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+                let observation = marker_observation(&frame.stamp)?;
+                let first: serde_json::Value = serde_json::from_slice(&fs::read(runtime.options.output.join("static_grip_vision_input/observation.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                if observation["measured_joints"] != first["measured_joints"]
+                    || observation["stamp"]["episode_id"] != first["stamp"]["episode_id"]
+                    || observation["stamp"]["sim_time_ns"] != first["stamp"]["sim_time_ns"] {
+                    return Err("fixed camera pair changed its native Tick/self state".into());
+                }
+                fs::write(directory.join("observation.json"),serde_json::to_vec_pretty(&observation).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                Some(directory)
+            } else {None};
             let rgba = frame
                 .rgb
                 .chunks_exact(3)
@@ -5161,14 +5191,14 @@ fn drive_capture(
             )
             .try_into_dynamic()
             .map_err(|error| error.to_string())?
-            .save(runtime.options.output.join("ego_640x480.png"))
+            .save(image_directory.as_ref().map_or_else(||runtime.options.output.join("ego_640x480.png"),|p|p.join("ego.png")))
             .map_err(|error| error.to_string())?;
             fs::write(
-                runtime.options.output.join("ego_stamp.json"),
+                image_directory.as_ref().map_or_else(||runtime.options.output.join("ego_stamp.json"),|p|p.join("stamp.json")),
                 serde_json::to_vec_pretty(&frame.stamp).map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
-            outcome.0.lock().unwrap().ego_stamp = Some(frame.stamp);
+            if !runtime.static_grasp_pair_secondary {outcome.0.lock().unwrap().ego_stamp = Some(frame.stamp);}
             runtime.ego_saved = true;
         }
         if runtime.ego_saved
@@ -5183,6 +5213,19 @@ fn drive_capture(
             if runtime.static_marker_worker.is_some()
                 && outcome.0.lock().unwrap().static_marker_localization.is_none()
             {
+                return Ok(());
+            }
+            if runtime.static_grasp_fixed_camera_pair && !runtime.static_grasp_pair_secondary {
+                runtime.static_grasp_pair_secondary=true;
+                runtime.requested=false;
+                runtime.ego_saved=false;
+                camera_mount.0=G1CameraMountProfile::ArenaEgo;
+                runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
+                if let Some(handoff)=&mut outcome.0.lock().unwrap().static_visual_grasp_handoff {
+                    handoff["fixed_camera_pair_same_native_tick"]=true.into();
+                    handoff["secondary_camera_profile"]="arena_ego".into();
+                    handoff["secondary_capture_proposes_actuation"]=false.into();
+                }
                 return Ok(());
             }
             if let Some(evidence) = &mut runtime.owner_evidence {
