@@ -385,6 +385,13 @@ mod worker {
                         {
                             return Err("unbound fixed camera/marker calibration reply".into());
                         }
+                        if camera_profile == "auxiliary_grip_overview"
+                            && reply["current_box_palm_center_distance_m"]
+                                .as_f64()
+                                .is_none_or(|d| !d.is_finite() || !(0. ..=0.25).contains(&d))
+                        {
+                            return Err("current auxiliary RGB box is outside the bounded self FK grip region; owner remains paused".into());
+                        }
                         if let Some(geometry) = &config.task_geometry {
                             if reply["target_memory_used"] != true {
                                 validate_clearance_reply(&reply, observation, &geometry.sha256)?;

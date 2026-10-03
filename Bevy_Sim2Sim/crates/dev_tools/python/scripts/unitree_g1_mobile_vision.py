@@ -307,8 +307,9 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
             "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
             "target_bin_detected":any(d["marker_id"] == 21 for d in detections), "carried_box_detected":22 in by_id,
             "task_qualified":False}
-    if box_view_only:
-        result["box_view_only"] = True
+    if box_view_only or camera_profile == "auxiliary_grip_overview":
+        if box_view_only:
+            result["box_view_only"] = True
         if 22 in by_id:
             frames = original_self_body_frames(definition, state["positions"])
             midpoint = (frames[28][:3, 3] + frames[45][:3, 3]) * .5

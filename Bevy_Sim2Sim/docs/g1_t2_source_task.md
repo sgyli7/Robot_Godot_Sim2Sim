@@ -1374,3 +1374,20 @@ not actual RGB evidence. This entry executes no lowering, raising, restoration,
 post-carry visibility turn, navigation proposal or release. It grants no task
 qualification. The formal50Hz clock and all original physical properties remain
 unchanged.
+
+Fresh0238 supplies actual two-marker auxiliary RGB after four original VLA
+calls and664single50Hz integrations. All464post-grasp samples have hand-only
+box support; minimum upright0.994124 and active sim/wall0.998474, zero misses
+or Tick debt. Independent marker position errors are4.199mm(box) and4.489mm
+(bin). Original model input arrays match the four original-camera PNGs exactly.
+No target memory or approach/release is executed. Trace SHA256:
+`e14ac690dfbe284011d19e5e464ce1866f5c4e2c4c7ae910728199352b8535c9`.
+
+`g1_mobile_auxiliary_approach_diagnostic` is separately bounded to3150Ticks:
+one actual auxiliary two-marker observation binds the existing coarse waypoint
+(relative visual distance minus the declared0.65m reobservation margin), then
+one new current observation checks the completed carry boundary. The original
+transport arm posture is retained throughout. Auxiliary perception requires
+current box proximity<=0.25m to the measured self-FK palm midpoint; this remains
+a necessary visibility guard, not proof of secure grasp. There is no lowering,
+raising, restoration, extra visibility turn, final approach or release here.
