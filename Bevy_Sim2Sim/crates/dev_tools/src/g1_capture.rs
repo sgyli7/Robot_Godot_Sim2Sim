@@ -699,6 +699,11 @@ pub fn run_static_memory_place_observe_from_file(path:&Path,options:G1CaptureOpt
     run_from_file(path,options,CaptureMode::StaticMemoryPlaceObserve)
 }
 
+/// Current100Tick visual admission before the original second chunk closes fingers.
+pub fn run_static_pregrasp_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
+    run_from_file(path,options,CaptureMode::StaticPregrasp)
+}
+
 /// One third original chunk from fresh190Tick RGB after an unverified lift.
 pub fn run_static_unheld_regrasp_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
     run_from_file(path,options,CaptureMode::StaticUnheldRegrasp)
@@ -827,6 +832,7 @@ enum CaptureMode {
     StaticMemoryPlace,
     StaticMemoryPlaceObserve,
     StaticUnheldRegrasp,
+    StaticPregrasp,
     MobileWaitGrasp,
     MobileContinuousRelease,
     TaskLab,
@@ -857,7 +863,7 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::StaticMemoryPlace | Self::StaticMemoryPlaceObserve | Self::StaticUnheldRegrasp | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::StaticMemoryPlace | Self::StaticMemoryPlaceObserve | Self::StaticUnheldRegrasp | Self::StaticPregrasp | Self::TaskLab | Self::MobileCarry => None,
         }
     }
 }
@@ -1353,6 +1359,7 @@ pub(super) struct CaptureRuntime {
     static_memory_place: bool,
     static_memory_observe: bool,
     static_unheld_regrasp: bool,
+    static_pregrasp: bool,
     static_regrasp_started: bool,
     static_transfer_auxiliary: bool,
     static_transfer_placement: bool,
@@ -1635,12 +1642,13 @@ fn run_capture_owner(
     let mobile_carry = mode == CaptureMode::MobileCarry;
     let static_memory_observe = mode == CaptureMode::StaticMemoryPlaceObserve;
     let static_unheld_regrasp = mode == CaptureMode::StaticUnheldRegrasp;
+    let static_pregrasp = mode == CaptureMode::StaticPregrasp;
     let static_memory_place = matches!(mode,CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
     let static_transfer_placement = matches!(mode, CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
     let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
     let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
-    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
-    let static_visual_budget = if static_unheld_regrasp {230} else if static_memory_observe {840} else if static_memory_place { 715 } else if static_visual_transfer { 390 } else { 140 };
+    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp | CaptureMode::StaticPregrasp);
+    let static_visual_budget = if static_pregrasp {100} else if static_unheld_regrasp {230} else if static_memory_observe {840} else if static_memory_place { 715 } else if static_visual_transfer { 390 } else { 140 };
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
     let continuous = mode == CaptureMode::MobileContinuousRelease;
@@ -1655,7 +1663,7 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp | CaptureMode::StaticPregrasp)
             || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
@@ -1752,7 +1760,7 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp | CaptureMode::StaticPregrasp)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some() != static_visual_grasp
             || if static_visual_grasp {
@@ -1772,7 +1780,7 @@ fn run_capture_owner(
         && (static_marker_assets.is_none()
             || static_marker_vision.is_none()
             || policy.as_ref().is_none_or(|p| {
-                p.max_calls != if static_unheld_regrasp {3} else {2} || p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait
+                p.max_calls != if static_pregrasp {1} else if static_unheld_regrasp {3} else {2} || p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait
             })
             || !static_startup
             || options.ticks != static_visual_budget)
@@ -2337,6 +2345,7 @@ fn run_capture_owner(
             static_memory_place,
             static_memory_observe,
             static_unheld_regrasp,
+            static_pregrasp,
             static_regrasp_started: false,
             static_transfer_auxiliary,
             static_transfer_placement,
@@ -4932,8 +4941,8 @@ fn drive_capture(
         };
         if capture_boundary && !runtime.requested {
             if runtime.static_visual_grasp && !runtime.static_visual_transfer {
-                if latest.phase != G1WorkerPhase::Paused || latest.timing.total_integrations != 140 {
-                    return Err("static visual handoff did not reach its completed140Tick boundary".into());
+                if latest.phase != G1WorkerPhase::Paused || latest.timing.total_integrations != if runtime.static_pregrasp {100} else {140} {
+                    return Err("static visual handoff did not reach its fixed completed boundary".into());
                 }
                 if runtime.static_marker_activation_render_frame.is_none() {
                     marker_gate
@@ -4942,9 +4951,9 @@ fn drive_capture(
                         .enabled = true;
                     runtime.static_marker_activation_render_frame = Some(runtime.render_frames);
                     outcome.0.lock().unwrap().static_visual_grasp_handoff = Some(serde_json::json!({
-                        "phase":"two_original_unmarked_chunks_then_current_marker_rgb",
-                        "markers_activated_at_completed_tick":140,"unmarked_original_vla_calls":2,
-                        "first_original_action_tick":60,"current_observation_required_tick":140,
+                        "phase":if runtime.static_pregrasp {"one_original_chunk_then_preclosure_marker_rgb"} else {"two_original_unmarked_chunks_then_current_marker_rgb"},
+                        "markers_activated_at_completed_tick":if runtime.static_pregrasp {100} else {140},"unmarked_original_vla_calls":if runtime.static_pregrasp {1} else {2},
+                        "first_original_action_tick":60,"current_observation_required_tick":if runtime.static_pregrasp {100} else {140},
                         "geometric_correction_executed":false,"task_qualified":false,
                     }));
                     return Ok(());

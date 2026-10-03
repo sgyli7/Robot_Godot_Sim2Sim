@@ -478,3 +478,13 @@ The original first chunk ends at100with an open hand; the second chunk closes
 it. Current perception and geometry admission before closing are the next
 bounded question. Scratch0381 retains original/model pixels, full steps and
 the independent negative contact classification; all owned children are reaped.
+
+`g1_static_pregrasp_diagnostic` is a separate exact100Tick perception-only
+entry:60real startup ticks, one unchanged original40frame chunk from unmarked
+ArenaEgoRGB, then disclose the existing labels and observe before closing.
+Two render updates precede the new100Tick capture. The CPU port still requires
+both original targets through unchanged image gates; no geometric correction,
+second original block, grasp/release proof or Qwen action executes here.
+Its matching config requires exactly one original request. It tests whether
+current RGB/self geometry can admit a bounded preclosure adjustment; it is
+not a task success or an alternative score for the frozen140/840entries.
