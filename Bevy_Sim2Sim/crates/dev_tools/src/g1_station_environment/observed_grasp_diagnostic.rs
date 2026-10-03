@@ -32,6 +32,8 @@ struct Fixture {
     output: PathBuf,
     #[serde(default)]
     post_grasp_goal: Option<PinnedPostGoal>,
+    #[serde(default)]
+    profile_step_times: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,7 +127,12 @@ fn saved_observed_grasp_in_original_world() -> Result<(), String> {
     let (_, environment, _) = prepare(&scene, &identity, body.floor_contact_friction)?;
     body.startup_environment = Some(environment);
     let episode = config.body.episode_id();
-    let worker = StaticStartupWorker::spawn_static_startup(config).map_err(|e| e.to_string())?;
+    let worker = if f.profile_step_times {
+        StaticStartupWorker::spawn_static_startup_profiled(config)
+    } else {
+        StaticStartupWorker::spawn_static_startup(config)
+    }
+    .map_err(|e| e.to_string())?;
     let trace = worker.subscribe_steps(512).map_err(|e| e.to_string())?;
     let mut file = fs::OpenOptions::new()
         .write(true)

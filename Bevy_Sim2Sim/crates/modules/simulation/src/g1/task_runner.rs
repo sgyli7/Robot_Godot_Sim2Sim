@@ -335,6 +335,11 @@ pub struct ArenaTaskRunner {
 }
 
 impl ArenaTaskRunner {
+    #[cfg(feature="g1_constraint_diagnostic")]
+    pub(super) fn enable_static_hotpath_diagnostic(&mut self)->Result<(),RobotError> {
+        let ArenaBodyRunner::StaticAgile(body)=&mut self.body else {return Err(error("static profiling requires AGILE"));};
+        body.enable_hotpath_diagnostic()
+    }
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub(super) fn is_current_mobile_chunk(&self, command: &ArenaTaskCommand) -> bool {
         command.chunk.profile == TaskProfile::MobileBox

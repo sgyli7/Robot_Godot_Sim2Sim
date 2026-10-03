@@ -87,6 +87,11 @@ pub(super) struct StaticStartupRunner {
     observed_place: Option<super::static_observed_place::StaticObservedPlace>,
 }
 impl StaticStartupRunner {
+    pub(super) fn load_profiled(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        let mut runner = Self::load(config)?;
+        runner.owner.enable_static_hotpath_diagnostic()?;
+        Ok(runner)
+    }
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
         Self::load_profile(config, false)
     }

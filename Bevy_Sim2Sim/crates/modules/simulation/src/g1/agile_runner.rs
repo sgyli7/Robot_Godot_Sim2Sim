@@ -128,6 +128,8 @@ pub struct AgileJointLimit {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AgileStep {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotpath: Option<AgileHotpathTiming>,
     pub actuator_backend: AgileActuatorBackend,
     pub frame: G1BodyFrame,
     pub measurement: G1Measurement,
@@ -149,6 +151,16 @@ pub struct AgileStep {
     pub step_configuration: StepConfiguration,
 }
 
+/// Development wall measurements; never enter the body-policy observation.
+#[derive(Clone, Debug, Serialize)]
+pub struct AgileHotpathTiming {
+    pub state_and_body_policy_ns: u64,
+    pub actuator_ns: u64,
+    pub integration_and_snapshot_ns: u64,
+    pub body_and_task_evidence_ns: u64,
+    pub rapier: crate::RapierCounterSample,
+}
+
 /// Owns the only floor/robot world and the independent recurrent policy.
 /// Public snapshots are read-only. Any operational or snapshot error latches
 /// terminal failure; rebuilding is required even after a post-inference guard.
@@ -167,9 +179,20 @@ pub struct AgileRunner {
     /// At most one accepted real output survives a later guard/integration failure.
     last_inference: Option<(u64, AgileResult)>,
     halted: Cell<bool>,
+    hotpath_diagnostic: bool,
 }
 
 impl AgileRunner {
+    /// Explicit stage timers, enabled before the first physical Tick only.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn enable_hotpath_diagnostic(&mut self) -> Result<(), RobotError> {
+        if self.simulation.integration_count != 0 {
+            return Err(error("AGILE profiling must precede its physical clock"));
+        }
+        self.hotpath_diagnostic = true;
+        self.simulation.enable_rapier_counters();
+        Ok(())
+    }
     pub fn load(config: &AgileRunnerConfig) -> Result<Self, RobotError> {
         let default_positions = config.validate()?;
         let parameters = source_parameters()?;
@@ -284,6 +307,7 @@ impl AgileRunner {
             motor_update_count: 0,
             last_inference: None,
             halted: Cell::new(false),
+            hotpath_diagnostic: false,
         };
         runner.frame()?;
         runner.measurement()?;
@@ -504,9 +528,11 @@ impl AgileRunner {
     ) -> Result<AgileStep, RobotError> {
         guard()?;
         validate_clock(self.simulation.configuration())?;
+        let profile_start = self.hotpath_diagnostic.then(std::time::Instant::now);
         let state = self.state()?;
         self.check_source_positions(&state.positions)?;
         let inference = self.policy.infer(&state, command)?;
+        let policy_end = profile_start.map(|_| std::time::Instant::now());
         self.last_inference = Some((self.simulation.integration_count, inference.clone()));
         guard()?;
         let next_motor_update = self
@@ -519,8 +545,10 @@ impl AgileRunner {
             &self.parameters,
         )?;
         self.motor_update_count = next_motor_update;
+        let actuator_end = profile_start.map(|_| std::time::Instant::now());
         // Exactly one existing 20 ms integration, with no external PD contributions.
         let snapshot = self.simulation.step_with_torques(&[]).map_err(error)?;
+        let integration_end = profile_start.map(|_| std::time::Instant::now());
         if snapshot.integration_count != inference.inference_count
             || snapshot.torque_update_count != inference.inference_count
             || self.motor_update_count != inference.inference_count
@@ -539,11 +567,26 @@ impl AgileRunner {
             return Err(error("AGILE frame/measurement boundary mismatch"));
         }
         let root = &self.simulation.world.bodies[self.assembly.root_handle()];
+        let task_objects = self.task_object_frame()?;
+        let evidence_end = profile_start.map(|_| std::time::Instant::now());
+        let hotpath = profile_start.map(|start| {
+            let ns = |duration: std::time::Duration| {
+                u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+            };
+            AgileHotpathTiming {
+                state_and_body_policy_ns: ns(policy_end.unwrap() - start),
+                actuator_ns: ns(actuator_end.unwrap() - policy_end.unwrap()),
+                integration_and_snapshot_ns: ns(integration_end.unwrap() - actuator_end.unwrap()),
+                body_and_task_evidence_ns: ns(evidence_end.unwrap() - integration_end.unwrap()),
+                rapier: self.simulation.rapier_counter_sample(),
+            }
+        });
         Ok(AgileStep {
+            hotpath,
             actuator_backend: AgileActuatorBackend::NativeForceBased,
             frame,
             measurement: measurement.clone(),
-            task_objects: self.task_object_frame()?,
+            task_objects,
             native_static_environment: self.native_static_environment.clone(),
             source_t1_finger_material_bodies: self.source_t1_finger_material_bodies.clone(),
             inference,
