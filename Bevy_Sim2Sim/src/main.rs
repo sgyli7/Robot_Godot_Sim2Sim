@@ -44,6 +44,7 @@ fn run() -> Result<(), String> {
         arguments.scene.as_deref(),
         Some(
             "g1_camera_diagnostic"
+                | "g1_mobile_wait_grasp_diagnostic"
                 | "g1_task_lab"
                 | "g1_mobile_carry_diagnostic"
                 | "g1_mobile_assist_diagnostic"
@@ -222,6 +223,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     };
     let receipt = if interactive {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
+    } else if arguments.scene.as_deref() == Some("g1_mobile_wait_grasp_diagnostic") {
+        dev_tools_minigame::g1_capture::run_mobile_wait_grasp_from_file(&path, options)
     } else if mobile_carry {
         dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
     } else if mobile_auxiliary_release {
@@ -356,7 +359,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification or G1 diagnostic directory\n\
                      --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
-                     --g1-ticks N    camera 0..400 (standing max150); mobile carry1000/1500; assisted carry maximum2050\n\
+                     --g1-ticks N    camera 0..400 (standing max150); mobile waited grasp1000; mobile carry1000/1500; assisted carry maximum2050\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -406,6 +409,10 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
     if options.scene.as_deref() == Some("g1_mobile_carry_diagnostic") {
         if !matches!(options.g1_ticks, Some(1000 | 1500)) {
             return Err("mobile carry scene requires --g1-ticks1000 or1500".into());
+        }
+    } else if options.scene.as_deref() == Some("g1_mobile_wait_grasp_diagnostic") {
+        if options.g1_ticks != Some(1000) {
+            return Err("mobile waited grasp requires --g1-ticks1000 as its finite maximum".into());
         }
     } else if options.scene.as_deref() == Some("g1_mobile_assist_diagnostic") {
         if options.g1_ticks != Some(2050) {
@@ -787,6 +794,37 @@ mod tests {
         assert!(parse_arguments(["--frames".to_owned(), "0".to_owned()].into_iter()).is_err());
     }
 
+    #[test]
+    fn waited_mobile_grasp_is_an_explicit_finite_scene() {
+        assert!(
+            parse_arguments(
+                [
+                    "--scene",
+                    "g1_mobile_wait_grasp_diagnostic",
+                    "--g1-ticks",
+                    "1000"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["200", "999", "1001", "3150"] {
+            assert!(
+                parse_arguments(
+                    [
+                        "--scene",
+                        "g1_mobile_wait_grasp_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
+        }
+    }
     #[test]
     fn longer_mobile_budget_cannot_escape_its_scene_or_depend_on_argument_order() {
         for ticks in ["1000", "1500"] {

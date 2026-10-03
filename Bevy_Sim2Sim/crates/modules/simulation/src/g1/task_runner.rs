@@ -336,6 +336,13 @@ pub struct ArenaTaskRunner {
 
 impl ArenaTaskRunner {
     #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn is_current_mobile_chunk(&self, command: &ArenaTaskCommand) -> bool {
+        command.chunk.profile == TaskProfile::MobileBox
+            && self.executor.accepted.as_deref() == Some(command.chunk.as_ref())
+            && self.executor.accepted_schedule == command.scheduled_start_sim_ns
+            && self.executor.pending.is_none()
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
     pub(super) fn executed_mobile_command(
         &self,
         execution: &ArenaTaskExecution,

@@ -1738,3 +1738,34 @@ already executed while an earlier chunk is active. The scheduling regression
 uses deliberately different pending targets and verifies that both the current
 and replacement command identities stay correct. This does not change original
 normalization, action bytes,50frame horizons or20ms action intervals.
+
+
+Entry0273separates a maximum100Tick settling allowance from up to100additional
+image/model waiting Ticks, as a finite200Tick traditional wait. All four frozen
+prefixes complete this limit with an automatic owner transition, preserve every
+previous100wait-state f32bit, and establish a continuous stationary interval
+through their remaining budget. The postgrasp fourth prefix retains hand-only
+support for all200wait samples. Total mechanical integrations are1300; new RGB
+and fresh VLA calls are zero. These are mechanical evidence, not autonomous
+success. Validation passes77simulation tests/39ignored,42development tests/
+2ignored,13CLI tests and default compilation.
+
+The separate `g1_mobile_wait_grasp_diagnostic` live entry requires a finite
+maximum1000Ticks, the original T2 camera/material/light/body/scene identities,
+four original50-frame chunks, and the existing4PGS candidate. It has no printed
+fiducials or auxiliary camera. Each chunk transitions on the next real owner
+boundary to explicitly recorded zero-navigation standing; no expired VLA frame
+is held or repeated. A replacement is admitted at its actual owner time only
+from the current consecutive stationary interval. Its image identity/time is
+unchanged, and no previously assigned future action slot is rebased. Readiness,
+waiting, original VLA frames and inference calls remain separate counters.
+Waiting expiry, old/foreign images, motion during inference and service failure
+produce an explicit stop/pause. This entry is a continuous timing/grasp preflight,
+not Qwen, scientific-station, formal8/10or full-task qualification.
+
+```bash
+cargo build --bin bevy_sim2sim --features dev_tools,dev_tools_minigame/g1_constraint_diagnostic,dev_tools_minigame/g1_source_lighting
+# Use a frozen matched source capture JSON with4calls and no prefetch field;
+# the original local N1.6service must already be loaded on its declared endpoint.
+/path/to/bevy_sim2sim --scene g1_mobile_wait_grasp_diagnostic --robot g1 --g1-config /path/to/frozen.json --g1-ticks 1000 --output /path/to/new_evidence
+```

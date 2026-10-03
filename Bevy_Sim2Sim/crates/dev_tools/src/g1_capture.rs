@@ -301,6 +301,9 @@ struct LivePolicyRuntime {
     max_calls: u32,
     next_boundary_tick: u64,
     prefetch_after_ticks: Option<u32>,
+    wait_after_chunks: bool,
+    wait_image_min_tick: Option<u64>,
+    completed: bool,
 }
 
 /// Fixed development windows preserve each original decoder's full horizon.
@@ -576,6 +579,15 @@ pub fn run_capture_from_file(
     run_from_file(path, options, CaptureMode::Camera)
 }
 
+/// Four fresh original chunks separated by explicit native standing waits.
+/// This source-scene timing preflight has no Qwen/task qualification.
+pub fn run_mobile_wait_grasp_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileWaitGrasp)
+}
+
 /// Two fixed1000/1500Tick original mobile carry-stage budgets. This does
 /// not widen the ordinary camera/static-task budgets or qualify task execution.
 pub fn run_mobile_carry_from_file(
@@ -676,6 +688,7 @@ pub fn run_mobile_auxiliary_release_from_file(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
+    MobileWaitGrasp,
     TaskLab,
     MobileCarry,
     MobileAssist,
@@ -693,6 +706,7 @@ enum CaptureMode {
 impl CaptureMode {
     fn assisted_tick_limit(self) -> Option<u32> {
         match self {
+            Self::MobileWaitGrasp => Some(1000),
             Self::MobileAssist => Some(2050),
             Self::MobileScan | Self::MobileAuxiliaryView => Some(1050),
             Self::MobileTargetView => Some(1300),
@@ -810,6 +824,7 @@ pub struct G1CaptureReceipt {
     pub owner_step_trace_dropped: u64,
     pub owner_step_trace_complete: bool,
     pub diagnostic_prefetch_after_ticks: Option<u32>,
+    pub explicit_standing_wait_maximum_ticks_per_chunk: Option<u32>,
     pub prefetch_discarded_image_stamps: Vec<serde_json::Value>,
     pub prefetch_image_events: Vec<serde_json::Value>,
     pub final_camera_progress: Option<rendering_minigame::g1_camera::G1CaptureProgress>,
@@ -940,6 +955,7 @@ impl G1CaptureReceipt {
             owner_step_trace_dropped: 0,
             owner_step_trace_complete: false,
             diagnostic_prefetch_after_ticks: None,
+            explicit_standing_wait_maximum_ticks_per_chunk: None,
             prefetch_discarded_image_stamps: Vec::new(),
             prefetch_image_events: Vec::new(),
             final_camera_progress: None,
@@ -1328,7 +1344,8 @@ fn run_capture_owner(
         mode == CaptureMode::MobileTargetApproach || raising_view || auxiliary_view;
     let target_view = mode == CaptureMode::MobileTargetView || (visual_approach && !auxiliary_view);
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
-    let assisted_carry = mode == CaptureMode::MobileAssist || scan_only;
+    let waited_grasp = mode == CaptureMode::MobileWaitGrasp;
+    let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     let mobile_prefetch = matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
         && policy
             .as_ref()
@@ -1374,7 +1391,7 @@ fn run_capture_owner(
             || diagnostic_source_rect_lighting.is_none()
             || !diagnostic_aces_fitted
             || task_lab.is_some()
-            || (scan_only && task_visual.is_none())
+            || ((scan_only || waited_grasp) && task_visual.is_none())
             || mobile_assist.as_ref().is_some_and(|c| {
                 !c.heading_yaw_source_rad.is_finite()
                     || c.heading_yaw_source_rad.abs() > std::f32::consts::PI
@@ -1393,7 +1410,7 @@ fn run_capture_owner(
                         .is_some_and(|l| l.distance_m != 0.18 || l.duration_ticks != 150)
             }))
     {
-        return Err("mobile development entry requires its exact 2050/1050/1300/3150 Tick budget, four fresh original grasp chunks and matched source scene/light/4PGS profile; manual carry is exactly 2m".into());
+        return Err("mobile development entry requires its exact 1000/2050/1050/1300/3150 Tick budget, four fresh original grasp chunks and matched source scene/light/4PGS profile; manual carry is exactly 2m".into());
     }
     if let Some(vision) = mobile_scan.as_ref().and_then(|c| c.vision.as_ref()) {
         vision.validate()?;
@@ -1619,6 +1636,9 @@ fn run_capture_owner(
                 max_calls: policy.max_calls,
                 next_boundary_tick: 0,
                 prefetch_after_ticks: policy.prefetch_after_ticks,
+                wait_after_chunks: waited_grasp,
+                wait_image_min_tick: None,
+                completed: false,
             })
         }
         (_, None) => None,
@@ -1680,7 +1700,9 @@ fn run_capture_owner(
         receipt.diagnostic_prefetch_after_ticks = live_policy
             .as_ref()
             .and_then(|live| live.prefetch_after_ticks);
-        receipt.pauses_for_camera_and_policy = receipt.diagnostic_prefetch_after_ticks.is_none();
+        receipt.explicit_standing_wait_maximum_ticks_per_chunk = waited_grasp.then_some(200);
+        receipt.pauses_for_camera_and_policy =
+            receipt.diagnostic_prefetch_after_ticks.is_none() && !waited_grasp;
     }
     if mobile_carry {
         outcome.0.lock().unwrap().scope =
@@ -1695,6 +1717,9 @@ fn run_capture_owner(
     }
     if interactive {
         outcome.0.lock().unwrap().scope = "native_local_qwen_interactive_lab_no_qualified_executor";
+    }
+    if waited_grasp {
+        outcome.0.lock().unwrap().scope = "native_four_fresh_original_grasp_chunks_with_explicit_physical_standing_waits_not_qualified";
     }
     let worker = config.spawn(
         predictive_limit_diagnostic,
@@ -1940,6 +1965,7 @@ mod budget_tests {
     #[test]
     fn both_startup_guards_share_the_explicit_stage_budget() {
         for (mode, budget) in [
+            (CaptureMode::MobileWaitGrasp, 1000),
             (CaptureMode::MobileAssist, 2050),
             (CaptureMode::MobileScan, 1050),
             (CaptureMode::MobileTargetView, 1300),
@@ -3342,6 +3368,13 @@ fn drive_live_policy(
     if runtime
         .live_policy
         .as_ref()
+        .is_some_and(|live| live.wait_after_chunks)
+    {
+        return drive_waited_mobile_policy(runtime, outcome, port);
+    }
+    if runtime
+        .live_policy
+        .as_ref()
         .is_some_and(|live| live.prefetch_after_ticks.is_some())
     {
         return drive_prefetched_policy(runtime, outcome, port);
@@ -3458,6 +3491,171 @@ fn drive_live_policy(
         }
         submit_live_observation(live, frame, &runtime.options.output)?;
         runtime.requested = false;
+        outcome.0.lock().unwrap().live_policy_inference_calls += 1;
+    }
+    Ok(false)
+}
+
+#[cfg(not(feature = "g1_constraint_diagnostic"))]
+fn drive_waited_mobile_policy(
+    _: &mut CaptureRuntime,
+    _: &CaptureOutcome,
+    _: &G1CameraPort,
+) -> Result<bool, String> {
+    Err("waited mobile grasp requires its explicit diagnostic feature".into())
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn drive_waited_mobile_policy(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    use simulation_minigame::g1::{
+        mobile_assist::{MobileAssistCommand, MobileAssistExecution},
+        worker::TimedCommand,
+    };
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("waited grasp owner snapshot absent")?;
+    let live = runtime
+        .live_policy
+        .as_mut()
+        .ok_or("waited grasp model worker absent")?;
+    let tick = latest.timing.episode_integrations;
+    if tick > u64::from(runtime.options.ticks) || latest.phase == G1WorkerPhase::Failed {
+        return Err(latest
+            .reason
+            .clone()
+            .unwrap_or("waited grasp owner failed or exceeded its total budget".into()));
+    }
+    let waiting = latest
+        .assist_step
+        .as_ref()
+        .and_then(|step| match &step.execution {
+            MobileAssistExecution::ClassicalModelWait { goal, waiting } => Some((goal, waiting)),
+            _ => None,
+        });
+    if tick > 0 && latest.phase == G1WorkerPhase::Paused {
+        if live.submitted_chunks == 4
+            && waiting.is_some_and(|(g, w)| g.request_id == 4 && w.completed)
+        {
+            live.completed = true;
+            return Ok(true);
+        }
+        return Err(
+            "finite standing wait expired before replacement; owner explicitly paused".into(),
+        );
+    }
+    if let Some(reply) = live.worker.try_take_reply() {
+        let initial = live.submitted_chunks == 0;
+        if live.pending.take() != Some(reply.observation)
+            || reply.profile != TaskProfile::MobileBox
+            || reply.sequence_id + 1 != live.next_sequence
+            || (initial && (tick != 0 || latest.phase != G1WorkerPhase::Paused))
+            || (!initial
+                && !waiting.is_some_and(|(g, w)| {
+                    g.request_id == u64::from(live.submitted_chunks)
+                        && w.observation_ready
+                        && !w.completed
+                }))
+        {
+            return Err(
+                "waited original reply is foreign or no longer in a stationary waiting interval"
+                    .into(),
+            );
+        }
+        let chunk = reply
+            .result
+            .map_err(|e| format!("waited original policy: {e:?}"))?;
+        if chunk.frames.len() != 50 {
+            return Err("waited original decoder changed its50-frame horizon".into());
+        }
+        fs::write(
+            runtime
+                .options
+                .output
+                .join(format!("live_reply_{:04}.json", reply.sequence_id)),
+            serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("waited grasp lost its unique native owner".into());
+        };
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: u64::from(runtime.options.ticks) * ARENA_ACTION_PERIOD_NS,
+                valid_until_wall: Instant::now() + Duration::from_secs(6),
+                command: MobileAssistCommand::OriginalVlaThenWait(ArenaTaskCommand {
+                    chunk: Arc::new(chunk),
+                    scheduled_start_sim_ns: None,
+                }),
+            })
+            .map_err(|e| e.to_string())?;
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.live_policy_successes += 1;
+        receipt.live_action_chunks.push(serde_json::json!({
+            "sequence_id":reply.sequence_id,"observation":reply.observation,"inference_ms":reply.elapsed.as_millis(),
+            "arrival_display_tick":tick,"execution_start":"recorded_by_actual_owner_step",
+            "frame_count":50,"original_frame_interval_ns":ARENA_ACTION_PERIOD_NS,
+            "following_classical_wait_maximum_ticks":200,"observation_restamped":false,
+            "future_slot_rebased":false,"same_owner_world":true,"task_qualified":false,
+        }));
+        live.submitted_chunks += 1;
+        return Ok(false);
+    }
+    if live.pending.is_some() || live.submitted_chunks == 4 {
+        return Ok(false);
+    }
+    let initial = live.submitted_chunks == 0;
+    if !initial
+        && !waiting.is_some_and(|(g, w)| {
+            g.request_id == u64::from(live.submitted_chunks) && w.observation_ready && !w.completed
+        })
+    {
+        return Ok(false);
+    }
+    if !runtime.requested {
+        let sequence = port.request_physics_frame(runtime.episode_id, tick)?;
+        live.wait_image_min_tick = Some(tick);
+        runtime.requested = true;
+        let mut receipt = outcome.0.lock().unwrap();
+        if receipt.prefetch_image_events.len() >= 16 {
+            return Err("waited image event budget exhausted".into());
+        }
+        receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_request","capture_sequence":sequence,"minimum_physics_tick":tick,"submitted_chunks":live.submitted_chunks,"runtime_elapsed_ms":runtime.started.elapsed().as_millis()}));
+        return Ok(false);
+    }
+    if let Some(frame) = port.take() {
+        let frame = frame?;
+        let frame_tick = frame.stamp.source_ticks[0];
+        if frame.stamp.source != CameraPoseSource::PhysicsBody
+            || frame.stamp.episode_id != runtime.episode_id
+            || frame.stamp.source_ticks != [frame_tick; 2]
+            || frame.stamp.sim_time_ns != frame_tick * ARENA_ACTION_PERIOD_NS
+            || frame_tick
+                < live
+                    .wait_image_min_tick
+                    .ok_or("standing image minimum boundary absent")?
+            || frame_tick > tick
+            || (initial && frame_tick != 0)
+        {
+            return Err(
+                "standing RGB/self stamp is foreign, pipelined old or future; no restamping".into(),
+            );
+        }
+        {
+            let mut receipt = outcome.0.lock().unwrap();
+            if receipt.prefetch_image_events.len() >= 16 {
+                return Err("waited image event budget exhausted".into());
+            }
+            receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_readback_consumed","capture_sequence":frame.stamp.capture_sequence,"actual_image_tick":frame_tick,"display_tick":tick,"captured_at_unix_ms":frame.stamp.captured_at_unix_ms,"copy_encoded_at_unix_ms":frame.stamp.copy_encoded_at_unix_ms,"readback_completed_at_unix_ms":frame.stamp.readback_completed_at_unix_ms}));
+        }
+        submit_live_observation(live, frame, &runtime.options.output)?;
+        runtime.requested = false;
+        live.wait_image_min_tick = None;
         outcome.0.lock().unwrap().live_policy_inference_calls += 1;
     }
     Ok(false)
@@ -3836,7 +4034,8 @@ fn drive_capture(
         // camera Tick identities. A moving display may update before this
         // Update-stage readiness read; do not wait for a stationary snapshot.
         let prefetch_running = runtime.live_policy.as_ref().is_some_and(|live| {
-            live.prefetch_after_ticks.is_some() && latest.timing.episode_integrations > 0
+            (live.prefetch_after_ticks.is_some() || live.wait_after_chunks)
+                && latest.timing.episode_integrations > 0
         });
         if !render_ready && !prefetch_running {
             return Ok(());
@@ -3853,6 +4052,12 @@ fn drive_capture(
             return Ok(());
         }
         let capture_boundary = if runtime
+            .live_policy
+            .as_ref()
+            .is_some_and(|live| live.wait_after_chunks && live.completed)
+        {
+            latest.phase == G1WorkerPhase::Paused
+        } else if runtime
             .mobile_assist
             .as_ref()
             .is_some_and(|assist| assist.completed)
@@ -3893,7 +4098,9 @@ fn drive_capture(
             receipt.task_visual_status = task_status.as_deref().cloned();
             receipt.background_visual_status = background_status.as_deref().cloned();
             if latest.phase != G1WorkerPhase::Failed {
-                receipt.physics_outcome = if runtime
+                receipt.physics_outcome = if runtime.live_policy.as_ref().is_some_and(|live| live.wait_after_chunks && live.completed) {
+                    "four_fresh_original_chunks_and_explicit_standing_waits_complete_not_task_qualified".into()
+                } else if runtime
                     .mobile_assist
                     .as_ref()
                     .is_some_and(|assist| assist.completed)

@@ -33,6 +33,9 @@ use super::{
 #[derive(Clone, Debug)]
 pub enum MobileAssistCommand {
     OriginalVla(ArenaTaskCommand),
+    /// Original50frames, then a separately recorded traditional standing wait.
+    /// The owner transitions without pausing or repeating a VLA frame.
+    OriginalVlaThenWait(ArenaTaskCommand),
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
     ClassicalReobserve(MobileScanGoal),
@@ -47,7 +50,7 @@ pub enum MobileAssistCommand {
 impl MobileAssistCommand {
     pub(crate) fn validate(&self) -> Result<(), RobotError> {
         match self {
-            Self::OriginalVla(command) => {
+            Self::OriginalVla(command) | Self::OriginalVlaThenWait(command) => {
                 command.validate()?;
                 if command.chunk.profile != TaskProfile::MobileBox {
                     return Err(invalid("assisted mobile owner rejects static VLA"));
@@ -342,10 +345,56 @@ impl MobileAssistRunner {
     ) -> Result<MobileAssistStep, RobotError> {
         guard()?;
         command.validate()?;
-        if !matches!(command, MobileAssistCommand::ClassicalModelWait(_)) {
+        if !matches!(
+            command,
+            MobileAssistCommand::ClassicalModelWait(_)
+                | MobileAssistCommand::OriginalVlaThenWait(_)
+        ) {
             self.waiting = None;
         }
         match command {
+            MobileAssistCommand::OriginalVlaThenWait(command) => {
+                if command.scheduled_start_sim_ns.is_some() {
+                    return Err(invalid(
+                        "waited VLA uses current owner admission, not a future action slot",
+                    ));
+                }
+                let state = self.owner.measurement()?;
+                if let Some(previous) = &self.last_vla_execution {
+                    if command.chunk.sequence_id == previous.sequence_id {
+                        // Compare against the accepted original chunk as well;
+                        // an equal sequence cannot mutate it during standing.
+                        if !self.owner.is_current_mobile_chunk(command) {
+                            return Err(invalid("waited original observation identity changed"));
+                        }
+                        if previous.frame_index + 1
+                            == profile_contract(TaskProfile::MobileBox).action_horizon
+                        {
+                            let goal = self.waiting.as_ref().map(|w| w.goal().clone()).unwrap_or(
+                                MobileWaitGoal {
+                                    episode_id: state.episode_id,
+                                    request_id: previous.sequence_id,
+                                    execution_start_sim_ns: state.sim_time_ns,
+                                    duration_ticks: 200,
+                                },
+                            );
+                            return self
+                                .step_inner(&MobileAssistCommand::ClassicalModelWait(goal), guard);
+                        }
+                    } else if self.waiting.as_ref().is_none_or(|w| {
+                        !w.admits_image(&state, command.chunk.observation.sim_time_ns)
+                    }) {
+                        return Err(invalid(
+                            "replacement VLA image is outside the current stationary waiting interval",
+                        ));
+                    }
+                } else if state.source_tick != 0 || command.chunk.observation.sim_time_ns != 0 {
+                    return Err(invalid(
+                        "first waited VLA requires the real zero-Tick image",
+                    ));
+                }
+                self.step_inner(&MobileAssistCommand::OriginalVla(command.clone()), guard)
+            }
             MobileAssistCommand::ClassicalModelWait(goal) => {
                 let state = self.owner.measurement()?;
                 if self.waiting.is_none() {
@@ -767,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "frozen original1..4chunk prefix then50/100explicit waiting Ticks;0freshVLA/renderer work"]
+    #[ignore = "frozen original1..4chunk prefix then50/100/200explicit waiting Ticks;0freshVLA/renderer work"]
     fn real_mobile_model_wait_diagnostic() -> Result<(), RobotError> {
         let config: ArenaTaskRunnerConfig =
             serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
@@ -783,10 +832,13 @@ mod tests {
             .map(|v| v.parse::<u32>().map_err(|e| invalid(e.to_string())))
             .transpose()?
             .unwrap_or(50);
+        let automatic_handoff =
+            std::env::var("G1_MOBILE_WAIT_AUTOMATIC_HANDOFF").as_deref() == Ok("1");
         if sequence.schema != "g1_saved_native_mobile_action_sequence_v1"
             || sequence.chunks.len() != 4
             || !(1..=4).contains(&prefix)
-            || ![50, 100].contains(&wait_ticks)
+            || ![50, 100, 200].contains(&wait_ticks)
+            || (automatic_handoff && wait_ticks != 200)
         {
             return Err(invalid(
                 "waiting diagnostic requires an exact original1..4chunk prefix",
@@ -801,18 +853,26 @@ mod tests {
             .map_err(|e| invalid(e.to_string()))?;
         let mut owner = MobileAssistRunner::load(&config)?;
         let mut records = 0;
+        let mut automatic_command = None;
         let result = (|| -> Result<(), RobotError> {
-            for mut chunk in sequence.chunks.into_iter().take(prefix) {
+            for (index, mut chunk) in sequence.chunks.into_iter().take(prefix).enumerate() {
                 // Only saved fixture wall freshness is renewed. Original image
                 // identity and simulation acquisition time remain unchanged.
                 chunk.observation.captured_at_unix_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|e| invalid(e.to_string()))?
                     .as_millis() as u64;
-                let command = MobileAssistCommand::OriginalVla(ArenaTaskCommand {
+                let original = ArenaTaskCommand {
                     chunk: Arc::new(chunk),
                     scheduled_start_sim_ns: None,
-                });
+                };
+                let command = if automatic_handoff && index + 1 == prefix {
+                    automatic_command =
+                        Some(MobileAssistCommand::OriginalVlaThenWait(original.clone()));
+                    MobileAssistCommand::OriginalVla(original)
+                } else {
+                    MobileAssistCommand::OriginalVla(original)
+                };
                 for _ in 0..50 {
                     let step = owner.step_with_guard(&command, &mut || Ok(()))?;
                     serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
@@ -821,12 +881,14 @@ mod tests {
                 }
             }
             let state = owner.measurement()?;
-            let command = MobileAssistCommand::ClassicalModelWait(MobileWaitGoal {
-                episode_id: state.episode_id,
-                request_id: prefix as u64,
-                execution_start_sim_ns: state.sim_time_ns,
-                duration_ticks: wait_ticks,
-            });
+            let command = automatic_command.unwrap_or(MobileAssistCommand::ClassicalModelWait(
+                MobileWaitGoal {
+                    episode_id: state.episode_id,
+                    request_id: prefix as u64,
+                    execution_start_sim_ns: state.sim_time_ns,
+                    duration_ticks: wait_ticks,
+                },
+            ));
             for tick in 0..wait_ticks {
                 let step = owner.step_with_guard(&command, &mut || Ok(()))?;
                 assert_eq!(owner.completed_skill(), tick + 1 == wait_ticks);
@@ -845,6 +907,7 @@ mod tests {
             "actual_body_policy_inferences":counts.successful_inference_count,"fresh_vla_calls":0,
             "new_current_camera_used":false,"mechanical_owner_wait_clock_not_image_stamp":true,
             "saved_fixture_wall_age_renewed":true,"world_or_contact_truth_input":false,
+            "automatic_owner_handoff_without_pause":automatic_handoff,
             "completed":result.is_ok(),"error":result.as_ref().err().map(ToString::to_string),
         })).map_err(|e|invalid(e.to_string()))?).map_err(|e|invalid(e.to_string()))?;
         result

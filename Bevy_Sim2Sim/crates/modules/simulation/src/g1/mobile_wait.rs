@@ -24,14 +24,14 @@ impl MobileWaitGoal {
         if self.episode_id == 0
             || self.request_id == 0
             || self.execution_start_sim_ns % 20_000_000 != 0
-            || !(1..=100).contains(&self.duration_ticks)
+            || !(1..=200).contains(&self.duration_ticks)
             || self
                 .execution_start_sim_ns
                 .checked_add(u64::from(self.duration_ticks) * 20_000_000)
                 .is_none()
         {
             return Err(invalid(
-                "waiting requires a current self-owner identity and at most100Ticks",
+                "waiting requires a current self-owner identity and at most200Ticks",
             ));
         }
         Ok(())
@@ -89,6 +89,29 @@ impl MobileModelWaiting {
     }
     pub fn completed(&self) -> bool {
         self.ticks == self.goal.duration_ticks
+    }
+
+    /// An image keeps its acquisition clock. Only the current consecutive
+    /// stationary interval may supply a replacement original action chunk.
+    pub fn admits_image(&self, state: &G1Measurement, image_sim_ns: u64) -> bool {
+        validate_self(state).is_ok()
+            && state.episode_id == self.goal.episode_id
+            && state.source_tick == self.next_tick
+            && self.stable_velocity_ticks >= 20
+            && state
+                .root_velocity_source
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                .sqrt()
+                <= 0.03
+            && image_sim_ns % 20_000_000 == 0
+            && image_sim_ns <= state.sim_time_ns
+            && image_sim_ns
+                >= self
+                    .next_tick
+                    .saturating_sub(u64::from(self.stable_velocity_ticks))
+                    * 20_000_000
     }
 
     pub fn update(&mut self, state: &G1Measurement) -> Result<MobileWaitStep, RobotError> {
@@ -263,9 +286,25 @@ mod tests {
             assert_eq!(step.completed, tick == 99);
         }
         let mut goal = w.goal().clone();
-        goal.duration_ticks = 101;
+        goal.duration_ticks = 201;
         assert!(goal.validate().is_err());
         goal.duration_ticks = 100;
         assert!(MobileModelWaiting::new(goal, &state(51), G1Command::default()).is_err());
+    }
+
+    #[test]
+    fn replacement_image_must_belong_to_current_stationary_interval() {
+        let mut w = waiting();
+        for tick in 50..70 {
+            w.update(&state(tick)).unwrap();
+        }
+        assert!(w.admits_image(&state(70), 65 * 20_000_000));
+        assert!(!w.admits_image(&state(70), 49 * 20_000_000));
+        assert!(!w.admits_image(&state(70), 71 * 20_000_000));
+        let mut moved = state(70);
+        moved.root_velocity_source[0] = 0.04;
+        assert!(!w.admits_image(&moved, 65 * 20_000_000));
+        w.update(&moved).unwrap();
+        assert!(!w.admits_image(&state(71), 65 * 20_000_000));
     }
 }
