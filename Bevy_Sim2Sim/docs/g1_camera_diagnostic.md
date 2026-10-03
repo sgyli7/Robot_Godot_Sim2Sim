@@ -446,3 +446,22 @@ reap their owned model/app/CPU children. Scratch0376–0380 retain the positive
 physical case, failed precision comparisons and correct blocked-grasp case.
 Recovery and native-default validation remain outstanding; no8/10 score is
 claimed.
+
+`g1_static_unheld_regrasp_diagnostic` is a distinct exact230Tick development
+probe with exactly three original N1.7 requests. It preserves the two original
+unmarked chunks, initial140localization and finite50Tick lift. Only this entry
+may consume a missing-apple190result as a failed visual lift. It then hides the
+public labels, restores ArenaEgo, waits two render updates and captures a new
+actual190Tick image for the third original40frame chunk. No image is restamped
+or edited. The sole owner accepts the separate `OriginalRegrasp` command only
+at this incomplete lift boundary, retaining all recurrent body/physical state.
+It rejects wrong episodes, times, profiles, sequences, horizons, scheduling,
+ticks outside190..229, and any subsequent transfer. The existing original
+whole-chunk action, force and joint-limit validation remains in force.
+At230, the probe discloses labels and restores the same fixed near-table view
+for independent inspection, then ends. A verified initial lift is not retried.
+Missing-target results remain fail-closed in the ordinary placement route.
+This finite probe tests original-strategy recovery; it does not grant a
+recovered grasp, geometric continuation, arbitrary-goal capability or formal
+task success. Use `--scene g1_static_unheld_regrasp_diagnostic --g1-ticks230`
+with a matching three-call config and unique output directory.

@@ -50,6 +50,7 @@ fn run() -> Result<(), String> {
                 | "g1_static_visual_transfer_placement_diagnostic"
                 | "g1_static_memory_place_diagnostic"
                 | "g1_static_memory_place_observe_diagnostic"
+                | "g1_static_unheld_regrasp_diagnostic"
                 | "g1_mobile_wait_grasp_diagnostic"
                 | "g1_mobile_continuous_release_diagnostic"
                 | "g1_task_lab"
@@ -229,7 +230,9 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
             },
         ),
     };
-    let receipt = if arguments.scene.as_deref() == Some("g1_static_memory_place_observe_diagnostic") {
+    let receipt = if arguments.scene.as_deref() == Some("g1_static_unheld_regrasp_diagnostic") {
+        dev_tools_minigame::g1_capture::run_static_unheld_regrasp_from_file(&path, options)
+    } else if arguments.scene.as_deref() == Some("g1_static_memory_place_observe_diagnostic") {
         dev_tools_minigame::g1_capture::run_static_memory_place_observe_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_static_memory_place_diagnostic") {
         dev_tools_minigame::g1_capture::run_static_memory_place_from_file(&path, options)
@@ -375,7 +378,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_static_visual_grasp_diagnostic, g1_static_visual_transfer_diagnostic, g1_static_visual_transfer_auxiliary_diagnostic, g1_static_visual_transfer_placement_diagnostic, g1_static_memory_place_diagnostic, g1_static_memory_place_observe_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_static_visual_grasp_diagnostic, g1_static_visual_transfer_diagnostic, g1_static_visual_transfer_auxiliary_diagnostic, g1_static_visual_transfer_placement_diagnostic, g1_static_memory_place_diagnostic, g1_static_memory_place_observe_diagnostic, g1_static_unheld_regrasp_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
@@ -427,6 +430,9 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             }
             value => return Err(format!("unknown argument '{value}'")),
         }
+    }
+    if options.scene.as_deref()==Some("g1_static_unheld_regrasp_diagnostic") && options.g1_ticks!=Some(230) {
+        return Err("finite unheld regrasp requires exactly230Ticks".into());
     }
     if options.scene.as_deref()==Some("g1_static_memory_place_observe_diagnostic") && options.g1_ticks!=Some(840) {
         return Err("static memory place observe requires its exact840Tick diagnostic budget".into());
@@ -482,7 +488,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
         if options.g1_ticks != Some(1300) {
             return Err("mobile target view requires --g1-ticks1300 as its finite maximum".into());
         }
-    } else if matches!(options.scene.as_deref(),Some("g1_static_memory_place_diagnostic" | "g1_static_memory_place_observe_diagnostic")) {
+    } else if matches!(options.scene.as_deref(),Some("g1_static_memory_place_diagnostic" | "g1_static_memory_place_observe_diagnostic" | "g1_static_unheld_regrasp_diagnostic")) {
         // Its exact715/840Tick admission is checked above; ordinary scenes retain400.
     } else if options.g1_ticks.is_some_and(|ticks| ticks > 400) {
         return Err(
@@ -494,6 +500,13 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unheld_regrasp_has_a_distinct_exact_finite_budget() {
+        assert!(super::parse_arguments(["--scene","g1_static_unheld_regrasp_diagnostic","--g1-ticks","230"].map(str::to_owned).into_iter()).is_ok());
+        for ticks in ["140","190","231","840"] {
+            assert!(super::parse_arguments(["--scene","g1_static_unheld_regrasp_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        }
+    }
     #[test]
     fn auxiliary_release_requires_its_fixed_finite_budget() {
         for ticks in ["1050", "2050", "3151"] {

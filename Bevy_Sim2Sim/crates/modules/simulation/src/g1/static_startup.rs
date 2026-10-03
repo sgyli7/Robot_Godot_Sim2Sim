@@ -16,8 +16,12 @@ pub const STATIC_STARTUP_TICKS: u64 = 60;
 
 #[derive(Clone, Debug)]
 pub enum StaticStartupCommand {
-    Startup { episode_id: u64 },
+    Startup {
+        episode_id: u64,
+    },
     OriginalVla(ArenaTaskCommand),
+    /// Explicit one-chunk probe after the visually unverified fixed lift.
+    OriginalRegrasp(ArenaTaskCommand),
     VisualTransfer(super::static_transfer::StaticVisualTransferGoal),
     MemoryPlace(super::static_place::StaticMemoryPlaceGoal),
     ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalGoal),
@@ -27,6 +31,7 @@ impl StaticStartupCommand {
         match self {
             Self::Startup { episode_id } if *episode_id != 0 => Ok(()),
             Self::OriginalVla(command) => command.validate(),
+            Self::OriginalRegrasp(command) => command.validate(),
             Self::VisualTransfer(goal) => goal.validate(),
             Self::MemoryPlace(goal) => goal.validate(),
             Self::ObservationWithdrawal(goal) => goal.validate(),
@@ -46,6 +51,7 @@ pub enum StaticStartupExecution {
         original_vla_output: bool,
     },
     OriginalVla(ArenaTaskExecution),
+    OriginalRegrasp(ArenaTaskExecution),
     VisualTransfer(super::static_transfer::StaticVisualTransferStep),
     MemoryPlace(super::static_place::StaticMemoryPlaceStep),
     ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalStep),
@@ -69,6 +75,7 @@ pub(super) struct StaticStartupRunner {
     placement_geometry: Option<super::static_place::StaticPlacementGeometry>,
     placement: Option<super::static_place::StaticMemoryPlace>,
     observation_withdrawal: Option<super::static_observe::StaticObservationWithdrawal>,
+    regrasp_started: bool,
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
@@ -108,6 +115,7 @@ impl StaticStartupRunner {
             placement_geometry,
             placement: None,
             observation_withdrawal: None,
+            regrasp_started: false,
             owner: if native_four_passes {
                 ArenaTaskRunner::load_static_predictive_limit_diagnostic(config)?
             } else {
@@ -189,7 +197,8 @@ impl StaticStartupRunner {
                     })
                 }
                 StaticStartupCommand::OriginalVla(command) => {
-                    if !self.ready
+                    if self.regrasp_started
+                        || !self.ready
                         || command.chunk.profile != task_minigame::types::TaskProfile::StaticApple
                         || command.chunk.observation.episode_id != self.episode_id
                         || command.chunk.observation.sim_time_ns < STATIC_STARTUP_TICKS * 20_000_000
@@ -210,7 +219,48 @@ impl StaticStartupRunner {
                         body: step.body,
                     })
                 }
+                StaticStartupCommand::OriginalRegrasp(command) => {
+                    let count = self.owner.progress_counts().integration_count;
+                    if !self.ready || !valid_regrasp_request(command, self.episode_id, count) {
+                        return Err(invalid(
+                            "finite original regrasp requires a fresh190Tick third original chunk",
+                        ));
+                    }
+                    if !self.regrasp_started {
+                        if count != 190
+                            || self
+                                .transfer
+                                .as_ref()
+                                .is_none_or(|t| !t.finished_lift_only())
+                            || self
+                                .last_original_execution
+                                .as_ref()
+                                .is_none_or(|e| e.admitted_chunks != 2 || e.frame_index != 39)
+                            || self.placement.is_some()
+                        {
+                            return Err(invalid(
+                                "original regrasp requires the unverified50Tick lift boundary",
+                            ));
+                        }
+                        // A typed explicit command ends this incomplete phase.
+                        // The physical world, recurrent body state and accepted
+                        // original action queue remain in this same owner.
+                        self.transfer = None;
+                        self.regrasp_started = true;
+                    }
+                    let step = self.owner.step_with_guard(command, guard)?;
+                    self.last_original_execution = Some(step.execution.clone());
+                    Ok(StaticStartupStep {
+                        execution: StaticStartupExecution::OriginalRegrasp(step.execution),
+                        body: step.body,
+                    })
+                }
                 StaticStartupCommand::VisualTransfer(goal) => {
+                    if self.regrasp_started {
+                        return Err(invalid(
+                            "finite regrasp probe does not qualify a new transfer",
+                        ));
+                    }
                     goal.validate()?;
                     let state = self.owner.measurement()?;
                     if self.transfer.is_none() {
@@ -334,6 +384,16 @@ impl StaticStartupRunner {
         result
     }
 }
+
+fn valid_regrasp_request(command: &ArenaTaskCommand, episode: u64, count: u64) -> bool {
+    command.chunk.profile == task_minigame::types::TaskProfile::StaticApple
+        && command.chunk.observation.episode_id == episode
+        && command.chunk.observation.sim_time_ns == 190 * 20_000_000
+        && command.chunk.sequence_id == 3
+        && command.chunk.frames.len() == 40
+        && (190..230).contains(&count)
+        && command.scheduled_start_sim_ns.is_none()
+}
 fn invalid(message: impl Into<String>) -> RobotError {
     RobotError::Contract(message.into())
 }
@@ -347,6 +407,58 @@ mod tests {
         sync::Arc,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn finite_regrasp_rejects_reset_stale_profile_sequence_and_excess_ticks() {
+        use task_minigame::{
+            policy::{PolicyActionChunk, PolicyActionFrame, profile_contract},
+            types::{ObservationStamp, TaskProfile},
+        };
+        let frame = PolicyActionFrame {
+            left_arm: [0.; 7],
+            right_arm: [0.; 7],
+            left_hand: [0.; 7],
+            right_hand: [0.; 7],
+            waist: [0.; 3],
+            base_height_m: 0.75,
+            navigate_mps_rps: [0.; 3],
+        };
+        let command = ArenaTaskCommand {
+            scheduled_start_sim_ns: None,
+            chunk: Arc::new(PolicyActionChunk {
+                profile: TaskProfile::StaticApple,
+                observation: ObservationStamp {
+                    episode_id: 5,
+                    frame_id: 7,
+                    sim_time_ns: 190 * 20_000_000,
+                    captured_at_unix_ms: 1,
+                },
+                sequence_id: 3,
+                model_revision: profile_contract(TaskProfile::StaticApple).revision.into(),
+                action_period_ns: 20_000_000,
+                frames: vec![frame; 40],
+            }),
+        };
+        assert!(valid_regrasp_request(&command, 5, 190));
+        assert!(valid_regrasp_request(&command, 5, 229));
+        assert!(!valid_regrasp_request(&command, 6, 190));
+        assert!(!valid_regrasp_request(&command, 5, 189));
+        assert!(!valid_regrasp_request(&command, 5, 230));
+        for field in 0..5 {
+            let mut changed = command.clone();
+            let chunk = Arc::make_mut(&mut changed.chunk);
+            match field {
+                0 => chunk.profile = TaskProfile::MobileBox,
+                1 => chunk.observation.sim_time_ns = 140 * 20_000_000,
+                2 => chunk.sequence_id = 4,
+                3 => {
+                    chunk.frames.pop();
+                }
+                _ => changed.scheduled_start_sim_ns = Some(190 * 20_000_000),
+            }
+            assert!(!valid_regrasp_request(&changed, 5, 190));
+        }
+    }
 
     #[test]
     #[ignore = "requires explicit local frozen models and saved original T1 chunk; 121 real startup/task ticks"]

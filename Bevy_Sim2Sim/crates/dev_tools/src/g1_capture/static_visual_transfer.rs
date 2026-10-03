@@ -76,7 +76,13 @@ impl StaticTransferRoute {
             return Ok(false);
         }
         if self.submitted_transfer {
-            if runtime.static_memory_observe && !self.grip_verified {
+            if runtime.static_regrasp_started {
+                let completed = drive_live_policy(runtime, outcome, port)?;
+                return Ok(completed && tick == 230 && latest.phase == G1WorkerPhase::Paused);
+            }
+            if (runtime.static_memory_observe || runtime.static_unheld_regrasp)
+                && !self.grip_verified
+            {
                 return self.drive_grip_verification(runtime, outcome, port);
             }
             if runtime.static_memory_place {
@@ -210,7 +216,9 @@ impl StaticTransferRoute {
         worker
             .submit(TimedCommand {
                 episode_id: runtime.episode_id,
-                valid_until_sim_ns: if runtime.static_memory_observe {
+                valid_until_sim_ns: if runtime.static_memory_observe
+                    || runtime.static_unheld_regrasp
+                {
                     190
                 } else {
                     390
@@ -272,11 +280,15 @@ impl StaticTransferRoute {
                 {
                     return Err("grip image and owner joint positions disagree".into());
                 }
-                runtime
+                let worker = runtime
                     .static_marker_worker
                     .as_mut()
-                    .ok_or("grip CPU worker absent")?
-                    .submit_grip_capture(&frame)?;
+                    .ok_or("grip CPU worker absent")?;
+                if runtime.static_unheld_regrasp {
+                    worker.submit_unverified_grip_capture(&frame)?;
+                } else {
+                    worker.submit_grip_capture(&frame)?;
+                }
                 fs::write(
                     runtime.options.output.join("static_grip_stamp.json"),
                     serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
@@ -312,20 +324,47 @@ impl StaticTransferRoute {
                 .as_millis(),
         )
         .map_err(|e| e.to_string())?;
-        let verification = super::static_grip_check::verify(
-            &origin["localization"],
-            &current["localization"],
-            samples,
-            &self.kinematics,
-            now,
-        )?;
+        let apple_visible = current["localization"]["detections"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|d| d["marker_id"] == 31));
+        let verification = if !apple_visible && runtime.static_unheld_regrasp {
+            serde_json::json!({"schema":"g1_static_unverified_lift_absence_v1","accepted":false,
+                "observation":current["localization"]["observation"],"reason":"actual lift RGB lacks apple31",
+                "world_or_contact_truth_input":false,"task_qualified":false})
+        } else {
+            super::static_grip_check::verify(
+                &origin["localization"],
+                &current["localization"],
+                samples,
+                &self.kinematics,
+                now,
+            )?
+        };
         fs::write(
             runtime.options.output.join("static_grip_verification.json"),
             serde_json::to_vec_pretty(&verification).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         if verification["accepted"] != true {
+            if runtime.static_unheld_regrasp {
+                let live = runtime
+                    .live_policy
+                    .as_mut()
+                    .ok_or("regrasp policy absent")?;
+                if live.submitted_chunks != 2 || live.pending.is_some() || live.max_calls != 3 {
+                    return Err("regrasp requires the completed two-chunk boundary".into());
+                }
+                live.next_boundary_tick = 190;
+                runtime.static_regrasp_started = true;
+                return Ok(false);
+            }
             return Err("actual RGB lift did not verify apple following the palm; horizontal transfer blocked".into());
+        }
+        if runtime.static_unheld_regrasp {
+            return Err(
+                "finite regrasp probe requires an unverified lift; verified grasp is not retried"
+                    .into(),
+            );
         }
         let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
             return Err("grip verification selected a foreign physical owner".into());

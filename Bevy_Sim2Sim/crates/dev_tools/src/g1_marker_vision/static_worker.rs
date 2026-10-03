@@ -75,6 +75,7 @@ struct Pending {
     started: Instant,
     grip_check: bool,
     camera_profile: G1CameraMountProfile,
+    allow_missing_apple: bool,
 }
 
 pub(crate) struct StaticMarkerWorker {
@@ -275,16 +276,30 @@ impl StaticMarkerWorker {
     }
 
     pub(crate) fn submit_capture(&mut self, frame: &G1CapturedRgb) -> Result<(), String> {
-        self.submit(frame, false)
+        self.submit(frame, false, false)
     }
 
     /// One additional actual image after the fixed lift; apple31 is required.
     /// The initial image still requires both original target identities.
     pub(crate) fn submit_grip_capture(&mut self, frame: &G1CapturedRgb) -> Result<(), String> {
-        self.submit(frame, true)
+        self.submit(frame, true, false)
     }
 
-    fn submit(&mut self, frame: &G1CapturedRgb, grip_check: bool) -> Result<(), String> {
+    /// Absence remains a failed lift; only an explicit finite recovery probe
+    /// may consume the missing-target result instead of terminating here.
+    pub(crate) fn submit_unverified_grip_capture(
+        &mut self,
+        frame: &G1CapturedRgb,
+    ) -> Result<(), String> {
+        self.submit(frame, true, true)
+    }
+
+    fn submit(
+        &mut self,
+        frame: &G1CapturedRgb,
+        grip_check: bool,
+        allow_missing_apple: bool,
+    ) -> Result<(), String> {
         if !self.ready()
             || self.pending.is_some()
             || (!grip_check && self.submitted)
@@ -374,6 +389,7 @@ impl StaticMarkerWorker {
             started,
             grip_check,
             camera_profile: frame.stamp.mount_profile,
+            allow_missing_apple,
         });
         self.previous_observation = Some(observation);
         if grip_check {
@@ -457,7 +473,9 @@ fn validate_reply(
         admitted[index] = true;
     }
     // Absence is a perception failure; no actuation or truth-based replacement.
-    if !admitted[0] || (!pending.grip_check && !admitted[1]) {
+    if (!admitted[0] && !(pending.grip_check && pending.allow_missing_apple))
+        || (!pending.grip_check && !admitted[1])
+    {
         return Err(if pending.grip_check {
             "actual lift RGB did not admit apple31"
         } else {
@@ -521,6 +539,7 @@ mod tests {
             started: Instant::now(),
             grip_check: false,
             camera_profile: G1CameraMountProfile::ArenaEgo,
+            allow_missing_apple: false,
         };
         let reply = json!({"schema":"g1_static_actual_rgb_localization_v1","observation":pending.observation,
         "source":"actual_rgb_printed_label_pnp_and_original_self_FK","image_sha256":pending.image_hash,
@@ -585,6 +604,19 @@ mod tests {
         reply["camera_profile"] = json!("static_placement_overview");
         assert!(validate_reply(&reply, &pending, &config).is_ok());
         reply["detections"].as_array_mut().unwrap().clear();
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+    }
+
+    #[test]
+    fn missing_apple_is_only_returned_to_the_explicit_recovery_probe() {
+        let (config, mut pending, mut reply) = fixture();
+        reply["detections"].as_array_mut().unwrap().remove(0);
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        pending.allow_missing_apple = true;
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        pending.grip_check = true;
+        assert!(validate_reply(&reply, &pending, &config).is_ok());
+        reply["detections"][0]["marker_id"] = json!(99);
         assert!(validate_reply(&reply, &pending, &config).is_err());
     }
 }

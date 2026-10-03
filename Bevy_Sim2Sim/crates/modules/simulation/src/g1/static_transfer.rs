@@ -303,6 +303,9 @@ impl StaticVisualTransfer {
     pub fn goal(&self) -> &StaticVisualTransferGoal {
         &self.goal
     }
+    pub(super) fn finished_lift_only(&self) -> bool {
+        self.ticks == 50
+    }
     pub(super) fn completed_command(&self) -> Option<AgileCommand> {
         (self.ticks == 250).then(|| self.command.clone())
     }
