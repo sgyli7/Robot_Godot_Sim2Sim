@@ -2,14 +2,14 @@
 
 版本：2026-10-03。实施分支：`codex/goose50_training`。
 
-当前仍在 **M0-S／M0-T，尚无合格训练本体；原生 mjlab 整机 GPU 环境及 RSL 网络前向／反向已通过独立复核，真实四杆 CONNECT 的两版开发检查均在开口首步失败，PPO／优化器更新为零**。足底与销点局部参数周期均已收口；下一问题限定为原生积分流程对照，保留 SI、65/18、实际电机与完整碰撞身份，不再扫材料或销点阻抗。完整源端物理、策略与游戏资格仍未取得。主线保持 **统一 MJCF → 原生 MuJoCo → mjlab／RSL-RL → Rapier／Bevy 验收**。源端资格、目标端资格与最终任务资格分别报告。以下为现行派工，历史“下一批”不作为当前任务。
+当前仍在 **M0-S／M0-T，尚无合格训练本体；新版真实四杆 CONNECT＋原生 Euler 已通过四组开发检查与 60 秒保持独立复核，但原默认悬空出生仍首步越域，PPO／优化器更新为零**。本轮原生积分流程对照已收口；下一步将同一冻结候选按显式数值 profile 接入成熟 mjlab，并做场景身份与小批量 GPU 复核。保留 SI、65/18、实际电机与完整碰撞身份，不继续扫材料、销点阻抗或积分标志。完整源端物理、策略与游戏资格仍未取得。主线保持 **统一 MJCF → 原生 MuJoCo → mjlab／RSL-RL → Rapier／Bevy 验收**。源端资格、目标端资格与最终任务资格分别报告。以下为现行派工，历史“下一批”不作为当前任务。
 
 **当前 GPU 状态：短准入完成并已释放。** 重新核对现场时，原 VLLM 进程已退出，GPU 利用率约 3%；本主线简短通知 G1 后单次运行冻结协议，约 **97 秒**结束并通知释放，没有停止或重启其他进程。原生 mjlab 两世界完成 100 Tick／**200 次真实积分**，每 Tick 一次上游 step 和一次不积分的 forward；Actor 65→18、Critic 65→1 分别完成 CUDA 前向／反向各一次，参数未更新、网络未控制本次物理动作。CPU 独立复核通过，完整场景二进制与此前 7,551 项身份检查一致；力矩误差 ≤6.67×10⁻¹⁶ N·m、65 观测误差 ≤2.39×10⁻⁷，网络输出误差 ≤4.10×10⁻⁸、参数梯度误差 ≤9.32×10⁻⁹。首次 CPU 环境误用及 GB10 capability 兼容提示仍保留；实际网络 kernels 已验证，优化器尚未运行。[冻结运行协议](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_mjlab_gpu_env_admission_001/manifest.json)、[实际 GPU 收据](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_mjlab_gpu_env_admission_001/env_receipt.json)、[独立复核](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_mjlab_gpu_env_admission_001/independent_env_review.json)。这是开发初态下的链路与 kernels 准入，不替代完整 M0-S、PPO、策略或游戏资格；没有新硬件依赖，性能子 agent 保持闲置。
 
 | 负责人 | 已沟通的责任与当前动作 |
 | --- | --- |
 | Goose Robot 硬件工程（Sai_Rotbots） | 机械复核 `2b79fec2f`、足底定义 `a751758d4` 和**受载静力 v2 `3c47c94aa` 均已交付**。约 24 分钟完成名义双脚及原左右单脚五组自洽全状态，未改 CAD／BOM／轴位／质量／SI／实验域。来源工程负责后续真实硬件、材料证据与必要的版本化修订；当前静力接续已收齐，不再等它处理 Lab 的积分／训练问题。 |
-| 当前 Goose 主线（Sai_Lab） | 原生 mjlab GPU／网络短准入已通过；本轮复用原生 CAD 接入真实 CONNECT，完成两版共 202 次 CPU 积分及全帧独立复核，开口首步均越过 0.1 mm 域，候选不晋升。**下一次只作原生 Euler 关闭隐式关节阻尼积分的版本化对照，保留实际阻尼力及 SI／碰撞／驱动／出生／销点参数；一 Tick 一次 20 ms 积分，失败即收口，不扫描标志或自定义求解器。** 现有源模型与 mjlab 白名单不变；原冷出生／冲击、完整碰撞与 M0-T 阻断仍开放，完整物理未过不启动 PPO。 |
+| 当前 Goose 主线（Sai_Lab） | 冻结 CONNECT v2 仅改原生 Euler／关闭隐式关节阻尼积分，实际阻尼力与全部物理参数保留。四组 400 步及同一受载开发初态 60 秒回归均独立通过；原悬空出生一步 1.782133 mm 深度仍拒绝。**下一问题是将明确选定的 Euler 候选接入现有 upstream mjlab：校验原生模型／合同／积分 profile，先做 CPU 场景身份与护栏回归，再协调单次有界 GPU 小批量复核。** 当前只冻结候选，不改生产白名单或授予物理／策略资格；原冷出生／冲击、完整碰撞与 M0-T 阻断开放，完整物理未过不启动 PPO。 |
 | 现有 bevy_performance 子 agent（Sai_Lab） | **第九周期已收口并闲置。** 可靠拓扑经公开 `from_convex_mesh` 构造使 `_022` 通过，`_005` 实际返回表面的 f64 体积仍少 0.84005%，故停止；未扩到 60 块、未改生产／库、未积分或跑性能。没有新的安全假设时不唤醒；不会把导入缺陷转嫁成 CAD 修改。 |
 
 派工已经实际发送至原硬件聊天与已有子 agent。用户最新授权已再次直接同步至 Goose Robot 硬件工程：后续硬件需求由本主线作为甲方提出具名关节／根位姿、载荷、失败证据、预期修改与验收标准，并负责接收、验收和反馈；用户无需传话。双方修改各自工程。当前没有新增硬件派工，不等待来源工程处理 Lab 的依赖安装或控制接入。保持同一实施聊天、现有两小时 heartbeat，不建立新聊天或独立 PM。仅在实际使用 GPU 前与释放时联系平等共享 DGX 的 G1；CPU 诊断不占 GPU 队列。
@@ -101,6 +101,12 @@ Torch 初始化确实记录了 GB10 capability 12.1 与该轮包声明最高 12.
 两版共 **202 次真实 20 ms 积分、6 次整机编译**；独立进程加载实际二进制、零积分，复核全部 202 帧及 **9,234 条接触**，原 NumPy 控制／热状态／65 观测精确一致，实际销点反力与完整约束重建误差 ≤8.53×10⁻¹⁴（广义力混合单位）。最大足底深度约 0.75872 mm，无自碰撞或非足部触地；128 个理想角的运动学闭合成立。首次 reviewer 的输出序列化失败已保留并修复，不重新运行物理。[v1 独立复核](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_connect_admission_001/independent_review.json)、[v2 独立复核](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_connect_admission_001/constant_impedance_v2/independent_review.json)。
 
 连续 qacc 与完成速度差的加速度存在差异，这是 MuJoCo 一阶隐式更新的已声明语义，不能仅靠两种数组不相等判定引擎 bug。下一步改变积分流程作有界对照，不再调销点阻抗；原生 Euler 的 eulerdamp 标志仅控制隐式阻尼积分，不关闭物理阻尼力。[官方说明](https://mujoco.readthedocs.io/en/3.10.0/XMLreference.html#option-flag) 安装的锁定 Warp 源码存在该分支，当前只做静态支持核对，未做该候选 GPU 运行。两版失败模型均不进入生产 mjlab 白名单。GPU／网络／优化器为零，无新增硬件需求，现有性能子 agent 闲置；源端、目标端与训练资格仍未取得。
+
+**2026-10-03：原生积分流程对照取得改善，开发域通过。** 冻结 CONNECT v2 的 SI、几何、销点软约束、碰撞／过滤、驱动和出生全部保留，仅改为原生 Euler 并关闭其隐式关节阻尼积分，实际物理阻尼仍启用。保持、开闭嘴、嘴体 ±0.05 N·m 外加力矩四组各 100 步，共 **400 次真实 20 ms 积分**完成；独立复核全部状态、原 NumPy 控制／热状态／65 观测与 18,249 条接触。最大销点距离 **46.9266 微米**、足底深度 **0.765063 mm**，原 100 微米／1.55 mm 域均通过，无自碰撞或非足部触地。开口首步的原生反力与连续加速度和冻结 implicitfast v2 完全一致，完成销点距离却由 110.695 微米降到 **3.86309 微米**；这支持积分流程的受控解释，不声明引擎 bug。[完整周期报告](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_integrator_admission_001/report.md)、[四组独立复核](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_integrator_admission_001/independent_review.json)。
+
+**同一 Euler 候选的 60 秒保持回归完成。** 原合法保持动作、显式受载开发出生与冷历史不变，**3,000 步**全部独立复核；最大水平漂移 **0.022761 mm**、销点距离 **16.5069 微米**、足底深度 **0.770659 mm**，最低直立度 0.99999752、COM 高度比 0.9999362，132,174 条接触均合法。首次长回归在第 2,111 步因固定 1 皮秒累计时钟断言拒绝，物理状态仍在域内；保留并独立复核该次全轨迹。修正的是累计 double 检查语义：每一步原生时间必须严格等于前一步时间＋.02，并匹配整数积分／控制计数；未改物理门槛，随后从同一初态完整重跑。[60 秒独立复核](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_integrator_admission_001/stand60_clock_review_v2/independent_review.json)。这是保持动作的开发回归，仍不是训练策略站立资格。
+
+**原出生失败未被覆盖。** 新版默认 +2 mm 悬空、中立轴位、冷动作历史与零动作的一步检查，在求解时仍无接触，完成足底深度 **1.782133 mm**，超过原 1.55 mm 域。独立重建出生、核对原控制／观测／积分计数并保留拒绝；不下移出生或改门槛。[原出生独立复核](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_integrator_admission_001/independent_legacy_cold_review.json)。本周期含拒绝与成功范围共 **5,512 次 CPU 积分、6 次整机编译**，独立复核零积分，GPU／网络／优化器为零。新版仅由[具名候选清单](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_native_integrator_admission_001/candidate_status.json)指定为下一次 upstream mjlab 接入候选，生产白名单尚未改。完整 M0-S、M0-T、冷出生／冲击、任务碰撞与夹取资格仍开放；不继续局部参数实验，无新增硬件需求，性能子 agent 仍闲置。
 
 ## 1. 目标与当前基线
 
