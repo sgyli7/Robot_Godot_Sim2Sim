@@ -69,8 +69,12 @@ impl MobileGripRelease {
                 "release needs completed stationary current carry boundary",
             ));
         }
-        let increment = (goal.target_palm_gap_m - calibration.commanded_gap(state, &command)?)
-            / f64::from(goal.duration_ticks);
+        let increment = calibration.horizontal_opening_increment(
+            state,
+            &command,
+            goal.target_palm_gap_m,
+            goal.duration_ticks,
+        )?;
         if !(0. ..=0.004).contains(&increment) {
             return Err(invalid(
                 "release opening increment outside bounded envelope",
@@ -105,7 +109,7 @@ impl MobileGripRelease {
             return Err(invalid("foreign/repeated/completed release state"));
         }
         let correction = if self.opening_ticks < self.goal.duration_ticks {
-            let corrected = calibration.spread(state, &self.command, self.increment)?;
+            let corrected = calibration.spread_horizontal(state, &self.command, self.increment)?;
             self.command = corrected.command;
             self.opening_ticks += 1;
             Some(corrected.receipt)

@@ -713,6 +713,10 @@ mod tests {
         fine_walk_speed_m_s: Option<f32>,
         maximum_native_ticks: Option<u64>,
         fine_segments_m: Option<Vec<f32>>,
+        coarse_segments_m: Option<Vec<f32>>,
+        stop_after_coarse: Option<bool>,
+        observed_fine_goals: Option<Vec<MobileCarryGoal>>,
+        mechanical_release: Option<MobileReleaseGoal>,
     }
     #[test]
     #[ignore = "frozen actual finite prefix then bounded standing;0freshVLA/renderer work"]
@@ -731,6 +735,52 @@ mod tests {
         }
         let fine_speed = goals.fine_walk_speed_m_s;
         let segments = goals.fine_segments_m;
+        let coarse_segments = goals.coarse_segments_m;
+        let stop_after_coarse = goals.stop_after_coarse.unwrap_or(false);
+        let observed_fine_goals = goals.observed_fine_goals;
+        let mechanical_release = goals.mechanical_release;
+        if let Some(observed) = &observed_fine_goals {
+            if stop_after_coarse
+                || coarse_segments.is_some()
+                || segments.is_some()
+                || fine_speed.is_some()
+                || observed.is_empty()
+                || observed.len() > 5
+                || observed.iter().any(|goal| {
+                    goal.validate().is_err()
+                        || goal.relative_distance_m != 0.1
+                        || goal.observation.episode_id != goals.scan.observation.episode_id
+                })
+                || observed.windows(2).any(|pair| {
+                    pair[1].observation.frame_id <= pair[0].observation.frame_id
+                        || pair[1].observation.sim_time_ns <= pair[0].observation.sim_time_ns
+                })
+            {
+                return Err(invalid("invalid saved actual fine-goal comparison"));
+            }
+        }
+        if mechanical_release.is_some() && observed_fine_goals.is_none() {
+            return Err(invalid(
+                "mechanical opening requires an exact observed prefix",
+            ));
+        }
+        if let Some(distances) = &coarse_segments {
+            if !stop_after_coarse
+                || fine_speed.is_some()
+                || segments.is_some()
+                || distances.is_empty()
+                || distances.len() > 5
+                || distances
+                    .iter()
+                    .any(|d| !d.is_finite() || !(0.1..=0.3).contains(d))
+                || (distances.iter().map(|d| d + 0.05).sum::<f32>()
+                    - (goals.coarse.relative_distance_m + 0.05))
+                    .abs()
+                    > 0.00001
+            {
+                return Err(invalid("invalid finite coarse carry comparison"));
+            }
+        }
         if let Some(distances) = &segments {
             if fine_speed.is_some()
                 || distances.is_empty()
@@ -743,7 +793,8 @@ mod tests {
                 return Err(invalid("invalid finite segmented carry comparison"));
             }
         }
-        let self_clock_suffix = fine_speed.is_some() || segments.is_some();
+        let self_clock_suffix =
+            fine_speed.is_some() || segments.is_some() || mechanical_release.is_some();
         if sequence.schema != "g1_saved_native_mobile_action_sequence_v1"
             || sequence.chunks.len() != 4
         {
@@ -784,11 +835,26 @@ mod tests {
             goals.coarse.observation.captured_at_unix_ms = now();
             goals.fine.observation.captured_at_unix_ms = now();
             goals.hold.observation.captured_at_unix_ms = now();
-            let mut commands = vec![
-                MobileAssistCommand::ClassicalScan(goals.scan),
-                MobileAssistCommand::ClassicalCarry(goals.coarse),
-            ];
-            if let Some(distances) = &segments {
+            let mut commands = vec![MobileAssistCommand::ClassicalScan(goals.scan)];
+            if let Some(distances) = &coarse_segments {
+                for distance in distances {
+                    let mut goal = goals.coarse.clone();
+                    goal.relative_distance_m = *distance;
+                    commands.push(MobileAssistCommand::ClassicalCarry(goal));
+                }
+            } else {
+                commands.push(MobileAssistCommand::ClassicalCarry(goals.coarse));
+            }
+            if stop_after_coarse {
+                // Finite saved-prefix comparison ends before any fine/hold action.
+            } else if let Some(observed) = &observed_fine_goals {
+                commands.extend(
+                    observed
+                        .iter()
+                        .cloned()
+                        .map(MobileAssistCommand::ClassicalCarry),
+                );
+            } else if let Some(distances) = &segments {
                 for distance in distances {
                     let mut goal = goals.fine.clone();
                     goal.relative_distance_m = *distance;
@@ -798,8 +864,31 @@ mod tests {
                 commands.push(MobileAssistCommand::ClassicalCarry(goals.fine));
             }
             let hold_stage = commands.len();
-            commands.push(MobileAssistCommand::ClassicalHold(goals.hold));
+            if !stop_after_coarse {
+                commands.push(MobileAssistCommand::ClassicalHold(goals.hold));
+            }
+            if let Some(goal) = &mechanical_release {
+                commands.push(MobileAssistCommand::ClassicalRelease(goal.clone()));
+            }
             for (stage, mut command) in commands.into_iter().enumerate() {
+                if observed_fine_goals.is_some() && (2..hold_stage).contains(&stage) {
+                    let MobileAssistCommand::ClassicalCarry(goal) = &mut command else {
+                        unreachable!()
+                    };
+                    // Keep the saved actual image frame/sim identity; only
+                    // renew the wall age for this explicitly offline fixture.
+                    goal.observation.captured_at_unix_ms = now();
+                }
+                if coarse_segments.is_some() && stage > 1 {
+                    let state = owner.measurement()?;
+                    let MobileAssistCommand::ClassicalCarry(goal) = &mut command else {
+                        unreachable!()
+                    };
+                    // Saved heading and self-clock only; no new RGB is claimed.
+                    goal.observation.frame_id += (stage - 1) as u64;
+                    goal.observation.sim_time_ns = state.sim_time_ns;
+                    goal.observation.captured_at_unix_ms = now();
+                }
                 if segments.is_some() && stage > 2 && stage < hold_stage {
                     let state = owner.measurement()?;
                     let MobileAssistCommand::ClassicalCarry(goal) = &mut command else {
@@ -818,6 +907,16 @@ mod tests {
                     };
                     // Self-clock mechanical hold only: there is no new image.
                     goal.observation.frame_id += segments.as_ref().map_or(0, |v| v.len() as u64);
+                    goal.observation.sim_time_ns = state.sim_time_ns;
+                    goal.observation.captured_at_unix_ms = now();
+                }
+                if stage == hold_stage + 1 && mechanical_release.is_some() {
+                    let state = owner.measurement()?;
+                    let MobileAssistCommand::ClassicalRelease(goal) = &mut command else {
+                        unreachable!()
+                    };
+                    // Explicit mechanical self-clock suffix; this is not a
+                    // fresh placement image or permission for live opening.
                     goal.observation.sim_time_ns = state.sim_time_ns;
                     goal.observation.captured_at_unix_ms = now();
                 }
@@ -859,10 +958,13 @@ mod tests {
             .open(&output)
             .map_err(|e| invalid(e.to_string()))?;
         serde_json::to_writer_pretty(file,&serde_json::json!({"qualified":false,"actual_integrations":ticks,
-            "fresh_vla_calls":0,"saved_actual_prefix":true,"new_current_camera_used":false,"completed_hold":result.is_ok(),
+            "fresh_vla_calls":0,"saved_actual_prefix":true,"new_current_camera_used":false,
+            "completed_hold":result.is_ok() && !stop_after_coarse,"completed_coarse_comparison":result.is_ok() && stop_after_coarse,
             "fine_walk_speed_override_m_s":fine_speed,"maximum_native_ticks":maximum_ticks,
-            "fine_segments_m":segments,"self_clock_suffix_stamps_without_new_images":self_clock_suffix,
-            "error":result.as_ref().err().map(ToString::to_string),"scope":"mechanical standing only; no fresh navigation/release/task qualification"})).map_err(|e|invalid(e.to_string()))?;
+            "fine_segments_m":segments,"coarse_segments_m":coarse_segments,"stop_after_coarse":stop_after_coarse,
+            "observed_fine_goals":observed_fine_goals,"mechanical_release":mechanical_release,
+            "self_clock_suffix_stamps_without_new_images":self_clock_suffix || coarse_segments.is_some(),
+            "error":result.as_ref().err().map(ToString::to_string),"scope":"finite saved-prefix mechanical comparison only; no fresh navigation/release/task qualification"})).map_err(|e|invalid(e.to_string()))?;
         result
     }
     fn read(name: &str) -> Result<Vec<u8>, RobotError> {

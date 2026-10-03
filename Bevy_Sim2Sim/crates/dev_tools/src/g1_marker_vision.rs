@@ -767,17 +767,28 @@ mod worker {
         let drop = number("estimated_drop_height_m")?;
         let upright = number("visible_bin_upward_cosine")?;
         let speed = number("self_root_speed_m_s")?;
+        let required_gap = number("required_measured_palm_gap_m")?;
+        let hand_clearance = required_gap <= 0.35;
         let admitted = margin >= 0.02
             && (0.05..=0.4).contains(&drop)
             && upright >= 0.98
-            && (0. ..=0.05).contains(&speed);
-        if proposal["schema"] != "g1_visible_marker_release_admission_v1"
+            && (0. ..=0.05).contains(&speed)
+            && hand_clearance;
+        if proposal["schema"] != "g1_visible_marker_release_admission_v2"
             || actual != observation
             || proposal["source_geometry_sha256"] != geometry_hash
             || proposal["world_or_contact_truth_input"] != false
             || proposal["task_qualified"] != false
             || proposal["source"] != "actual_two_marker_rgb_and_public_original_collision_vertices"
             || proposal["minimum_required_floor_margin_m"] != 0.02
+            || proposal["opening_profile"] != "gravity_horizontal_original_fingers"
+            || proposal["robot_collision_geometry_sha256"] != reply["robot_definition_sha256"]
+            || proposal["minimum_hand_clearance_m"] != 0.01
+            || !(0. ..=1.).contains(&required_gap)
+            || required_gap == 0.
+            || proposal["maximum_commanded_palm_gap_m"] != 0.35
+            || proposal["hand_clearance_admitted"] != hand_clearance
+            || proposal["prediction_is_not_physical_detachment"] != true
             || !(-1. ..=1.).contains(&upright)
             || proposal["release_admitted"] != admitted
         {
@@ -789,7 +800,7 @@ mod worker {
                     .map_err(|e| e.to_string())?;
             goal.validate().map_err(|e| e.to_string())?;
             if goal.observation != observation
-                || goal.target_palm_gap_m != 0.3
+                || goal.target_palm_gap_m != 0.35
                 || goal.duration_ticks != 100
             {
                 return Err("release goal detached from its current visual admission".into());
@@ -971,12 +982,15 @@ mod worker {
             reply["placement_view_only"] = true.into();
             reply["camera_mount_profile"] = "auxiliary_grip_overview".into();
             reply["release_proposal"] = serde_json::json!({
-                "schema":"g1_visible_marker_release_admission_v1","observation":stamp,
+                "schema":"g1_visible_marker_release_admission_v2","observation":stamp,
                 "source_geometry_sha256":"geometry","world_or_contact_truth_input":false,"task_qualified":false,
                 "source":"actual_two_marker_rgb_and_public_original_collision_vertices",
                 "minimum_signed_floor_margin_m":0.03,"minimum_required_floor_margin_m":0.02,
                 "estimated_drop_height_m":0.25,"visible_bin_upward_cosine":1.,"self_root_speed_m_s":0.01,
-                "release_admitted":true,"release_goal":{"observation":stamp,"target_palm_gap_m":0.3,"duration_ticks":100},
+                "opening_profile":"gravity_horizontal_original_fingers","robot_collision_geometry_sha256":"definition",
+                "minimum_hand_clearance_m":0.01,"required_measured_palm_gap_m":0.32,"maximum_commanded_palm_gap_m":0.35,
+                "hand_clearance_admitted":true,"prediction_is_not_physical_detachment":true,
+                "release_admitted":true,"release_goal":{"observation":stamp,"target_palm_gap_m":0.35,"duration_ticks":100},
             });
             assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
             assert!(
@@ -993,7 +1007,7 @@ mod worker {
                 .is_ok()
             );
             assert!(validate_reply(&reply, stamp, "image", "input", "definition").is_err());
-            for mutation in 0..8 {
+            for mutation in 0..14 {
                 let mut bad = reply.clone();
                 let p = &mut bad["release_proposal"];
                 match mutation {
@@ -1004,7 +1018,13 @@ mod worker {
                     4 => p["self_root_speed_m_s"] = 0.051.into(),
                     5 => p["world_or_contact_truth_input"] = true.into(),
                     6 => p["release_goal"]["observation"]["episode_id"] = 9.into(),
-                    _ => p["release_goal"]["duration_ticks"] = 150.into(),
+                    7 => p["release_goal"]["duration_ticks"] = 150.into(),
+                    8 => p["release_goal"]["target_palm_gap_m"] = 0.3.into(),
+                    9 => p["opening_profile"] = "tilted".into(),
+                    10 => p["robot_collision_geometry_sha256"] = "foreign".into(),
+                    11 => p["required_measured_palm_gap_m"] = 0.351.into(),
+                    12 => p["hand_clearance_admitted"] = false.into(),
+                    _ => p["prediction_is_not_physical_detachment"] = false.into(),
                 }
                 assert!(
                     validate_release_reply(&bad, stamp, "geometry").is_err(),
@@ -1014,6 +1034,10 @@ mod worker {
             reply["release_proposal"]["minimum_signed_floor_margin_m"] = (-0.01).into();
             reply["release_proposal"]["release_admitted"] = false.into();
             reply["release_proposal"]["release_goal"] = serde_json::Value::Null;
+            assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
+            reply["release_proposal"]["minimum_signed_floor_margin_m"] = 0.03.into();
+            reply["release_proposal"]["required_measured_palm_gap_m"] = 0.36.into();
+            reply["release_proposal"]["hand_clearance_admitted"] = false.into();
             assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
         }
         #[test]
@@ -1059,8 +1083,7 @@ mod worker {
             let mut foreign_camera = reply.clone();
             foreign_camera["camera_mount_profile"] = "arena_ego".into();
             assert!(
-                validate_reply(&foreign_camera, stamp, "image", "input", "definition")
-                    .is_err()
+                validate_reply(&foreign_camera, stamp, "image", "input", "definition").is_err()
             );
             let mut bad = reply.clone();
             bad["fine_approach_proposal"]["current_floor_margin_m"] = 0.019.into();

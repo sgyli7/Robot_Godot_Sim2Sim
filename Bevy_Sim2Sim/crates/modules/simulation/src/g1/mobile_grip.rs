@@ -116,7 +116,7 @@ impl MobileGripCalibration {
         state: &G1Measurement,
         original: &G1Command,
     ) -> Result<MobileGripCorrection, RobotError> {
-        self.solve(state, original, None, None)
+        self.solve(state, original, None, None, None)
     }
 
     /// One bounded Cartesian increment preserves both palm rotations/gap and
@@ -134,7 +134,7 @@ impl MobileGripCalibration {
                 "Cartesian grip increment exceeds3mm per native Tick",
             ));
         }
-        self.solve(state, previous, Some(offset_root_source_m), None)
+        self.solve(state, previous, Some(offset_root_source_m), None, None)
     }
 
     /// Open both palm targets symmetrically; no prop/contact sensor is read.
@@ -147,7 +147,60 @@ impl MobileGripCalibration {
         if !gap_increment_m.is_finite() || !(0. ..=0.004).contains(&gap_increment_m) {
             return Err(invalid("grip opening exceeds2mm per palm per native Tick"));
         }
-        self.solve(state, previous, None, Some(gap_increment_m))
+        self.solve(state, previous, None, Some(gap_increment_m), None)
+    }
+
+    /// Spread perpendicular to gravity while preserving each palm's height.
+    /// Unlike a tilted palm-to-palm line, this adds no differential lift.
+    pub fn spread_horizontal(
+        &self,
+        state: &G1Measurement,
+        previous: &G1Command,
+        horizontal_gap_increment_m: f64,
+    ) -> Result<MobileGripCorrection, RobotError> {
+        if !horizontal_gap_increment_m.is_finite()
+            || !(0. ..=0.004).contains(&horizontal_gap_increment_m)
+        {
+            return Err(invalid("horizontal opening exceeds2mm per palm per Tick"));
+        }
+        self.solve(
+            state,
+            previous,
+            None,
+            None,
+            Some(horizontal_gap_increment_m),
+        )
+    }
+
+    /// Convert the existing three-dimensional final gap to a fixed horizontal
+    /// increment using the named self orientation and original FK only.
+    pub fn horizontal_opening_increment(
+        &self,
+        state: &G1Measurement,
+        command: &G1Command,
+        target_gap_m: f64,
+        duration_ticks: u32,
+    ) -> Result<f64, RobotError> {
+        let delta = self.commanded_palm_separation(state, command)?;
+        let up = up_in_root(state)?;
+        let vertical = delta.dot(&up);
+        let horizontal = (delta - up * vertical).norm();
+        let final_squared = target_gap_m.powi(2) - vertical.powi(2);
+        if !target_gap_m.is_finite()
+            || !(0.25..=0.35).contains(&target_gap_m)
+            || !(50..=150).contains(&duration_ticks)
+            || horizontal < 1e-4
+            || final_squared <= 0.
+        {
+            return Err(invalid("invalid horizontal opening geometry"));
+        }
+        let increment = (final_squared.sqrt() - horizontal) / f64::from(duration_ticks);
+        if !(0. ..=0.004).contains(&increment) {
+            return Err(invalid(
+                "horizontal opening increment outside bounded envelope",
+            ));
+        }
+        Ok(increment)
     }
 
     pub fn commanded_gap(
@@ -155,6 +208,14 @@ impl MobileGripCalibration {
         state: &G1Measurement,
         command: &G1Command,
     ) -> Result<f64, RobotError> {
+        Ok(self.commanded_palm_separation(state, command)?.norm())
+    }
+
+    fn commanded_palm_separation(
+        &self,
+        state: &G1Measurement,
+        command: &G1Command,
+    ) -> Result<Vector3<f64>, RobotError> {
         validate_self_state(state)?;
         command.validate()?;
         let mut q = [0.; JOINT_COUNT];
@@ -166,7 +227,7 @@ impl MobileGripCalibration {
             });
         }
         let poses = self.forward(&q);
-        Ok((poses[28].translation.vector - poses[45].translation.vector).norm())
+        Ok(poses[28].translation.vector - poses[45].translation.vector)
     }
 
     /// Restore this episode's original calibrated transport pose through one
@@ -283,6 +344,7 @@ impl MobileGripCalibration {
         original: &G1Command,
         translation: Option<[f64; 3]>,
         opening: Option<f64>,
+        horizontal_opening: Option<f64>,
     ) -> Result<MobileGripCorrection, RobotError> {
         validate_self_state(state)?;
         original.validate()?;
@@ -315,6 +377,10 @@ impl MobileGripCalibration {
             for goal in &mut goals {
                 goal.translation.vector += Vector3::from(offset);
             }
+        } else if let Some(increment) = horizontal_opening {
+            let offset = horizontal_spread_offset(delta, up_in_root(state)?, increment)?;
+            goals[0].translation.vector += offset;
+            goals[1].translation.vector -= offset;
         } else {
             let gap = opening.map_or(SOURCE_PALM_GAP_M, |increment| original_gap + increment);
             goals[0].translation.vector = midpoint + direction * (gap * 0.5);
@@ -393,6 +459,8 @@ impl MobileGripCalibration {
             receipt: MobileGripReceipt {
                 schema: if translation.is_some() {
                     "g1_mobile_self_state_cartesian_grip_v1"
+                } else if horizontal_opening.is_some() {
+                    "g1_mobile_self_state_horizontal_open_grip_v1"
                 } else if opening.is_some() {
                     "g1_mobile_self_state_open_grip_v1"
                 } else {
@@ -427,6 +495,30 @@ impl MobileGripCalibration {
         }
         poses
     }
+}
+
+fn up_in_root(state: &G1Measurement) -> Result<Vector3<f64>, RobotError> {
+    let [w, x, y, z] = state.root_rotation_wxyz.map(f64::from);
+    let norm_squared = w * w + x * x + y * y + z * z;
+    if !norm_squared.is_finite() || (norm_squared - 1.).abs() > 2e-5 {
+        return Err(invalid(
+            "horizontal opening needs a normalized self quaternion",
+        ));
+    }
+    Ok(UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z))
+        .inverse_transform_vector(&Vector3::z()))
+}
+
+fn horizontal_spread_offset(
+    delta: Vector3<f64>,
+    up: Vector3<f64>,
+    increment: f64,
+) -> Result<Vector3<f64>, RobotError> {
+    let horizontal = delta - up * delta.dot(&up);
+    if horizontal.norm() < 1e-4 {
+        return Err(invalid("horizontal opening has no lateral direction"));
+    }
+    Ok(horizontal.normalize() * (increment * 0.5))
 }
 
 fn pose(source: &SourcePose) -> Isometry3<f64> {
@@ -477,6 +569,36 @@ mod tests {
     use robot_minigame::g1::policy::bound_bytes;
     use serde::Deserialize;
     use std::{fs, path::Path};
+
+    #[test]
+    fn horizontal_spread_preserves_height_for_tilted_palms_and_body() {
+        let up = Vector3::<f64>::new(0.1, 0.2, 0.97).normalize();
+        let delta = Vector3::<f64>::new(0.004, 0.24, 0.03);
+        assert!(delta.normalize().dot(&up).abs() > 0.1);
+        let offset = horizontal_spread_offset(delta, up, 0.003).unwrap();
+        assert!(offset.dot(&up).abs() < 1e-12);
+        assert!((offset.norm() - 0.0015).abs() < 1e-12);
+        assert!(horizontal_spread_offset(up * 0.2, up, 0.003).is_err());
+    }
+
+    #[test]
+    fn horizontal_opening_rejects_unknown_self_gravity() {
+        let mut state = G1Measurement {
+            episode_id: 1,
+            source_tick: 0,
+            sim_time_ns: 0,
+            joint_positions: vec![0.; JOINT_COUNT],
+            joint_velocities: vec![0.; JOINT_COUNT],
+            root_rotation_wxyz: [1., 0., 0., 0.],
+            root_angular_velocity_body: [0.; 3],
+            root_velocity_source: [0.; 3],
+        };
+        assert_eq!(up_in_root(&state).unwrap(), Vector3::z());
+        for quaternion in [[0.; 4], [2., 0., 0., 0.], [f32::NAN, 0., 0., 0.]] {
+            state.root_rotation_wxyz = quaternion;
+            assert!(up_in_root(&state).is_err());
+        }
+    }
 
     #[derive(Deserialize)]
     struct Fixture {
@@ -536,6 +658,7 @@ mod tests {
         let state = measurement(fixture.state).map_err(|e| invalid(e.to_string()))?;
         let calibration = MobileGripCalibration::new(&definition)?;
         let original = fixture.command.clone();
+        let target_gap = fixture.goal.target_palm_gap_m;
         let mut release = super::super::mobile_release::MobileGripRelease::new(
             fixture.goal,
             &state,
@@ -560,7 +683,7 @@ mod tests {
             steps.push(step);
         }
         assert!(steps.last().unwrap().completed);
-        assert!((steps.last().unwrap().commanded_palm_gap_m - 0.3).abs() < 1e-6);
+        assert!((steps.last().unwrap().commanded_palm_gap_m - target_gap).abs() < 1e-6);
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)

@@ -6,6 +6,7 @@ This finite development tool proposes navigation; it never actuates a world.
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 from pathlib import Path
@@ -193,7 +194,69 @@ def clearance_from_visible_markers(detections, observation, geometry_path, marke
                            "duration_ticks": duration} if admitted else None}
 
 
-def placement_from_visible_markers(detections, observation, geometry_path, mounts):
+def horizontal_release_clearance(definition, observation, root_from_box, box_vertices):
+    """Clip original hand hulls to the visible box's perpendicular footprint.
+
+    This estimates a rigid horizontal opening from measured self FK and current
+    RGB. It uses no world/contact state and cannot prove physical detachment.
+    """
+    from scipy.optimize import linprog
+    from scipy.spatial import ConvexHull
+
+    frames = original_self_body_frames(definition, observation["measured_joints"]["positions"])
+    delta = frames[28][:3, 3] - frames[45][:3, 3]
+    up = rotation(observation["measured_joints"]["root_rotation_wxyz"]).T @ np.array([0., 0., 1.])
+    vertical = float(delta @ up)
+    horizontal = delta - vertical * up
+    span = float(np.linalg.norm(horizontal))
+    if span < 1e-4:
+        raise ValueError("horizontal release lacks a lateral palm direction")
+    direction = horizontal / span
+    basis = np.column_stack([direction, np.cross(direction, up), up])
+    box = (box_vertices @ root_from_box[:3, :3].T + root_from_box[:3, 3]) @ basis
+    lower, upper = box.min(axis=0), box.max(axis=0)
+    shifts = []
+    for collider in definition["collisions"]:
+        index = collider["body"]
+        name = definition["bodies"][index]["name"]
+        if not name.startswith(("left_hand_", "right_hand_")):
+            continue
+        if collider["shape"] == "convex_hull":
+            points = np.asarray(collider["points"], dtype=np.float64)
+        elif collider["shape"] == "box":
+            points = np.asarray(list(itertools.product(*[[-x, x] for x in collider["half_extents"]])))
+            local = transform(collider["local_pose"])
+            points = points @ local[:3, :3].T + local[:3, 3]
+        else:
+            raise ValueError("unsupported original hand collision shape")
+        points = (points @ frames[index][:3, :3].T + frames[index][:3, 3]) @ basis
+        hull = ConvexHull(points)
+        # A rectangle encloses the full visible box perpendicular to spreading.
+        # Infeasible shapes cannot overlap this footprint; no truth query occurs.
+        a = np.vstack([hull.equations[:, :3], [[0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]])
+        b = np.r_[-hull.equations[:, 3], upper[1], -lower[1], upper[2], -lower[2]]
+        left = name.startswith("left_")
+        solved = linprog([1 if left else -1, 0, 0], A_ub=a, b_ub=b,
+                         bounds=[(None, None)] * 3, method="highs")
+        if solved.status == 2:
+            continue
+        if not solved.success:
+            raise ValueError("original hand release clearance solve failed")
+        inner = float(solved.x[0])
+        shifts.append(max(0., float(upper[0] + .01 - inner if left else inner - lower[0] + .01)))
+    if not shifts:
+        raise ValueError("visible box has no measured hand footprint for release")
+    required = float(np.hypot(span + 2 * max(shifts), vertical))
+    return {"opening_profile": "gravity_horizontal_original_fingers",
+            "robot_collision_geometry_sha256": DEFINITION_SHA256,
+            "minimum_hand_clearance_m": .01,
+            "required_measured_palm_gap_m": required,
+            "maximum_commanded_palm_gap_m": .35,
+            "hand_clearance_admitted": required <= .35,
+            "prediction_is_not_physical_detachment": True}
+
+
+def placement_from_visible_markers(detections, observation, geometry_path, mounts, definition):
     """Conservative release admission from current RGB and public geometry only."""
     objects = {o["kind"]: o for o in json.loads(Path(geometry_path).read_text())["objects"]}
     poses = {d["marker_id"]: np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[d["marker_id"]]) for d in detections}
@@ -212,15 +275,16 @@ def placement_from_visible_markers(detections, observation, geometry_path, mount
     drop = float(points[:, 2].min()-floor[:, 2].max())
     upright = float((rotation(observation["measured_joints"]["root_rotation_wxyz"]) @ poses[21][:3, :3])[2, 2])
     root_speed = float(np.linalg.norm(observation["measured_joints"]["root_velocity_source"]))
-    admitted = margin >= .02 and .05 <= drop <= .4 and upright >= .98 and root_speed <= .05
-    return {"schema": "g1_visible_marker_release_admission_v1", "observation": observation["stamp"],
+    opening = horizontal_release_clearance(definition, observation, poses[22], vertices)
+    admitted = margin >= .02 and .05 <= drop <= .4 and upright >= .98 and root_speed <= .05 and opening["hand_clearance_admitted"]
+    return {"schema": "g1_visible_marker_release_admission_v2", "observation": observation["stamp"],
             "source_geometry_sha256": TASK_GEOMETRY_SHA256, "world_or_contact_truth_input": False,
             "source": "actual_two_marker_rgb_and_public_original_collision_vertices",
             "minimum_signed_floor_margin_m": margin, "minimum_required_floor_margin_m": .02,
             "estimated_drop_height_m": drop, "visible_bin_upward_cosine": upright,
             "self_root_speed_m_s": root_speed, "release_admitted": admitted, "task_qualified": False,
-            "release_goal": {"observation": observation["stamp"], "target_palm_gap_m": .3,
-                             "duration_ticks": 100} if admitted else None}
+            "release_goal": {"observation": observation["stamp"], "target_palm_gap_m": .35,
+                             "duration_ticks": 100} if admitted else None, **opening}
 
 
 def fine_from_visible_markers(detections, observation, geometry_path, mounts, heading):
@@ -408,7 +472,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
             result["fine_approach_proposal"] = fine_proposal
     if placement_view_only:
         result["placement_view_only"] = True
-        result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts)
+        result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts, definition)
     return result
 
 

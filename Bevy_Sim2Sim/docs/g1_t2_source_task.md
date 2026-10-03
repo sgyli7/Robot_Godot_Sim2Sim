@@ -1540,3 +1540,67 @@ the declared geometry to its pinned configuration before returning any reply.
 The actual saved-RGB Rust/Python round trip and41development tests/2ignored
 pass with0physics/models. Hold and newer placement-only image are still
 required before opening; no criterion is relaxed.
+
+Fresh0253 does not reach the repaired arrival gate: hand-only support ends at
+987 during coarse walking, before any fine/hold/opening. Its current image1097
+correctly rejects missing markers after the dropped box. All1097single50Hz
+updates complete with zero misses/debt; strict placement0seconds. The first
+original image differs from0251 by at most one RGB level, and the original
+model outputs and resulting grasp state differ. This is not evidence that the
+arrival fix failed. Trace SHA256:
+`98a6427d0d331973fe7b1fb0d7c411dd158b63d465a5ecad5796ea927187964f`.
+
+The exact saved0253 replay0254 reproduces all1097native f32 physical samples
+and the987hand-support loss. Control0255 changes only one coarse walk into
+three bounded segments with the same total requested physical path and the
+unchanged0.3m/s navigator/100Tick stop. It still loses support1285, before
+completing1373Ticks. Neither replay has non-floor robot/background impulse
+contact. Segmentation delays failure but is not a sufficient grip remedy and
+is not promoted to the runtime coarse approach. Both use0freshVLA/0newRGB;
+later segmented stamps are explicitly self-clock fixtures. This also leaves
+fresh-grasp robustness open instead of selecting a successful recorded grasp
+as autonomous qualification.
+
+A separate saved observed-prefix release test0256 matches all1809physical
+samples from0251, then executes100real holding Ticks and225opening/settling
+Ticks. All1709preopening post-grasp samples are hand-only, but the original
+30cm commanded gap leaves both distal index links supporting the box through
+2134: strict placement0seconds. No new RGB/VLA occurs; the hold/opening suffix
+has explicitly synthetic self-clock stamps and cannot qualify live release.
+
+The actual saved RGB/self-state and pinned original hand/box hulls provide a
+zero-physics clearance calculation0257. Hulls are conservatively clipped to
+the box footprint perpendicular to spreading; this requires more than the
+30cm target for a1cm gap around relevant hand shapes. A single35cm goal within
+the existing contract in0258 physically detaches the box, but the tilted spread
+leaves one final corner0.000250m outside the frozen bin-floor footprint. It
+correctly fails strict placement despite stable real bin support. No tolerance,
+rate, gain, friction, mass or force limit is changed.
+
+Control0259 changes only that35cm opening to spread perpendicular to named
+self gravity, preserving each palm's original height, orientation and fingers.
+The exact1909Tick physical prefix matches0258. Through the opening, real hand
+contact ends at1990; strict placement is then sustained for2.52seconds at2134,
+with upright>=0.992144. This passes the finite saved-prefix mechanical release
+check, not fresh vision/Qwen/science-station/formal8of10 or continuous1x.
+Trace SHA256:
+`bf3ef15e4c7af6e284f139df5cd04f1a93aec7ee6e0b862486f17d0a12df0106`.
+
+The current placement-only image protocol is now version2. It retains every
+floor-margin/drop-height/upright/self-speed gate and independently binds both
+original robot and task collision geometry. It predicts horizontal hand
+clearance from the actual current box image and named self FK; required gap
+beyond35cm rejects opening. An admitted command uses the existing35cm maximum
+and100opening Ticks, followed by125physical settling Ticks. The prediction is
+explicitly not proof of detachment: the separate contact/placement auditor
+must still pass. No saved self-clock stamp enters the runtime release path.
+
+Entry0260 passes the exact saved-RGB Rust/Python placement round trip with
+required measured horizontal clearance gap0.297021m, admitted35cm goal and
+no physics/models. The pure225-step release envelope also passes. A separate
+self-command audit checks every100opening step: maximum gravity-height change
+is1.25e-8m and palm rotation change4.46e-8, with fingers and zero navigation
+preserved. Validation passes73simulation tests/38ignored,41development tests/
+2ignored,12CLI tests and default compilation. A new unit test's initial numeric
+type compile error is retained in the evidence alongside its corrected pass.
+The new live full chain remains a separate required check.
