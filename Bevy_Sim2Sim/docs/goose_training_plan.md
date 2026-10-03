@@ -4,6 +4,8 @@
 
 **当前执行状态：按用户最新安排收尾，等待 Goose Robot 硬件工程完整交付后再继续。** Lab 不再并行实现碰撞代理，不启动新的物理实验、GPU 或 PPO，也不唤醒闲置性能子 agent。现有两小时 heartbeat 只检查明确交付状态；没有实质变化时保持安静。硬件方已收到这一分工及直接回交本聊天的要求，用户无需传话。
 
+**2026-10-04 最新等待检查：硬件本轮已结束，但交付仍未放行。** 实际读取 `goose_external_roles_candidate_v4` 验收文件，其状态为 `held_not_a_sim2sim_delivery`；源端／目标端／训练放行及候选晋升均为 false。供应方报告 21 刚体、89 个碰撞子形状；原 50 Hz 冷出生零动作／站立动作最大脚底接触深度分别为 21.221／16.151 mm，均未通过，改变接地初始化和 margin 的案例仅作诊断。完整任务覆盖、嘴部进物／持物／放开与目标整机动态仍开放。342 个有限姿态、单块目标凸包读回或 skill 收尾不代表完整交付；Lab 本轮只读取并冻结验收状态，未接收放行整包、未独立复跑物理、未恢复实施。[等待检查收据](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_hardware_wait_review_001/wait_review_receipt.json)、[供应方验收文件冻结副本](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_hardware_wait_review_001/supplier_gate_snapshot.json)。
+
 当前仍在 **M0-S／M0-T，尚无合格训练本体，PPO／优化器更新为零**。已验收的颈开口 CAD／SI 修订、真实四杆 CONNECT＋原生 Euler、CPU 开发回归和成熟 mjlab 短 GPU 接入均保留，但不代表完整游戏模型交付或策略资格。**30,105 子形状参考及后续制造面细分路线已收口，不作为训练／游戏候选继续推进。** 旧 512 几何提案不是现行交付目标；mjlab 的 `njmax=512` 是另一项约束容量，不随几何提案撤销。
 
 碰撞方案按用户最新澄清参考 MicroDuck／G1 的任务接触角色与精度划分，并显著降低复杂度；**不将随意的 29 或对照模型的 11 直接硬编码为 Goose 已获批准的数值合同**。复合形状按全部实际子形状计数，脚底支撑、嘴部夹持、活动连杆与外部接触须有依据；制造级内部细节留在 CAD／SI。尚未提交、未验证的 11 个硬上限改动已撤回，三处代码与原提交逐字节相同。[收尾收据](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_delivery_wait_001/closure_receipt.json)。
