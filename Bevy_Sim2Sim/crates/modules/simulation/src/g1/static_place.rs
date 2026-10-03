@@ -61,10 +61,10 @@ impl StaticPlacementGeometry {
         &self.sha256
     }
     pub fn load(config: &super::task_objects::TaskObjectSceneConfig) -> Result<Self, RobotError> {
-        let d = super::task_objects::TaskObjectsDefinition::load(
-            &config.definition,
-            &config.definition_sha256,
-        )?;
+        Self::load_public_definition(&config.definition, &config.definition_sha256)
+    }
+    pub fn load_public_definition(path: &std::path::Path, hash: &str) -> Result<Self, RobotError> {
+        let d = super::task_objects::TaskObjectsDefinition::load(path, hash)?;
         let (apple, plate) = d.static_placement_vertices();
         if apple.is_empty() || plate.is_empty() {
             return Err(invalid("missing original static public geometry"));
@@ -72,8 +72,43 @@ impl StaticPlacementGeometry {
         Ok(Self {
             apple,
             plate,
-            sha256: config.definition_sha256.clone(),
+            sha256: hash.into(),
         })
+    }
+    /// Public shape extrema for a disclosed rigid transfer, with no world query.
+    pub(super) fn lowering_delta(
+        &self,
+        state: &G1Measurement,
+        apple: &[[f64; 4]; 4],
+        plate: &[[f64; 4]; 4],
+        prior_displacement: Vector3<f64>,
+    ) -> Result<Vector3<f64>, RobotError> {
+        let root = self_rotation(state)?.to_rotation_matrix().into_inner();
+        let apple_r = root * matrix(apple)?;
+        let plate_r = root * matrix(plate)?;
+        let low = self
+            .apple
+            .iter()
+            .map(|p| (apple_r * Vector3::from(*p)).z)
+            .fold(f64::INFINITY, f64::min);
+        let high = self
+            .plate
+            .iter()
+            .map(|p| (plate_r * Vector3::from(*p)).z)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut target = root * translation(plate);
+        target.z += high - low + 0.005;
+        let delta = target - root * translation(apple) - prior_displacement;
+        if !delta.iter().all(|v| v.is_finite())
+            || !(-0.15..=0.).contains(&delta.z)
+            || delta.fixed_rows::<2>(0).norm() > 0.035
+            || delta.norm() / 100. > 0.0016
+        {
+            return Err(invalid(
+                "observed placement lowering path exceeds frozen bounds",
+            ));
+        }
+        Ok(delta)
     }
 }
 #[derive(Clone, Debug, Serialize)]
@@ -206,7 +241,7 @@ impl StaticMemoryPlace {
         })
     }
 }
-fn matrix(m: &[[f64; 4]; 4]) -> Result<Matrix3<f64>, RobotError> {
+pub(super) fn matrix(m: &[[f64; 4]; 4]) -> Result<Matrix3<f64>, RobotError> {
     if !m.iter().flatten().all(|v| v.is_finite())
         || m[3] != [0., 0., 0., 1.]
         || translation(m).norm() > 2.
@@ -221,7 +256,7 @@ fn matrix(m: &[[f64; 4]; 4]) -> Result<Matrix3<f64>, RobotError> {
     }
     Ok(r)
 }
-fn translation(m: &[[f64; 4]; 4]) -> Vector3<f64> {
+pub(super) fn translation(m: &[[f64; 4]; 4]) -> Vector3<f64> {
     Vector3::new(m[0][3], m[1][3], m[2][3])
 }
 fn sha(s: &str) -> bool {

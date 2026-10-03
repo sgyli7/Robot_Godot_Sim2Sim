@@ -24,6 +24,7 @@ pub enum StaticStartupCommand {
     OriginalRegrasp(ArenaTaskCommand),
     /// Finite classical correction from a current preclosure RGB observation.
     ObservedGrasp(super::static_grasp::StaticObservedGraspGoal),
+    ObservedPlace(super::static_observed_place::StaticObservedPlaceGoal),
     VisualTransfer(super::static_transfer::StaticVisualTransferGoal),
     MemoryPlace(super::static_place::StaticMemoryPlaceGoal),
     ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalGoal),
@@ -35,6 +36,7 @@ impl StaticStartupCommand {
             Self::OriginalVla(command) => command.validate(),
             Self::OriginalRegrasp(command) => command.validate(),
             Self::ObservedGrasp(goal) => goal.validate(),
+            Self::ObservedPlace(goal) => goal.validate(),
             Self::VisualTransfer(goal) => goal.validate(),
             Self::MemoryPlace(goal) => goal.validate(),
             Self::ObservationWithdrawal(goal) => goal.validate(),
@@ -56,6 +58,7 @@ pub enum StaticStartupExecution {
     OriginalVla(ArenaTaskExecution),
     OriginalRegrasp(ArenaTaskExecution),
     ObservedGrasp(super::static_grasp::StaticObservedGraspStep),
+    ObservedPlace(super::static_observed_place::StaticObservedPlaceStep),
     VisualTransfer(super::static_transfer::StaticVisualTransferStep),
     MemoryPlace(super::static_place::StaticMemoryPlaceStep),
     ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalStep),
@@ -81,6 +84,7 @@ pub(super) struct StaticStartupRunner {
     observation_withdrawal: Option<super::static_observe::StaticObservationWithdrawal>,
     regrasp_started: bool,
     observed_grasp: Option<super::static_grasp::StaticObservedGrasp>,
+    observed_place: Option<super::static_observed_place::StaticObservedPlace>,
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
@@ -122,6 +126,7 @@ impl StaticStartupRunner {
             observation_withdrawal: None,
             regrasp_started: false,
             observed_grasp: None,
+            observed_place: None,
             owner: if native_four_passes {
                 ArenaTaskRunner::load_static_predictive_limit_diagnostic(config)?
             } else {
@@ -359,6 +364,65 @@ impl StaticStartupRunner {
                         .step_static_observed_grasp_with_guard(&step.command, guard)?;
                     Ok(StaticStartupStep {
                         execution: StaticStartupExecution::ObservedGrasp(step),
+                        body,
+                    })
+                }
+                StaticStartupCommand::ObservedPlace(goal) => {
+                    let state = self.owner.measurement()?;
+                    if self.observed_place.is_none() {
+                        let grasp = self
+                            .observed_grasp
+                            .as_ref()
+                            .ok_or_else(|| invalid("observed placement has no corrected grasp"))?;
+                        let command = grasp.completed_command().ok_or_else(|| {
+                            invalid("observed placement requires a completed corrected grasp")
+                        })?;
+                        if state.source_tick != 100 + grasp.goal().increments.len() as u64
+                            || self.transfer.is_some()
+                            || self.placement.is_some()
+                            || self.regrasp_started
+                            || self
+                                .last_original_execution
+                                .as_ref()
+                                .is_none_or(|e| e.admitted_chunks != 1 || e.frame_index != 39)
+                        {
+                            return Err(invalid(
+                                "observed placement differs from its separate one-chunk grasp boundary",
+                            ));
+                        }
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .as_millis() as u64;
+                        if goal.observations.iter().any(|o| {
+                            o.captured_at_unix_ms > now || now - o.captured_at_unix_ms > 2000
+                        }) {
+                            return Err(invalid(
+                                "observed placement actual RGB pair wall age expired",
+                            ));
+                        }
+                        self.observed_place =
+                            Some(super::static_observed_place::StaticObservedPlace::new(
+                                goal.clone(),
+                                &state,
+                                command,
+                                self.placement_geometry.as_ref().ok_or_else(|| {
+                                    invalid("observed placement public shape absent")
+                                })?,
+                            )?);
+                    }
+                    let place = self.observed_place.as_mut().unwrap();
+                    if place.goal() != goal {
+                        return Err(invalid("observed placement immutable goal changed"));
+                    }
+                    let step = place.update(&state, &self.kinematics)?;
+                    let body = self.owner.step_static_observed_place_with_guard(
+                        &step.command,
+                        guard,
+                        goal.start_tick(),
+                    )?;
+                    Ok(StaticStartupStep {
+                        execution: StaticStartupExecution::ObservedPlace(step),
                         body,
                     })
                 }

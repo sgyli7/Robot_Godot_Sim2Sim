@@ -30,6 +30,14 @@ struct Fixture {
     goal: PathBuf,
     goal_sha256: String,
     output: PathBuf,
+    #[serde(default)]
+    post_grasp_goal: Option<PinnedPostGoal>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinnedPostGoal {
+    path: PathBuf,
+    sha256: String,
 }
 fn wait(
     worker: &StaticStartupWorker,
@@ -37,7 +45,7 @@ fn wait(
     file: &mut fs::File,
     target: u64,
 ) -> Result<Arc<WorkerSnapshot<StaticStartupStep>>, String> {
-    let end = Instant::now() + Duration::from_secs(15);
+    let end = Instant::now() + Duration::from_secs(20);
     loop {
         for r in trace.drain() {
             writeln!(file,"{}",serde_json::json!({"body":r.step.body,"execution":r.step.execution,"timing":r.timing})).map_err(|e|e.to_string())?;
@@ -161,10 +169,40 @@ fn saved_observed_grasp_in_original_world() -> Result<(), String> {
             command: StaticStartupCommand::ObservedGrasp(goal),
         })
         .map_err(|e| e.to_string())?;
-    let final_state = wait(&worker, &trace, &mut file, target)?;
+    let mut final_state = wait(&worker, &trace, &mut file, target)?;
+    let mut final_target = target;
+    if let Some(post) = f.post_grasp_goal {
+        let mut goal: simulation_minigame::g1::static_observed_place::StaticObservedPlaceGoal =
+            serde_json::from_slice(
+                &bound_bytes(&post.path, &post.sha256).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        goal.validate().map_err(|e| e.to_string())?;
+        if goal.start_tick() != target || goal.observations[1].episode_id != episode {
+            return Err(
+                "offline placement differs from its actual corrected-grasp boundary".into(),
+            );
+        }
+        // Saved-pair mechanical probe only; these refreshed wall identities
+        // must never be described as fresh camera observations or autonomy.
+        let now = wall();
+        goal.observations[0].captured_at_unix_ms = now - 1;
+        goal.observations[1].captured_at_unix_ms = now;
+        final_target =
+            target + simulation_minigame::g1::static_observed_place::OBSERVED_PLACE_TICKS;
+        worker
+            .submit(TimedCommand {
+                episode_id: episode,
+                valid_until_sim_ns: final_target * 20_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(17),
+                command: StaticStartupCommand::ObservedPlace(goal),
+            })
+            .map_err(|e| e.to_string())?;
+        final_state = wait(&worker, &trace, &mut file, final_target)?;
+    }
     assert_eq!(trace.dropped_records(), 0);
-    assert_eq!(final_state.timing.total_integrations, target);
-    assert_eq!(final_state.timing.total_successful_inferences, target);
+    assert_eq!(final_state.timing.total_integrations, final_target);
+    assert_eq!(final_state.timing.total_successful_inferences, final_target);
     let simulation_minigame::g1::task_runner::ArenaBodyStep::StaticAgile(body) = &final_state
         .step
         .as_ref()

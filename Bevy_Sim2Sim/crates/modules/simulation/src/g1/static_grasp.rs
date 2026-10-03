@@ -108,6 +108,9 @@ impl StaticObservedGrasp {
     pub fn goal(&self) -> &StaticObservedGraspGoal {
         &self.goal
     }
+    pub(super) fn completed_command(&self) -> Option<AgileCommand> {
+        (self.ticks == self.goal.increments.len()).then(|| self.command.clone())
+    }
     pub fn update(
         &mut self,
         state: &G1Measurement,

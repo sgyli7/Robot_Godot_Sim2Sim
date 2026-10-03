@@ -389,6 +389,13 @@ impl ArenaTaskRunner {
         self.step_static_classical_admitted_with_guard(command,guard,100..500,1)
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_observed_place_with_guard(&mut self,
+        command:&robot_minigame::g1::agile::AgileCommand,
+        guard:&mut dyn FnMut()->Result<(),RobotError>,start_tick:u64)->Result<ArenaBodyStep,RobotError> {
+        if !(101..=500).contains(&start_tick) {return Err(error("observed placement start exceeds its fixed contract"));}
+        self.step_static_classical_admitted_with_guard(command,guard,start_tick..start_tick+super::static_observed_place::OBSERVED_PLACE_TICKS,1)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
     fn step_static_classical_admitted_with_guard(&mut self,
         command: &robot_minigame::g1::agile::AgileCommand,
         guard: &mut dyn FnMut() -> Result<(), RobotError>,

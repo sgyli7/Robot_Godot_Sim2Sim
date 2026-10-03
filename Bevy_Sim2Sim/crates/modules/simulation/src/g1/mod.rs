@@ -28,6 +28,8 @@ pub mod static_transfer;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod static_grasp;
 #[cfg(feature = "g1_constraint_diagnostic")]
+pub mod static_observed_place;
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub mod static_place;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod static_observe;
