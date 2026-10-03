@@ -461,3 +461,15 @@ checks the actual virtualenv prefix, NumPy, ONNX Runtime and CUDA provider befor
 loading any weights. The corrected manifest keeps all ten case configurations
 and thresholds byte-equivalent, updates only tool/source identities, and names
 the retained zero-Tick failed batch. No task case or score is silently retried.
+
+The corrected run (`0316`) completes all five seed0 cases:2pass,3fail,
+1900actual integrations and40fresh N1.7 forwards, with standing throughout.
+Its second model group never starts because a port probe without SO_REUSEADDR
+rejects the previous group's closed connections. The probe now matches the
+HTTP server's reuse policy and still rejects an active listener. A CPU socket
+test exercises both outcomes. Explicit continuation pins the old summary and
+manifest, checks unchanged cases/thresholds/model/binary, re-audits every retained
+case and checks the closed owner's40actual calls before starting only seed42.
+The combined report retains separate source identities and new/retained counts;
+it never rewrites or reruns the first five cases. Even five further successes
+would give at most7of10, so this batch cannot meet the frozen8of10 threshold.

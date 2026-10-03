@@ -39,6 +39,67 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
+def check_port_available(port=5557):
+    # Match ThreadingHTTPServer's reuse policy. A completed seed group can leave
+    # accepted connections in TIME_WAIT; that is not an active model owner.
+    # An active listener still causes bind to fail and is never stopped here.
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))
+
+
+def retained_cases(directory, expected_summary_sha, manifest, binary_sha):
+    """Re-audit a completed seed0 group without repeating physical execution."""
+    summary_path = directory / "summary.json"
+    parent_path = directory / "frozen_manifest.json"
+    if digest(summary_path) != expected_summary_sha:
+        raise ValueError("Retained partial summary changed")
+    parent = json.loads(parent_path.read_text())
+    old = json.loads(summary_path.read_text())
+    if (digest(parent_path) != manifest.get("parent_manifest_sha256")
+            or old["manifest_sha256"] != digest(parent_path)
+            or old["complete"] or old["binary_sha256"] != binary_sha):
+        raise ValueError("Continuation does not identify the incomplete original run")
+    for key in ("cases", "acceptance", "profile", "revision", "seed_offsets",
+                "physics_hz", "integrations_per_tick", "startup_ticks", "task_ticks",
+                "max_vla_calls", "model_receipt_sha256", "pauses_for_camera_and_policy"):
+        if parent[key] != manifest[key]:
+            raise ValueError(f"Continuation changed frozen case or acceptance: {key}")
+    for name, checksum in parent["tools_sha256"].items():
+        if name != "unitree_g1_static_suite.py" and manifest["tools_sha256"].get(name) != checksum:
+            raise ValueError("Continuation changed model or audit implementation")
+    results = old["cases"]
+    if (len(results) != 5 or {(c["position_id"], c["seed_offset"]) for c in results}
+            != {(p, 0) for p in range(5)}):
+        raise ValueError("Only a completed five-case seed0 group can be resumed")
+    lifecycle = json.loads((directory / "seed_offset_0/model_lifecycle.json").read_text())
+    if (not lifecycle["owned_model_closed"] or lifecycle["initial_health"]["successful_inferences"] != 0
+            or lifecycle["final_health"]["successful_inferences"] != 40
+            or lifecycle["final_health"]["failed_inferences"] != 0):
+        raise ValueError("Retained model owner or actual inference counter is incomplete")
+    for result in results:
+        case = directory / f"position_{result['position_id']}_seed_0"
+        spec = next(c for c in manifest["cases"]
+                    if (c["position_id"], c["seed_offset"]) == (result["position_id"], 0))
+        execution = json.loads((case / "execution.json").read_text())
+        if (json.loads((case / "config.json").read_text()) != spec["configuration"]
+                or execution["code_commit"] != old["code_commit"]
+                or execution["binary_sha256"] != binary_sha
+                or execution["frozen_manifest_sha256"] != old["manifest_sha256"]
+                or execution["result"] != result
+                or not result["evidence_verified"] or result["actual_integrations"] != 380
+                or result["fresh_vla_calls"] != 8 or not result["model_counter_verified"]):
+            raise ValueError("Retained case identity or actual execution is incomplete")
+        verified = audit(case, 0)
+        for key in ("strict_placement_passed", "trace_sha256", "standing_all_ticks",
+                    "max_continuous_placement_seconds", "minimum_margin_m"):
+            if verified[key] != result[key]:
+                raise ValueError(f"Retained case failed independent re-audit: {key}")
+    return results, {"directory": str(directory), "summary_sha256": expected_summary_sha,
+                     "manifest_sha256": digest(parent_path), "code_commit": old["code_commit"],
+                     "reexecuted_cases": 0, "actual_integrations": 1900, "fresh_vla_calls": 40}
+
+
 def run(args):
     if digest(args.manifest) != args.manifest_sha256:
         raise ValueError("Frozen suite manifest checksum changed")
@@ -97,15 +158,26 @@ def run(args):
                 or config["diagnostic_constraint_sweeps"] != 16
                 or not config["predictive_limit_diagnostic"]):
             raise ValueError("Case changed its unique native station/body/VLA owner")
+    retained, origin = [], None
+    if args.resume_output is not None:
+        if not args.resume_summary_sha256:
+            raise ValueError("Continuation requires the pinned partial summary checksum")
+        retained, origin = retained_cases(args.resume_output, args.resume_summary_sha256,
+                                           manifest, digest(binary))
+    elif args.resume_summary_sha256:
+        raise ValueError("Partial summary checksum requires its retained output directory")
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copy2(args.manifest, args.output / "frozen_manifest.json")
     shutil.copy2(args.build_receipt, args.output / "build.json")
     save(args.output / "model_runtime.json", runtime_identity)
     summary = {"schema": "g1_native_static_profile_suite_result_v1", "complete": False,
                "manifest_sha256": args.manifest_sha256, "code_commit": head,
-               "binary_sha256": digest(binary), "cases": [], "successes": 0,
+               "binary_sha256": digest(binary), "cases": retained,
+               "successes": sum(int(c["strict_placement_passed"]) for c in retained),
                "expected_cases": 10, "required_successes": 8,
-               "actual_integrations": 0, "fresh_vla_calls": 0,
+               "actual_integrations": sum(c["actual_integrations"] for c in retained),
+               "fresh_vla_calls": sum(c["fresh_vla_calls"] for c in retained),
+               "retained_run": origin, "new_actual_integrations": 0, "new_fresh_vla_calls": 0,
                "pauses_for_camera_and_policy": True, "qwen_target_selection": False,
                "continuous_real_time_qualified": False, "full_task_qualified": False}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -119,6 +191,8 @@ def run(args):
     start = time.monotonic()
     try:
         for seed in [0, 42]:
+            if retained and seed == 0:
+                continue
             group = args.output / f"seed_offset_{seed}"
             group.mkdir()
             shared_captures = group / "policy_captures"
@@ -129,8 +203,7 @@ def run(args):
             server = None
             with (group / "model.log").open("x") as log:
                 try:
-                    with socket.socket() as probe:
-                        probe.bind(("127.0.0.1", 5557))
+                    check_port_available()
                     server = subprocess.Popen(command, cwd=args.workspace, stdout=log, stderr=subprocess.STDOUT)
                     lifecycle["owned_model_pid"] = server.pid
                     deadline = time.monotonic() + 90
@@ -243,6 +316,8 @@ def run(args):
                             summary["successes"] += int(result["strict_placement_passed"] and result["evidence_verified"])
                             summary["actual_integrations"] += result["actual_integrations"]
                             summary["fresh_vla_calls"] += result["fresh_vla_calls"]
+                            summary["new_actual_integrations"] += result["actual_integrations"]
+                            summary["new_fresh_vla_calls"] += result["fresh_vla_calls"]
                             save(args.output / "summary.json", summary)
                         print(f"EVENT native_T1_case_completed position={spec['position_id']} seed_offset={seed} passed={result['strict_placement_passed']} verified={result['evidence_verified']} ticks={result['actual_integrations']} vla={result['fresh_vla_calls']}", flush=True)
                 finally:
@@ -281,12 +356,16 @@ def main():
     parser.add_argument("--model-python", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--resume-output", type=Path)
+    parser.add_argument("--resume-summary-sha256")
     args = parser.parse_args()
     # Resolving a venv's bin/python symlink selects the base interpreter and
     # loses its site-packages. Preserve that launcher path deliberately.
     args.model_python = args.model_python.absolute()
     for name in ["manifest", "binary", "build_receipt", "model_receipt", "workspace", "output"]:
         setattr(args, name, getattr(args, name).resolve())
+    if args.resume_output is not None:
+        args.resume_output = args.resume_output.resolve()
     sys.exit(run(args))
 
 
