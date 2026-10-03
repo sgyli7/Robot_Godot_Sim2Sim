@@ -585,7 +585,7 @@ impl ArenaTaskRunner {
             || self.executor.accepted.is_some()
             || self.executor.pending.is_some()
             || !(60..160).contains(&tick)
-            || command.navigation != [0.; 3]
+            || command.navigation.iter().any(|v| v.abs() > 0.01)
         {
             return Err(error("finite offline alignment fixture admission failed"));
         }

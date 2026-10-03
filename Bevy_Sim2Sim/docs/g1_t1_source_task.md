@@ -495,5 +495,11 @@ fixture: two fresh native station owners, each60startup +80saved commands
 using one fixed oracle-derived initial-position translation and source FK/IK;
 fingers, body commands, gains, physics and all original saved bytes stay intact.
 It creates no images or task-policy calls and cannot earn an autonomous score.
-The diagnostic API rejects VLA admission, navigation and steps outside60..160;
+The diagnostic API rejects VLA admission, navigation magnitude above0.01and
+steps outside60..160; tiny original decoded navigation residuals stay unchanged.
 normal workers/queues do not call it or acquire a new fallback behavior.
+
+The first alignment attempt (`0322`) stops after62actual ticks because its
+initial zero-navigation guard rejects an original -0.000629rad/s yaw output.
+No candidate world has run. Its partial trace stays retained; only that guard
+is corrected, with unchanged saved commands, oracle delta and grasp thresholds.
