@@ -389,3 +389,21 @@ No independent success/contact/object pose label was sent to Qwen. There were
 zero Qwen executor actions; this is final semantic feedback, not Qwen-driven
 physical task execution or formal acceptance. Owned Qwen/N1.7/app/CPU processes
 were stopped/reaped immediately. Evidence: scratch 0371/0372.
+
+The observation-withdrawal diagnostic now pauses at Tick 190, after the fixed
+50 mm lift, before any horizontal transfer. One additional native ego RGB
+capture must detect apple31 through the same 8 px / 1 px image gates. The
+original Tick 140 localization still requires both apple31 and plate32; neither
+target identity nor gate is weakened. The two image poses and all 51 named self
+samples from 140 through 190 verify at least 25 mm of apple and measured-palm
+lift, with no more than 20 mm change in apple position relative to the measured
+palm. The latter bound corresponds to the sum of the two previously calibrated
+10 mm position-error bounds; it does not establish contact or final success.
+Self velocity accounts for root translation. Current image age is limited to
+2 seconds and origin age to 8 seconds, with original acquisition timestamps.
+No contact/world truth enters this check. Missing, stale, reset, slipped or
+stationary-object observations block horizontal motion and pause the simulation.
+The initial and grip localization have separate immutable input directories and
+receipt fields; the CPU worker permits at most these two captures. Other
+diagnostic entries retain their prior single-capture route. This development
+gate is not a recovered grasp, a formal task result, or a qualified UI skill.

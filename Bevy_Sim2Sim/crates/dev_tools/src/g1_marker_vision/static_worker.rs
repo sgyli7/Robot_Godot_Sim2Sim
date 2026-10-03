@@ -73,6 +73,7 @@ struct Pending {
     image_hash: String,
     input_hash: String,
     started: Instant,
+    grip_check: bool,
 }
 
 pub(crate) struct StaticMarkerWorker {
@@ -87,6 +88,8 @@ pub(crate) struct StaticMarkerWorker {
     ready: Option<Value>,
     pending: Option<Pending>,
     submitted: bool,
+    grip_submitted: bool,
+    previous_observation: Option<ObservationStamp>,
 }
 
 impl StaticMarkerWorker {
@@ -169,6 +172,8 @@ impl StaticMarkerWorker {
             ready: None,
             pending: None,
             submitted: false,
+            grip_submitted: false,
+            previous_observation: None,
         })
     }
 
@@ -179,6 +184,7 @@ impl StaticMarkerWorker {
     pub(crate) fn provenance(&self) -> Value {
         json!({"owned_pid":self.child.id(),"episode_id":self.episode_id,"ready":self.ready,
             "single_capture_submitted":self.submitted,"pending":self.pending.is_some(),
+            "grip_capture_submitted":self.grip_submitted,
             "world_or_contact_truth_input":false,"actuation_proposed":false})
     }
 
@@ -268,9 +274,20 @@ impl StaticMarkerWorker {
     }
 
     pub(crate) fn submit_capture(&mut self, frame: &G1CapturedRgb) -> Result<(), String> {
+        self.submit(frame, false)
+    }
+
+    /// One additional actual image after the fixed lift; apple31 is required.
+    /// The initial image still requires both original target identities.
+    pub(crate) fn submit_grip_capture(&mut self, frame: &G1CapturedRgb) -> Result<(), String> {
+        self.submit(frame, true)
+    }
+
+    fn submit(&mut self, frame: &G1CapturedRgb, grip_check: bool) -> Result<(), String> {
         if !self.ready()
             || self.pending.is_some()
-            || self.submitted
+            || (!grip_check && self.submitted)
+            || (grip_check && (!self.submitted || self.grip_submitted))
             || frame.stamp.episode_id != self.episode_id
             || frame.stamp.source != CameraPoseSource::PhysicsBody
             || frame.stamp.mount_profile != G1CameraMountProfile::ArenaEgo
@@ -303,7 +320,18 @@ impl StaticMarkerWorker {
         if observation.frame_id == 0 || observation.captured_at_unix_ms == 0 {
             return Err("static RGB frame identity is zero".into());
         }
-        let directory = self.root.join("static_vision_input");
+        if self.previous_observation.is_some_and(|previous| {
+            observation.frame_id <= previous.frame_id
+                || observation.sim_time_ns <= previous.sim_time_ns
+                || observation.captured_at_unix_ms <= previous.captured_at_unix_ms
+        }) {
+            return Err("static CPU image identity did not advance".into());
+        }
+        let directory = self.root.join(if grip_check {
+            "static_grip_vision_input"
+        } else {
+            "static_vision_input"
+        });
         fs::create_dir(&directory).map_err(|e| e.to_string())?;
         let rgb = CameraRgb::from_rgb(
             "native_static_ego",
@@ -337,8 +365,14 @@ impl StaticMarkerWorker {
             image_hash,
             input_hash,
             started,
+            grip_check,
         });
-        self.submitted = true;
+        self.previous_observation = Some(observation);
+        if grip_check {
+            self.grip_submitted = true;
+        } else {
+            self.submitted = true;
+        }
         Ok(())
     }
 }
@@ -414,7 +448,7 @@ fn validate_reply(
         admitted[index] = true;
     }
     // Absence is a perception failure; no actuation or truth-based replacement.
-    if admitted != [true; 2] {
+    if !admitted[0] || (!pending.grip_check && !admitted[1]) {
         return Err("actual static RGB did not admit both requested targets".into());
     }
     Ok(())
@@ -437,6 +471,7 @@ impl Drop for StaticMarkerWorker {
                 &json!({"owned_pid":self.child.id(),"episode_id":self.episode_id,
                 "owned_child_reaped":status.is_ok(),"exit_status":status.ok().map(|s|s.to_string()),
                 "single_capture_submitted":self.submitted,"pending_at_shutdown":self.pending.is_some(),
+                "grip_capture_submitted":self.grip_submitted,
                 "world_or_contact_truth_input":false}),
             );
         }
@@ -470,6 +505,7 @@ mod tests {
             image_hash: "a".repeat(64),
             input_hash: "b".repeat(64),
             started: Instant::now(),
+            grip_check: false,
         };
         let reply = json!({"schema":"g1_static_actual_rgb_localization_v1","observation":pending.observation,
         "source":"actual_rgb_printed_label_pnp_and_original_self_FK","image_sha256":pending.image_hash,
@@ -521,5 +557,16 @@ mod tests {
         let mut bad = reply;
         bad["detections"][0]["reprojection_rms_px"] = json!(1.01);
         assert!(validate_reply(&bad, &pending, &config).is_err());
+    }
+
+    #[test]
+    fn grip_reply_requires_current_apple_but_initial_reply_keeps_both_targets() {
+        let (config, mut pending, mut reply) = fixture();
+        reply["detections"].as_array_mut().unwrap().pop();
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        pending.grip_check = true;
+        assert!(validate_reply(&reply, &pending, &config).is_ok());
+        reply["detections"].as_array_mut().unwrap().clear();
+        assert!(validate_reply(&reply, &pending, &config).is_err());
     }
 }

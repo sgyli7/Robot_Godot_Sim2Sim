@@ -170,3 +170,16 @@ Failed owner snapshots preserve actual integration/inference counters if a
 post-integration guard refuses the last completed record. No parameter grid is
 performed. The frozen trajectory and independent physical audit, not the test
 exit status alone, determine what this comparison shows.
+
+The single four-pass comparison at `1d7f220` stops at the existing startup
+admission gate after exactly 60 native integrations, WBC calls and torque
+updates. All recorded ticks remain upright, but the final self speed is
+0.114630 m/s and there are zero consecutive stable ticks; the unchanged gate
+requires 20 ticks at no more than 0.03 m/s. The sixteen-pass reference has
+0.002345 m/s and 43 consecutive stable ticks at that same boundary. Horizontal
+root drift is 0.149 m versus 0.00507 m. No original grasp action or placement
+command executes. This negative result identifies startup instability under
+this fixed four-pass input, and cannot establish placement quality or formal
+task qualification. No threshold, frequency, force, gain or material is changed;
+no parameter grid or retry is performed. Scratch case 0373 retains all 60 body
+records and the failed owner snapshot with actual counters.

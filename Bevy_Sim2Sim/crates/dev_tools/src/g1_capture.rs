@@ -32,6 +32,8 @@ use bevy::{
 mod mobile_continuous;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_visual_transfer;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod static_grip_check;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
@@ -994,6 +996,8 @@ pub struct G1CaptureReceipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_marker_localization: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_grip_localization: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub static_visual_grasp_handoff: Option<serde_json::Value>,
     pub camera_exposure_ev100: f32,
     pub diagnostic_directional_shadow_maps: bool,
@@ -1130,6 +1134,7 @@ impl G1CaptureReceipt {
             mobile_assist_handoff: None,
             disclosed_fiducials: None,
             static_marker_localization: None,
+            static_grip_localization: None,
             static_visual_grasp_handoff: None,
             camera_exposure_ev100: Exposure::default().ev100,
             diagnostic_directional_shadow_maps: true,
@@ -4592,7 +4597,14 @@ fn drive_capture(
     let result = (|| -> Result<(), String> {
         if let Some(worker) = &mut runtime.static_marker_worker {
             if let Some(localization) = worker.poll()? {
-                outcome.0.lock().unwrap().static_marker_localization = Some(localization);
+                let tick = localization["localization"]["observation"]["sim_time_ns"]
+                    .as_u64()
+                    .ok_or("static localization time absent")? / 20_000_000;
+                if runtime.static_memory_observe && tick == 190 {
+                    outcome.0.lock().unwrap().static_grip_localization = Some(localization);
+                } else {
+                    outcome.0.lock().unwrap().static_marker_localization = Some(localization);
+                }
             }
         }
         if let Some(lighting) = &station_illumination {

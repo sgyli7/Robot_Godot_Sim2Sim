@@ -11,6 +11,7 @@ use simulation_minigame::g1::{
     task_objects::TaskObjectSceneConfig,
     worker::TimedCommand,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) struct StaticTransferRoute {
     kinematics: StaticLeftPalmKinematics,
@@ -20,6 +21,9 @@ pub(super) struct StaticTransferRoute {
     submitted_placement: bool,
     memory_image_requested: bool,
     submitted_withdrawal: bool,
+    transfer_goal: Option<StaticVisualTransferGoal>,
+    grip_image_submitted: bool,
+    grip_verified: bool,
 }
 impl StaticTransferRoute {
     pub(super) fn new(
@@ -40,6 +44,9 @@ impl StaticTransferRoute {
             submitted_placement: false,
             memory_image_requested: false,
             submitted_withdrawal: false,
+            transfer_goal: None,
+            grip_image_submitted: false,
+            grip_verified: false,
         })
     }
     fn drive(
@@ -69,6 +76,9 @@ impl StaticTransferRoute {
             return Ok(false);
         }
         if self.submitted_transfer {
+            if runtime.static_memory_observe && !self.grip_verified {
+                return self.drive_grip_verification(runtime, outcome, port);
+            }
             if runtime.static_memory_place {
                 return self.drive_placement(runtime, outcome, port);
             }
@@ -200,15 +210,139 @@ impl StaticTransferRoute {
         worker
             .submit(TimedCommand {
                 episode_id: runtime.episode_id,
-                valid_until_sim_ns: 390 * 20_000_000,
+                valid_until_sim_ns: if runtime.static_memory_observe {
+                    190
+                } else {
+                    390
+                } * 20_000_000,
                 valid_until_wall: Instant::now() + Duration::from_secs(7),
                 command: StaticStartupCommand::VisualTransfer(goal.clone()),
             })
             .map_err(|e| e.to_string())?;
         self.submitted_transfer = true;
+        self.transfer_goal = Some(goal.clone());
         outcome.0.lock().unwrap().static_visual_grasp_handoff = Some(
             serde_json::json!({"phase":"current140Tick_RGB_then_classical_left_palm_transfer","goal":goal,"geometric_correction_executed":true,"requested_classical_ticks":250,"original_vla_calls":2,"whole_path_preflight_outside_physical_tick":true,"world_or_contact_truth_input":false,"task_qualified":false}),
         );
+        Ok(false)
+    }
+    fn drive_grip_verification(
+        &mut self,
+        runtime: &mut CaptureRuntime,
+        outcome: &CaptureOutcome,
+        port: &G1CameraPort,
+    ) -> Result<bool, String> {
+        let latest = runtime
+            .latest
+            .clone()
+            .ok_or("grip verification self absent")?;
+        let tick = latest.timing.episode_integrations;
+        if tick < 190 {
+            return Ok(false);
+        }
+        if tick != 190 || latest.phase != G1WorkerPhase::Paused {
+            return Err("grip verification requires the completed50Tick lift pause".into());
+        }
+        if !self.grip_image_submitted {
+            if !runtime.requested {
+                port.request_physics_frame(runtime.episode_id, 190)?;
+                runtime.requested = true;
+                return Ok(false);
+            }
+            if let Some(frame) = port.take() {
+                let frame = frame?;
+                if frame.stamp.source_ticks != [190, 190]
+                    || frame.stamp.episode_id != runtime.episode_id
+                {
+                    return Err("grip verification RGB is stale or from another episode".into());
+                }
+                let measured = latest
+                    .measurement
+                    .as_ref()
+                    .ok_or("grip current self absent")?;
+                let native = frame
+                    .stamp
+                    .native_state
+                    .as_ref()
+                    .ok_or("grip camera self absent")?;
+                if native.measured_joints.positions != measured.joint_positions
+                    || native.measured_joints.velocities != measured.joint_velocities
+                    || native.measured_joints.root_rotation_wxyz != measured.root_rotation_wxyz
+                    || native.measured_joints.root_velocity_source != measured.root_velocity_source
+                {
+                    return Err("grip image and owner joint positions disagree".into());
+                }
+                runtime
+                    .static_marker_worker
+                    .as_mut()
+                    .ok_or("grip CPU worker absent")?
+                    .submit_grip_capture(&frame)?;
+                fs::write(
+                    runtime.options.output.join("static_grip_stamp.json"),
+                    serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                runtime.requested = false;
+                self.grip_image_submitted = true;
+            }
+            return Ok(false);
+        }
+        let (origin, current) = {
+            let receipt = outcome.0.lock().unwrap();
+            let Some(current) = receipt.static_grip_localization.clone() else {
+                return Ok(false);
+            };
+            (
+                receipt
+                    .static_marker_localization
+                    .clone()
+                    .ok_or("grip origin RGB absent")?,
+                current,
+            )
+        };
+        let samples = &runtime
+            .startup_evidence
+            .as_ref()
+            .ok_or("grip self stream absent")?
+            .static_self_samples;
+        let now = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis(),
+        )
+        .map_err(|e| e.to_string())?;
+        let verification = super::static_grip_check::verify(
+            &origin["localization"],
+            &current["localization"],
+            samples,
+            &self.kinematics,
+            now,
+        )?;
+        fs::write(
+            runtime.options.output.join("static_grip_verification.json"),
+            serde_json::to_vec_pretty(&verification).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if verification["accepted"] != true {
+            return Err("actual RGB lift did not verify apple following the palm; horizontal transfer blocked".into());
+        }
+        let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
+            return Err("grip verification selected a foreign physical owner".into());
+        };
+        worker
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: 390 * 20_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(6),
+                command: StaticStartupCommand::VisualTransfer(
+                    self.transfer_goal
+                        .clone()
+                        .ok_or("immutable transfer goal absent")?,
+                ),
+            })
+            .map_err(|e| e.to_string())?;
+        self.grip_verified = true;
         Ok(false)
     }
     fn drive_placement(
