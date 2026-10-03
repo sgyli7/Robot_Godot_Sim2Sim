@@ -101,6 +101,55 @@ def test_real_tick_has_single_integration_and_20ms_slew(tmp_path):
     assert runtime.physics_integrations == 10
 
 
+def test_static_action_inverse_matches_actual_settled_drive_without_changing_semantics(tmp_path):
+    from bevy_microduck_tools.goose.drive_static import static_drive_targets
+    runtime, _ = fixture_runtime(tmp_path)
+    q = np.linspace(-.2, .2, 18)
+    required = np.linspace(-.4, .4, 18)
+    result = static_drive_targets(runtime.contract, q, required, np.zeros(5))
+    assert result["feasible"] and not result["physical_pose_qualified"]
+    assert max(result["minimum_slew_updates"]) > 1
+    assert not np.allclose(result["stationary_first_update_torque_nm"], required)
+    # A settled development start is declared explicitly; it is not a cold reset.
+    runtime.data.qpos[runtime.qidx] = q
+    runtime.target = np.asarray(result["bounded_target_rad"])
+    _, state = runtime.step(result["action"])
+    np.testing.assert_allclose(runtime.last_tau, required, atol=1e-12)
+    assert state["physics_integrations"] == state["controller_updates"] == 1
+    assert state["time_s"] == pytest.approx(DT)
+
+
+def test_static_action_check_rejects_peak_only_or_clipped_holding_efforts(tmp_path):
+    from bevy_microduck_tools.goose.drive_static import static_drive_targets
+    runtime, _ = fixture_runtime(tmp_path)
+    q, required = np.zeros(18), np.zeros(18)
+    required[6] = 1.2  # Below peak 2 Nm but above continuous 1 Nm.
+    q[7], required[7] = .99, .2  # Legal pose, impossible positive target offset.
+    result = static_drive_targets(runtime.contract, q, required, np.zeros(5))
+    assert not result["feasible"]
+    assert not result["axis_checks"][6]["within_continuous_cap"]
+    assert not result["axis_checks"][7]["target_reproduces_static_effort"]
+    assert result["action"][7] == 1.
+    assert result["stationary_settled_torque_nm"][7] == pytest.approx(.02)
+    assert result["physics_integrations"] == 0
+
+
+def test_static_beak_effort_has_no_extra_feedforward_or_out_of_range_target(tmp_path):
+    from bevy_microduck_tools.goose.drive_static import static_drive_targets
+    runtime, _ = fixture_runtime(tmp_path)
+    runtime.contract["joints"][5].update(range_rad=[0., .55], action_scale_rad=.55)
+    required = np.zeros(18)
+    required[:5] = .3
+    required[5] = -.01
+    result = static_drive_targets(runtime.contract, np.zeros(18), required, np.full(5, .3))
+    assert all(row["feasible"] for row in result["axis_checks"][:5])
+    assert not result["axis_checks"][5]["feasible"]
+    assert result["bounded_target_rad"][5] == 0.
+    assert result["stationary_settled_torque_nm"][5] == 0.
+    with pytest.raises(ValueError, match="5 finite"):
+        static_drive_targets(runtime.contract, np.zeros(18), required, np.zeros(18))
+
+
 def test_recovery_retains_low_com_state_no_auto_reset(tmp_path):
     runtime, _ = fixture_runtime(tmp_path, skill="recovery")
     runtime.data.qpos[2] = .05
