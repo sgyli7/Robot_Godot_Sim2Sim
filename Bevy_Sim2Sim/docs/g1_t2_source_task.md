@@ -1414,3 +1414,16 @@ control0241 passes225numeric updates with maximum per-update joint change
 0.002058rad and final commanded gap0.300000007m; it is not physical evidence.
 This finite entry still requires independent grip-until-opening and strict
 placement audit; it does not qualify the ten-episode suite or continuous1x.
+
+Fresh0243 completes1443single50Hz integrations/four original VLA calls;
+all1243post-grasp samples remain hand-only. Current placement RGB rejects
+opening: estimated floor margin0.001379m<0.02m and self speed0.050051m/s>0.05.
+Independent truth audit agrees the box is not wholly inside (margin−0.001423m).
+No opening executes, no hand support is lost, upright>=0.992144, zero misses/debt;
+active sim/wall0.999039 and owned model closes. Trace SHA256:
+`0be6289b73c713d1b76b99b0215ab998fa88efa9e2ddf5a195725607acef1737`.
+The fixed radial0.12m fine margin is an insufficient geometric approximation;
+future fine targets must use the actual whole-object floor containment interval.
+The completed100Tick navigation stop also retains measurable root motion;
+additional standing must be a separately bounded real owner action and require
+new current RGB afterward. Neither admission threshold is relaxed.
