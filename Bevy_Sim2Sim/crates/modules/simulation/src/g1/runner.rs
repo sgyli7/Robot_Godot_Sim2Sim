@@ -232,6 +232,22 @@ impl G1Runner {
         Ok(())
     }
 
+    /// Test-private single comparison after the exactly reproduced grasp/scan
+    /// prefix. No runtime setter or arbitrary solver search is exposed.
+    #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn saved_walk_sixteen_pgs_comparison(&mut self) -> Result<(), RobotError> {
+        if self.simulation.integration_count != 996
+            || self.progress_counts().successful_inference_count != 996
+            || self.actuator_backend != G1ActuatorBackend::NativeForceBased
+            || self.task_objects.as_ref().is_none_or(|s| !s.has_source_t2_background())
+            || self.simulation.world.integration_parameters.num_internal_pgs_iterations != 4
+        {
+            return Err(error("saved walking comparison requires the exact996Tick original4PGS prefix"));
+        }
+        self.simulation.world.integration_parameters.num_internal_pgs_iterations = 16;
+        Ok(())
+    }
+
     pub fn initial_frame(&self) -> Result<G1BodyFrame, RobotError> {
         self.completed_frame(&self.simulation.snapshot())
     }

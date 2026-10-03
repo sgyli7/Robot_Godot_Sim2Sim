@@ -1032,6 +1032,57 @@ mod tests {
         Ok(())
     }
 
+    /// Same recorded commands and exact996Tick prefix; one nonintegrating
+    /// contact-convergence change at walking entry, no live capability.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    #[ignore = "pinned1460Tick mobile mechanics; original4PGS vs one16PGS comparison after exact996Tick prefix;0fresh RGB/VLA"]
+    fn real_mobile_saved_walk_contact_convergence_comparison() -> Result<(), RobotError> {
+        use robot_minigame::g1::{contract::G1Command, policy::bound_bytes};
+        use std::{fs, io::Write};
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fixture {
+            commands: Vec<G1Command>,
+            use_fixed_sixteen_pgs: bool,
+        }
+        let read = |name: &str| -> Result<Vec<u8>, RobotError> {
+            let path = std::env::var(name).map_err(error)?;
+            let sha = std::env::var(format!("{name}_SHA256")).map_err(error)?;
+            let bytes = bound_bytes(Path::new(&path), &sha)?;
+            if bytes.len() > 2_000_000 { return Err(error("walking comparison exceeds fixture budget")); }
+            Ok(bytes)
+        };
+        let config: ArenaTaskRunnerConfig = serde_json::from_slice(&read("G1_MOBILE_CONVERGENCE_CONFIG")?).map_err(error)?;
+        let fixture: Fixture = serde_json::from_slice(&read("G1_MOBILE_CONVERGENCE_FIXTURE")?).map_err(error)?;
+        if fixture.commands.len() != 1460
+            || fixture.commands[996].navigation[0] != 0.3
+            || fixture.commands[996].navigation[1] != 0.
+            || fixture.commands[1263].navigation != [0.; 3]
+        { return Err(error("walking comparison changed fixed command/timeline identity")); }
+        let output = std::env::var("G1_MOBILE_CONVERGENCE_OUTPUT").map_err(error)?;
+        let mut trace = fs::OpenOptions::new().write(true).create_new(true).open(output).map_err(error)?;
+        let mut owner = ArenaTaskRunner::load_mobile_constraint_diagnostic(&config)?;
+        let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
+            return Err(error("walking comparison requires original Homie_v2"));
+        };
+        for (index, command) in fixture.commands.iter().enumerate() {
+            if index == 996 && fixture.use_fixed_sixteen_pgs {
+                body.saved_walk_sixteen_pgs_comparison()?;
+            }
+            command.validate()?;
+            let step = body.step(command)?;
+            if step.integration_count != index as u64 + 1 || step.step_configuration.physics_hz != 50 {
+                return Err(error("walking comparison changed physical timeline"));
+            }
+            writeln!(trace,"{}",serde_json::json!({"body":{"mobile_homie_v2":step},
+                "phase":"offline_saved_walking_contact_convergence","command":command,
+                "fixed_sixteen_pgs_candidate":fixture.use_fixed_sixteen_pgs,
+                "fresh_images":0,"fresh_vla_calls":0,"autonomous_execution":false})).map_err(error)?;
+        }
+        Ok(())
+    }
+
     /// A finite grasp-phase wait experiment, not a runtime fallback or approval
     /// to retain expired VLA actions. Every step still calls the real WBC/motor.
     #[cfg(feature = "g1_constraint_diagnostic")]
