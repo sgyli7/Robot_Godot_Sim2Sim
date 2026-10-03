@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 from unitree_g1_mobile_vision import DEFINITION_SHA256, root_from_camera, rotation
 
-LAYOUT = {31: ('t1_apple', .02, [.002, 0., .046]), 32: ('t1_plate', .06, [0., 0., .0045])}
+LAYOUT = {31: ('t1_apple', .02, [.002, 0., .046]), 32: ('t1_plate', .06, [0., 0., .0255])}
 
 
 def sha(path):
@@ -59,10 +59,12 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
     if Path(fiducial_path).stat().st_size > 16*1024 or sha(fiducial_path) != fiducial_sha256:
         raise ValueError('Static printed calibration identity changed')
     calibration = json.loads(Path(fiducial_path).read_text())
-    if (set(calibration) != {'schema','dictionary','layout_profile','png_paths','png_sha256'}
+    if (set(calibration) != {'schema','dictionary','layout_profile','png_paths','png_sha256','calibration_version','marker_mounts_source_m'}
             or calibration['schema'] != 'g1_task_fiducials_v1'
             or calibration['dictionary'] != 'DICT_4X4_50'
             or calibration['layout_profile'] != 'static_apple_plate'
+            or calibration['calibration_version'] != 2
+            or calibration['marker_mounts_source_m'] != [LAYOUT[31][2],LAYOUT[32][2]]
             or len(calibration['png_paths']) != 2 or len(calibration['png_sha256']) != 2):
         raise ValueError('Foreign static label profile')
     for name, expected in zip(calibration['png_paths'],calibration['png_sha256']):

@@ -22,6 +22,17 @@ class StaticObservationTests(unittest.TestCase):
                 bad=json.loads(json.dumps(value));mutation(bad);path.write_text(json.dumps(bad))
                 with self.assertRaises(ValueError):observation(path)
 
+    def test_stale_or_changed_print_mount_cannot_reinterpret_an_observation(self):
+        base=Path(__file__).resolve().parents[4];labels=base/'assets/g1_fiducials/static_apple_plate.json'
+        definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
+        if not definition.exists():self.skipTest('byte-bound original public model is not installed')
+        with tempfile.TemporaryDirectory() as root:
+            path,_=self.fixture(root);image=Path(root)/'rgb.png';cv2.imwrite(str(image),np.ones((480,640,3),np.uint8)*127)
+            for mutation in [lambda x:x.update(calibration_version=1),lambda x:x['marker_mounts_source_m'][1].__setitem__(2,.0045)]:
+                bad=json.loads(labels.read_text());mutation(bad);stale=Path(root)/'labels.json';stale.write_text(json.dumps(bad))
+                with self.assertRaisesRegex(ValueError,'Foreign static label profile'):
+                    localize(image,path,definition,stale,hashlib.sha256(stale.read_bytes()).hexdigest())
+
     def test_plain_actual_rgb_yields_no_object_pose_or_actuation(self):
         base=Path(__file__).resolve().parents[4];labels=base/'assets/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')

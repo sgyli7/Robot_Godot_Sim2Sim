@@ -25,6 +25,10 @@ struct Document {
     png_sha256: [String; 2],
     #[serde(default)]
     layout_profile: G1FiducialLayoutProfile,
+    #[serde(default)]
+    calibration_version: Option<u32>,
+    #[serde(default)]
+    marker_mounts_source_m: Option<[[f32; 3]; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -62,6 +66,8 @@ impl Default for G1TaskFiducialGate {
 #[derive(Clone, Debug, Serialize)]
 pub struct G1TaskFiducialReceipt {
     pub layout_profile: G1FiducialLayoutProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calibration_version: Option<u32>,
     pub schema: &'static str,
     pub dictionary: &'static str,
     pub marker_ids: [u32; 2],
@@ -88,6 +94,17 @@ impl G1TaskFiducialModel {
         let document: Document = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if document.schema != "g1_task_fiducials_v1" || document.dictionary != "DICT_4X4_50" {
             return Err("unsupported original-task printed-marker contract".into());
+        }
+        if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate {
+            if document.calibration_version != Some(2)
+                || document.marker_mounts_source_m != Some([[0.002, 0., 0.046], [0., 0., 0.0255]])
+            {
+                return Err("static public marker calibration version/mount changed".into());
+            }
+        } else if document.calibration_version.is_some()
+            || document.marker_mounts_source_m.is_some()
+        {
+            return Err("static marker calibration cannot enter a mobile layout".into());
         }
         let png_path = |name: &str| {
             let png = Path::new(name);
@@ -129,6 +146,7 @@ impl G1TaskFiducialModel {
             pngs,
             receipt: G1TaskFiducialReceipt {
                 layout_profile: document.layout_profile,
+                calibration_version: document.calibration_version,
                 schema: if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate {
                     "g1_static_disclosed_printed_markers_v1"
                 } else {
@@ -166,7 +184,7 @@ impl G1TaskFiducialModel {
                         [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
                     }
                     G1FiducialLayoutProfile::StaticApplePlate => {
-                        [[0.002, 0., 0.046], [0., 0., 0.0045]]
+                        document.marker_mounts_source_m.unwrap()
                     }
                 },
                 object_local_rotation_wxyz: match document.layout_profile {
@@ -353,7 +371,7 @@ mod static_profile_tests {
         assert_eq!(model.receipt.white_margin_overall_size_m, [0.025, 0.075]);
         assert_eq!(
             model.receipt.object_local_center_source_m,
-            [[0.002, 0., 0.046], [0., 0., 0.0045]]
+            [[0.002, 0., 0.046], [0., 0., 0.0255]]
         );
         assert_eq!(model.receipt.activation_tick, 0);
         assert!(!model.receipt.physics_modified);

@@ -591,3 +591,18 @@ self-state gate. The startup helper is shared with the original live profile;
 no new physics method or altered startup command is introduced.0Tick views
 initialize that same owner and perform no integration. Any policy combined
 with static labels, other profile or different Tick budget remains rejected.
+
+The first actual static marker view (`0330`,4cc72ec) completes60original owner
+integrations/WBC calls with0VLA/Qwen. All60body records exactly match the
+unmarked P1reference; camera, self-state and task display use the same Tick60.
+Apple ID31is detected with18.43px minimum edge,0.456px reprojection RMS and
+2.14mm independent position error. Plate ID32is hidden inside its original
+mesh, so this is only partial perception proof and cannot admit a task.
+
+Calibration v2moves only the plate label above the original cooked surface:
+the source geometry's maximum localZ is0.02346462m; labelZ is0.0255m. The
+apple label stays unchanged. Version2and both fixed public mount centers are
+now explicit byte-bound document fields checked by renderer and localizer;
+stale/changed mounts are rejected rather than applying new parameters to old
+pictures. The original0330document, localizer, raw RGB, partial result and
+independent audit remain retained. No physics or learned-policy field changes.
