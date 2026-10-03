@@ -353,3 +353,24 @@ friction, mass, original policy outputs and the single20ms integration stay
 unchanged. The purpose is to physically withdraw the occluding hand/forearm
 before capturing the final actual near-table image. Independent truth must still
 check uninterrupted physical placement; this movement does not qualify a task.
+
+
+The first 840-Tick attempt at `49b7b76` failed before any native integration or
+VLA inference: NVIDIA Vulkan reported inability to allocate presentation state,
+then an unconfigured surface panic. All owned processes were reaped; no physical
+parameter changed. One exact-code/profile retry completed 840 native/WBC ticks,
+two fresh VLA calls and five actual images. The unchanged independent v4 audit
+confirmed 6.06 seconds of continuous stable released placement and standing.
+The fixed withdrawal did not interrupt the placement window. The final actual
+image visibly exposes the apple and plate outline. The unchanged CPU localizer
+recovers apple ID31 at 15.97px minimum edge, 0.054px reprojection RMS and 2.653mm
+independent position error. Plate ID32 is covered by the placed apple, so no
+current two-target precision pass is claimed. Failure/retry/visibility are
+scratch 0367/0369/0370, respectively.
+
+Read-only review of the previously frozen ten original traces found hand-only
+support at the 140-Tick boundary in seven cases; three remain surface-supported.
+This is independent failure classification, never controller input or an actual
+new ten-case test. A fixed two-chunk grasp cannot simply be assumed to provide
+8/10 acquisition. Actual visual grasp admission/recovery and the formal native
+profile still require evidence before enabling the public execute-task action.
