@@ -1788,3 +1788,38 @@ paused-boundary interface and must be upgraded before claiming continuous
 full-task operation. Qwen/scientific station/frozen10episodes/faults/terrain/
 coexistence/fullvideo/runbook remain open; neither goal nor main branch is
 complete.
+
+
+The continuous classical admission seam keeps the unchanged RGB observation
+stamp and records a separate actual execution start. Its private proof is built
+from at most201owner self samples during explicit stationary waiting, original
+joint FK/IMU and velocity odometry. Maximum camera-to-owner displacement/palm
+motion is5mm, rotation change0.01rad, and image age remains the frozen1second
+limit. Relative navigation points are adjusted by measured self displacement;
+public-map search headings remain absolute. Legacy paused constructors keep
+requiring the exact current image boundary and preserve their old targets.
+
+Read-only0275reuses actual0274self/RGB identities, with zero new images, model
+calls, torque updates or world integrations. Three observations admit; the
+Tick333image at actual owner365rejects because measured palm motion is
+0.005016610m. It is not converted into a pass by relaxing5mm. A forged moved
+past-image self state, old image and proof reused at another owner boundary
+also reject. An initial missing test-only deserializer/dependency compile error,
+and the wrong assumption that a zero-age image could be compared against its
+own mutated current state, are retained beside the repaired explicit results.
+
+`g1_mobile_continuous_release_diagnostic` is a separate3150Tickmaximum source
+route candidate: four original VLA chunks, public-map search, current auxiliary
+RGB coarse approach, at most five newly observed fine segments, actual aligned
+hold, placement-only RGB, gravity-horizontal opening/settling, and explicitly
+recorded standing between these operations. Marker visibility additionally
+requires actual fourth-chunk completion; absoluteTick200does not enable markers
+in its learned inputs. The owner transitions directly from every completed skill
+to its finite200Tickwait, preserving actual upper/finger targets. Every new
+classical skill must obtain the private image/current-self proof; expiry or
+excess motion pauses explicitly. This candidate has not yet established fresh
+continuous carry/release, Qwen, scientific-station or formal ten-episode success.
+Validation passes78simulation tests/40ignored,35rendering/3ignored,
+42development/2ignored,14CLI tests and default compilation. The original
+17system-parameter compile error is repaired by grouping the two camera/gate
+resources, not by changing scheduling or physics.

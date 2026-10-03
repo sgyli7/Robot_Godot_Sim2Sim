@@ -27,6 +27,9 @@ use bevy::{
     },
     winit::WinitPlugin,
 };
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_continuous;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
@@ -38,7 +41,9 @@ use rendering_minigame::{
         G1CameraMountProfile, G1CameraNativeState, G1CameraPlugin, G1CameraPort, G1CaptureStamp,
         G1CapturedRgb, G1EgoCamera, G1ObservationPlugin,
     },
-    g1_task_fiducial::{G1TaskFiducialModel, G1TaskFiducialPlugin, G1TaskFiducialReceipt},
+    g1_task_fiducial::{
+        G1TaskFiducialGate, G1TaskFiducialModel, G1TaskFiducialPlugin, G1TaskFiducialReceipt,
+    },
     g1_task_visual::{
         G1TaskVisualFrame, G1TaskVisualInput, G1TaskVisualModel, G1TaskVisualPlugin,
         G1TaskVisualPose, G1TaskVisualStatus,
@@ -588,6 +593,13 @@ pub fn run_mobile_wait_grasp_from_file(
     run_from_file(path, options, CaptureMode::MobileWaitGrasp)
 }
 
+pub fn run_mobile_continuous_release_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::MobileContinuousRelease)
+}
+
 /// Two fixed1000/1500Tick original mobile carry-stage budgets. This does
 /// not widen the ordinary camera/static-task budgets or qualify task execution.
 pub fn run_mobile_carry_from_file(
@@ -689,6 +701,7 @@ pub fn run_mobile_auxiliary_release_from_file(
 enum CaptureMode {
     Camera,
     MobileWaitGrasp,
+    MobileContinuousRelease,
     TaskLab,
     MobileCarry,
     MobileAssist,
@@ -715,7 +728,8 @@ impl CaptureMode {
             | Self::MobileTargetMemoryView
             | Self::MobileTargetRestoredView
             | Self::MobileAuxiliaryApproach
-            | Self::MobileAuxiliaryRelease => Some(3150),
+            | Self::MobileAuxiliaryRelease
+            | Self::MobileContinuousRelease => Some(3150),
             Self::Camera | Self::TaskLab | Self::MobileCarry => None,
         }
     }
@@ -1124,6 +1138,8 @@ pub(super) struct CaptureRuntime {
         Option<OwnerEvidence<simulation_minigame::g1::mobile_assist::MobileAssistStep>>,
     mobile_assist: Option<MobileAssistCaptureRuntime>,
     interactive: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    continuous_route: Option<mobile_continuous::ContinuousMobileRoute>,
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1336,7 +1352,8 @@ fn run_capture_owner(
     let mobile_carry = mode == CaptureMode::MobileCarry;
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
-    let auxiliary_release = mode == CaptureMode::MobileAuxiliaryRelease;
+    let continuous = mode == CaptureMode::MobileContinuousRelease;
+    let auxiliary_release = mode == CaptureMode::MobileAuxiliaryRelease || continuous;
     let auxiliary_approach = mode == CaptureMode::MobileAuxiliaryApproach || auxiliary_release;
     let auxiliary_view = mode == CaptureMode::MobileAuxiliaryView || auxiliary_approach;
     let raising_view = mode == CaptureMode::MobileTargetRaiseView || memory_view || restored_view;
@@ -1344,7 +1361,7 @@ fn run_capture_owner(
         mode == CaptureMode::MobileTargetApproach || raising_view || auxiliary_view;
     let target_view = mode == CaptureMode::MobileTargetView || (visual_approach && !auxiliary_view);
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
-    let waited_grasp = mode == CaptureMode::MobileWaitGrasp;
+    let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     let mobile_prefetch = matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
         && policy
@@ -1450,6 +1467,16 @@ fn run_capture_owner(
             );
         }
     }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    let continuous_route = if continuous {
+        Some(mobile_continuous::ContinuousMobileRoute::new(
+            mobile_scan
+                .as_ref()
+                .ok_or("continuous marker configuration absent")?,
+        )?)
+    } else {
+        None
+    };
     let mobile_stage = mobile_assist
         .map(MobileAssistStage::Carry)
         .or_else(|| mobile_scan.map(MobileAssistStage::Scan));
@@ -1721,6 +1748,9 @@ fn run_capture_owner(
     if waited_grasp {
         outcome.0.lock().unwrap().scope = "native_four_fresh_original_grasp_chunks_with_explicit_physical_standing_waits_not_qualified";
     }
+    if continuous {
+        outcome.0.lock().unwrap().scope = "native_bounded_continuous_actual_rgb_grasp_classical_carry_release_source_scene_not_qualified";
+    }
     let worker = config.spawn(
         predictive_limit_diagnostic,
         diagnostic_constraint_sweeps,
@@ -1804,18 +1834,24 @@ fn run_capture_owner(
             owner_evidence,
             #[cfg(feature = "g1_constraint_diagnostic")]
             assist_evidence,
-            mobile_assist: mobile_stage.map(|c| {
-                MobileAssistCaptureRuntime::new(
-                    c,
-                    raising_view,
-                    memory_view,
-                    restored_view,
-                    auxiliary_view,
-                    auxiliary_approach,
-                    auxiliary_release,
-                )
-            }),
+            mobile_assist: if continuous {
+                None
+            } else {
+                mobile_stage.map(|c| {
+                    MobileAssistCaptureRuntime::new(
+                        c,
+                        raising_view,
+                        memory_view,
+                        restored_view,
+                        auxiliary_view,
+                        auxiliary_approach,
+                        auxiliary_release,
+                    )
+                })
+            },
             interactive,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            continuous_route,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .add_plugins(
@@ -1857,6 +1893,9 @@ fn run_capture_owner(
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
     }
     if let Some(model) = fiducial_model {
+        if continuous {
+            app.insert_resource(G1TaskFiducialGate { enabled: false });
+        }
         outcome.0.lock().unwrap().disclosed_fiducials = Some(model.receipt.clone());
         app.insert_resource(model).add_plugins(G1TaskFiducialPlugin);
     }
@@ -1966,6 +2005,7 @@ mod budget_tests {
     fn both_startup_guards_share_the_explicit_stage_budget() {
         for (mode, budget) in [
             (CaptureMode::MobileWaitGrasp, 1000),
+            (CaptureMode::MobileContinuousRelease, 3150),
             (CaptureMode::MobileAssist, 2050),
             (CaptureMode::MobileScan, 1050),
             (CaptureMode::MobileTargetView, 1300),
@@ -2150,6 +2190,10 @@ fn drive_bounded_task(
     outcome: &CaptureOutcome,
     port: &G1CameraPort,
 ) -> Result<bool, String> {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    if runtime.continuous_route.is_some() {
+        return mobile_continuous::drive(runtime, outcome, port);
+    }
     if runtime.mobile_assist.is_some() {
         let grasp_done = runtime
             .live_policy
@@ -3861,7 +3905,10 @@ fn drive_capture(
     task_status: Option<Res<G1TaskVisualStatus>>,
     mut task_input: ResMut<G1TaskVisualInput>,
     mut input: ResMut<G1BodyObservationInput>,
-    mut camera_mount: ResMut<G1ActiveCameraMount>,
+    (mut camera_mount, mut marker_gate): (
+        ResMut<G1ActiveCameraMount>,
+        Option<ResMut<G1TaskFiducialGate>>,
+    ),
     port: Res<G1CameraPort>,
     mut exit: MessageWriter<AppExit>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -4002,6 +4049,24 @@ fn drive_capture(
                 .clone()
                 .unwrap_or_else(|| "worker failed before publishing a native snapshot".into()));
         }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if runtime
+            .continuous_route
+            .as_ref()
+            .is_some_and(|r| r.needs_auxiliary_view())
+            && camera_mount.0 == G1CameraMountProfile::ArenaEgo
+        {
+            camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
+            marker_gate
+                .as_mut()
+                .ok_or("continuous logical marker gate absent")?
+                .enabled = true;
+            if let Some(handoff) = &mut outcome.0.lock().unwrap().mobile_assist_handoff {
+                handoff["markers_activated_at_actual_display_tick"] =
+                    latest.timing.episode_integrations.into();
+            }
+            return Ok(());
+        }
         if runtime
             .mobile_assist
             .as_ref()
@@ -4051,7 +4116,16 @@ fn drive_capture(
             runtime.command_submitted = true;
             return Ok(());
         }
-        let capture_boundary = if runtime
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        let continuous_complete = runtime
+            .continuous_route
+            .as_ref()
+            .is_some_and(|r| r.completed());
+        #[cfg(not(feature = "g1_constraint_diagnostic"))]
+        let continuous_complete = false;
+        let capture_boundary = if continuous_complete {
+            latest.phase == G1WorkerPhase::Paused
+        } else if runtime
             .live_policy
             .as_ref()
             .is_some_and(|live| live.wait_after_chunks && live.completed)
@@ -4098,7 +4172,9 @@ fn drive_capture(
             receipt.task_visual_status = task_status.as_deref().cloned();
             receipt.background_visual_status = background_status.as_deref().cloned();
             if latest.phase != G1WorkerPhase::Failed {
-                receipt.physics_outcome = if runtime.live_policy.as_ref().is_some_and(|live| live.wait_after_chunks && live.completed) {
+                receipt.physics_outcome = if continuous_complete {
+                    "continuous_actual_rgb_vla_grasp_classical_carry_hold_release_and_explicit_waits_complete_not_task_qualified".into()
+                } else if runtime.live_policy.as_ref().is_some_and(|live| live.wait_after_chunks && live.completed) {
                     "four_fresh_original_chunks_and_explicit_standing_waits_complete_not_task_qualified".into()
                 } else if runtime
                     .mobile_assist
@@ -4146,13 +4222,19 @@ fn drive_capture(
                 runtime.requested = false;
                 return Ok(());
             }
+            let use_auxiliary = runtime
+                .mobile_assist
+                .as_ref()
+                .is_some_and(|a| a.auxiliary_view);
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            let use_auxiliary = use_auxiliary
+                || runtime
+                    .continuous_route
+                    .as_ref()
+                    .is_some_and(|r| r.needs_auxiliary_view());
             if frame.stamp.source != CameraPoseSource::PhysicsBody
                 || frame.stamp.mount_profile
-                    != if runtime
-                        .mobile_assist
-                        .as_ref()
-                        .is_some_and(|a| a.auxiliary_view)
-                    {
+                    != if use_auxiliary {
                         G1CameraMountProfile::AuxiliaryGripOverview
                     } else {
                         G1CameraMountProfile::ArenaEgo

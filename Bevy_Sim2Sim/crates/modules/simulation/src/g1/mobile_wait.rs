@@ -2,12 +2,16 @@
 //! Uses the previously executed upper command and named self sensors only.
 //! This is traditional control, never a repeated or restamped VLA action frame.
 
-use super::runner::G1Measurement;
+use super::{
+    mobile_admission::MobileImageAdmission, mobile_grip::MobileGripCalibration,
+    runner::G1Measurement,
+};
 use robot_minigame::{
     RobotError,
     g1::contract::{G1Command, JOINT_COUNT},
 };
 use serde::{Deserialize, Serialize};
+use task_minigame::types::ObservationStamp;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +62,7 @@ pub struct MobileModelWaiting {
     displacement: [f64; 3],
     previous_velocity: [f32; 3],
     stable_velocity_ticks: u32,
+    self_history: Vec<(G1Measurement, [f64; 3])>,
 }
 
 impl MobileModelWaiting {
@@ -81,6 +86,7 @@ impl MobileModelWaiting {
             displacement: [0.; 3],
             previous_velocity: state.root_velocity_source,
             stable_velocity_ticks: 0,
+            self_history: vec![(state.clone(), [0.; 3])],
         })
     }
 
@@ -112,6 +118,47 @@ impl MobileModelWaiting {
                     .next_tick
                     .saturating_sub(u64::from(self.stable_velocity_ticks))
                     * 20_000_000
+    }
+
+    pub(super) fn admit_observed_skill(
+        &self,
+        observation: ObservationStamp,
+        current: &G1Measurement,
+        calibration: &MobileGripCalibration,
+        maximum_image_age_ns: u64,
+    ) -> Result<MobileImageAdmission, RobotError> {
+        if !self.admits_image(current, observation.sim_time_ns) {
+            return Err(invalid(
+                "skill image is outside the current stationary self interval",
+            ));
+        }
+        let current_odometry: [f64; 3] = std::array::from_fn(|i| {
+            self.displacement[i]
+                + 0.01 * f64::from(self.previous_velocity[i] + current.root_velocity_source[i])
+        });
+        let (image, image_odometry) = if observation.sim_time_ns == current.sim_time_ns {
+            (current, &current_odometry)
+        } else {
+            let (image, odometry) = self
+                .self_history
+                .iter()
+                .find(|(s, _)| s.sim_time_ns == observation.sim_time_ns)
+                .ok_or_else(|| {
+                    invalid("actual camera boundary is absent from bounded owner self history")
+                })?;
+            (image, odometry)
+        };
+        let displacement = std::array::from_fn(|i| current_odometry[i] - image_odometry[i]);
+        let (palm_motion, rotation_change) =
+            calibration.measured_palm_motion(image, current, displacement)?;
+        MobileImageAdmission::from_stationary_wait(
+            observation,
+            current,
+            displacement,
+            palm_motion,
+            rotation_change,
+            maximum_image_age_ns,
+        )
     }
 
     pub fn update(&mut self, state: &G1Measurement) -> Result<MobileWaitStep, RobotError> {
@@ -149,6 +196,16 @@ impl MobileModelWaiting {
             0
         };
         self.previous_velocity = state.root_velocity_source;
+        if self
+            .self_history
+            .last()
+            .is_none_or(|(s, _)| s.source_tick != state.source_tick)
+        {
+            if self.self_history.len() >= 201 {
+                return Err(invalid("finite owner self-history budget exhausted"));
+            }
+            self.self_history.push((state.clone(), self.displacement));
+        }
         self.next_tick = self
             .next_tick
             .checked_add(1)
@@ -306,5 +363,149 @@ mod tests {
         assert!(!w.admits_image(&moved, 65 * 20_000_000));
         w.update(&moved).unwrap();
         assert!(!w.admits_image(&state(71), 65 * 20_000_000));
+    }
+
+    #[test]
+    #[ignore = "frozen actual RGB/current-self admission check;0world integrations/0model calls"]
+    fn saved_mobile_image_admission_self_diagnostic() -> Result<(), RobotError> {
+        use super::super::mobile_navigation::{MobileCarryGoal, MobileCarryNavigator};
+        use robot_minigame::g1::definition::G1Definition;
+        use robot_minigame::g1::policy::bound_bytes;
+        use std::{fs, path::Path};
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SavedSelf {
+            episode_id: u64,
+            source_tick: u64,
+            sim_time_ns: u64,
+            joint_positions: Vec<f32>,
+            joint_velocities: Vec<f32>,
+            root_rotation_wxyz: [f32; 4],
+            root_velocity_source: [f32; 3],
+            root_angular_velocity_body: [f32; 3],
+        }
+        impl SavedSelf {
+            fn measured(self) -> G1Measurement {
+                G1Measurement {
+                    episode_id: self.episode_id,
+                    source_tick: self.source_tick,
+                    sim_time_ns: self.sim_time_ns,
+                    joint_positions: self.joint_positions,
+                    joint_velocities: self.joint_velocities,
+                    root_rotation_wxyz: self.root_rotation_wxyz,
+                    root_velocity_source: self.root_velocity_source,
+                    root_angular_velocity_body: self.root_angular_velocity_body,
+                }
+            }
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Case {
+            goal: MobileWaitGoal,
+            command: G1Command,
+            states: Vec<SavedSelf>,
+            current: SavedSelf,
+            observation: ObservationStamp,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fixture {
+            schema: String,
+            definition: String,
+            definition_sha256: String,
+            cases: Vec<Case>,
+        }
+        let path = std::env::var("G1_MOBILE_SELF_ADMISSION_FIXTURE")
+            .map_err(|e| invalid(e.to_string()))?;
+        let expected = std::env::var("G1_MOBILE_SELF_ADMISSION_FIXTURE_SHA256")
+            .map_err(|e| invalid(e.to_string()))?;
+        let bytes = bound_bytes(Path::new(&path), &expected)?;
+        let fixture: Fixture =
+            serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+        if fixture.schema != "g1_saved_actual_image_self_admission_v1" || fixture.cases.len() != 4 {
+            return Err(invalid(
+                "self admission requires three actual replacement images and the final actual grip image",
+            ));
+        }
+        let definition =
+            G1Definition::load(Path::new(&fixture.definition), &fixture.definition_sha256)?;
+        let calibration = MobileGripCalibration::new(&definition)?;
+        let mut results = Vec::new();
+        let result = (|| -> Result<(), RobotError> {
+            for c in fixture.cases {
+                let states: Vec<_> = c.states.into_iter().map(SavedSelf::measured).collect();
+                let current = c.current.measured();
+                let first = states
+                    .first()
+                    .ok_or_else(|| invalid("empty actual self history"))?;
+                let mut waiting = MobileModelWaiting::new(c.goal, first, c.command)?;
+                for s in &states {
+                    waiting.update(s)?;
+                }
+                let admission = waiting.admit_observed_skill(
+                    c.observation,
+                    &current,
+                    &calibration,
+                    1_000_000_000,
+                );
+                let admission = match admission {
+                    Ok(admission) => admission,
+                    Err(error) => {
+                        results.push(serde_json::json!({"admitted":false,"observation":c.observation,"execution_start_sim_ns":current.sim_time_ns,"error":error.to_string()}));
+                        continue;
+                    }
+                };
+                let goal = MobileCarryGoal {
+                    observation: c.observation,
+                    heading_yaw_source_rad: 0.,
+                    relative_distance_m: 0.1,
+                };
+                if c.observation.sim_time_ns != current.sim_time_ns {
+                    assert!(MobileCarryNavigator::new(goal.clone(), &current).is_err());
+                }
+                let mut navigation =
+                    MobileCarryNavigator::new_with_admission(goal.clone(), &current, &admission)?;
+                navigation.update(&current)?;
+                assert_eq!(navigation.goal().observation, c.observation);
+                let mut next = current.clone();
+                next.source_tick += 1;
+                next.sim_time_ns += 20_000_000;
+                assert!(MobileCarryNavigator::new_with_admission(goal, &next, &admission).is_err());
+                let mut old = c.observation;
+                old.sim_time_ns = 0;
+                assert!(
+                    waiting
+                        .admit_observed_skill(old, &current, &calibration, 1_000_000_000)
+                        .is_err()
+                );
+                if c.observation.sim_time_ns != current.sim_time_ns {
+                    let mut moved = current.clone();
+                    moved.joint_positions[15] += 0.1;
+                    assert!(
+                        waiting
+                            .admit_observed_skill(
+                                c.observation,
+                                &moved,
+                                &calibration,
+                                1_000_000_000
+                            )
+                            .is_err()
+                    );
+                }
+                results.push(serde_json::json!({"admitted":true,"admission":admission}));
+            }
+            assert!(results.iter().any(|r| r["admitted"] == true));
+            assert!(results.iter().any(|r| r["admitted"] == false));
+            Ok(())
+        })();
+        let output =
+            std::env::var("G1_MOBILE_SELF_ADMISSION_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(&mut file,&serde_json::json!({"schema":"g1_saved_actual_self_admission_result_v1","qualified":false,"actual_integrations":0,"actual_torque_updates":0,"fresh_vla_calls":0,"new_rgb_frames":0,"fixture_sha256":expected,"admissions":results,"complete":result.is_ok(),"error":result.as_ref().err().map(ToString::to_string)})).map_err(|e|invalid(e.to_string()))?;
+        result
     }
 }

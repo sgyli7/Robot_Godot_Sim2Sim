@@ -5,7 +5,7 @@ use robot_minigame::RobotError;
 use serde::{Deserialize, Serialize};
 use task_minigame::types::ObservationStamp;
 
-use super::runner::G1Measurement;
+use super::{mobile_admission::MobileImageAdmission, runner::G1Measurement};
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -60,16 +60,28 @@ pub struct MobileScanNavigator {
 
 impl MobileScanNavigator {
     pub fn new(goal: MobileScanGoal, state: &G1Measurement) -> Result<Self, RobotError> {
+        let admission = MobileImageAdmission::at_current_boundary(goal.observation, state)?;
+        Self::new_with_admission(goal, state, &admission)
+    }
+    pub(super) fn new_with_admission(
+        goal: MobileScanGoal,
+        state: &G1Measurement,
+        admission: &MobileImageAdmission,
+    ) -> Result<Self, RobotError> {
         goal.validate()?;
-        let mut motion = MobileCarryNavigator::new(
+        let mut motion = MobileCarryNavigator::new_with_admission(
             MobileCarryGoal {
                 observation: goal.observation.clone(),
                 heading_yaw_source_rad: goal.heading_yaw_source_rad,
                 relative_distance_m: 0.1,
             },
             state,
+            admission,
         )?;
         motion.scan_only = true;
+        // A public-map search heading is absolute, not a relative point.
+        motion.execution_heading_yaw_source_rad = goal.heading_yaw_source_rad;
+        motion.execution_relative_distance_m = 0.1;
         Ok(Self { goal, motion })
     }
     pub fn goal(&self) -> &MobileScanGoal {
@@ -97,6 +109,8 @@ pub struct MobileNavigationStep {
     pub navigation: [f32; 3],
     pub own_velocity_odometry_xy_m: [f32; 2],
     pub completed: bool,
+    pub execution_heading_yaw_source_rad: f32,
+    pub execution_relative_distance_m: f32,
 }
 
 #[derive(Clone)]
@@ -112,20 +126,30 @@ pub struct MobileCarryNavigator {
     scan_only: bool,
     forward_window_m: f32,
     forward_window_ticks: u32,
+    execution_heading_yaw_source_rad: f32,
+    execution_relative_distance_m: f32,
     #[cfg(test)]
     diagnostic_walk_speed_m_s: Option<f32>,
 }
 
 impl MobileCarryNavigator {
     pub fn new(goal: MobileCarryGoal, state: &G1Measurement) -> Result<Self, RobotError> {
+        let admission = MobileImageAdmission::at_current_boundary(goal.observation, state)?;
+        Self::new_with_admission(goal, state, &admission)
+    }
+    pub(super) fn new_with_admission(
+        goal: MobileCarryGoal,
+        state: &G1Measurement,
+        admission: &MobileImageAdmission,
+    ) -> Result<Self, RobotError> {
         goal.validate()?;
-        if goal.observation.episode_id != state.episode_id
-            || goal.observation.sim_time_ns != state.sim_time_ns
-        {
+        if !admission.matches(goal.observation, state) {
             return Err(invalid(
                 "carry handoff requires observation from the current native boundary",
             ));
         }
+        let (execution_heading_yaw_source_rad, execution_relative_distance_m) = admission
+            .navigation_target_at_execution(goal.heading_yaw_source_rad, goal.relative_distance_m);
         Ok(Self {
             goal,
             next_state_tick: state.source_tick,
@@ -138,6 +162,8 @@ impl MobileCarryNavigator {
             scan_only: false,
             forward_window_m: 0.,
             forward_window_ticks: 0,
+            execution_heading_yaw_source_rad,
+            execution_relative_distance_m,
             #[cfg(test)]
             diagnostic_walk_speed_m_s: None,
         })
@@ -186,7 +212,7 @@ impl MobileCarryNavigator {
         }
         let [w, x, y, z] = state.root_rotation_wxyz;
         let heading = (2. * (w * z + x * y)).atan2(1. - 2. * (y * y + z * z));
-        let delta = self.goal.heading_yaw_source_rad - heading;
+        let delta = self.execution_heading_yaw_source_rad - heading;
         let error = delta.sin().atan2(delta.cos());
         self.phase_ticks += 1;
         let phase = self.phase;
@@ -226,8 +252,9 @@ impl MobileCarryNavigator {
                     self.odometry[k] += state.root_velocity_source[k] * 0.02;
                 }
                 self.forward_window_m += 0.02
-                    * (state.root_velocity_source[0] * self.goal.heading_yaw_source_rad.cos()
-                        + state.root_velocity_source[1] * self.goal.heading_yaw_source_rad.sin());
+                    * (state.root_velocity_source[0] * self.execution_heading_yaw_source_rad.cos()
+                        + state.root_velocity_source[1]
+                            * self.execution_heading_yaw_source_rad.sin());
                 self.forward_window_ticks += 1;
                 if self.forward_window_ticks == 50 {
                     // One initial gait-start window is allowed. Thereafter,
@@ -240,7 +267,8 @@ impl MobileCarryNavigator {
                     self.forward_window_m = 0.;
                     self.forward_window_ticks = 0;
                 }
-                if self.odometry[0].hypot(self.odometry[1]) >= self.goal.relative_distance_m + 0.05
+                if self.odometry[0].hypot(self.odometry[1])
+                    >= self.execution_relative_distance_m + 0.05
                 {
                     self.phase = MobileNavigationPhase::Stop;
                     self.phase_ticks = 0;
@@ -268,6 +296,8 @@ impl MobileCarryNavigator {
             navigation,
             own_velocity_odometry_xy_m: self.odometry,
             completed: self.completed,
+            execution_heading_yaw_source_rad: self.execution_heading_yaw_source_rad,
+            execution_relative_distance_m: self.execution_relative_distance_m,
         })
     }
 }

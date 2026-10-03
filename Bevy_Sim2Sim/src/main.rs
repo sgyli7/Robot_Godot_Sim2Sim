@@ -45,6 +45,7 @@ fn run() -> Result<(), String> {
         Some(
             "g1_camera_diagnostic"
                 | "g1_mobile_wait_grasp_diagnostic"
+                | "g1_mobile_continuous_release_diagnostic"
                 | "g1_task_lab"
                 | "g1_mobile_carry_diagnostic"
                 | "g1_mobile_assist_diagnostic"
@@ -214,6 +215,7 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
                 || mobile_auxiliary_view
                 || mobile_auxiliary_approach
                 || mobile_auxiliary_release
+                || arguments.scene.as_deref() == Some("g1_mobile_continuous_release_diagnostic")
             {
                 120
             } else {
@@ -225,6 +227,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_mobile_wait_grasp_diagnostic") {
         dev_tools_minigame::g1_capture::run_mobile_wait_grasp_from_file(&path, options)
+    } else if arguments.scene.as_deref() == Some("g1_mobile_continuous_release_diagnostic") {
+        dev_tools_minigame::g1_capture::run_mobile_continuous_release_from_file(&path, options)
     } else if mobile_carry {
         dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
     } else if mobile_auxiliary_release {
@@ -353,7 +357,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
@@ -434,6 +438,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                 | "g1_mobile_target_restored_view_diagnostic"
                 | "g1_mobile_auxiliary_approach_diagnostic"
                 | "g1_mobile_auxiliary_release_diagnostic"
+                | "g1_mobile_continuous_release_diagnostic"
         )
     ) {
         if options.g1_ticks != Some(3150) {
@@ -794,6 +799,37 @@ mod tests {
         assert!(parse_arguments(["--frames".to_owned(), "0".to_owned()].into_iter()).is_err());
     }
 
+    #[test]
+    fn continuous_mobile_release_keeps_its_own_finite_budget() {
+        assert!(
+            parse_arguments(
+                [
+                    "--scene",
+                    "g1_mobile_continuous_release_diagnostic",
+                    "--g1-ticks",
+                    "3150"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["200", "1000", "3151"] {
+            assert!(
+                parse_arguments(
+                    [
+                        "--scene",
+                        "g1_mobile_continuous_release_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
+        }
+    }
     #[test]
     fn waited_mobile_grasp_is_an_explicit_finite_scene() {
         assert!(

@@ -11,6 +11,7 @@ use serde::Serialize;
 use task_minigame::{policy::profile_contract, types::TaskProfile};
 
 use super::{
+    mobile_admission::MobileImageAdmission,
     mobile_grip::{MobileGripCalibration, MobileGripReceipt},
     mobile_hold::{MobileGripHolding, MobileHoldGoal, MobileHoldStep},
     mobile_lowering::{MobileGripLowering, MobileLowerGoal, MobileLowerStep},
@@ -36,6 +37,7 @@ pub enum MobileAssistCommand {
     /// Original50frames, then a separately recorded traditional standing wait.
     /// The owner transitions without pausing or repeating a VLA frame.
     OriginalVlaThenWait(ArenaTaskCommand),
+    ObservedSkillThenWait(MobileObservedSkill),
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
     ClassicalReobserve(MobileScanGoal),
@@ -47,9 +49,36 @@ pub enum MobileAssistCommand {
     ClassicalModelWait(MobileWaitGoal),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum MobileObservedSkill {
+    Carry(MobileCarryGoal),
+    Scan(MobileScanGoal),
+    Hold(MobileHoldGoal),
+    Release(MobileReleaseGoal),
+}
+impl MobileObservedSkill {
+    fn observation(&self) -> task_minigame::types::ObservationStamp {
+        match self {
+            Self::Carry(g) => g.observation,
+            Self::Scan(g) => g.observation,
+            Self::Hold(g) => g.observation,
+            Self::Release(g) => g.observation,
+        }
+    }
+    fn command(&self) -> MobileAssistCommand {
+        match self {
+            Self::Carry(g) => MobileAssistCommand::ClassicalCarry(g.clone()),
+            Self::Scan(g) => MobileAssistCommand::ClassicalScan(g.clone()),
+            Self::Hold(g) => MobileAssistCommand::ClassicalHold(g.clone()),
+            Self::Release(g) => MobileAssistCommand::ClassicalRelease(g.clone()),
+        }
+    }
+}
+
 impl MobileAssistCommand {
     pub(crate) fn validate(&self) -> Result<(), RobotError> {
         match self {
+            Self::ObservedSkillThenWait(skill) => skill.command().validate(),
             Self::OriginalVla(command) | Self::OriginalVlaThenWait(command) => {
                 command.validate()?;
                 if command.chunk.profile != TaskProfile::MobileBox {
@@ -122,6 +151,8 @@ pub enum MobileAssistExecution {
 pub struct MobileAssistStep {
     pub execution: MobileAssistExecution,
     pub body: ArenaBodyStep,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_admission: Option<MobileImageAdmission>,
 }
 
 /// No second world, physical pose setter, task-object sensor or model client.
@@ -129,6 +160,9 @@ pub struct MobileAssistRunner {
     owner: ArenaTaskRunner,
     calibration: MobileGripCalibration,
     maximum_observation_wall_age_ms: u64,
+    maximum_observation_age_ns: u64,
+    continuous_skill: Option<MobileObservedSkill>,
+    continuous_admission: Option<MobileImageAdmission>,
     last_vla_execution: Option<ArenaTaskExecution>,
     last_vla_command: Option<G1Command>,
     last_controller_command: Option<G1Command>,
@@ -169,6 +203,9 @@ impl MobileAssistRunner {
             owner: ArenaTaskRunner::load_mobile_constraint_diagnostic(config)?,
             calibration: MobileGripCalibration::new(&definition)?,
             maximum_observation_wall_age_ms: config.max_observation_wall_age_ms,
+            maximum_observation_age_ns: config.max_observation_age_ns,
+            continuous_skill: None,
+            continuous_admission: None,
             last_vla_execution: None,
             last_vla_command: None,
             last_controller_command: None,
@@ -207,6 +244,15 @@ impl MobileAssistRunner {
 
     pub fn completed_skill(&self) -> bool {
         if let Some(waiting) = &self.waiting {
+            return waiting.completed();
+        }
+        if self.continuous_skill.is_some() {
+            return false;
+        }
+        self.completed_native_skill()
+    }
+    fn completed_native_skill(&self) -> bool {
+        if let Some(waiting) = &self.waiting {
             waiting.completed()
         } else if let Some(release) = &self.release {
             release.completed()
@@ -223,6 +269,39 @@ impl MobileAssistRunner {
         } else {
             self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
         }
+    }
+
+    fn skill_completed(&self, skill: &MobileObservedSkill) -> bool {
+        match skill {
+            MobileObservedSkill::Carry(g) => self
+                .carry
+                .as_ref()
+                .is_some_and(|c| c.navigator.goal() == g && c.navigator.completed()),
+            MobileObservedSkill::Scan(g) => self
+                .scan
+                .as_ref()
+                .is_some_and(|s| s.navigator.goal() == g && s.navigator.completed()),
+            MobileObservedSkill::Hold(g) => self
+                .hold
+                .as_ref()
+                .is_some_and(|h| h.goal() == g && h.completed()),
+            MobileObservedSkill::Release(g) => self
+                .release
+                .as_ref()
+                .is_some_and(|r| r.goal() == g && r.completed()),
+        }
+    }
+    fn classical_admission(
+        &self,
+        observation: task_minigame::types::ObservationStamp,
+        state: &G1Measurement,
+    ) -> Result<MobileImageAdmission, RobotError> {
+        if let Some(admission) = &self.continuous_admission {
+            if admission.matches(observation, state) {
+                return Ok(admission.clone());
+            }
+        }
+        MobileImageAdmission::at_current_boundary(observation, state)
     }
 
     fn prepare_classical(
@@ -312,8 +391,22 @@ impl MobileAssistRunner {
         if self.halted {
             return Err(invalid("mobile assist halted; reset required"));
         }
-        let result = self.step_inner(command, guard);
-        if let Ok(step) = &result {
+        if !matches!(
+            command,
+            MobileAssistCommand::ObservedSkillThenWait(_)
+                | MobileAssistCommand::ClassicalModelWait(_)
+        ) {
+            self.continuous_skill = None;
+            self.continuous_admission = None;
+        }
+        let mut result = self.step_inner(command, guard);
+        if let Ok(step) = &mut result {
+            if !matches!(
+                &step.execution,
+                MobileAssistExecution::ClassicalModelWait { .. }
+            ) {
+                step.image_admission = self.continuous_admission.clone();
+            }
             self.last_controller_command = Some(match &step.execution {
                 MobileAssistExecution::OriginalVla(_) => {
                     self.last_vla_command.as_ref().unwrap().clone()
@@ -349,10 +442,50 @@ impl MobileAssistRunner {
             command,
             MobileAssistCommand::ClassicalModelWait(_)
                 | MobileAssistCommand::OriginalVlaThenWait(_)
+                | MobileAssistCommand::ObservedSkillThenWait(_)
         ) {
             self.waiting = None;
         }
         match command {
+            MobileAssistCommand::ObservedSkillThenWait(skill) => {
+                let state = self.owner.measurement()?;
+                if self.continuous_skill.as_ref() != Some(skill) {
+                    if self
+                        .continuous_skill
+                        .as_ref()
+                        .is_some_and(|previous| !self.skill_completed(previous))
+                    {
+                        return Err(invalid(
+                            "cannot replace an active continuous observed skill",
+                        ));
+                    }
+                    let waiting = self.waiting.as_ref().ok_or_else(|| {
+                        invalid("observed skill requires an explicit stationary owner wait")
+                    })?;
+                    let admission = waiting.admit_observed_skill(
+                        skill.observation(),
+                        &state,
+                        &self.calibration,
+                        self.maximum_observation_age_ns,
+                    )?;
+                    self.continuous_skill = Some(skill.clone());
+                    self.continuous_admission = Some(admission);
+                }
+                if self.skill_completed(skill) {
+                    let goal =
+                        self.waiting
+                            .as_ref()
+                            .map(|w| w.goal().clone())
+                            .unwrap_or(MobileWaitGoal {
+                                episode_id: state.episode_id,
+                                request_id: skill.observation().frame_id,
+                                execution_start_sim_ns: state.sim_time_ns,
+                                duration_ticks: 200,
+                            });
+                    return self.step_inner(&MobileAssistCommand::ClassicalModelWait(goal), guard);
+                }
+                self.step_inner(&skill.command(), guard)
+            }
             MobileAssistCommand::OriginalVlaThenWait(command) => {
                 if command.scheduled_start_sim_ns.is_some() {
                     return Err(invalid(
@@ -403,7 +536,7 @@ impl MobileAssistRunner {
                             && Some(state.sim_time_ns)
                                 == e.execution_start_sim_ns.checked_add(1_000_000_000)
                     });
-                    if !self.completed_skill() && !complete_vla {
+                    if !self.completed_native_skill() && !complete_vla {
                         return Err(invalid(
                             "model waiting requires a completed VLA chunk or classical skill",
                         ));
@@ -426,6 +559,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&waiting_step.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalModelWait {
                         goal: goal.clone(),
                         waiting: waiting_step,
@@ -474,6 +608,7 @@ impl MobileAssistRunner {
                 self.waiting = None;
                 self.original_transport_command = None;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::OriginalVla(step.execution),
                     body: step.body,
                 })
@@ -491,7 +626,9 @@ impl MobileAssistRunner {
                     }) {
                         return Err(invalid("next carry requires a newer actual camera frame"));
                     }
-                    let navigator = MobileCarryNavigator::new(goal.clone(), &state)?;
+                    let admission = self.classical_admission(goal.observation, &state)?;
+                    let navigator =
+                        MobileCarryNavigator::new_with_admission(goal.clone(), &state, &admission)?;
                     let (command, grip) = self.prepare_classical(&goal.observation, &state)?;
                     if self.original_transport_command.is_none() {
                         let mut posture = command.clone();
@@ -524,6 +661,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&carry.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalCarry {
                         goal: goal.clone(),
                         grip: carry.grip.clone(),
@@ -581,6 +719,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&reobserve.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalReobserve {
                         goal: goal.clone(),
                         grip: reobserve.grip.clone(),
@@ -598,7 +737,9 @@ impl MobileAssistRunner {
                     ));
                 }
                 if self.scan.is_none() {
-                    let navigator = MobileScanNavigator::new(goal.clone(), &state)?;
+                    let admission = self.classical_admission(goal.observation, &state)?;
+                    let navigator =
+                        MobileScanNavigator::new_with_admission(goal.clone(), &state, &admission)?;
                     let (command, grip) = self.prepare_classical(&goal.observation, &state)?;
                     if self.original_transport_command.is_none() {
                         let mut posture = command.clone();
@@ -621,6 +762,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&scan.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalScan {
                         goal: goal.clone(),
                         grip: scan.grip.clone(),
@@ -667,6 +809,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&restoring.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalRestore {
                         goal: goal.clone(),
                         restoring,
@@ -684,7 +827,13 @@ impl MobileAssistRunner {
                         return Err(invalid("hold requires completed carry"));
                     }
                     let (command, _) = self.prepare_classical(&goal.observation, &state)?;
-                    self.hold = Some(MobileGripHolding::new(goal.clone(), &state, command)?);
+                    let admission = self.classical_admission(goal.observation, &state)?;
+                    self.hold = Some(MobileGripHolding::new_with_admission(
+                        goal.clone(),
+                        &state,
+                        command,
+                        &admission,
+                    )?);
                 }
                 let hold = self.hold.as_mut().unwrap();
                 if hold.goal() != goal {
@@ -695,6 +844,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&holding.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalHold {
                         goal: goal.clone(),
                         holding,
@@ -715,11 +865,13 @@ impl MobileAssistRunner {
                         return Err(invalid("release requires completed stationary carry"));
                     }
                     let (command, _) = self.prepare_classical(&goal.observation, &state)?;
-                    self.release = Some(MobileGripRelease::new(
+                    let admission = self.classical_admission(goal.observation, &state)?;
+                    self.release = Some(MobileGripRelease::new_with_admission(
                         goal.clone(),
                         &state,
                         command,
                         &self.calibration,
+                        &admission,
                     )?);
                 }
                 let release = self.release.as_mut().unwrap();
@@ -731,6 +883,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&opening.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalRelease {
                         goal: goal.clone(),
                         opening,
@@ -759,6 +912,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&raising.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalRaise {
                         goal: goal.clone(),
                         raising,
@@ -788,6 +942,7 @@ impl MobileAssistRunner {
                     .owner
                     .step_mobile_assist_with_guard(&lowering.command, guard)?;
                 Ok(MobileAssistStep {
+                    image_admission: None,
                     execution: MobileAssistExecution::ClassicalLower {
                         goal: goal.clone(),
                         lowering,

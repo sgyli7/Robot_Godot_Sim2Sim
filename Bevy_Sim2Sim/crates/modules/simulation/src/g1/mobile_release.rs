@@ -1,5 +1,7 @@
 //! Finite palm opening and real physical settling; self sensors/FK only.
 
+use super::mobile_admission::MobileImageAdmission;
+
 use super::{
     mobile_grip::{MobileGripCalibration, MobileGripReceipt},
     runner::G1Measurement,
@@ -59,12 +61,19 @@ impl MobileGripRelease {
         command: G1Command,
         calibration: &MobileGripCalibration,
     ) -> Result<Self, RobotError> {
+        let admission = MobileImageAdmission::at_current_boundary(goal.observation, state)?;
+        Self::new_with_admission(goal, state, command, calibration, &admission)
+    }
+    pub(super) fn new_with_admission(
+        goal: MobileReleaseGoal,
+        state: &G1Measurement,
+        command: G1Command,
+        calibration: &MobileGripCalibration,
+        admission: &MobileImageAdmission,
+    ) -> Result<Self, RobotError> {
         goal.validate()?;
         command.validate()?;
-        if goal.observation.episode_id != state.episode_id
-            || goal.observation.sim_time_ns != state.sim_time_ns
-            || command.navigation != [0.; 3]
-        {
+        if !admission.matches(goal.observation, state) || command.navigation != [0.; 3] {
             return Err(invalid(
                 "release needs completed stationary current carry boundary",
             ));

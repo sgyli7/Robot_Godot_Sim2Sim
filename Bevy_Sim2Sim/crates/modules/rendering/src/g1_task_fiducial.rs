@@ -1,6 +1,7 @@
 //! Disclosed render-only printed markers on the original mobile box/bin.
 //! They inherit renderer object transforms and never modify physics. Visibility
-//! begins at Tick200, after the four original unmarked grasp observations.
+//! has a legacy Tick200minimum. Continuous routes add a logical owner gate
+//! after the four original unmarked grasp observations actually complete.
 
 use std::{fs, path::Path};
 
@@ -41,6 +42,18 @@ pub enum G1FiducialLayoutProfile {
 pub struct G1TaskFiducialModel {
     pngs: [Vec<u8>; 2],
     pub receipt: G1TaskFiducialReceipt,
+}
+
+/// Optional logical admission gate in addition to the original minimum Tick.
+/// Continuous routes keep markers hidden until original grasp actually ends.
+#[derive(Resource)]
+pub struct G1TaskFiducialGate {
+    pub enabled: bool,
+}
+impl Default for G1TaskFiducialGate {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,6 +157,7 @@ struct PrintedMarker;
 pub struct G1TaskFiducialPlugin;
 impl Plugin for G1TaskFiducialPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<G1TaskFiducialGate>();
         app.add_systems(PostStartup, spawn)
             .add_systems(PostUpdate, reveal.before(TransformSystems::Propagate));
     }
@@ -242,12 +256,14 @@ fn spawn(
 fn reveal(
     model: Res<G1TaskFiducialModel>,
     input: Res<G1TaskVisualInput>,
+    gate: Res<G1TaskFiducialGate>,
     mut markers: Query<&mut Visibility, With<PrintedMarker>>,
 ) {
-    let visible = input
-        .0
-        .as_ref()
-        .is_some_and(|f| f.source_tick >= model.receipt.activation_tick);
+    let visible = gate.enabled
+        && input
+            .0
+            .as_ref()
+            .is_some_and(|f| f.source_tick >= model.receipt.activation_tick);
     for mut visibility in &mut markers {
         let next = if visible {
             Visibility::Inherited

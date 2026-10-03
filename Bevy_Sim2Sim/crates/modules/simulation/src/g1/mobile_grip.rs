@@ -109,6 +109,47 @@ impl MobileGripCalibration {
         Ok(Self { joints, limits })
     }
 
+    /// Bound camera-to-owner palm motion from measured joints/IMU and self
+    /// velocity odometry only. No physical body or object pose is consulted.
+    pub(super) fn measured_palm_motion(
+        &self,
+        image: &G1Measurement,
+        current: &G1Measurement,
+        self_displacement_source_m: [f64; 3],
+    ) -> Result<(f64, f64), RobotError> {
+        validate_self_state(image)?;
+        validate_self_state(current)?;
+        if image.episode_id != current.episode_id
+            || !self_displacement_source_m.iter().all(|v| v.is_finite())
+        {
+            return Err(invalid("palm admission has foreign/nonfinite self history"));
+        }
+        let joints = |s: &G1Measurement| std::array::from_fn(|i| f64::from(s.joint_positions[i]));
+        let before = self.forward(&joints(image));
+        let after = self.forward(&joints(current));
+        let rotation = |s: &G1Measurement| {
+            let [w, x, y, z] = s.root_rotation_wxyz;
+            UnitQuaternion::new_normalize(Quaternion::new(
+                f64::from(w),
+                f64::from(x),
+                f64::from(y),
+                f64::from(z),
+            ))
+        };
+        let r0 = rotation(image);
+        let r1 = rotation(current);
+        let displacement = Vector3::from(self_displacement_source_m);
+        let maximum = PALMS
+            .iter()
+            .map(|&p| {
+                (displacement + r1 * after[p].translation.vector
+                    - r0 * before[p].translation.vector)
+                    .norm()
+            })
+            .fold(0., f64::max);
+        Ok((maximum, r0.angle_to(&r1)))
+    }
+
     /// Pure correction. On a failed/bounded solve the owner receives an error,
     /// never clipped model bytes or an unvalidated motor command.
     pub fn correct(

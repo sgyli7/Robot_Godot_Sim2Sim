@@ -1,6 +1,8 @@
 //! Bounded real standing using the original command and named self velocity.
 //! No object pose/contact truth, camera inference or additional integration.
 
+use super::mobile_admission::MobileImageAdmission;
+
 use super::runner::G1Measurement;
 use robot_minigame::{RobotError, g1::contract::G1Command};
 use serde::{Deserialize, Serialize};
@@ -48,12 +50,18 @@ impl MobileGripHolding {
         state: &G1Measurement,
         command: G1Command,
     ) -> Result<Self, RobotError> {
+        let admission = MobileImageAdmission::at_current_boundary(goal.observation, state)?;
+        Self::new_with_admission(goal, state, command, &admission)
+    }
+    pub(super) fn new_with_admission(
+        goal: MobileHoldGoal,
+        state: &G1Measurement,
+        command: G1Command,
+        admission: &MobileImageAdmission,
+    ) -> Result<Self, RobotError> {
         goal.validate()?;
         command.validate()?;
-        if goal.observation.episode_id != state.episode_id
-            || goal.observation.sim_time_ns != state.sim_time_ns
-            || command.navigation != [0.; 3]
-        {
+        if !admission.matches(goal.observation, state) || command.navigation != [0.; 3] {
             return Err(invalid(
                 "hold requires a fresh completed stationary carry boundary",
             ));
