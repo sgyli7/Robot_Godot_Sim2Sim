@@ -1604,3 +1604,19 @@ preserved. Validation passes73simulation tests/38ignored,41development tests/
 2ignored,12CLI tests and default compilation. A new unit test's initial numeric
 type compile error is retained in the evidence alongside its corrected pass.
 The new live full chain remains a separate required check.
+
+Fresh0261 then completes the entire native development chain with four new
+original N1.6 calls, current images before each of four fine moves, a new hold
+image and a newer placement-only image admitting the horizontal35cm opening.
+All1709post-grasp/preopening samples are hand-only. Real hand contact ends
+inside the commanded opening, and strict whole-box containment/detachment/bin
+support/low velocity/standing remains true for the final2.52seconds; final floor
+margin0.094009m. All2134actual50Hz single integrations/control updates complete
+with active sim/wall0.999187 and zero misses/debt. The owned model exits by
+SIGINT−2 and the app exits0. No saved grasp or synthetic image stamp enters
+this live chain. Trace SHA256:
+`0434673574a9e2f18eb21dca88f6379edb76b6ae0944f868a331ce0235f766a0`.
+This is a finite source-near native vision/classical-control development pass.
+Qwen selection, science station, fresh-grasp robustness, continuous1x, the
+frozen formal ten-trial suite, terrain/fault/coexistence and final video/runbook/
+main merge remain required; formal T2 success is still false.
