@@ -1473,3 +1473,25 @@ not successful gripping. Trace SHA256:
 `5ce4f807da6b235c3f651d48c732082443f8096f2ab95682d8b76c39078b0751`.
 The next finite causal comparison changes only the requested fine walking
 speed; it does not promote a controller remedy or relax placement/grip gates.
+
+Saved-prefix control0248 requests0.1m/s only during fine walking. The unchanged
+progress guard stops it at1266Ticks for less than3cm forward progress in1second.
+All1066post-grasp samples remain hand-only, but only44.5mm fine odometry is
+accumulated and no hold/opening completes. The low-speed override remains
+test-only; no speed sweep or weakened progress rule is adopted. Trace SHA256:
+`19bbe3d2a02191e51d992ddb5abb697533318c38f10d03b8d8b372f76c1cdf31`.
+
+Control0249 instead uses the unchanged0.3m/s navigator in four0.1m requested
+segments (existing0.05m stop margin), each followed by its original100Tick
+stop, then100Tick hold. All1918single50Hz Ticks complete, with1718post-grasp
+hand-only samples and zero non-floor robot/background impulse contacts. The
+first1147physical body samples match fresh0246 at native f32 bits. Fine root
+displacement is[-0.077928,-0.572353,-0.000374]m and final self speed0.009834m/s.
+Independent final floor margin is0.022907m, but the hands still support the
+box: strict placement0seconds and opening0Ticks. Later suffix stamps are
+explicitly synthetic self-clock fixture stamps, not new rendered observations.
+This is a mechanical comparison with0freshVLA/0current-camera frames, not an
+autonomous demonstration. It supports testing actual RGB after every bounded
+segment; it does not justify blindly executing a saved four-segment sequence.
+Trace SHA256:
+`8f5b3d2cc46d7676444373f6aebf90cbdf8a9da19a56f18556463eaa98474b7f`.

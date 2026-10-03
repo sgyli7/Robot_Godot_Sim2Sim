@@ -112,6 +112,8 @@ pub struct MobileCarryNavigator {
     scan_only: bool,
     forward_window_m: f32,
     forward_window_ticks: u32,
+    #[cfg(test)]
+    diagnostic_walk_speed_m_s: Option<f32>,
 }
 
 impl MobileCarryNavigator {
@@ -136,6 +138,8 @@ impl MobileCarryNavigator {
             scan_only: false,
             forward_window_m: 0.,
             forward_window_ticks: 0,
+            #[cfg(test)]
+            diagnostic_walk_speed_m_s: None,
         })
     }
 
@@ -144,6 +148,22 @@ impl MobileCarryNavigator {
     }
     pub fn completed(&self) -> bool {
         self.completed
+    }
+
+    /// Mechanical causal test only. The normal runtime and source model
+    /// selection remain unchanged; no speed search or in-flight mutation.
+    #[cfg(test)]
+    pub(super) fn diagnostic_set_walk_speed(&mut self, speed: f32) -> Result<(), RobotError> {
+        if !speed.is_finite()
+            || !(0.06..=0.3).contains(&speed)
+            || self.phase != MobileNavigationPhase::Turn
+            || self.diagnostic_walk_speed_m_s.is_some()
+            || self.scan_only
+        {
+            return Err(invalid("invalid/late/repeated diagnostic walking speed"));
+        }
+        self.diagnostic_walk_speed_m_s = Some(speed);
+        Ok(())
     }
 
     /// One call per native pre-integration boundary. Repeats, resets, skipped
@@ -228,7 +248,10 @@ impl MobileCarryNavigator {
                 } else if self.phase_ticks >= 1000 {
                     return Err(invalid("proprioceptive carry walk deadline missed"));
                 } else {
-                    [0.3, 0., (0.8 * error).clamp(-0.25, 0.25)]
+                    let speed = 0.3;
+                    #[cfg(test)]
+                    let speed = self.diagnostic_walk_speed_m_s.unwrap_or(speed);
+                    [speed, 0., (0.8 * error).clamp(-0.25, 0.25)]
                 }
             }
             MobileNavigationPhase::Stop => {
@@ -369,5 +392,22 @@ mod tests {
             s.root_velocity_source = [if tick % 2 == 0 { 0.6 } else { 0. }, 0., 0.];
             assert!(nav.update(&s).is_ok());
         }
+    }
+
+    #[test]
+    fn diagnostic_speed_is_bounded_one_time_and_before_walk() {
+        let mut g = goal();
+        g.heading_yaw_source_rad = 0.;
+        let mut nav = MobileCarryNavigator::new(g, &state(200)).unwrap();
+        for invalid in [f32::NAN, 0.04, 0.4] {
+            assert!(nav.clone().diagnostic_set_walk_speed(invalid).is_err());
+        }
+        nav.diagnostic_set_walk_speed(0.1).unwrap();
+        assert!(nav.clone().diagnostic_set_walk_speed(0.2).is_err());
+        for tick in 200..220 {
+            nav.update(&state(tick)).unwrap();
+        }
+        assert!(nav.clone().diagnostic_set_walk_speed(0.1).is_err());
+        assert_eq!(nav.update(&state(220)).unwrap().navigation, [0.1, 0., 0.]);
     }
 }

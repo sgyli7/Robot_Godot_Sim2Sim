@@ -710,6 +710,9 @@ mod tests {
         coarse: MobileCarryGoal,
         fine: MobileCarryGoal,
         hold: MobileHoldGoal,
+        fine_walk_speed_m_s: Option<f32>,
+        maximum_native_ticks: Option<u64>,
+        fine_segments_m: Option<Vec<f32>>,
     }
     #[test]
     #[ignore = "frozen actual finite prefix then bounded standing;0freshVLA/renderer work"]
@@ -722,6 +725,25 @@ mod tests {
         let mut goals: AuxiliaryHoldFixture =
             serde_json::from_slice(&read("G1_MOBILE_AUX_HOLD_GOALS")?)
                 .map_err(|e| invalid(e.to_string()))?;
+        let maximum_ticks = goals.maximum_native_ticks.unwrap_or(1700);
+        if !(1700..=3150).contains(&maximum_ticks) {
+            return Err(invalid("saved mechanical fixture exceeds3150Tick budget"));
+        }
+        let fine_speed = goals.fine_walk_speed_m_s;
+        let segments = goals.fine_segments_m;
+        if let Some(distances) = &segments {
+            if fine_speed.is_some()
+                || distances.is_empty()
+                || distances.len() > 5
+                || distances
+                    .iter()
+                    .any(|d| !d.is_finite() || !(0.1..=0.2).contains(d))
+                || distances.iter().map(|d| d + 0.05).sum::<f32>() > 0.7
+            {
+                return Err(invalid("invalid finite segmented carry comparison"));
+            }
+        }
+        let self_clock_suffix = fine_speed.is_some() || segments.is_some();
         if sequence.schema != "g1_saved_native_mobile_action_sequence_v1"
             || sequence.chunks.len() != 4
         {
@@ -762,15 +784,57 @@ mod tests {
             goals.coarse.observation.captured_at_unix_ms = now();
             goals.fine.observation.captured_at_unix_ms = now();
             goals.hold.observation.captured_at_unix_ms = now();
-            let commands = [
+            let mut commands = vec![
                 MobileAssistCommand::ClassicalScan(goals.scan),
                 MobileAssistCommand::ClassicalCarry(goals.coarse),
-                MobileAssistCommand::ClassicalCarry(goals.fine),
-                MobileAssistCommand::ClassicalHold(goals.hold),
             ];
-            for command in commands {
+            if let Some(distances) = &segments {
+                for distance in distances {
+                    let mut goal = goals.fine.clone();
+                    goal.relative_distance_m = *distance;
+                    commands.push(MobileAssistCommand::ClassicalCarry(goal));
+                }
+            } else {
+                commands.push(MobileAssistCommand::ClassicalCarry(goals.fine));
+            }
+            let hold_stage = commands.len();
+            commands.push(MobileAssistCommand::ClassicalHold(goals.hold));
+            for (stage, mut command) in commands.into_iter().enumerate() {
+                if segments.is_some() && stage > 2 && stage < hold_stage {
+                    let state = owner.measurement()?;
+                    let MobileAssistCommand::ClassicalCarry(goal) = &mut command else {
+                        unreachable!()
+                    };
+                    // Saved-image heading + self-clock mechanical suffix only.
+                    // Synthetic stamps are never passed off as new RGB frames.
+                    goal.observation.frame_id += (stage - 2) as u64;
+                    goal.observation.sim_time_ns = state.sim_time_ns;
+                    goal.observation.captured_at_unix_ms = now();
+                }
+                if stage == hold_stage && self_clock_suffix {
+                    let state = owner.measurement()?;
+                    let MobileAssistCommand::ClassicalHold(goal) = &mut command else {
+                        unreachable!()
+                    };
+                    // Self-clock mechanical hold only: there is no new image.
+                    goal.observation.frame_id += segments.as_ref().map_or(0, |v| v.len() as u64);
+                    goal.observation.sim_time_ns = state.sim_time_ns;
+                    goal.observation.captured_at_unix_ms = now();
+                }
+                let mut speed_selected = false;
                 loop {
                     let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+                    if stage == 2 && !speed_selected {
+                        if let Some(speed) = fine_speed {
+                            owner
+                                .carry
+                                .as_mut()
+                                .ok_or_else(|| invalid("fine causal test has no carry"))?
+                                .navigator
+                                .diagnostic_set_walk_speed(speed)?;
+                        }
+                        speed_selected = true;
+                    }
                     ticks += 1;
                     let mut record =
                         serde_json::to_value(&step).map_err(|e| invalid(e.to_string()))?;
@@ -782,8 +846,8 @@ mod tests {
                     if owner.completed_skill() {
                         break;
                     }
-                    if ticks >= 1700 {
-                        return Err(invalid("auxiliary hold exceeded1700Tick fixture budget"));
+                    if ticks >= maximum_ticks {
+                        return Err(invalid("auxiliary hold exceeded declared fixture budget"));
                     }
                 }
             }
@@ -796,6 +860,8 @@ mod tests {
             .map_err(|e| invalid(e.to_string()))?;
         serde_json::to_writer_pretty(file,&serde_json::json!({"qualified":false,"actual_integrations":ticks,
             "fresh_vla_calls":0,"saved_actual_prefix":true,"new_current_camera_used":false,"completed_hold":result.is_ok(),
+            "fine_walk_speed_override_m_s":fine_speed,"maximum_native_ticks":maximum_ticks,
+            "fine_segments_m":segments,"self_clock_suffix_stamps_without_new_images":self_clock_suffix,
             "error":result.as_ref().err().map(ToString::to_string),"scope":"mechanical standing only; no fresh navigation/release/task qualification"})).map_err(|e|invalid(e.to_string()))?;
         result
     }
