@@ -230,7 +230,7 @@ mod worker {
             observation: ObservationStamp,
             memory: Option<MarkerTargetMemory>,
         ) -> Result<Self, String> {
-            Self::start_internal(config, directory, observation, memory, false)
+            Self::start_internal(config, directory, observation, memory, false, false)
         }
 
         pub fn start_box_view(
@@ -241,7 +241,20 @@ mod worker {
             if config.task_geometry.is_some() {
                 return Err("box visibility cannot request navigation clearance".into());
             }
-            Self::start_internal(config, directory, observation, None, true)
+            Self::start_internal(config, directory, observation, None, true, false)
+        }
+
+        pub fn start_placement_view(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+        ) -> Result<Self, String> {
+            if config.task_geometry.is_none() || config.fiducial_calibration.is_none() {
+                return Err(
+                    "placement view requires bound public geometry and auxiliary labels".into(),
+                );
+            }
+            Self::start_internal(config, directory, observation, None, false, true)
         }
 
         fn start_internal(
@@ -250,6 +263,7 @@ mod worker {
             observation: ObservationStamp,
             memory: Option<MarkerTargetMemory>,
             box_view_only: bool,
+            placement_view_only: bool,
         ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
@@ -321,6 +335,9 @@ mod worker {
                         if box_view_only {
                             command.arg("--box-view-only");
                         }
+                        if placement_view_only {
+                            command.arg("--placement-view-only");
+                        }
                         if let Some(calibration) = &config.fiducial_calibration {
                             command.arg("--fiducials").arg(&calibration.path);
                         }
@@ -372,6 +389,7 @@ mod worker {
                             &config.definition_sha256,
                             memory.as_ref().zip(memory_hash.as_deref()),
                             box_view_only,
+                            placement_view_only,
                         )?;
                         if config
                             .fiducial_calibration
@@ -395,6 +413,9 @@ mod worker {
                         if let Some(geometry) = &config.task_geometry {
                             if reply["target_memory_used"] != true {
                                 validate_clearance_reply(&reply, observation, &geometry.sha256)?;
+                            }
+                            if placement_view_only {
+                                validate_release_reply(&reply, observation, &geometry.sha256)?;
                             }
                         } else if !reply["clearance_proposal"].is_null() {
                             return Err("unrequested public-geometry clearance reply".into());
@@ -453,7 +474,16 @@ mod worker {
         definition: &str,
         memory: Option<(&MarkerTargetMemory, &str)>,
     ) -> Result<(), String> {
-        validate_reply_for_policy(reply, observation, image, input, definition, memory, false)
+        validate_reply_for_policy(
+            reply,
+            observation,
+            image,
+            input,
+            definition,
+            memory,
+            false,
+            false,
+        )
     }
 
     fn validate_reply_for_policy(
@@ -464,6 +494,7 @@ mod worker {
         definition: &str,
         memory: Option<(&MarkerTargetMemory, &str)>,
         box_view_only: bool,
+        placement_view_only: bool,
     ) -> Result<(), String> {
         let actual: ObservationStamp =
             serde_json::from_value(reply["observation"].clone()).map_err(|e| e.to_string())?;
@@ -540,6 +571,24 @@ mod worker {
         if reply["box_view_only"] == true {
             return Err("box visibility cannot replace a target localization".into());
         }
+        if placement_view_only {
+            if reply["placement_view_only"] != true
+                || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+                || memory.is_some()
+                || !reply["navigation_proposal"].is_null()
+                || !reply["target_memory_estimate"].is_null()
+                || reply["target_memory_used"] == true
+                || reply["release_proposal"].is_null()
+            {
+                return Err(
+                    "placement view cannot admit navigation, memory or a foreign camera".into(),
+                );
+            }
+            return Ok(());
+        }
+        if reply["placement_view_only"] == true || !reply["release_proposal"].is_null() {
+            return Err("unrequested release admission reply".into());
+        }
         if let Some((memory, hash)) = memory {
             memory.validate(observation)?;
             let estimate = &reply["target_memory_estimate"];
@@ -600,6 +649,57 @@ mod worker {
             || !(0.1..=2.5).contains(&distance)
         {
             return Err("invalid visual navigation proposal".into());
+        }
+        Ok(())
+    }
+
+    fn validate_release_reply(
+        reply: &serde_json::Value,
+        observation: ObservationStamp,
+        geometry_hash: &str,
+    ) -> Result<(), String> {
+        let proposal = &reply["release_proposal"];
+        let actual: ObservationStamp =
+            serde_json::from_value(proposal["observation"].clone()).map_err(|e| e.to_string())?;
+        let number = |field| {
+            proposal[field]
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| format!("invalid visual release {field}"))
+        };
+        let margin = number("minimum_signed_floor_margin_m")?;
+        let drop = number("estimated_drop_height_m")?;
+        let upright = number("visible_bin_upward_cosine")?;
+        let speed = number("self_root_speed_m_s")?;
+        let admitted = margin >= 0.02
+            && (0.05..=0.4).contains(&drop)
+            && upright >= 0.98
+            && (0. ..=0.05).contains(&speed);
+        if proposal["schema"] != "g1_visible_marker_release_admission_v1"
+            || actual != observation
+            || proposal["source_geometry_sha256"] != geometry_hash
+            || proposal["world_or_contact_truth_input"] != false
+            || proposal["task_qualified"] != false
+            || proposal["source"] != "actual_two_marker_rgb_and_public_original_collision_vertices"
+            || proposal["minimum_required_floor_margin_m"] != 0.02
+            || !(-1. ..=1.).contains(&upright)
+            || proposal["release_admitted"] != admitted
+        {
+            return Err("foreign/unsafe visual release admission".into());
+        }
+        if admitted {
+            let goal: simulation_minigame::g1::mobile_release::MobileReleaseGoal =
+                serde_json::from_value(proposal["release_goal"].clone())
+                    .map_err(|e| e.to_string())?;
+            goal.validate().map_err(|e| e.to_string())?;
+            if goal.observation != observation
+                || goal.target_palm_gap_m != 0.3
+                || goal.duration_ticks != 100
+            {
+                return Err("release goal detached from its current visual admission".into());
+            }
+        } else if !proposal["release_goal"].is_null() {
+            return Err("rejected visual alignment cannot provide a release goal".into());
         }
         Ok(())
     }
@@ -675,7 +775,9 @@ mod worker {
             } else {
                 Some(serde_json::from_value(f["memory"].clone()).map_err(|e| e.to_string())?)
             };
-            let job = if f["box_view_only"] == true {
+            let job = if f["placement_view_only"] == true {
+                MarkerVisionJob::start_placement_view(config, directory.clone(), stamp)?
+            } else if f["box_view_only"] == true {
                 MarkerVisionJob::start_box_view(config, directory.clone(), stamp)?
             } else {
                 MarkerVisionJob::start_with_memory(config, directory.clone(), stamp, memory)?
@@ -741,7 +843,16 @@ mod worker {
             reply["carried_box_detected"] = true.into();
             reply["current_box_palm_center_distance_m"] = 0.19.into();
             let check = |r: &serde_json::Value| {
-                validate_reply_for_policy(r, stamp, "image", "input", "definition", None, true)
+                validate_reply_for_policy(
+                    r,
+                    stamp,
+                    "image",
+                    "input",
+                    "definition",
+                    None,
+                    true,
+                    false,
+                )
             };
             assert!(check(&reply).is_ok());
             assert!(validate_reply(&reply, stamp, "image", "input", "definition").is_err());
@@ -756,6 +867,58 @@ mod worker {
                 }
                 assert!(check(&bad).is_err());
             }
+        }
+        #[test]
+        fn release_cannot_cross_frame_geometry_margin_or_speed_guards() {
+            let (mut reply, stamp) = fixture();
+            reply["navigation_proposal"] = serde_json::Value::Null;
+            reply["placement_view_only"] = true.into();
+            reply["camera_mount_profile"] = "auxiliary_grip_overview".into();
+            reply["release_proposal"] = serde_json::json!({
+                "schema":"g1_visible_marker_release_admission_v1","observation":stamp,
+                "source_geometry_sha256":"geometry","world_or_contact_truth_input":false,"task_qualified":false,
+                "source":"actual_two_marker_rgb_and_public_original_collision_vertices",
+                "minimum_signed_floor_margin_m":0.03,"minimum_required_floor_margin_m":0.02,
+                "estimated_drop_height_m":0.25,"visible_bin_upward_cosine":1.,"self_root_speed_m_s":0.01,
+                "release_admitted":true,"release_goal":{"observation":stamp,"target_palm_gap_m":0.3,"duration_ticks":100},
+            });
+            assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
+            assert!(
+                validate_reply_for_policy(
+                    &reply,
+                    stamp,
+                    "image",
+                    "input",
+                    "definition",
+                    None,
+                    false,
+                    true
+                )
+                .is_ok()
+            );
+            assert!(validate_reply(&reply, stamp, "image", "input", "definition").is_err());
+            for mutation in 0..8 {
+                let mut bad = reply.clone();
+                let p = &mut bad["release_proposal"];
+                match mutation {
+                    0 => p["observation"]["frame_id"] = 1.into(),
+                    1 => p["source_geometry_sha256"] = "foreign".into(),
+                    2 => p["minimum_signed_floor_margin_m"] = 0.019.into(),
+                    3 => p["estimated_drop_height_m"] = 0.401.into(),
+                    4 => p["self_root_speed_m_s"] = 0.051.into(),
+                    5 => p["world_or_contact_truth_input"] = true.into(),
+                    6 => p["release_goal"]["observation"]["episode_id"] = 9.into(),
+                    _ => p["release_goal"]["duration_ticks"] = 150.into(),
+                }
+                assert!(
+                    validate_release_reply(&bad, stamp, "geometry").is_err(),
+                    "mutation {mutation}"
+                );
+            }
+            reply["release_proposal"]["minimum_signed_floor_margin_m"] = (-0.01).into();
+            reply["release_proposal"]["release_admitted"] = false.into();
+            reply["release_proposal"]["release_goal"] = serde_json::Value::Null;
+            assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
         }
         fn memory_fixture() -> (MarkerTargetMemory, ObservationStamp) {
             let current = ObservationStamp {

@@ -55,6 +55,7 @@ fn run() -> Result<(), String> {
                 | "g1_mobile_target_restored_view_diagnostic"
                 | "g1_mobile_auxiliary_view_diagnostic"
                 | "g1_mobile_auxiliary_approach_diagnostic"
+                | "g1_mobile_auxiliary_release_diagnostic"
         )
     ) {
         if arguments.robot.as_deref() != Some("g1")
@@ -186,6 +187,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
         arguments.scene.as_deref() == Some("g1_mobile_auxiliary_view_diagnostic");
     let mobile_auxiliary_approach =
         arguments.scene.as_deref() == Some("g1_mobile_auxiliary_approach_diagnostic");
+    let mobile_auxiliary_release =
+        arguments.scene.as_deref() == Some("g1_mobile_auxiliary_release_diagnostic");
     if interactive && arguments.g1_ticks.is_some() {
         return Err(
             "g1_task_lab admits UI intentions; --g1-ticks automatic execution is forbidden".into(),
@@ -209,6 +212,7 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
                 || mobile_target_restored_view
                 || mobile_auxiliary_view
                 || mobile_auxiliary_approach
+                || mobile_auxiliary_release
             {
                 120
             } else {
@@ -220,6 +224,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
     } else if mobile_carry {
         dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
+    } else if mobile_auxiliary_release {
+        dev_tools_minigame::g1_capture::run_mobile_auxiliary_release_from_file(&path, options)
     } else if mobile_auxiliary_approach {
         dev_tools_minigame::g1_capture::run_mobile_auxiliary_approach_from_file(&path, options)
     } else if mobile_auxiliary_view {
@@ -344,7 +350,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
@@ -420,6 +426,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                 | "g1_mobile_target_memory_view_diagnostic"
                 | "g1_mobile_target_restored_view_diagnostic"
                 | "g1_mobile_auxiliary_approach_diagnostic"
+                | "g1_mobile_auxiliary_release_diagnostic"
         )
     ) {
         if options.g1_ticks != Some(3150) {
@@ -441,6 +448,37 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auxiliary_release_requires_its_fixed_finite_budget() {
+        for ticks in ["1050", "2050", "3151"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_mobile_auxiliary_release_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            super::parse_arguments(
+                [
+                    "--scene",
+                    "g1_mobile_auxiliary_release_diagnostic",
+                    "--g1-ticks",
+                    "3150"
+                ]
+                .into_iter()
+                .map(str::to_owned)
+            )
+            .is_ok()
+        );
+    }
     #[test]
     fn auxiliary_approach_cannot_escape_its_fixed_budget() {
         for ticks in ["1050", "1300", "2050", "3151"] {

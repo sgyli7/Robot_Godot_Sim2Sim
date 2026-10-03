@@ -514,6 +514,68 @@ mod tests {
         original_command: G1Command,
         goal: super::super::mobile_restore::MobileRestoreGoal,
     }
+    #[derive(Deserialize)]
+    struct ReleaseFixture {
+        state: serde_json::Value,
+        command: G1Command,
+        goal: super::super::mobile_release::MobileReleaseGoal,
+    }
+    #[test]
+    #[ignore = "requires pinned real self-state/command; pure opening envelope,0physics/models"]
+    fn real_original_transport_release_envelope() -> Result<(), RobotError> {
+        let env = |name| std::env::var(name).map_err(|e| invalid(format!("{name}: {e}")));
+        let definition = G1Definition::load(
+            Path::new(&env("G1_GRIP_DEFINITION")?),
+            &env("G1_GRIP_DEFINITION_SHA256")?,
+        )?;
+        let fixture: ReleaseFixture = serde_json::from_slice(&bound_bytes(
+            Path::new(&env("G1_GRIP_FIXTURE")?),
+            &env("G1_GRIP_FIXTURE_SHA256")?,
+        )?)
+        .map_err(|e| invalid(e.to_string()))?;
+        let state = measurement(fixture.state).map_err(|e| invalid(e.to_string()))?;
+        let calibration = MobileGripCalibration::new(&definition)?;
+        let original = fixture.command.clone();
+        let mut release = super::super::mobile_release::MobileGripRelease::new(
+            fixture.goal,
+            &state,
+            fixture.command,
+            &calibration,
+        )?;
+        let mut steps = Vec::new();
+        for index in 0..225 {
+            let mut synthetic = state.clone();
+            synthetic.source_tick += index;
+            synthetic.sim_time_ns = synthetic.source_tick * 20_000_000;
+            let step = release.update(&synthetic, &calibration)?;
+            assert_eq!(step.command.navigation, [0.; 3]);
+            assert_eq!(
+                step.command.upper_positions[7..14],
+                original.upper_positions[7..14]
+            );
+            assert_eq!(
+                step.command.upper_positions[21..28],
+                original.upper_positions[21..28]
+            );
+            steps.push(step);
+        }
+        assert!(steps.last().unwrap().completed);
+        assert!((steps.last().unwrap().commanded_palm_gap_m - 0.3).abs() < 1e-6);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(env("G1_GRIP_OUTPUT")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(
+            file,
+            &serde_json::json!({
+                "actual_integrations":0,"actual_model_inferences":0,"qualified":false,
+                "synthetic_future_self_states_numeric_only":true,"completed":true,"steps":steps,
+            }),
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        Ok(())
+    }
     #[test]
     #[ignore = "requires original definition and frozen raised self-state/commands;0world/model work"]
     fn real_mobile_transport_restore_envelope() -> Result<(), RobotError> {

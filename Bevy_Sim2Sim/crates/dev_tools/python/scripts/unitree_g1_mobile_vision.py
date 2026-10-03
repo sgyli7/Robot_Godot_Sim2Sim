@@ -193,7 +193,37 @@ def clearance_from_visible_markers(detections, observation, geometry_path, marke
                            "duration_ticks": duration} if admitted else None}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None):
+def placement_from_visible_markers(detections, observation, geometry_path, mounts):
+    """Conservative release admission from current RGB and public geometry only."""
+    objects = {o["kind"]: o for o in json.loads(Path(geometry_path).read_text())["objects"]}
+    poses = {d["marker_id"]: np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[d["marker_id"]]) for d in detections}
+    if set(poses) != {21, 22}:
+        raise ValueError("placement requires both current visible markers")
+    bin_from_box = np.linalg.inv(poses[21]) @ poses[22]
+    vertices = np.concatenate([np.asarray(p["points"]) for p in objects["t2_box"]["convex_parts"]])
+    points = vertices @ bin_from_box[:3, :3].T + bin_from_box[:3, 3]
+    floor = np.asarray(objects["t2_bin"]["convex_parts"][2]["points"])
+    # The pinned original part2 has a rectangular flat-floor footprint.
+    hull = cv2.convexHull(floor[:, :2].astype(np.float32)).reshape(-1, 2)
+    lower, upper = floor[:, :2].min(axis=0), floor[:, :2].max(axis=0)
+    if len(hull) != 4 or not all(np.allclose(p, [lower[0] if p[0] < 0 else upper[0], lower[1] if p[1] < 0 else upper[1]], atol=1e-7) for p in hull):
+        raise ValueError("public original floor is not the fixed rectangle")
+    margin = float(min((points[:, :2]-lower).min(), (upper-points[:, :2]).min()))
+    drop = float(points[:, 2].min()-floor[:, 2].max())
+    upright = float((rotation(observation["measured_joints"]["root_rotation_wxyz"]) @ poses[21][:3, :3])[2, 2])
+    root_speed = float(np.linalg.norm(observation["measured_joints"]["root_velocity_source"]))
+    admitted = margin >= .02 and .05 <= drop <= .4 and upright >= .98 and root_speed <= .05
+    return {"schema": "g1_visible_marker_release_admission_v1", "observation": observation["stamp"],
+            "source_geometry_sha256": TASK_GEOMETRY_SHA256, "world_or_contact_truth_input": False,
+            "source": "actual_two_marker_rgb_and_public_original_collision_vertices",
+            "minimum_signed_floor_margin_m": margin, "minimum_required_floor_margin_m": .02,
+            "estimated_drop_height_m": drop, "visible_bin_upward_cosine": upright,
+            "self_root_speed_m_s": root_speed, "release_admitted": admitted, "task_qualified": False,
+            "release_goal": {"observation": observation["stamp"], "target_palm_gap_m": .3,
+                             "duration_ticks": 100} if admitted else None}
+
+
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False):
     if box_view_only and (geometry_path is not None or memory_path is not None):
         raise ValueError("current box view cannot request navigation geometry or target memory")
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
@@ -218,6 +248,8 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     definition = json.loads(Path(definition_path).read_text())
     camera_profile = observation.get("camera_mount_profile", "arena_ego")
     marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile)
+    if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile != "auxiliary_grip_targets"):
+        raise ValueError("placement view requires its bound auxiliary labels/public geometry and no other mode")
     camera_in_root = root_from_camera(definition, state["positions"], camera_profile)
     root_rotation = rotation(state["root_rotation_wxyz"])
     c = observation["camera"]
@@ -279,7 +311,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                 raise ValueError("current visible target moved outside static-memory tolerance")
         else:
             by_id[21] = np.asarray(memory_estimate["root_from_marker"])
-    if not box_view_only and 21 in by_id and 22 in by_id:
+    if not box_view_only and not placement_view_only and 21 in by_id and 22 in by_id:
         if layout_profile == "original_arena":
             bin_p = by_id[21][:3, 3]
             box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
@@ -324,6 +356,9 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["target_memory_used"] = used_memory
     if geometry_path is not None and not used_memory:
         result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts)
+    if placement_view_only:
+        result["placement_view_only"] = True
+        result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts)
     return result
 
 
@@ -337,8 +372,9 @@ def main():
     parser.add_argument("--target-memory", type=Path)
     parser.add_argument("--box-view-only", action="store_true")
     parser.add_argument("--fiducials", type=Path)
+    parser.add_argument("--placement-view-only", action="store_true")
     args = parser.parse_args()
-    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials)
+    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials, args.placement_view_only)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

@@ -1391,3 +1391,26 @@ transport arm posture is retained throughout. Auxiliary perception requires
 current box proximity<=0.25m to the measured self-FK palm midpoint; this remains
 a necessary visibility guard, not proof of secure grasp. There is no lowering,
 raising, restoration, extra visibility turn, final approach or release here.
+
+Fresh0240 executes one actual auxiliary-RGB coarse waypoint:1147single50Hz
+integrations/four new original VLA calls,947post-grasp samples all hand-only.
+Measured own-velocity carry displacement is1.03634m. New current marker errors
+are0.583mm(box)/1.418mm(bin), with remaining visual distance0.645439m.
+Active sim/wall0.998778, zero misses/debt; owned model closes. Trace SHA256:
+`3fe6df070eb78771e841b3f6508e3fbddf8187f2a8cb0ea887917f4be05388d5`.
+
+The separate3150Tick `g1_mobile_auxiliary_release_diagnostic` entry adds a
+new actual coarse-boundary RGB fine waypoint with fixed0.12m margin, then a
+new actual stationary placement image. Before any opening, current two-marker
+poses and the pinned public bin floor part2/box collision vertices must place
+all box vertices within its rectangular floor footprint with>=0.02m margin.
+Estimated bottom-to-floor drop must be0.05–0.40m, visible bin upward cosine
+>=0.98 and own root speed<=0.05m/s. Placement-only perception cannot admit
+navigation, old target memory or original-camera substitution. Rejected
+alignment leaves the owner paused. Admitted release uses the existing0.30m
+commanded palm gap over100Ticks and125real physical settling Ticks; fingers,
+clock and physics parameters remain unchanged. Pure actual-self-state opening
+control0241 passes225numeric updates with maximum per-update joint change
+0.002058rad and final commanded gap0.300000007m; it is not physical evidence.
+This finite entry still requires independent grip-until-opening and strict
+placement audit; it does not qualify the ten-episode suite or continuous1x.
