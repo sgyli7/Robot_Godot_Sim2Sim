@@ -1982,3 +1982,16 @@ are reaped. Full trace SHA256:
 The handoff remedy does not establish walking robustness. No repeated frequency,
 gain, force or material search follows from this result. Station/Qwen integration
 continues independently while actual pre-drop grip/contact changes are audited.
+
+The `20261003_0300` offline stop comparison reconstructs every physical command
+of0292 without perception or queue admission. Its reference reproduces all1460
+complete body steps exactly, including support loss at1282. One fixed30Tick
+navigation deceleration changes only29nonzero navigation vectors starting1264;
+all1263prefix body steps remain exact. The candidate loses support at1272,
+while the original Homie walking policy is still selected. Therefore abrupt
+walk-to-stand selection is not established as the sole cause, and this candidate
+is not installed in navigation. The two1460Tick worlds use the original50Hz
+integration and4nonintegratingPGS, unchanged gains/friction/mass/grip targets.
+They supply causal mechanical evidence only, with0fresh RGB/VLA calls and no
+real-time or task qualification. Inspect actual palm/box geometry and supporting
+contacts before any further control change.

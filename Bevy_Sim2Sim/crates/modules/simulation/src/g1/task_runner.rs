@@ -890,6 +890,79 @@ mod tests {
         finite_source_target_hold_diagnostic(160, 200, false)
     }
 
+    /// Test-private command replay to isolate one walk-to-stand transition.
+    /// No observation/queue admission is claimed by this offline fixture.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    #[ignore = "pinned actual1460Tick mobile commands; onefixed30Tick deceleration vs exact reference; no fresh RGB/VLA or task qualification"]
+    fn real_mobile_saved_stop_transition_diagnostic() -> Result<(), RobotError> {
+        use robot_minigame::g1::{contract::G1Command, policy::bound_bytes};
+        use std::{fs, io::Write};
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct StopFixture {
+            commands: Vec<G1Command>,
+            stop_tick: u64,
+            deceleration_ticks: u32,
+            enable_deceleration: bool,
+        }
+        let read = |name: &str| -> Result<Vec<u8>, RobotError> {
+            let path = std::env::var(name).map_err(error)?;
+            let sha = std::env::var(format!("{name}_SHA256")).map_err(error)?;
+            let bytes = bound_bytes(Path::new(&path), &sha)?;
+            if bytes.len() > 2_000_000 {
+                return Err(error("stop fixture exceeds budget"));
+            }
+            Ok(bytes)
+        };
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_STOP_CONFIG")?).map_err(error)?;
+        let fixture: StopFixture =
+            serde_json::from_slice(&read("G1_MOBILE_STOP_FIXTURE")?).map_err(error)?;
+        if fixture.commands.len() != 1460
+            || fixture.stop_tick != 1264
+            || fixture.deceleration_ticks != 30
+            || fixture.commands[1262].navigation[0] != 0.3
+            || fixture.commands[1263..1293]
+                .iter()
+                .any(|c| c.navigation != [0.; 3])
+        {
+            return Err(error(
+                "stop comparison changed fixed source prefix/candidate/budget",
+            ));
+        }
+        let output = std::env::var("G1_MOBILE_STOP_OUTPUT").map_err(error)?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .map_err(error)?;
+        let mut owner = ArenaTaskRunner::load_mobile_constraint_diagnostic(&config)?;
+        let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
+            return Err(error("stop comparison requires Homie_v2"));
+        };
+        let previous = fixture.commands[1262].navigation;
+        for (index, original) in fixture.commands.iter().enumerate() {
+            let tick = index as u64 + 1;
+            let mut command = original.clone();
+            if fixture.enable_deceleration
+                && (fixture.stop_tick..fixture.stop_tick + 30).contains(&tick)
+            {
+                let fraction = (29 - (tick - fixture.stop_tick)) as f32 / 30.;
+                command.navigation = previous.map(|v| v * fraction);
+            }
+            // Private fixture access bypasses the task queue deliberately. Only
+            // validated physical commands reach the same original body owner.
+            command.validate()?;
+            let step = body.step(&command)?;
+            if step.integration_count != tick || step.step_configuration.physics_hz != 50 {
+                return Err(error("stop comparison changed physical timeline"));
+            }
+            writeln!(trace,"{}",serde_json::json!({"body":{"mobile_homie_v2":step},"phase":"offline_saved_stop_comparison","command":command,"fixed_deceleration_candidate":fixture.enable_deceleration,"fresh_images":0,"fresh_vla_calls":0,"autonomous_execution":false})).map_err(error)?;
+        }
+        Ok(())
+    }
+
     /// A finite grasp-phase wait experiment, not a runtime fallback or approval
     /// to retain expired VLA actions. Every step still calls the real WBC/motor.
     #[cfg(feature = "g1_constraint_diagnostic")]
