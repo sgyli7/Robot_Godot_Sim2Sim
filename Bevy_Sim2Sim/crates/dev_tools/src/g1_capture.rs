@@ -882,6 +882,8 @@ pub struct G1CaptureReceipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_station_preparation: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_station_illumination: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub static_startup: Option<serde_json::Value>,
     pub floor_center_engine: [f32; 3],
     pub floor_full_extents_m: [f32; 3],
@@ -1015,6 +1017,7 @@ impl G1CaptureReceipt {
             task_qualified: false,
             environment: "source_near_simple_floor_not_science_station",
             native_station_preparation: None,
+            native_station_illumination: None,
             static_startup: None,
             floor_center_engine: [0., -0.25, 0.],
             floor_full_extents_m: [40., 0.5, 40.],
@@ -1125,6 +1128,56 @@ struct DiagnosticIllumination {
     ambient_brightness: f32,
     directional_illuminance: f32,
     source_rect_lighting: Option<SourceRectLighting>,
+    station_ambient_override: Option<f32>,
+    station_directional_override: Option<f32>,
+    station_shadow_override: Option<bool>,
+}
+
+#[derive(Resource)]
+struct NativeStationIllumination(serde_json::Value);
+
+/// Runs after the native station has created its actual lights. No extra
+/// lights or renderer-only foreground are introduced for this comparison.
+fn configure_native_station_illumination(
+    station: Option<Res<super::g1_station_environment::G1StationSceneActive>>,
+    setting: Res<DiagnosticIllumination>,
+    mut ambient: Option<ResMut<GlobalAmbientLight>>,
+    mut directional: Query<(&mut DirectionalLight, &Transform)>,
+    mut commands: Commands,
+) {
+    if station.is_none() {
+        return;
+    }
+    let Some(ambient) = ambient.as_mut() else {
+        commands.insert_resource(NativeStationIllumination(
+            serde_json::json!({"error":"station has no effective ambient light"}),
+        ));
+        return;
+    };
+    if let Some(brightness) = setting.station_ambient_override {
+        ambient.brightness = brightness;
+        ambient.color = Color::WHITE;
+    }
+    let mut lights = Vec::new();
+    for (mut light, transform) in &mut directional {
+        if let Some(illuminance) = setting.station_directional_override {
+            light.illuminance = illuminance;
+        }
+        if let Some(shadows) = setting.station_shadow_override {
+            light.shadow_maps_enabled = shadows;
+        }
+        lights.push(serde_json::json!({"illuminance":light.illuminance,"shadow_maps_enabled":light.shadow_maps_enabled,
+            "color_srgba":light.color.to_srgba().to_f32_array(),"rotation_xyzw":transform.rotation.to_array()}));
+    }
+    let mut report = serde_json::json!({"schema":"g1_effective_native_station_illumination_v1",
+        "read_actual_ecs_lights":true,"explicit_comparison":setting.station_ambient_override.is_some()
+            || setting.station_directional_override.is_some() || setting.station_shadow_override.is_some(),
+        "ambient_brightness":ambient.brightness,"ambient_color_srgba":ambient.color.to_srgba().to_f32_array(),
+        "directional_lights":lights,"added_directional_lights":0});
+    if lights.len() != 1 {
+        report["error"] = serde_json::json!("station requires one actual directional light");
+    }
+    commands.insert_resource(NativeStationIllumination(report));
 }
 
 #[derive(Resource)]
@@ -1664,6 +1717,7 @@ fn run_capture_owner(
         .map(|input| SourceRectLighting::load(&input.path, &input.sha256))
         .transpose()?;
     let exposure_ev100 = exposure_ev100.unwrap_or(Exposure::default().ev100);
+    let station_shadow_override = directional_shadow_maps;
     let directional_shadow_maps = directional_shadow_maps.unwrap_or(true);
     let ambient_brightness = diagnostic_ambient_brightness.unwrap_or(450.);
     let directional_illuminance = diagnostic_directional_illuminance.unwrap_or(15_000.);
@@ -2012,6 +2066,9 @@ fn run_capture_owner(
             ambient_brightness,
             directional_illuminance,
             source_rect_lighting,
+            station_ambient_override: diagnostic_ambient_brightness,
+            station_directional_override: diagnostic_directional_illuminance,
+            station_shadow_override,
         })
         .insert_resource(model)
         .insert_resource(outcome.clone())
@@ -2098,7 +2155,8 @@ fn run_capture_owner(
     if station.is_some() {
         app.insert_resource(super::g1_station_environment::G1StationSceneActive)
             .insert_resource(rendering_minigame::StationExternalCamera)
-            .add_plugins(rendering_minigame::StationVisualPlugin);
+            .add_plugins(rendering_minigame::StationVisualPlugin)
+            .add_systems(PostStartup, configure_native_station_illumination);
     }
     if let Some(model) = task_model {
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
@@ -2236,6 +2294,64 @@ mod budget_tests {
             CaptureMode::MobileCarry,
         ] {
             assert_eq!(mode.assisted_tick_limit(), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod station_lighting_tests {
+    use super::*;
+
+    #[test]
+    fn actual_station_lights_apply_explicit_settings_and_preserve_defaults() {
+        for explicit in [false, true] {
+            let mut app = App::new();
+            app.insert_resource(super::super::g1_station_environment::G1StationSceneActive)
+                .insert_resource(GlobalAmbientLight {
+                    color: Color::srgb(0.78, 0.76, 0.85),
+                    brightness: 450.,
+                    ..default()
+                })
+                .insert_resource(DiagnosticIllumination {
+                    ambient_brightness: 2328.,
+                    directional_illuminance: 981.,
+                    source_rect_lighting: None,
+                    station_ambient_override: explicit.then_some(2328.),
+                    station_directional_override: explicit.then_some(981.),
+                    station_shadow_override: explicit.then_some(false),
+                })
+                .add_systems(PostStartup, configure_native_station_illumination);
+            let light = app
+                .world_mut()
+                .spawn((
+                    DirectionalLight {
+                        illuminance: 10000.,
+                        shadow_maps_enabled: true,
+                        ..default()
+                    },
+                    Transform::default(),
+                ))
+                .id();
+            app.update();
+            let actual = app.world().get::<DirectionalLight>(light).unwrap();
+            let ambient = app.world().resource::<GlobalAmbientLight>();
+            let report = &app.world().resource::<NativeStationIllumination>().0;
+            assert_eq!(actual.illuminance, if explicit { 981. } else { 10000. });
+            assert_eq!(actual.shadow_maps_enabled, !explicit);
+            assert_eq!(ambient.brightness, if explicit { 2328. } else { 450. });
+            assert_eq!(
+                report["directional_lights"][0]["illuminance"]
+                    .as_f64()
+                    .unwrap(),
+                f64::from(actual.illuminance)
+            );
+            assert_eq!(
+                report["ambient_brightness"].as_f64().unwrap(),
+                f64::from(ambient.brightness)
+            );
+            assert_eq!(report["added_directional_lights"], 0);
+            assert_eq!(report["explicit_comparison"], explicit);
+            assert!(report.get("error").is_none());
         }
     }
 }
@@ -4219,7 +4335,7 @@ fn drive_prefetched_policy(
 fn drive_capture(
     mut commands: Commands,
     mut runtime: ResMut<CaptureRuntime>,
-    outcome: Res<CaptureOutcome>,
+    (outcome, station_illumination): (Res<CaptureOutcome>, Option<Res<NativeStationIllumination>>),
     health: Res<StationRenderHealth>,
     visual: Res<G1VisualStatus>,
     task_model: Option<Res<G1TaskVisualModel>>,
@@ -4243,6 +4359,25 @@ fn drive_capture(
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
+        if let Some(lighting) = &station_illumination {
+            if let Some(error) = lighting.0.get("error").and_then(|e| e.as_str()) {
+                return Err(error.into());
+            }
+            let mut receipt = outcome.0.lock().unwrap();
+            receipt.native_station_illumination = Some(lighting.0.clone());
+            receipt.camera_ambient_brightness = lighting.0["ambient_brightness"]
+                .as_f64()
+                .ok_or("missing effective ambient light")?
+                as f32;
+            receipt.camera_directional_illuminance =
+                lighting.0["directional_lights"][0]["illuminance"]
+                    .as_f64()
+                    .ok_or("missing effective directional light")? as f32;
+            receipt.diagnostic_directional_shadow_maps =
+                lighting.0["directional_lights"][0]["shadow_maps_enabled"]
+                    .as_bool()
+                    .ok_or("missing effective shadow setting")?;
+        }
         if let Some(evidence) = &mut runtime.owner_evidence {
             evidence.drain(&mut outcome.0.lock().unwrap())?;
         }

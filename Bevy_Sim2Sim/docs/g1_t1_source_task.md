@@ -394,7 +394,7 @@ placement remains0seconds: startup readiness has not solved grasping. Active
 sim/wall ratio0.993with2misses is separate from camera/model-paused continuous
 ratio0.640and does not qualify continuous1x operation.
 
-The station entry also retained default450ambient/15000directional/shadow-on
+The station entry recorded requested450ambient/15000directional/shadow-on
 lighting rather than the successful source-near0071baseline's fixed
 2328.263982ambient/981.363192directional/shadow-off settings at the sameEV100=11.7.
 This is a disclosed rendering/profile difference in addition to the mechanical
@@ -404,3 +404,20 @@ source background. It has0physics integrations and0VLA calls. Native station
 captures now accept explicitly supplied finite bounded light energies as well;
 normal defaults and geometry remain unchanged. The next comparison restores
 those three known baseline fields, with no lighting or physical parameter sweep.
+
+The0308run reveals that those requested receipt fields did not describe effective
+station lights: native station setup skipped the capture-light branch. All8images
+and original action blocks are byte-identical to0305, despite different requested
+light parameters. Both runs execute380real steps and fail placement. Effective
+station defaults are450ambient with RGB(0.78,0.76,0.85),10000directional and shadows
+enabled. Older raw receipts and sealed evidence remain unchanged; this explicit
+correction supersedes their station-light interpretation.
+
+Native station capture now applies explicit lighting fields after the station
+has spawned its actual light entities, and records ambient color/energy plus
+each directional light's effective color/energy/rotation/shadow state. Existing
+station defaults are preserved when no override is requested. No additional
+light or floor is added. The ECS integration test verifies both the unchanged
+default entities and effective overrides; all43development tests pass. The next
+fixed known-baseline comparison must additionally verify actual effective
+lighting and changed pixels before it is considered a valid visual comparison.

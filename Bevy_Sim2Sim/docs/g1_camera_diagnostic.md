@@ -290,3 +290,11 @@ body pose or saved VLA command is silently rebased. The receipt's `static_startu
 field records the gate; `owner_steps.jsonl` includes both typed startup and
 original VLA records. The independent placement auditor consumes physical truth
 only after execution. Neither startup nor successful camera capture qualifies T1.
+
+Explicit native station lighting overrides are applied after its light entities
+exist. The optional `native_station_illumination` receipt reads effective ECS
+ambient color/brightness and directional color/energy/rotation/shadow settings.
+The legacy scalar lighting fields also report those actual values in station
+captures. With no override, the station's own defaults remain intact. Receipts
+before this fix recorded requested capture parameters even when the station
+branch skipped them;0308's separate application audit corrects that interpretation.
