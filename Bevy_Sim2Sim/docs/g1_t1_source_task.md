@@ -767,3 +767,21 @@ pixel/input hashes, process provenance, round-trip time and full image-to-result
 wall age. Three-second preparation/request limits and rejection of foreign,
 missing or duplicated targets remain explicit. This does not enable task UI
 execution or qualify physical tasks. Forty-seven development tests pass.
+
+The actual native CPU capture (`0350`,4677d3a) uses two unchanged frozen
+positions (P0/P3), with60native integrations and one new640x480image each.
+Both original image gates pass, with apple errors0.652/6.494mm. Full original
+image-to-localization ages are529/572ms, including readback and submission;
+all120physical body records match the pre-CPU references after excluding only
+new auditor contact fields and episode IDs. Both owned app/CPU processes are
+reaped. The initial independent script compared two different JSON decimal
+representations as float64 and failed; its corrected read-only check verifies
+identical original f32sensor bits. P0is not physically rerun to repair that
+auditor. There are0fresh VLA/Qwen calls and no task execution qualification.
+
+A test-only ten-case active-contact revalidation replays the exact saved
+eight40frame chunks after each original60Tick startup in the same station.
+Only wall expiry is refreshed and explicitly marked offline; episode/frame/
+simulation identities and every action remain unchanged. It cannot contribute
+a fresh-model,1x or autonomous score. Its purpose is to determine whether the
+old cached-contact placement evidence survives current solver-point receipts.
