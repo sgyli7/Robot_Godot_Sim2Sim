@@ -54,7 +54,7 @@ fn wait(
             if s.phase == G1WorkerPhase::Failed {
                 // Retain actual counters even if a post-integration guard
                 // rejects the last boundary before emitting a complete step.
-                writeln!(file,"{}",serde_json::json!({"failed_owner_snapshot":true,"target_tick":target,"phase":s.phase,"reason":s.reason,"timing":s.timing})).map_err(|e|e.to_string())?;
+                writeln!(file,"{}",serde_json::json!({"failed_owner_snapshot":true,"target_tick":target,"phase":format!("{:?}",s.phase),"reason":s.reason,"timing":s.timing})).map_err(|e|e.to_string())?;
                 file.flush().map_err(|e| e.to_string())?;
                 return Err(s.reason.clone().unwrap_or("static owner failed".into()));
             }
