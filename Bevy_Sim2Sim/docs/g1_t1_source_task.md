@@ -452,3 +452,12 @@ are frozen before any case runs. This intermediate profile suite explicitly
 retains camera/model pauses and cannot qualify Qwen or continuous execution;
 its task score is reported separately. Failed/partial cases and owned process
 cleanup remain in the output rather than being silently retried or dropped.
+
+The first frozen suite launch (`0313`) ends before model readiness with0real
+integrations and0VLA calls. Its launcher incorrectly resolved the virtualenv
+`bin/python` symlink to the base uv interpreter, losing NumPy/site-packages.
+The failed lifecycle and logs remain. The launcher now preserves that path and
+checks the actual virtualenv prefix, NumPy, ONNX Runtime and CUDA provider before
+loading any weights. The corrected manifest keeps all ten case configurations
+and thresholds byte-equivalent, updates only tool/source identities, and names
+the retained zero-Tick failed batch. No task case or score is silently retried.

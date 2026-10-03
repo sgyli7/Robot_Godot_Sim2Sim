@@ -72,6 +72,13 @@ def run(args):
         raise ValueError("Build/source identity changed or integration checkout is dirty")
     if digest(args.model_receipt) != manifest["model_receipt_sha256"]:
         raise ValueError("Original five-graph model receipt changed")
+    runtime = subprocess.run([str(args.model_python), "-c",
+        "import sys,json,numpy,onnxruntime;print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'numpy':numpy.__version__,'onnxruntime':onnxruntime.__version__,'providers':onnxruntime.get_available_providers()}))"],
+        capture_output=True, text=True, timeout=30, check=True)
+    runtime_identity = json.loads(runtime.stdout)
+    if (Path(runtime_identity["prefix"]).resolve() != args.model_python.parent.parent.resolve()
+            or "CUDAExecutionProvider" not in runtime_identity["providers"]):
+        raise ValueError("Model launcher does not select its isolated CUDA environment")
     cases = manifest["cases"]
     expected_pairs = {(position, seed) for position in range(5) for seed in [0, 42]}
     if len(cases) != 10 or {(c["position_id"], c["seed_offset"]) for c in cases} != expected_pairs:
@@ -93,6 +100,7 @@ def run(args):
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copy2(args.manifest, args.output / "frozen_manifest.json")
     shutil.copy2(args.build_receipt, args.output / "build.json")
+    save(args.output / "model_runtime.json", runtime_identity)
     summary = {"schema": "g1_native_static_profile_suite_result_v1", "complete": False,
                "manifest_sha256": args.manifest_sha256, "code_commit": head,
                "binary_sha256": digest(binary), "cases": [], "successes": 0,
@@ -274,7 +282,10 @@ def main():
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    for name in ["manifest", "binary", "build_receipt", "model_receipt", "model_python", "workspace", "output"]:
+    # Resolving a venv's bin/python symlink selects the base interpreter and
+    # loses its site-packages. Preserve that launcher path deliberately.
+    args.model_python = args.model_python.absolute()
+    for name in ["manifest", "binary", "build_receipt", "model_receipt", "workspace", "output"]:
         setattr(args, name, getattr(args, name).resolve())
     sys.exit(run(args))
 
