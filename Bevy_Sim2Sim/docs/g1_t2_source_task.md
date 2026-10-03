@@ -1623,8 +1623,8 @@ main merge remain required; formal T2 success is still false.
 
 The next continuous-grasp preflight admits only the existing camera diagnostic
 with exactly200Ticks and four original N1.6 action chunks. Each chunk still
-contains50frames at20ms; requests for the next actual image start25Ticks into
-the running chunk. The existing bounded executor keeps the captured image's
+contains50frames at20ms; the next actual image must come from at least25Ticks
+into the running chunk. The existing bounded executor keeps the captured image's
 original stamp and a separate future execution slot. A missed slot rejects;
 it does not rebase an old action or pause the active physics clock. Original
 source camera, source lighting, task/background geometry and the explicit4PGS
@@ -1633,3 +1633,24 @@ task UI and other chunk budgets are excluded from this preflight. StaticApple
 keeps its existing trigger and validation. Unit checks pass42development tests
 with2ignored; live timing and physical-grasp outcomes remain separate evidence.
 This bounded admission does not qualify continuous full-task1x operation.
+
+Fresh0263 fails the first replacement at50Ticks before a second model call.
+The renderer completes an already-pipelined Tick22scene for the Tick25 request;
+that correctly stamped image is discarded, but another usable image does not
+arrive by50. The50actual original frames have zero missed physics deadlines or
+Tick debt; expired actions are not applied. Independent raw evidence contains
+every50integration despite a stale false completeness flag after the last
+counter observation. That reporting order is corrected without changing the
+trace or physical outcome. Trace SHA256:
+`a530b93694f7de785b1655b65074ed8be0c86d969b393393918cd6448f111139`.
+
+The single camera slot now accepts a current-episode minimum physical Tick.
+Prefetch registers this one bounded request ahead of its Tick25scene, avoiding
+a late main-thread request followed by a wasted old-scene GPU copy. Rendering
+waits until the actual native scene meets the floor; no image/self-state stamp
+is rewritten and no extra buffer or queue is allocated. Reset clears the floor,
+and foreign episodes are rejected. Existing unrestricted camera requests retain
+their behavior. Request, extraction/copy/readback and consumption timing is
+recorded separately; the original action start/deadline and trigger stay fixed.
+Two camera regression tests check old-scene rejection, unchanged actual stamps
+and reset isolation. Live timing remains to be checked in fresh0265.

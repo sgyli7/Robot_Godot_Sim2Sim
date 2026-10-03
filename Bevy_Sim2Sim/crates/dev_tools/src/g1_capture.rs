@@ -811,6 +811,7 @@ pub struct G1CaptureReceipt {
     pub owner_step_trace_complete: bool,
     pub diagnostic_prefetch_after_ticks: Option<u32>,
     pub prefetch_discarded_image_stamps: Vec<serde_json::Value>,
+    pub prefetch_image_events: Vec<serde_json::Value>,
     pub continuous_boundary_sim_seconds: f64,
     pub continuous_boundary_wall_seconds: f64,
     pub active_wall_seconds: f64,
@@ -939,6 +940,7 @@ impl G1CaptureReceipt {
             owner_step_trace_complete: false,
             diagnostic_prefetch_after_ticks: None,
             prefetch_discarded_image_stamps: Vec::new(),
+            prefetch_image_events: Vec::new(),
             continuous_boundary_sim_seconds: 0.,
             continuous_boundary_wall_seconds: 0.,
             active_wall_seconds: 0.,
@@ -987,6 +989,9 @@ impl G1CaptureReceipt {
         self.actual_torque_updates = snapshot.timing.total_torque_updates;
         self.actual_model_attempts = snapshot.timing.total_inference_attempts;
         self.actual_model_successes = snapshot.timing.total_successful_inferences;
+        self.owner_step_trace_complete = self.owner_step_trace_dropped == 0
+            && self.owner_step_records > 0
+            && self.owner_step_records == self.actual_integrations;
         self.active_wall_seconds = snapshot.timing.active_wall_seconds;
         self.active_sim_seconds = snapshot.timing.active_sim_seconds;
         self.control_deadlines_missed = snapshot.timing.control_deadlines_missed;
@@ -3568,20 +3573,45 @@ fn drive_prefetched_policy(
     } else {
         live.next_boundary_tick - horizon + u64::from(live.prefetch_after_ticks.unwrap())
     };
-    if tick < trigger_tick {
-        return Ok(false);
-    }
     if !initial && tick >= live.next_boundary_tick {
         return Err("prefetch image missed replacement window; explicit pause required".into());
     }
     if !runtime.requested {
-        port.request()?;
+        let sequence = port.request_physics_frame(runtime.episode_id, trigger_tick)?;
+        let mut receipt = outcome.0.lock().unwrap();
+        if receipt.prefetch_image_events.len() >= 40 {
+            return Err("bounded prefetch image event budget exhausted".into());
+        }
+        receipt.prefetch_image_events.push(serde_json::json!({
+            "event": "request", "capture_sequence": sequence,
+            "display_tick": tick, "minimum_physics_tick": trigger_tick,
+            "fixed_action_start_tick": live.next_boundary_tick,
+            "runtime_elapsed_ms": runtime.started.elapsed().as_millis(),
+        }));
         runtime.requested = true;
+        return Ok(false);
+    }
+    if tick < trigger_tick {
         return Ok(false);
     }
     if let Some(frame) = port.take() {
         let frame = frame?;
         let frame_tick = frame.stamp.source_ticks[0];
+        let mut receipt = outcome.0.lock().unwrap();
+        if receipt.prefetch_image_events.len() >= 40 {
+            return Err("bounded prefetch image event budget exhausted".into());
+        }
+        receipt.prefetch_image_events.push(serde_json::json!({
+            "event": "readback_consumed", "capture_sequence": frame.stamp.capture_sequence,
+            "display_tick": tick, "actual_image_tick": frame_tick,
+            "minimum_physics_tick": trigger_tick,
+            "fixed_action_start_tick": live.next_boundary_tick,
+            "captured_at_unix_ms": frame.stamp.captured_at_unix_ms,
+            "copy_encoded_at_unix_ms": frame.stamp.copy_encoded_at_unix_ms,
+            "readback_completed_at_unix_ms": frame.stamp.readback_completed_at_unix_ms,
+            "runtime_elapsed_ms": runtime.started.elapsed().as_millis(),
+        }));
+        drop(receipt);
         if frame.stamp.source != CameraPoseSource::PhysicsBody
             || frame.stamp.episode_id != runtime.episode_id
             || frame.stamp.source_ticks != [frame_tick; 2]

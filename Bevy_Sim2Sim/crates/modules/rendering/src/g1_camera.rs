@@ -317,6 +317,7 @@ struct CaptureSlot {
     episode_id: u64,
     next_sequence: u64,
     requested: bool,
+    minimum_physics_tick: Option<u64>,
     active: Option<(u64, u64)>,
     completed: Option<Result<G1CapturedRgb, String>>,
 }
@@ -328,7 +329,22 @@ pub struct G1CameraPort(Arc<Mutex<CaptureSlot>>);
 
 impl G1CameraPort {
     pub fn request(&self) -> Result<u64, String> {
+        self.request_inner(None)
+    }
+
+    /// Wait for an actual current-episode physics scene at or after this tick.
+    /// An older pipelined scene is not copied and its stamp is never rewritten.
+    pub fn request_physics_frame(&self, episode_id: u64, minimum_tick: u64) -> Result<u64, String> {
+        self.request_inner(Some((episode_id, minimum_tick)))
+    }
+
+    fn request_inner(&self, minimum: Option<(u64, u64)>) -> Result<u64, String> {
         let mut slot = self.0.lock().map_err(|_| "camera slot poisoned")?;
+        if minimum.is_some_and(|(episode, tick)| {
+            episode == 0 || episode != slot.episode_id || tick > u64::MAX / 20_000_000
+        }) {
+            return Err("camera minimum physics boundary is foreign or invalid".into());
+        }
         if slot.requested || slot.active.is_some() || slot.completed.is_some() {
             return Err("camera has a pending or unconsumed observation".into());
         }
@@ -337,6 +353,7 @@ impl G1CameraPort {
             .checked_add(1)
             .ok_or("capture sequence exhausted")?;
         slot.requested = true;
+        slot.minimum_physics_tick = minimum.map(|(_, tick)| tick);
         Ok(slot.next_sequence)
     }
 
@@ -351,6 +368,7 @@ impl G1CameraPort {
         }
         slot.episode_id = episode_id;
         slot.requested = false;
+        slot.minimum_physics_tick = None;
         slot.completed = None;
         // A mapping already in flight is retained until its callback releases
         // it. No second buffer is allocated while that old operation completes.
@@ -386,6 +404,14 @@ impl G1CameraPort {
         {
             return None;
         }
+        if slot.minimum_physics_tick.is_some_and(|tick| {
+            frame.source.source != CameraPoseSource::PhysicsBody
+                || frame.source.source_ticks[0] < tick
+                || frame.source.source_ticks[0] != frame.source.source_ticks[1]
+        }) {
+            // Retain the one request; do not allocate a GPU copy for old pixels.
+            return None;
+        }
         if frame.source.source == CameraPoseSource::PhysicsBody
             && frame.source.native_state.is_none()
         {
@@ -396,6 +422,7 @@ impl G1CameraPort {
             return None;
         }
         slot.requested = false;
+        slot.minimum_physics_tick = None;
         slot.active = Some((slot.episode_id, slot.next_sequence));
         Some(G1CaptureStamp {
             episode_id: slot.episode_id,
@@ -867,6 +894,51 @@ mod tests {
         assert_eq!(original.body_frame.source_tick, 10);
         assert_eq!(original.measured_joints.positions.len(), 43);
         assert_eq!(captured.stamp.source_ticks, [10, 10]);
+    }
+
+    #[test]
+    fn minimum_physics_request_skips_old_scene_without_copy_or_restamp() {
+        let port = G1CameraPort::default();
+        port.reset(1).unwrap();
+        assert!(port.request_physics_frame(2, 12).is_err());
+        assert!(port.request_physics_frame(1, u64::MAX).is_err());
+        port.request_physics_frame(1, 12).unwrap();
+        assert!(port.begin(&frame(1)).is_none());
+        let mut old = frame(1);
+        let state = native(1, 10);
+        old.source = arena_head_camera(&state.body_frame).unwrap();
+        old.source.native_state = Some(state);
+        assert!(port.begin(&old).is_none());
+        assert_eq!(port.progress(), "awaiting_render_extraction");
+        assert!(port.request().is_err());
+        let mut current = frame(1);
+        let state = native(1, 13);
+        current.source = arena_head_camera(&state.body_frame).unwrap();
+        current.source.native_state = Some(state);
+        let stamp = port.begin(&current).unwrap();
+        assert_eq!(stamp.source_ticks, [13, 13]);
+        assert_eq!(stamp.sim_time_ns, 260_000_000);
+        assert_eq!(stamp.captured_at_unix_ms, 1234);
+        assert_eq!(
+            stamp.native_state.as_ref().unwrap().body_frame.source_tick,
+            13
+        );
+        assert_eq!(port.progress(), "gpu_mapping");
+        port.finish(stamp, Ok(Vec::new()));
+        assert_eq!(port.take().unwrap().unwrap().stamp.source_ticks, [13, 13]);
+        assert_eq!(port.progress(), "idle");
+    }
+
+    #[test]
+    fn reset_invalidates_minimum_frame_request_without_leaking_its_boundary() {
+        let port = G1CameraPort::default();
+        port.reset(1).unwrap();
+        port.request_physics_frame(1, 100).unwrap();
+        port.reset(2).unwrap();
+        assert!(port.begin(&frame(1)).is_none());
+        assert!(port.request_physics_frame(1, 0).is_err());
+        port.request().unwrap();
+        assert!(port.begin(&frame(2)).is_some());
     }
 
     #[test]
