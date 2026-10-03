@@ -335,3 +335,22 @@ Every station owner step records public environment identity, collider coverage,
 zero preparation integrations and original-floor removal. Integration, rendering
 and strict task acceptance must be tested separately; this preparation alone is
 not station task success or frozen8of10 qualification.
+
+The first native-station live pilot (`20261003_0298`, clean0848e5c) used8fresh
+original N1.7 calls and320single50Hz integrations. All camera pixels and original
+stamps match the captured model inputs. The robot remains standing but the apple
+stays on the shelf: strict placement0seconds. Camera/model pauses and18missed
+control deadlines also prevent real-time qualification.
+
+A bounded offline mechanical comparison (`0299`) preserves all320original
+successful0071actions and their simulation/frame identity. Only offline wall
+admission times are refreshed. The original-floor reference reproduces all320
+robot body frames exactly in float32 and passes2.76seconds of strict placement;
+the station world with identical actions fails. Public-geometry vertical rays
+confirm groundY=0, upward normals and no duplicate ground under either foot.
+The imported tessellation has separate equal-position vertices. G1 static meshes
+now weld those vertices and apply Rapier/Parry `FIX_INTERNAL_EDGES` contact-normal
+handling without changing surface coordinates or coverage. The third320Tick
+comparison still fails placement, so internal edges alone do not explain the
+failure. These960CPUbody-controller integrations are mechanical diagnostics,
+with0fresh images/VLA calls, and are not autonomous task qualification.

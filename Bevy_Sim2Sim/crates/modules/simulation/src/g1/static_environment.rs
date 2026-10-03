@@ -34,6 +34,7 @@ pub struct StaticEnvironmentReceipt {
     pub original_broad_floor_removed: bool,
     pub preparation_integrations: u64,
     pub owner_integrations_at_installation: u64,
+    pub triangle_contact_treatment: &'static str,
 }
 
 /// Immutable collision shapes prepared before the physical clock starts.
@@ -106,8 +107,16 @@ impl PreparedStaticEnvironment {
                     {
                         return Err(invalid("invalid public environment triangle coverage"));
                     }
-                    ColliderBuilder::trimesh(points, indices)
-                        .map_err(|e| invalid(format!("environment triangle mesh: {e:?}")))?
+                    // The station floor is authored with separate vertices per
+                    // triangle. Weld equal positions and constrain internal-edge
+                    // normals so a flat tessellated floor has no artificial rims.
+                    // Coordinates and surface coverage are unchanged.
+                    ColliderBuilder::trimesh_with_flags(
+                        points,
+                        indices,
+                        TriMeshFlags::FIX_INTERNAL_EDGES,
+                    )
+                    .map_err(|e| invalid(format!("environment triangle mesh: {e:?}")))?
                 }
                 None => ColliderBuilder::convex_hull(&points)
                     .ok_or_else(|| invalid("invalid public environment convex hull"))?,
@@ -172,6 +181,7 @@ impl PreparedStaticEnvironment {
             original_broad_floor_removed: true,
             preparation_integrations: 0,
             owner_integrations_at_installation: world.integration_count,
+            triangle_contact_treatment: "merge_equal_vertices_and_fix_internal_edge_normals",
         })
     }
 }
@@ -198,6 +208,35 @@ mod tests {
             0.5,
         )
         .unwrap()
+    }
+    #[test]
+    fn duplicated_triangle_vertices_keep_surface_and_gain_internal_edge_normals() {
+        let mut shape = prepared();
+        let original = shape.colliders.pop().unwrap();
+        let mesh = original.shape().as_trimesh().unwrap();
+        assert_eq!(mesh.vertices().len(), 4);
+        assert_eq!(mesh.indices().len(), 2);
+        assert!(mesh.triangle_normal_constraints(0).is_some());
+        let mut points = Vec::new();
+        for index in mesh.indices() {
+            for &vertex in index {
+                points.push(mesh.vertices()[vertex as usize].to_array());
+            }
+        }
+        let welded = PreparedStaticEnvironment::prepare(
+            shape.identity,
+            vec![StaticEnvironmentShape::Triangles {
+                vertices: points,
+                indices: vec![[0, 1, 2], [3, 4, 5]],
+            }],
+            0.5,
+        )
+        .unwrap();
+        let actual = welded.colliders[0].shape().as_trimesh().unwrap();
+        assert_eq!(actual.vertices().len(), 4);
+        assert_eq!(actual.indices().len(), 2);
+        assert!(actual.triangle_normal_constraints(0).is_some());
+        assert_eq!(original.compute_aabb(), welded.colliders[0].compute_aabb());
     }
     #[test]
     fn installation_replaces_floor_without_integrating_and_preserves_other_bodies() {
