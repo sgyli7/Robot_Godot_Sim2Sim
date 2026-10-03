@@ -1,7 +1,8 @@
 import hashlib,json,math,tempfile,unittest
 from pathlib import Path
 import cv2,numpy as np
-from unitree_g1_static_vision import observation,localize
+from unitree_g1_static_vision import PinnedPublicStaticVisionAssets,observation,localize
+from unittest.mock import patch
 
 class StaticObservationTests(unittest.TestCase):
     def fixture(self,root):
@@ -41,5 +42,42 @@ class StaticObservationTests(unittest.TestCase):
             path,_=self.fixture(root);image=Path(root)/'rgb.png';cv2.imwrite(str(image),np.ones((480,640,3),np.uint8)*127)
             result=localize(image,path,definition,labels,hashlib.sha256(labels.read_bytes()).hexdigest())
             self.assertEqual(result['detections'],[]);self.assertFalse(result['actuation_proposed']);self.assertFalse(result['task_qualified'])
+
+    def test_prepared_public_model_uses_each_current_joint_state(self):
+        base=Path(__file__).resolve().parents[4];labels=base/'assets/g1_fiducials/static_apple_plate.json'
+        definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
+        if not definition.exists():self.skipTest('byte-bound original public model is not installed')
+        assets=PinnedPublicStaticVisionAssets(definition,labels,hashlib.sha256(labels.read_bytes()).hexdigest())
+        q=[0.]*43;before=assets.root_camera(q);q[12]=.1
+        self.assertGreater(np.max(abs(before-assets.root_camera(q))),.01)
+
+    def test_prepared_asset_does_not_reparse_model_or_accept_changed_identity(self):
+        base=Path(__file__).resolve().parents[4];labels=base/'assets/g1_fiducials/static_apple_plate.json'
+        definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
+        if not definition.exists():self.skipTest('byte-bound original public model is not installed')
+        identity=hashlib.sha256(labels.read_bytes()).hexdigest()
+        assets=PinnedPublicStaticVisionAssets(definition,labels,identity)
+        with tempfile.TemporaryDirectory() as root:
+            path,_=self.fixture(root);image=Path(root)/'rgb.png';cv2.imwrite(str(image),np.ones((480,640,3),np.uint8)*127)
+            with patch('unitree_g1_static_vision.json.loads',wraps=json.loads) as parse:
+                result=localize(image,path,definition,labels,identity,public_assets=assets)
+                self.assertEqual(parse.call_count,1)  # Current observation, never the model again.
+            self.assertEqual(result['detections'],[])
+            with self.assertRaisesRegex(ValueError,'prepared public asset identity'):
+                localize(image,path,definition,labels,'0'*64,public_assets=assets)
+
+    def test_changed_bytes_after_preparation_reject_instead_of_using_cache(self):
+        base=Path(__file__).resolve().parents[4];source=base/'assets/g1_fiducials/static_apple_plate.json'
+        definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
+        if not definition.exists():self.skipTest('byte-bound original public model is not installed')
+        with tempfile.TemporaryDirectory() as root:
+            calibration=json.loads(source.read_text())
+            calibration['png_paths']=[str((source.parent/p).resolve()) for p in calibration['png_paths']]
+            labels=Path(root)/'labels.json';labels.write_text(json.dumps(calibration))
+            identity=hashlib.sha256(labels.read_bytes()).hexdigest()
+            assets=PinnedPublicStaticVisionAssets(definition,labels,identity)
+            labels.write_text(labels.read_text()+' ')
+            with self.assertRaisesRegex(ValueError,'asset bytes changed'):
+                assets.verify_request(definition,labels,identity)
 
 if __name__=='__main__':unittest.main()

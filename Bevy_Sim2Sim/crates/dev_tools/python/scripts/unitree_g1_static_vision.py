@@ -53,33 +53,70 @@ def observation(path):
     return value
 
 
-def localize(image_path, observation_path, definition_path, fiducial_path, fiducial_sha256):
+class PinnedPublicStaticVisionAssets:
+    """Verified public assets prepared before image capture; no task-world data.
+
+    Every request rechecks the byte identities. Only public model loading is
+    cached; FK still uses each frame's measured joints and changed files reject.
+    """
+    def __init__(self, definition_path, fiducial_path, fiducial_sha256):
+        self._definition_path = Path(definition_path).resolve(strict=True)
+        self._fiducial_path = Path(fiducial_path).resolve(strict=True)
+        self._fiducial_sha256 = fiducial_sha256
+        definition_path, fiducial_path = self._definition_path, self._fiducial_path
+        if Path(definition_path).stat().st_size > 64*1024*1024 or sha(definition_path) != DEFINITION_SHA256:
+            raise ValueError('Original public robot definition identity changed')
+        if Path(fiducial_path).stat().st_size > 16*1024 or sha(fiducial_path) != fiducial_sha256:
+            raise ValueError('Static printed calibration identity changed')
+        calibration = json.loads(Path(fiducial_path).read_text())
+        if (set(calibration) != {'schema','dictionary','layout_profile','png_paths','png_sha256','calibration_version','marker_mounts_source_m'}
+                or calibration['schema'] != 'g1_task_fiducials_v1'
+                or calibration['dictionary'] != 'DICT_4X4_50'
+                or calibration['layout_profile'] != 'static_apple_plate'
+                or calibration['calibration_version'] != 2
+                or calibration['marker_mounts_source_m'] != [LAYOUT[31][2],LAYOUT[32][2]]
+                or len(calibration['png_paths']) != 2 or len(calibration['png_sha256']) != 2):
+            raise ValueError('Foreign static label profile')
+        for name, expected in zip(calibration['png_paths'],calibration['png_sha256']):
+            p = Path(name)
+            if not p.is_absolute():p=Path(fiducial_path).parent/p
+            if p.stat().st_size > 1024*1024 or sha(p) != expected:
+                raise ValueError('Public printed pixels changed')
+        self._definition = json.loads(Path(definition_path).read_text())
+        self._files = [(self._definition_path, DEFINITION_SHA256, 64*1024*1024),
+                       (self._fiducial_path, fiducial_sha256, 16*1024)]
+        for name, expected in zip(calibration['png_paths'], calibration['png_sha256']):
+            path = Path(name)
+            if not path.is_absolute():
+                path = self._fiducial_path.parent/path
+            self._files.append((path, expected, 1024*1024))
+
+    def verify_request(self, definition_path, fiducial_path, fiducial_sha256):
+        if (Path(definition_path).resolve(strict=True) != self._definition_path
+                or Path(fiducial_path).resolve(strict=True) != self._fiducial_path
+                or fiducial_sha256 != self._fiducial_sha256):
+            raise ValueError('Static request changed its prepared public asset identity')
+        for path, expected, limit in self._files:
+            if path.stat().st_size > limit or sha(path) != expected:
+                raise ValueError('Prepared static public asset bytes changed')
+
+    def root_camera(self, measured_positions):
+        return root_from_camera(self._definition, measured_positions)
+
+
+def localize(image_path, observation_path, definition_path, fiducial_path, fiducial_sha256,
+             *, public_assets=None):
     value = observation(observation_path)
-    if sha(definition_path) != DEFINITION_SHA256 or Path(definition_path).stat().st_size > 64*1024*1024:
-        raise ValueError('Original public robot definition identity changed')
-    if Path(fiducial_path).stat().st_size > 16*1024 or sha(fiducial_path) != fiducial_sha256:
-        raise ValueError('Static printed calibration identity changed')
-    calibration = json.loads(Path(fiducial_path).read_text())
-    if (set(calibration) != {'schema','dictionary','layout_profile','png_paths','png_sha256','calibration_version','marker_mounts_source_m'}
-            or calibration['schema'] != 'g1_task_fiducials_v1'
-            or calibration['dictionary'] != 'DICT_4X4_50'
-            or calibration['layout_profile'] != 'static_apple_plate'
-            or calibration['calibration_version'] != 2
-            or calibration['marker_mounts_source_m'] != [LAYOUT[31][2],LAYOUT[32][2]]
-            or len(calibration['png_paths']) != 2 or len(calibration['png_sha256']) != 2):
-        raise ValueError('Foreign static label profile')
-    for name, expected in zip(calibration['png_paths'],calibration['png_sha256']):
-        p = Path(name)
-        if not p.is_absolute():p=Path(fiducial_path).parent/p
-        if p.stat().st_size > 1024*1024 or sha(p) != expected:
-            raise ValueError('Public printed pixels changed')
+    if public_assets is None:
+        public_assets = PinnedPublicStaticVisionAssets(definition_path, fiducial_path, fiducial_sha256)
+    else:
+        public_assets.verify_request(definition_path, fiducial_path, fiducial_sha256)
     if Path(image_path).stat().st_size > 16*1024*1024:
         raise ValueError('Static RGB exceeds finite byte budget')
     image = cv2.imread(str(image_path),cv2.IMREAD_COLOR)
     if image is None or image.shape != (480,640,3):
         raise ValueError('Static actual camera requires640x480PNG')
-    definition=json.loads(Path(definition_path).read_text())
-    root_camera=root_from_camera(definition,value['measured_joints']['positions'])
+    root_camera=public_assets.root_camera(value['measured_joints']['positions'])
     c=value['camera'];K=np.array([[c['fx'],0,c['cx']],[0,c['fy'],c['cy']],[0,0,1.]])
     parameters=cv2.aruco.DetectorParameters();parameters.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_SUBPIX
     detector=cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),parameters)
