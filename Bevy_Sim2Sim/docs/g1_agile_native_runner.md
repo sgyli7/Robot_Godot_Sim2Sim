@@ -142,3 +142,15 @@ origin/current memory age. It executes 715 real native/WBC ticks and records
 all steps for the independent active-contact placement audit. Passing the Rust
 execution test alone is not proof of release, support, a two-second placement
 window, fresh model execution, Qwen task execution, or formal task qualification.
+
+
+The first single-case offline mechanical placement at `230de1b` completed all
+715 actual native/WBC ticks. Its first 390 body records exactly matched the
+preceding live image transfer. The unchanged independent v4 audit found 4.0
+continuous seconds with every apple collision vertex in the plate footprint,
+positive current plate support, no actual robot contact, low linear/angular
+velocity and continuous standing. All 125 settling samples passed those rules;
+final speeds were 1.84e-6 m/s and 5.41e-5 rad/s. This is one saved-original
+P1/seed42 mechanical diagnostic, with zero new VLA/Qwen requests or images;
+it is not a formal autonomous task trial or an 8/10 result. Raw steps and the
+independent result are retained in scratch case 0363 for immutable sealing.
