@@ -532,3 +532,20 @@ command), allowing one separately declared gravity-compensated arm-hold
 comparison. This test seam still has no worker/UI path, object-truth controller
 input or autonomous score. Previously frozen fixtures retain their behavior:
 their commands79and80are identical and the new reference flag defaults false.
+
+The gravity-compensated320Tick comparison (`0326`) is also negative. Its
+reference exactly reproduces all160steps of0324's preload candidate, and both
+140Tick prefixes match. Candidate palm displacement drops from29.2mm to13.4mm,
+but hand-only support drops from13/20to11/20ticks and the apple still falls.
+This rejects unsettled-arm correction as a sufficient grasp fix; no gravity,
+preload, friction or gain sweep follows.
+
+`unitree_g1_t1_source_grasp.py` provides one finite original200/50Hz source
+comparison with the same100saved original commands after60startup updates,
+original G1/finger friction, source shelf and original apple/plate USD at the
+matched initial poses. Its reduced scene omits background/cameras and has no
+VLA or expert claim. Original action groups are mapped by source joint names.
+Each control update must advance exactly4original integrations, at most640.
+Object poses/velocities are recorded only for the independent auditor. This
+entry does not change native50Hz or establish contact retention, visual task
+success or formal task acceptance by itself.
