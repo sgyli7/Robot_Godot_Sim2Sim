@@ -29,6 +29,12 @@ struct PendingVision {
     reply: Option<serde_json::Value>,
 }
 
+struct PendingSkill {
+    observation: ObservationStamp,
+    next_stage: Stage,
+    increments_fine_goal: bool,
+}
+
 pub(super) struct ContinuousMobileRoute {
     stage: Stage,
     vision: MarkerVisionConfiguration,
@@ -37,6 +43,8 @@ pub(super) struct ContinuousMobileRoute {
     image_min_tick: Option<u64>,
     job: Option<PendingVision>,
     worker: Option<PersistentMarkerWorker>,
+    submitted_skill: Option<PendingSkill>,
+    rejected_images: u32,
     fine_goals: u32,
     images: u32,
     completed: bool,
@@ -60,6 +68,8 @@ impl ContinuousMobileRoute {
             image_min_tick: None,
             job: None,
             worker: None,
+            submitted_skill: None,
+            rejected_images: 0,
             fine_goals: 0,
             images: 0,
             completed: false,
@@ -106,6 +116,44 @@ impl ContinuousMobileRoute {
                 .reason
                 .clone()
                 .unwrap_or("continuous route owner failed/budget exceeded".into()));
+        }
+        if let Some(pending) = &self.submitted_skill {
+            let rejection = latest.assist_step.as_ref().and_then(|step| {
+                let MobileAssistExecution::ClassicalModelWait { waiting, .. } = &step.execution
+                else {
+                    return None;
+                };
+                waiting
+                    .rejected_image
+                    .as_ref()
+                    .filter(|r| r.observation == pending.observation)
+                    .cloned()
+            });
+            if let Some(rejection) = rejection {
+                self.rejected_images += 1;
+                self.record(outcome, serde_json::json!({
+                    "event":"owner_rejected_image_reobserve", "stage":format!("{:?}", self.stage),
+                    "rejection":rejection, "actual_display_tick":tick,
+                    "rejected_image_count":self.rejected_images, "maximum_reobservations":2,
+                    "existing_wait_budget_reset":false, "rejected_skill_executed":false,
+                }))?;
+                self.submitted_skill = None;
+                if self.rejected_images > 2 {
+                    return Err("two stale-image reobservations exhausted; explicit pause".into());
+                }
+            } else if latest
+                .assist_step
+                .as_ref()
+                .and_then(|s| s.image_admission.as_ref())
+                .is_some_and(|a| a.observation() == pending.observation)
+            {
+                let pending = self.submitted_skill.take().unwrap();
+                self.stage = pending.next_stage;
+                self.expected_wait_request = pending.observation.frame_id;
+                self.fine_goals += u32::from(pending.increments_fine_goal);
+            } else {
+                return Ok(false);
+            }
         }
         if tick > 0 && latest.phase == G1WorkerPhase::Paused {
             if self.stage==Stage::Finish && latest.assist_step.as_ref().is_some_and(|s| matches!(&s.execution,
@@ -164,7 +212,6 @@ impl ContinuousMobileRoute {
                     if !(0.1..=1.85).contains(&distance) {
                         return Err("coarse RGB waypoint outside bounded range".into());
                     }
-                    self.stage = Stage::Fine;
                     MobileObservedSkill::Carry(MobileCarryGoal {
                         observation,
                         heading_yaw_source_rad: proposal["heading_yaw_source_rad"]
@@ -185,10 +232,7 @@ impl ContinuousMobileRoute {
                         .as_str()
                         .ok_or("fine RGB containment state absent")?
                     {
-                        "aligned" => {
-                            self.stage = Stage::Placement;
-                            MobileObservedSkill::Hold(MobileHoldGoal { observation })
-                        }
+                        "aligned" => MobileObservedSkill::Hold(MobileHoldGoal { observation }),
                         "advance" if self.fine_goals < 5 => {
                             let goal: MobileCarryGoal = serde_json::from_value(
                                 reply["fine_approach_proposal"]["goal"].clone(),
@@ -200,7 +244,6 @@ impl ContinuousMobileRoute {
                                         .into(),
                                 );
                             }
-                            self.fine_goals += 1;
                             MobileObservedSkill::Carry(goal)
                         }
                         _ => {
@@ -223,7 +266,6 @@ impl ContinuousMobileRoute {
                     if goal.observation != observation {
                         return Err("release proposal changed its actual RGB identity".into());
                     }
-                    self.stage = Stage::Finish;
                     MobileObservedSkill::Release(goal)
                 }
                 _ => return Err("unexpected continuous localization phase".into()),
@@ -244,7 +286,6 @@ impl ContinuousMobileRoute {
                     heading_yaw_source_rad: self.search_heading,
                 }),
             )?;
-            self.stage = Stage::Coarse;
         } else {
             self.worker.as_mut().unwrap().submit(
                 &directory,
@@ -266,6 +307,17 @@ impl ContinuousMobileRoute {
         outcome: &CaptureOutcome,
         skill: MobileObservedSkill,
     ) -> Result<(), String> {
+        if self.submitted_skill.is_some() {
+            return Err("continuous skill awaits actual owner acceptance".into());
+        }
+        let next_stage = match &skill {
+            MobileObservedSkill::Scan(_) => Stage::Coarse,
+            MobileObservedSkill::Carry(_) => Stage::Fine,
+            MobileObservedSkill::Hold(_) => Stage::Placement,
+            MobileObservedSkill::Release(_) => Stage::Finish,
+        };
+        let increments_fine_goal =
+            self.stage == Stage::Fine && matches!(&skill, MobileObservedSkill::Carry(_));
         let observation = match &skill {
             MobileObservedSkill::Carry(g) => g.observation,
             MobileObservedSkill::Scan(g) => g.observation,
@@ -291,8 +343,12 @@ impl ContinuousMobileRoute {
                 command,
             })
             .map_err(|e| e.to_string())?;
-        self.expected_wait_request = observation.frame_id;
-        self.record(outcome,serde_json::json!({"event":"observed_skill_submitted","next_stage":format!("{:?}",self.stage),"observation":observation,
+        self.submitted_skill = Some(PendingSkill {
+            observation,
+            next_stage,
+            increments_fine_goal,
+        });
+        self.record(outcome,serde_json::json!({"event":"observed_skill_submitted","next_stage":format!("{:?}",next_stage),"observation":observation,
             "arrival_display_tick":runtime.latest.as_ref().unwrap().timing.episode_integrations,"execution_start":"actual_owner_step_image_admission",
             "original_image_restamped":false,"following_traditional_wait_maximum_ticks":200,"world_or_contact_truth_input":false}))
     }

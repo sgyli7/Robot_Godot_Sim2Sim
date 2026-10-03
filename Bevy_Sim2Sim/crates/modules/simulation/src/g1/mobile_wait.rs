@@ -43,6 +43,13 @@ impl MobileWaitGoal {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MobileRejectedImage {
+    pub observation: ObservationStamp,
+    pub rejected_at_sim_ns: u64,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct MobileWaitStep {
     pub command: G1Command,
     pub waiting_ticks: u32,
@@ -52,6 +59,8 @@ pub struct MobileWaitStep {
     pub stable_velocity_ticks: u32,
     pub observation_ready: bool,
     pub completed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejected_image: Option<MobileRejectedImage>,
 }
 
 pub struct MobileModelWaiting {
@@ -220,6 +229,7 @@ impl MobileModelWaiting {
             stable_velocity_ticks: self.stable_velocity_ticks,
             observation_ready: self.stable_velocity_ticks >= 20,
             completed: self.completed(),
+            rejected_image: None,
         })
     }
 }

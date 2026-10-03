@@ -169,6 +169,8 @@ pub struct MobileAssistRunner {
     maximum_observation_age_ns: u64,
     continuous_skill: Option<MobileObservedSkill>,
     continuous_admission: Option<MobileImageAdmission>,
+    rejected_observed_skill: Option<(MobileObservedSkill, super::mobile_wait::MobileRejectedImage)>,
+    rejected_observation_frame_floor: u64,
     last_vla_execution: Option<ArenaTaskExecution>,
     last_vla_command: Option<G1Command>,
     last_controller_command: Option<G1Command>,
@@ -212,6 +214,8 @@ impl MobileAssistRunner {
             maximum_observation_age_ns: config.max_observation_age_ns,
             continuous_skill: None,
             continuous_admission: None,
+            rejected_observed_skill: None,
+            rejected_observation_frame_floor: 0,
             last_vla_execution: None,
             last_vla_command: None,
             last_controller_command: None,
@@ -404,6 +408,7 @@ impl MobileAssistRunner {
         ) {
             self.continuous_skill = None;
             self.continuous_admission = None;
+            self.rejected_observed_skill = None;
         }
         let mut result = self.step_inner(command, guard);
         if let Ok(step) = &mut result {
@@ -437,6 +442,27 @@ impl MobileAssistRunner {
         }
         result
     }
+    fn continue_wait_after_image_rejection(
+        &mut self,
+        rejection: super::mobile_wait::MobileRejectedImage,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<MobileAssistStep, RobotError> {
+        let goal = self
+            .waiting
+            .as_ref()
+            .ok_or_else(|| {
+                invalid("rejected image has no previously admitted finite standing wait")
+            })?
+            .goal()
+            .clone();
+        let mut step = self.step_inner(&MobileAssistCommand::ClassicalModelWait(goal), guard)?;
+        let MobileAssistExecution::ClassicalModelWait { waiting, .. } = &mut step.execution else {
+            return Err(invalid("rejected image did not preserve the standing wait"));
+        };
+        waiting.rejected_image = Some(rejection);
+        Ok(step)
+    }
+
     fn step_inner(
         &mut self,
         command: &MobileAssistCommand,
@@ -456,6 +482,31 @@ impl MobileAssistRunner {
         match command {
             MobileAssistCommand::ObservedSkillThenWait(skill) => {
                 let state = self.owner.measurement()?;
+                // A rejected observation is discarded permanently. Continue
+                // only the existing finite standing wait; do not retry it when
+                // the self motion later changes or reset the waiting budget.
+                if let Some((rejected, reason)) = &self.rejected_observed_skill
+                    && rejected.observation() == skill.observation()
+                {
+                    if rejected != skill {
+                        return Err(invalid("a rejected image cannot mutate into another skill"));
+                    }
+                    let reason = reason.clone();
+                    return self.continue_wait_after_image_rejection(reason, guard);
+                }
+                if skill.observation().episode_id == state.episode_id
+                    && skill.observation().frame_id <= self.rejected_observation_frame_floor
+                {
+                    return self.continue_wait_after_image_rejection(
+                        super::mobile_wait::MobileRejectedImage {
+                            observation: skill.observation(),
+                            rejected_at_sim_ns: state.sim_time_ns,
+                            reason: "previously discarded image cannot become an executed skill"
+                                .into(),
+                        },
+                        guard,
+                    );
+                }
                 if self.continuous_skill.as_ref() != Some(skill) {
                     if self
                         .continuous_skill
@@ -469,14 +520,31 @@ impl MobileAssistRunner {
                     let waiting = self.waiting.as_ref().ok_or_else(|| {
                         invalid("observed skill requires an explicit stationary owner wait")
                     })?;
-                    let admission = waiting.admit_observed_skill(
+                    let admission = match waiting.admit_observed_skill(
                         skill.observation(),
                         &state,
                         &self.calibration,
                         self.maximum_observation_age_ns,
-                    )?;
+                    ) {
+                        Ok(admission) => admission,
+                        Err(error) => {
+                            if skill.observation().episode_id == state.episode_id {
+                                self.rejected_observation_frame_floor = self
+                                    .rejected_observation_frame_floor
+                                    .max(skill.observation().frame_id);
+                            }
+                            let rejection = super::mobile_wait::MobileRejectedImage {
+                                observation: skill.observation(),
+                                rejected_at_sim_ns: state.sim_time_ns,
+                                reason: error.to_string(),
+                            };
+                            self.rejected_observed_skill = Some((skill.clone(), rejection.clone()));
+                            return self.continue_wait_after_image_rejection(rejection, guard);
+                        }
+                    };
                     self.continuous_skill = Some(skill.clone());
                     self.continuous_admission = Some(admission);
+                    self.rejected_observed_skill = None;
                 }
                 if self.skill_completed(skill) {
                     let goal =
@@ -1123,6 +1191,147 @@ mod tests {
         scan: MobileScanGoal,
         maximum_ticks: u64,
         preserve_executed_grasp: bool,
+    }
+
+    #[test]
+    #[ignore = "saved actual prefix: rejected input must preserve identical finite standing mechanics, then admit a distinct saved image; zero fresh RGB/VLA"]
+    fn real_mobile_rejected_image_preserves_wait_diagnostic() -> Result<(), RobotError> {
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        let mut fixture: SavedContinuousScan =
+            serde_json::from_slice(&read("G1_MOBILE_CONTINUOUS_SCAN_FIXTURE")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        if fixture.chunks.len() != 4
+            || fixture.prefix_sequence_ids.len() > 1000
+            || fixture
+                .prefix_sequence_ids
+                .iter()
+                .any(|i| !(1..=4).contains(i))
+        {
+            return Err(invalid(
+                "rejection test requires the exact bounded saved prefix",
+            ));
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        for chunk in &mut fixture.chunks {
+            chunk.observation.captured_at_unix_ms = now;
+        }
+        fixture.scan.observation.captured_at_unix_ms = now;
+        let mut discarded = MobileAssistRunner::load(&config)?;
+        let mut reference = MobileAssistRunner::load(&config)?;
+        let mut recovered = MobileAssistRunner::load(&config)?;
+        for &sequence in &fixture.prefix_sequence_ids {
+            let command = MobileAssistCommand::OriginalVlaThenWait(ArenaTaskCommand {
+                chunk: Arc::new(fixture.chunks[sequence - 1].clone()),
+                scheduled_start_sim_ns: None,
+            });
+            let a = discarded.step_with_guard(&command, &mut || Ok(()))?;
+            let b = reference.step_with_guard(&command, &mut || Ok(()))?;
+            let c = recovered.step_with_guard(&command, &mut || Ok(()))?;
+            assert_eq!(
+                serde_json::to_value(&a.body).unwrap(),
+                serde_json::to_value(&b.body).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&a.body).unwrap(),
+                serde_json::to_value(&c.body).unwrap()
+            );
+        }
+        let wait = discarded
+            .waiting
+            .as_ref()
+            .ok_or_else(|| invalid("prefix lacks finite wait"))?;
+        let elapsed_wait_ticks = (discarded.measurement()?.sim_time_ns
+            - wait.goal().execution_start_sim_ns)
+            / 20_000_000;
+        let remaining = wait.goal().duration_ticks - elapsed_wait_ticks as u32;
+        assert!(remaining > 3);
+        let goal = wait.goal().clone();
+        let mut stale = fixture.scan.clone();
+        stale.observation = fixture.chunks[3].observation;
+        assert!(stale.observation.frame_id < fixture.scan.observation.frame_id);
+        let rejected =
+            MobileAssistCommand::ObservedSkillThenWait(MobileObservedSkill::Scan(stale.clone()));
+        for i in 0..remaining {
+            let a = discarded.step_with_guard(&rejected, &mut || Ok(()))?;
+            let b = reference.step_with_guard(
+                &MobileAssistCommand::ClassicalModelWait(goal.clone()),
+                &mut || Ok(()),
+            )?;
+            assert_eq!(
+                serde_json::to_value(&a.body).unwrap(),
+                serde_json::to_value(&b.body).unwrap()
+            );
+            let MobileAssistExecution::ClassicalModelWait {
+                goal: actual_goal,
+                waiting,
+            } = &a.execution
+            else {
+                panic!("rejected image executed a skill")
+            };
+            assert_eq!(actual_goal, &goal);
+            assert_eq!(
+                waiting.rejected_image.as_ref().unwrap().observation,
+                stale.observation
+            );
+            assert_eq!(waiting.completed, i + 1 == remaining);
+            assert!(a.image_admission.is_none());
+            if i < 3 {
+                let c = recovered.step_with_guard(&rejected, &mut || Ok(()))?;
+                assert_eq!(
+                    serde_json::to_value(&a.body).unwrap(),
+                    serde_json::to_value(&c.body).unwrap()
+                );
+            }
+        }
+        assert!(discarded.completed_skill());
+        let before = discarded.progress_counts();
+        assert!(
+            discarded
+                .step_with_guard(&rejected, &mut || Ok(()))
+                .is_err()
+        );
+        let after = discarded.progress_counts();
+        assert_eq!(after.integration_count, before.integration_count);
+        assert_eq!(after.torque_update_count, before.torque_update_count);
+        assert_eq!(
+            after.inference_attempt_count,
+            before.inference_attempt_count
+        );
+        assert_eq!(
+            after.successful_inference_count,
+            before.successful_inference_count
+        );
+        assert!(after.halted);
+        let valid = MobileAssistCommand::ObservedSkillThenWait(MobileObservedSkill::Scan(
+            fixture.scan.clone(),
+        ));
+        let admitted = recovered.step_with_guard(&valid, &mut || Ok(()))?;
+        assert!(matches!(
+            admitted.execution,
+            MobileAssistExecution::ClassicalScan { .. }
+        ));
+        assert_eq!(
+            admitted.image_admission.as_ref().unwrap().observation(),
+            fixture.scan.observation
+        );
+        let output =
+            std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        fs::write(output, serde_json::to_vec_pretty(&serde_json::json!({
+            "schema":"g1_rejected_image_finite_wait_comparison_v1", "qualified":false,
+            "fresh_rgb":0,"fresh_vla_calls":0,"saved_prefix_ticks_per_owner":fixture.prefix_sequence_ids.len(),
+            "same_physical_prefix_owners":3,"identical_rejection_and_reference_wait_ticks":remaining,
+            "rejected_image":stale.observation,"new_distinct_saved_image":fixture.scan.observation,
+            "expired_wait_adds_no_ticks":true,"waiting_budget_reset":false,"discarded_counts":before,
+            "reference_counts":reference.progress_counts(),"recovered_counts":recovered.progress_counts(),
+            "recovered_admission":admitted.image_admission,
+            "scope":"saved mechanical control/rejection semantics only; not fresh perception or task success",
+        })).map_err(|e| invalid(e.to_string()))?).map_err(|e| invalid(e.to_string()))?;
+        Ok(())
     }
 
     #[test]

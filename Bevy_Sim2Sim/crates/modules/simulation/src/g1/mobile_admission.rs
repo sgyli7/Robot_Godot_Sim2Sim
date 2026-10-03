@@ -19,6 +19,9 @@ pub struct MobileImageAdmission {
 }
 
 impl MobileImageAdmission {
+    pub fn observation(&self) -> ObservationStamp {
+        self.observation
+    }
     pub(super) fn navigation_target_at_execution(&self, heading: f32, distance: f32) -> (f32, f32) {
         if !self.continuous_stationary_wait {
             return (heading, distance);

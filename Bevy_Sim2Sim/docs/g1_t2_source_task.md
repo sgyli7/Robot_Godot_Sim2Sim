@@ -1916,3 +1916,23 @@ history also shows the rejected image already exceeds5mm at0.34s; faster JSON
 alone therefore does not prove the entire route will pass. Bounded reobservation
 while the existing safe standing wait remains active is the next missing
 recovery behavior; rejected inputs must never become an executed skill.
+
+
+Bounded stale-image recovery0286 preserves the existing owner wait rather than
+executing or restamping a rejected skill. A discarded observation remains
+ineligible; a distinct new frame may be submitted. Waiting limits and all
+self-motion/image gates stay unchanged. The RGB route permits at most two
+reobservations and commits its next stage/fine-step count only after the native
+owner publishes the corresponding accepted image proof. Wait exhaustion or
+unsafe self state still halts explicitly.
+
+A saved mechanical comparison uses three identical590Tick prefixes. The
+rejection and reference owners then run138remaining standing Ticks with every
+serialized body/control result equal. A repeated rejected command cannot extend
+the200Tickwait; the next expired call halts without inference/torque/integration.
+A third owner rejects the old frame for3Ticks, then admits the distinct original
+saved scan image once. Counts are728/728/594=2050new native integrations, with
+zero fresh RGB/VLA calls. This verifies rejection semantics only. Initial test
+compile and an incorrect assertion about the halt latch are retained separately.
+Current79simulation tests/42ignored and42development tests/3ignored pass, as does
+the default app compile. Fresh perception/carry/release acceptance remains open.
