@@ -420,3 +420,29 @@ original learned-policy images and initial two-target localization remain
 ArenaEgo. The CPU reply is bound to the requested mount. No new camera angle,
 search grid, control pose or precision relaxation is introduced. Cases0374/0375
 retain the failed actual check and public-geometry-only projection separately.
+
+At `ee0e590`, the one actual fixed-view P1/seed42 check admits the lift and
+completes all840native/WBC ticks and two fresh original N1.7 calls. Six actual
+camera images include190; all840body records exactly match0369 after excluding
+episode IDs. Independent release/support/geometry/standing remains6.06seconds.
+The check reports69.5mm apple lift,76.9mm measured-palm lift and17.2mm relative
+displacement. However, independent current190apple position error is16.43mm,
+above the unchanged10mm precision gate; plate error is4.74mm. Thus this is a
+coarse motion check with successful physical placement, not qualified fine
+localization or a formal task. The20mm motion bound is not used to relabel that
+precision failure. Two read-only comparisons (corner LM refinement and a
+physical six-DOF public-pattern fit) do not reduce the apple error and are not
+adopted. A separate independent camera audit finds self-FK/native camera gaps
+below0.21micrometers, excluding camera extrinsic drift in this case. No truth
+camera or object pose is supplied to control.
+
+The previously unheld P2/seed0 case also runs once at the same code/profile.
+It completes190ticks and two fresh original calls, then detects plate32 but
+cannot admit apple31 after lifting the empty hand. Horizontal transfer and
+placement stay blocked. The read-only auditor confirms the apple remains on
+the table with positive current surface support and zero positive robot
+support; that truth never replaces the missing visual observation. Both cases
+reap their owned model/app/CPU children. Scratch0376–0380 retain the positive
+physical case, failed precision comparisons and correct blocked-grasp case.
+Recovery and native-default validation remain outstanding; no8/10 score is
+claimed.
