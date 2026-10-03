@@ -1620,3 +1620,16 @@ This is a finite source-near native vision/classical-control development pass.
 Qwen selection, science station, fresh-grasp robustness, continuous1x, the
 frozen formal ten-trial suite, terrain/fault/coexistence and final video/runbook/
 main merge remain required; formal T2 success is still false.
+
+The next continuous-grasp preflight admits only the existing camera diagnostic
+with exactly200Ticks and four original N1.6 action chunks. Each chunk still
+contains50frames at20ms; requests for the next actual image start25Ticks into
+the running chunk. The existing bounded executor keeps the captured image's
+original stamp and a separate future execution slot. A missed slot rejects;
+it does not rebase an old action or pause the active physics clock. Original
+source camera, source lighting, task/background geometry and the explicit4PGS
+development factory are required. Auxiliary markers, classical carry/release,
+task UI and other chunk budgets are excluded from this preflight. StaticApple
+keeps its existing trigger and validation. Unit checks pass42development tests
+with2ignored; live timing and physical-grasp outcomes remain separate evidence.
+This bounded admission does not qualify continuous full-task1x operation.

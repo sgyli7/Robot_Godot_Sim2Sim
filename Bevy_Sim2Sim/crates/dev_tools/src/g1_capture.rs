@@ -303,6 +303,21 @@ struct LivePolicyRuntime {
     prefetch_after_ticks: Option<u32>,
 }
 
+/// Fixed development windows preserve each original decoder's full horizon.
+/// Observation time remains the actual image time; execution has its own slot.
+fn profile_prefetch_allowed(
+    profile: TaskProfile,
+    trigger_tick: u32,
+    calls: u32,
+    total_ticks: u32,
+) -> bool {
+    match profile {
+        // Existing static validation/whole-chunk startup guards stay intact.
+        TaskProfile::StaticApple => trigger_tick == 10 && calls >= 2,
+        TaskProfile::MobileBox => trigger_tick == 25 && calls == 4 && total_ticks == 200,
+    }
+}
+
 // Distinct complete startup schemas and typed workers; no action conversion.
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -1307,6 +1322,31 @@ fn run_capture_owner(
     let target_view = mode == CaptureMode::MobileTargetView || (visual_approach && !auxiliary_view);
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only;
+    let mobile_prefetch = matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
+        && policy
+            .as_ref()
+            .is_some_and(|p| p.prefetch_after_ticks.is_some());
+    if mobile_prefetch
+        && (mode != CaptureMode::Camera
+            || !cfg!(feature = "g1_constraint_diagnostic")
+            || options.ticks != 200
+            || policy
+                .as_ref()
+                .is_none_or(|p| p.max_calls != 4 || p.prefetch_after_ticks != Some(25))
+            || config
+                .task_objects()
+                .is_none_or(|c| c.source_t2_background.is_none())
+            || diagnostic_constraint_sweeps != Some(4)
+            || predictive_limit_diagnostic
+            || diagnostic_source_rect_lighting.is_none()
+            || !diagnostic_aces_fitted
+            || task_visual.is_none()
+            || task_lab.is_some()
+            || mobile_assist.is_some()
+            || mobile_scan.is_some())
+    {
+        return Err("mobile prefetch is only the explicit200Tick/four-original-chunk matched source-camera/light/4PGS grasp diagnostic".into());
+    }
     if (mode == CaptureMode::MobileAssist) != mobile_assist.is_some()
         || scan_only != mobile_scan.is_some()
     {
@@ -1544,7 +1584,7 @@ fn run_capture_owner(
                 || config.max_observation_wall_age_ms == 0
                 || config.max_observation_wall_age_ms > 20_000
                 || policy.prefetch_after_ticks.is_some_and(|tick| {
-                    profile != TaskProfile::StaticApple || tick != 10 || policy.max_calls < 2
+                    !profile_prefetch_allowed(profile, tick, policy.max_calls, options.ticks)
                 })
             {
                 return Err("live diagnostic requires its bounded whole-chunk count, exact tick budget and image/inference age <=20s".into());
@@ -1861,7 +1901,35 @@ fn run_capture_owner(
 
 #[cfg(test)]
 mod budget_tests {
-    use super::CaptureMode;
+    use super::{CaptureMode, profile_prefetch_allowed};
+    use task_minigame::types::TaskProfile;
+
+    #[test]
+    fn prefetch_windows_do_not_mix_profiles_or_change_original_horizons() {
+        assert!(profile_prefetch_allowed(
+            TaskProfile::StaticApple,
+            10,
+            2,
+            80
+        ));
+        assert!(profile_prefetch_allowed(
+            TaskProfile::StaticApple,
+            10,
+            8,
+            320
+        ));
+        assert!(profile_prefetch_allowed(TaskProfile::MobileBox, 25, 4, 200));
+        for (profile, trigger, calls, ticks) in [
+            (TaskProfile::StaticApple, 25, 4, 160),
+            (TaskProfile::MobileBox, 10, 4, 200),
+            (TaskProfile::MobileBox, 25, 3, 150),
+            (TaskProfile::MobileBox, 25, 4, 199),
+            (TaskProfile::MobileBox, 25, 8, 400),
+            (TaskProfile::StaticApple, 10, 1, 40),
+        ] {
+            assert!(!profile_prefetch_allowed(profile, trigger, calls, ticks));
+        }
+    }
     #[test]
     fn both_startup_guards_share_the_explicit_stage_budget() {
         for (mode, budget) in [
