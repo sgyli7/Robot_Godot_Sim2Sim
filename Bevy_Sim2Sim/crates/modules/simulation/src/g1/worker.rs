@@ -35,6 +35,11 @@ pub type G1Worker = PhysicsWorker<G1Command, G1Step>;
 pub type AgileWorker = PhysicsWorker<AgileCommand, AgileStep>;
 pub type ArenaTaskWorker = PhysicsWorker<ArenaTaskCommand, ArenaTaskStep>;
 #[cfg(feature = "g1_constraint_diagnostic")]
+pub type StaticStartupWorker = PhysicsWorker<
+    super::static_startup::StaticStartupCommand,
+    super::static_startup::StaticStartupStep,
+>;
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub type MobileAssistWorker = PhysicsWorker<MobileAssistCommand, MobileAssistStep>;
 pub type TimedG1Command = TimedCommand<G1Command>;
 pub type TimedAgileCommand = TimedCommand<AgileCommand>;
@@ -418,6 +423,23 @@ impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
     }
 }
 
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl StaticStartupWorker {
+    /// One world and one clock, including the explicitly requested startup.
+    pub fn spawn_static_startup(config: ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        Self::spawn_owner(
+            config.body.episode_id(),
+            move |episode_id| {
+                super::static_startup::StaticStartupRunner::load(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+}
+
 // Concrete public aliases are the supported contracts. The private traits only
 // let these native owners share scheduling; they never convert action semantics.
 #[allow(private_bounds)]
@@ -675,6 +697,54 @@ impl BoundaryRunner for ArenaTaskRunner {
     }
     fn progress_counts(&self) -> G1ProgressCounts {
         ArenaTaskRunner::progress_counts(self)
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl BoundaryRunner for super::static_startup::StaticStartupRunner {
+    type Command = super::static_startup::StaticStartupCommand;
+    type Step = super::static_startup::StaticStartupStep;
+    fn initial_frame(&self) -> Result<Option<G1BodyFrame>, RobotError> {
+        self.initial_frame().map(Some)
+    }
+    fn initial_measurement(&self) -> Result<Option<G1Measurement>, RobotError> {
+        self.measurement().map(Some)
+    }
+    fn task_objects(&self) -> Result<Option<TaskObjectFrame>, RobotError> {
+        self.task_objects()
+    }
+    fn step(
+        &mut self,
+        command: &Self::Command,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<Option<Self::Step>, RobotError> {
+        self.step_with_guard(command, guard).map(Some)
+    }
+    fn progress_counts(&self) -> G1ProgressCounts {
+        self.progress_counts()
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl BoundaryCommand for super::static_startup::StaticStartupCommand {
+    fn validate(&self) -> Result<(), RobotError> {
+        self.validate()
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl BoundaryStep for super::static_startup::StaticStartupStep {
+    fn parts(&self) -> (&G1BodyFrame, &G1Measurement, f32, f32) {
+        match &self.body {
+            ArenaBodyStep::StaticAgile(step) => step.parts(),
+            ArenaBodyStep::MobileHomieV2(step) => step.parts(),
+        }
+    }
+    fn task_objects(&self) -> Option<&TaskObjectFrame> {
+        match &self.body {
+            ArenaBodyStep::StaticAgile(step) => step.task_objects(),
+            ArenaBodyStep::MobileHomieV2(step) => step.task_objects(),
+        }
     }
 }
 

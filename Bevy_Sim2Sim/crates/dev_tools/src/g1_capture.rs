@@ -97,6 +97,10 @@ struct CaptureConfiguration {
     task_visual_sha256: Option<String>,
     #[serde(default)]
     policy: Option<LivePolicyConfiguration>,
+    /// Explicit 60 real startup ticks in the same static task world, before
+    /// the first fresh image. Never enabled implicitly or on model failure.
+    #[serde(default)]
+    static_startup: bool,
     #[serde(default)]
     exposure_ev100: Option<f32>,
     #[serde(default)]
@@ -364,7 +368,26 @@ impl CaptureRunnerConfig {
         predictive_limit_diagnostic: bool,
         diagnostic_constraint_sweeps: Option<u32>,
         assisted_carry: bool,
+        static_startup: bool,
     ) -> Result<CaptureWorker, String> {
+        if static_startup {
+            let Self::Task(config) = self else {
+                return Err("static startup requires matched T1 task owner".into());
+            };
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            {
+                return simulation_minigame::g1::worker::StaticStartupWorker::spawn_static_startup(
+                    config,
+                )
+                .map(CaptureWorker::StaticStartup)
+                .map_err(|e| e.to_string());
+            }
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
+            {
+                let _ = config;
+                return Err("static startup requires explicit development feature".into());
+            }
+        }
         if assisted_carry {
             let Self::Task(config) = self else {
                 return Err("assisted carry requires a matched mobile task owner".into());
@@ -461,6 +484,8 @@ impl CaptureRunnerConfig {
 enum CaptureWorker {
     Task(ArenaTaskWorker),
     #[cfg(feature = "g1_constraint_diagnostic")]
+    StaticStartup(simulation_minigame::g1::worker::StaticStartupWorker),
+    #[cfg(feature = "g1_constraint_diagnostic")]
     AssistedMobile(simulation_minigame::g1::worker::MobileAssistWorker),
     Mobile(G1Worker),
     Static {
@@ -479,6 +504,8 @@ struct CaptureSnapshot {
     timing: G1WorkerTiming,
     task_step: Option<Arc<ArenaTaskStep>>,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    startup_step: Option<Arc<simulation_minigame::g1::static_startup::StaticStartupStep>>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     assist_step: Option<Arc<simulation_minigame::g1::mobile_assist::MobileAssistStep>>,
 }
 impl CaptureSnapshot {
@@ -493,6 +520,8 @@ impl CaptureSnapshot {
             timing: s.timing.clone(),
             task_step: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
+            startup_step: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
             assist_step: None,
         }
     }
@@ -500,6 +529,17 @@ impl CaptureSnapshot {
 impl CaptureWorker {
     fn take_latest(&self) -> Option<Arc<CaptureSnapshot>> {
         match self {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::StaticStartup(w) => w.take_latest().map(|s| {
+                let mut snapshot=CaptureSnapshot::from_worker(&s);
+                snapshot.startup_step=s.step.clone();
+                if let Some(step)=&s.step {
+                    if let simulation_minigame::g1::static_startup::StaticStartupExecution::OriginalVla(execution)=&step.execution {
+                        snapshot.task_step=Some(Arc::new(ArenaTaskStep{execution:execution.clone(),body:step.body.clone()}));
+                    }
+                }
+                Arc::new(snapshot)
+            }),
             #[cfg(feature = "g1_constraint_diagnostic")]
             Self::AssistedMobile(w) => w.take_latest().map(|s| {
                 let mut snapshot=CaptureSnapshot::from_worker(&s);
@@ -527,6 +567,8 @@ impl CaptureWorker {
     fn pause(&self) {
         match self {
             #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::StaticStartup(w) => w.pause(),
+            #[cfg(feature = "g1_constraint_diagnostic")]
             Self::AssistedMobile(w) => w.pause(),
             Self::Task(w) => w.pause(),
             Self::Mobile(w) => w.pause(),
@@ -537,6 +579,12 @@ impl CaptureWorker {
         let valid_until_sim_ns = u64::from(ticks) * 20_000_000;
         let valid_until_wall = Instant::now() + Duration::from_secs(8);
         match self {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::StaticStartup(_) => {
+                return Err(
+                    "startup owner requires explicit typed initialization or original VLA".into(),
+                );
+            }
             #[cfg(feature = "g1_constraint_diagnostic")]
             Self::AssistedMobile(_) => {
                 return Err("assisted mobile owner requires typed VLA/carry requests".into());
@@ -563,6 +611,18 @@ impl CaptureWorker {
     fn submit_live_chunk(&self, timed: TimedArenaTaskCommand) -> Result<(), String> {
         match self {
             Self::Task(worker) => worker.submit(timed).map_err(|e| e.to_string()),
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            Self::StaticStartup(worker) => worker
+                .submit(simulation_minigame::g1::worker::TimedCommand {
+                    episode_id: timed.episode_id,
+                    valid_until_sim_ns: timed.valid_until_sim_ns,
+                    valid_until_wall: timed.valid_until_wall,
+                    command:
+                        simulation_minigame::g1::static_startup::StaticStartupCommand::OriginalVla(
+                            timed.command,
+                        ),
+                })
+                .map_err(|e| e.to_string()),
             #[cfg(feature = "g1_constraint_diagnostic")]
             Self::AssistedMobile(worker) => worker
                 .submit(simulation_minigame::g1::worker::TimedCommand {
@@ -797,6 +857,7 @@ fn run_from_file(
         config.mobile_assist,
         config.mobile_scan,
         config.station,
+        config.static_startup,
         mode,
     )
 }
@@ -820,6 +881,8 @@ pub struct G1CaptureReceipt {
     pub environment: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_station_preparation: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_startup: Option<serde_json::Value>,
     pub floor_center_engine: [f32; 3],
     pub floor_full_extents_m: [f32; 3],
     pub floor_contact_friction: f32,
@@ -952,6 +1015,7 @@ impl G1CaptureReceipt {
             task_qualified: false,
             environment: "source_near_simple_floor_not_science_station",
             native_station_preparation: None,
+            static_startup: None,
             floor_center_engine: [0., -0.25, 0.],
             floor_full_extents_m: [40., 0.5, 40.],
             floor_contact_friction: floor_friction,
@@ -1138,11 +1202,16 @@ pub(super) struct CaptureRuntime {
     render_frames: u32,
     latest: Option<Arc<CaptureSnapshot>>,
     command_submitted: bool,
+    startup_submitted: bool,
+    startup_ticks: u64,
     requested: bool,
     ego_saved: bool,
     main_saved: Arc<Mutex<Result<bool, String>>>,
     live_policy: Option<LivePolicyRuntime>,
     owner_evidence: Option<OwnerEvidence>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    startup_evidence:
+        Option<OwnerEvidence<simulation_minigame::g1::static_startup::StaticStartupStep>>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     assist_evidence:
         Option<OwnerEvidence<simulation_minigame::g1::mobile_assist::MobileAssistStep>>,
@@ -1171,6 +1240,8 @@ impl CaptureRuntime {
         let episode_id = self.episode_id.checked_add(1).ok_or("episode exhausted")?;
         match &self.worker {
             #[cfg(feature = "g1_constraint_diagnostic")]
+            CaptureWorker::StaticStartup(worker) => worker.reset(),
+            #[cfg(feature = "g1_constraint_diagnostic")]
             CaptureWorker::AssistedMobile(worker) => worker.reset(),
             CaptureWorker::Task(worker) => worker.reset(),
             CaptureWorker::Mobile(worker) => worker.reset(),
@@ -1184,9 +1255,10 @@ impl CaptureRuntime {
             live.pending = None;
             live.next_sequence = 1;
             live.submitted_chunks = 0;
-            live.next_boundary_tick = 0;
+            live.next_boundary_tick = self.startup_ticks;
         }
         self.episode_id = episode_id;
+        self.startup_submitted = false;
         self.latest = None;
         self.requested = false;
         Ok(episode_id)
@@ -1231,6 +1303,16 @@ trait CapturedTaskStep {
 }
 impl CapturedTaskStep for ArenaTaskStep {
     type Execution = simulation_minigame::g1::task_runner::ArenaTaskExecution;
+    fn execution(&self) -> &Self::Execution {
+        &self.execution
+    }
+    fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep {
+        &self.body
+    }
+}
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl CapturedTaskStep for simulation_minigame::g1::static_startup::StaticStartupStep {
+    type Execution = simulation_minigame::g1::static_startup::StaticStartupExecution;
     fn execution(&self) -> &Self::Execution {
         &self.execution
     }
@@ -1343,6 +1425,7 @@ pub fn run_capture(
         None,
         None,
         None,
+        false,
         CaptureMode::Camera,
     )
 }
@@ -1370,6 +1453,7 @@ fn run_capture_owner(
     mobile_assist: Option<MobileAssistCaptureConfiguration>,
     mobile_scan: Option<MobileScanCaptureConfiguration>,
     station: Option<super::g1_station_environment::G1StationConfiguration>,
+    static_startup: bool,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
@@ -1387,6 +1471,19 @@ fn run_capture_owner(
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
+    if static_startup
+        && (mode != CaptureMode::Camera
+            || assisted_carry
+            || !predictive_limit_diagnostic
+            || diagnostic_constraint_sweeps != Some(16)
+            || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
+            || policy
+                .as_ref()
+                .is_none_or(|p| p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait))
+    {
+        return Err("explicit static startup requires bounded T1 camera/live-policy mode, predictive 16-sweep owner and no prefetch".into());
+    }
+    let startup_ticks = if static_startup { 60 } else { 0 };
     if policy.as_ref().is_some_and(|p| p.boundary_images_with_wait)
         && (!waited_grasp
             || policy
@@ -1663,7 +1760,10 @@ fn run_capture_owner(
             let horizon = profile_contract(profile).action_horizon as u32;
             if policy.max_calls == 0
                 || policy.max_calls > if mobile_carry { 30 } else { 8 }
-                || (!interactive && !assisted_carry && options.ticks != policy.max_calls * horizon)
+                || (!interactive
+                    && !assisted_carry
+                    && u64::from(options.ticks)
+                        != u64::from(policy.max_calls * horizon) + startup_ticks)
                 || policy.timeout_ms == 0
                 || policy.timeout_ms > 20_000
                 || config.max_observation_wall_age_ms == 0
@@ -1695,7 +1795,7 @@ fn run_capture_owner(
                 pending: None,
                 submitted_chunks: 0,
                 max_calls: policy.max_calls,
-                next_boundary_tick: 0,
+                next_boundary_tick: startup_ticks,
                 prefetch_after_ticks: policy.prefetch_after_ticks,
                 wait_after_chunks: waited_grasp,
                 boundary_images_with_wait: policy.boundary_images_with_wait,
@@ -1826,6 +1926,7 @@ fn run_capture_owner(
         predictive_limit_diagnostic,
         diagnostic_constraint_sweeps,
         assisted_carry,
+        static_startup,
     )?;
     let owner_evidence = match &worker {
         CaptureWorker::Task(worker) => Some(OwnerEvidence {
@@ -1843,6 +1944,8 @@ fn run_capture_owner(
         CaptureWorker::Mobile(_) | CaptureWorker::Static { .. } => None,
         #[cfg(feature = "g1_constraint_diagnostic")]
         CaptureWorker::AssistedMobile(_) => None,
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        CaptureWorker::StaticStartup(_) => None,
     };
     #[cfg(feature = "g1_constraint_diagnostic")]
     let assist_evidence = match &worker {
@@ -1860,6 +1963,29 @@ fn run_capture_owner(
         }),
         _ => None,
     };
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    let startup_evidence = match &worker {
+        CaptureWorker::StaticStartup(worker) => Some(OwnerEvidence {
+            trace: worker.subscribe_steps(512).map_err(|e| e.to_string())?,
+            output: BufWriter::new(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output.join("owner_steps.jsonl"))
+                    .map_err(|e| e.to_string())?,
+            ),
+            records: 0,
+            first_boundary_wall_ms: None,
+        }),
+        _ => None,
+    };
+    if static_startup {
+        outcome.0.lock().unwrap().static_startup = Some(serde_json::json!({
+            "requested_real_ticks":60,"completed":false,"ready":false,
+            "same_owner_world":true,"self_velocity_and_imu_only":true,
+            "original_vla_output":false,"task_qualified":false,
+        }));
+    }
     if predictive_limit_diagnostic {
         outcome
             .0
@@ -1898,11 +2024,15 @@ fn run_capture_owner(
             render_frames: 0,
             latest: None,
             command_submitted: false,
+            startup_submitted: false,
+            startup_ticks,
             requested: false,
             ego_saved: false,
             main_saved: Arc::new(Mutex::new(Ok(false))),
             live_policy,
             owner_evidence,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            startup_evidence,
             #[cfg(feature = "g1_constraint_diagnostic")]
             assist_evidence,
             mobile_assist: if continuous {
@@ -3492,6 +3622,74 @@ fn drive_live_policy(
     outcome: &CaptureOutcome,
     port: &G1CameraPort,
 ) -> Result<bool, String> {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    if runtime.startup_ticks != 0 {
+        use simulation_minigame::g1::static_startup::{
+            StaticStartupCommand, StaticStartupExecution,
+        };
+        let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
+            return Err("explicit startup lost its unique owner".into());
+        };
+        let latest = runtime
+            .latest
+            .as_ref()
+            .ok_or("missing startup owner snapshot")?;
+        if latest.phase == G1WorkerPhase::Failed {
+            return Err(latest
+                .reason
+                .clone()
+                .unwrap_or("startup physics failed".into()));
+        }
+        if !runtime.startup_submitted {
+            if latest.phase != G1WorkerPhase::Paused || latest.timing.episode_integrations != 0 {
+                return Ok(false);
+            }
+            worker
+                .submit(simulation_minigame::g1::worker::TimedCommand {
+                    episode_id: runtime.episode_id,
+                    valid_until_sim_ns: runtime.startup_ticks * ARENA_ACTION_PERIOD_NS,
+                    valid_until_wall: Instant::now() + Duration::from_secs(8),
+                    command: StaticStartupCommand::Startup {
+                        episode_id: runtime.episode_id,
+                    },
+                })
+                .map_err(|e| e.to_string())?;
+            runtime.startup_submitted = true;
+            return Ok(false);
+        }
+        if latest.timing.episode_integrations < runtime.startup_ticks {
+            return Ok(false);
+        }
+        if latest.timing.episode_integrations == runtime.startup_ticks {
+            let step = latest
+                .startup_step
+                .as_ref()
+                .ok_or("missing completed startup evidence")?;
+            let StaticStartupExecution::Startup {
+                ticks,
+                stable_self_velocity_ticks,
+                completed,
+                ready,
+                ..
+            } = &step.execution
+            else {
+                return Err("startup boundary contains unexpected task execution".into());
+            };
+            if *ticks != runtime.startup_ticks || !completed || !ready {
+                return Err(
+                    "finite static startup did not establish its self-state gate; reset required"
+                        .into(),
+                );
+            }
+            outcome.0.lock().unwrap().static_startup = Some(serde_json::json!({
+                "requested_real_ticks":runtime.startup_ticks,"actual_real_ticks":ticks,
+                "stable_self_velocity_ticks":stable_self_velocity_ticks,"completed":completed,"ready":ready,
+                "same_owner_world":true,"self_velocity_and_imu_only":true,
+                "first_task_observation_earliest_sim_time_ns":runtime.startup_ticks*ARENA_ACTION_PERIOD_NS,
+                "original_vla_output":false,"task_qualified":false,
+            }));
+        }
+    }
     if runtime
         .live_policy
         .as_ref()
@@ -4051,6 +4249,10 @@ fn drive_capture(
         if let Some(evidence) = &mut runtime.assist_evidence {
             evidence.drain(&mut outcome.0.lock().unwrap())?;
         }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(evidence) = &mut runtime.startup_evidence {
+            evidence.drain(&mut outcome.0.lock().unwrap())?;
+        }
         if let Some(error) = health.snapshot().error {
             return Err(error);
         }
@@ -4429,6 +4631,15 @@ fn drive_capture(
                 if !outcome.0.lock().unwrap().owner_step_trace_complete {
                     return Err(
                         "assisted owner evidence did not cover every actual integration".into(),
+                    );
+                }
+            }
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            if let Some(evidence) = &mut runtime.startup_evidence {
+                evidence.drain(&mut outcome.0.lock().unwrap())?;
+                if !outcome.0.lock().unwrap().owner_step_trace_complete {
+                    return Err(
+                        "startup/task owner evidence did not cover every integration".into(),
                     );
                 }
             }

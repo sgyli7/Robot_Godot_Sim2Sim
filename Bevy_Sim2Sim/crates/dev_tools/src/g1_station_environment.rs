@@ -87,6 +87,29 @@ mod tests {
             .map_err(|e| e.to_string())?;
         let mut owner = ArenaTaskRunner::load_static_predictive_constraint_diagnostic(&config)
             .map_err(|e| e.to_string())?;
+        if std::env::var("G1_STATION_STARTUP_ONLY").ok().as_deref() == Some("true") {
+            for _ in 0..60 {
+                let step = owner
+                    .diagnostic_static_startup_step(&mut || Ok(()))
+                    .map_err(|e| e.to_string())?;
+                writeln!(trace,"{}",serde_json::json!({"body":step,"phase":"explicit_static_startup","environment":use_station,"static_contacts_auditor_only":owner.diagnostic_static_contacts(),"fresh_images":0,"fresh_vla_calls":0,"qualified":false})).map_err(|e|e.to_string())?;
+            }
+            let before = owner.progress_counts();
+            assert!(
+                owner
+                    .diagnostic_static_startup_step(&mut || Ok(()))
+                    .is_err()
+            );
+            assert_eq!(before, owner.progress_counts());
+            return Ok(());
+        }
+        let maximum_ticks = std::env::var("G1_STATION_REPLAY_TICKS")
+            .map(|s| s.parse::<u64>())
+            .unwrap_or(Ok(320))
+            .map_err(|e| e.to_string())?;
+        if !(1..=320).contains(&maximum_ticks) {
+            return Err("comparison Tick bound changed".into());
+        }
         for (index, chunk) in chunks.iter_mut().enumerate() {
             chunk.observation.captured_at_unix_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -97,6 +120,9 @@ mod tests {
                 scheduled_start_sim_ns: None,
             };
             for frame in 0..40 {
+                if index as u64 * 40 + frame >= maximum_ticks {
+                    return Ok(());
+                }
                 let step = owner
                     .step_with_guard(&command, &mut || Ok(()))
                     .map_err(|e| e.to_string())?;
@@ -104,7 +130,12 @@ mod tests {
                 if owner.progress_counts().integration_count != tick {
                     return Err("integration count changed".into());
                 }
-                writeln!(trace, "{}", serde_json::json!({"phase":"offline_saved_T1_action", "body":step.body,"execution":step.execution,"environment":use_station,"offline_wall_time_refreshed":true,"fresh_images":0,"fresh_vla_calls":0,"qualified":false})).map_err(|e| e.to_string())?;
+                let contacts = if tick <= 10 || tick % 40 == 0 {
+                    Some(owner.diagnostic_static_contacts())
+                } else {
+                    None
+                };
+                writeln!(trace, "{}", serde_json::json!({"phase":"offline_saved_T1_action", "body":step.body,"execution":step.execution,"environment":use_station,"static_contacts_auditor_only":contacts,"offline_wall_time_refreshed":true,"fresh_images":0,"fresh_vla_calls":0,"qualified":false})).map_err(|e| e.to_string())?;
             }
         }
         Ok(())

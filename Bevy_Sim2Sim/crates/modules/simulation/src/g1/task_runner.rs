@@ -543,6 +543,34 @@ impl ArenaTaskRunner {
         counts
     }
 
+    /// Auditor-only fixed-contact evidence; absent from policy measurements.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn diagnostic_static_contacts(&self) -> Vec<serde_json::Value> {
+        match &self.body {
+            ArenaBodyRunner::StaticAgile(body) => body.diagnostic_static_contacts(),
+            ArenaBodyRunner::MobileHomieV2(_) => Vec::new(),
+        }
+    }
+
+    /// Explicit finite initialization, before any VLA admission. Every call
+    /// returns its real body integration; it is never an automatic load/fallback.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn diagnostic_static_startup_step(
+        &mut self,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        if self.halted || self.executor.accepted.is_some() || self.executor.pending.is_some() {
+            return Err(error(
+                "static startup is forbidden after VLA admission/failure",
+            ));
+        }
+        let ArenaBodyRunner::StaticAgile(body) = &mut self.body else {
+            return Err(error("static startup requires the original AGILE profile"));
+        };
+        body.step_startup_stance(guard)
+            .map(|step| ArenaBodyStep::StaticAgile(Box::new(step)))
+    }
+
     pub fn step_with_guard(
         &mut self,
         command: &ArenaTaskCommand,

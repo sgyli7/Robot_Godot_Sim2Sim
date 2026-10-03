@@ -272,3 +272,21 @@ are unchanged. A frozen two-call comparison failed before the first integration
 because its acquired observation exceeded the existing 2000 ms owner wall TTL.
 Only its first model call completed. The second-call performance gate could not
 be evaluated, so this is not an adopted remedy and the deadline was not relaxed.
+
+## Explicit finite static initialization
+
+A development T1 capture may set `static_startup: true` together with
+`predictive_limit_diagnostic: true` and `diagnostic_constraint_sweeps: 16`.
+It requires the original static policy, camera diagnostic mode, and no prefetch
+or standing-wait policy mode. For eight original40-frame chunks, pass
+`--g1-ticks 380`:60actual startup ticks plus320actual task ticks. The normal
+capture and all other profiles keep their existing behavior.
+
+The single physical owner performs the startup with the original AGILE defaults,
+zero navigation and0.75metre pelvis-height command. At least20consecutive self
+velocity/IMU checks must pass by Tick60, otherwise the finite run stops. The
+first original task image retains its actual Tick60or-later stamp. No RGB stamp,
+body pose or saved VLA command is silently rebased. The receipt's `static_startup`
+field records the gate; `owner_steps.jsonl` includes both typed startup and
+original VLA records. The independent placement auditor consumes physical truth
+only after execution. Neither startup nor successful camera capture qualifies T1.

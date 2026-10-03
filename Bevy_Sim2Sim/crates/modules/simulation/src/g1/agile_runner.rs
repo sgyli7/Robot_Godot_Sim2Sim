@@ -360,6 +360,57 @@ impl AgileRunner {
     pub fn counts(&self) -> WorldCounts {
         self.simulation.counts()
     }
+
+    /// Explicit startup stance for a finite development fixture; model defaults,
+    /// original motor gains and the existing recurrent body controller are used.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_startup_stance(
+        &mut self,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<AgileStep, RobotError> {
+        if self.progress_counts().integration_count >= 60 {
+            return Err(error("explicit static startup exceeded60Tick bound"));
+        }
+        let mut upper_positions = [0.; 28];
+        upper_positions.copy_from_slice(&self.default_positions[15..]);
+        self.step_with_guard(
+            &AgileCommand {
+                navigation: [0.; 3],
+                pelvis_height: 0.75,
+                upper_positions,
+            },
+            guard,
+        )
+    }
+
+    /// Read-only contact evidence for explicit development fixtures. It is
+    /// never returned as a controller observation or called by the normal Tick.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn diagnostic_static_contacts(&self) -> Vec<serde_json::Value> {
+        let handles = self.assembly.diagnostic_body_handles();
+        let physics = &self.simulation.world;
+        physics.narrow_phase.contact_pairs().filter_map(|pair| {
+            let a = physics.colliders[pair.collider1].parent()?;
+            let b = physics.colliders[pair.collider2].parent()?;
+            let (robot_index, other, collider) = if let Some(i) = handles.iter().position(|h| *h == a) {
+                (i, b, pair.collider2)
+            } else if let Some(i) = handles.iter().position(|h| *h == b) {
+                (i, a, pair.collider1)
+            } else { return None; };
+            if !physics.bodies[other].is_fixed() || !pair.has_any_active_contact() { return None; }
+            let shape = physics.colliders[collider].shape();
+            Some(serde_json::json!({"robot_body_index":robot_index,
+                "fixed_collider":collider.into_raw_parts(),
+                "fixed_shape":if shape.as_trimesh().is_some() {"triangles"} else if shape.as_cuboid().is_some() {"cuboid"} else {"other"},
+                "total_impulse_magnitude_n_s":pair.total_impulse_magnitude(),
+                "manifolds":pair.manifolds.iter().map(|m|serde_json::json!({
+                    "normal_engine":m.data.normal.to_array(),
+                    "geometric_points":m.points.len(),
+                    "solver_points":m.data.solver_contacts.len(),
+                    "minimum_solver_distance_m":m.data.solver_contacts.iter().map(|p|p.dist).reduce(f32::min)
+                })).collect::<Vec<_>>() }))
+        }).collect()
+    }
     pub fn configuration(&self) -> StepConfiguration {
         self.simulation.configuration()
     }

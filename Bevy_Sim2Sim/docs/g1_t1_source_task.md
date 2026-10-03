@@ -354,3 +354,34 @@ handling without changing surface coordinates or coverage. The third320Tick
 comparison still fails placement, so internal edges alone do not explain the
 failure. These960CPUbody-controller integrations are mechanical diagnostics,
 with0fresh images/VLA calls, and are not autonomous task qualification.
+
+The40Tick-per-world contact audit (`0301`,80real body steps) distinguishes cached
+empty manifolds from solver-active contact points. Both original-floor and
+station active foot normals are vertical. The oblique empty cached normals do
+not establish a contact defect. Larger initial impulse differences involve the
+original robot contour and original task table. No mass, gain, pose or support
+geometry is changed to remove those contacts.
+
+One finite initialization comparison (`0302`) executes60original zero-navigation,
+0.75metre-height/default-upper AGILE commands in each world,120real body steps.
+Last20Tick maximum self speed is0.0040m/s on the original floor and0.0043m/s in
+the station. These are finite startup checks; original robot/table contacts
+remain, and they do not establish feet-only support or task success.
+
+The development `static_startup` owner makes that initialization explicit in
+the same task world and clock. Loading performs0integrations. After exactly60
+real20ms steps, at least20consecutive self-velocity/IMU checks must satisfy
+speed<=0.03m/s and upright cosine>0.95. Only then may unchanged original N1.7
+chunks enter, using an actual image from simulation time>=1.2seconds. Startup
+records are separate from VLA execution records; all380integrations of an
+eight-chunk pilot remain in the evidence. Reset reconstructs the world and
+startup gate; stale episode/image results cannot continue it. This is an
+explicit bounded comparison, not an automatic fallback or qualified executor.
+
+The real owner/reset test (`0303`) passes with121real body integrations and0fresh
+VLA calls: an old pre-startup image is rejected at60without an extra integration,
+a reset repeats the60real startup ticks, and one saved original action frame is
+admitted at the new boundary. This offline fixture explicitly refreshes its
+image admission stamp and does not claim fresh vision. Its first failed test
+attempt executed60real startup ticks before a test-side consumed-snapshot
+assertion failed; that failure and its log are retained separately.

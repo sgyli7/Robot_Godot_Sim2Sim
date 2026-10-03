@@ -106,7 +106,7 @@ impl G1Assembly {
     }
 
     /// Read-only source-body mapping for bounded native contact diagnostics.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "g1_constraint_diagnostic"))]
     pub(super) fn diagnostic_body_handles(&self) -> &[RigidBodyHandle] {
         &self.bodies
     }
