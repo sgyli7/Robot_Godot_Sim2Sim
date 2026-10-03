@@ -2006,3 +2006,15 @@ enters policy self state. Serialized inputs cannot inject prepared geometry.
 This first mobile station entry rejects all task objects and assisted factories
 before model loading, so an unvalidated original background cannot silently
 overlap the station. Actual carrying in the station remains unqualified.
+
+The first finite station stand (`0339`,fa4864e) records150actual native/WBC
+ticks over3seconds, normal1PGS,0VLA/Qwen calls and2553installed station
+colliders. All149positive-contact boundaries contain only source foot bodies7/14;
+minimum pelvis height0.74955m and upright cosine0.998989 pass the frozen finite
+entry guard. Clock ratios0.999474(active)/1.003309(boundaries),0misses and0pending
+ticks pass. The actual1080p station/head images and complete150step trace are
+retained. XY drift0.12838m and final horizontal velocity about0.25m/s are material
+limits: this is neither long-term stationary stability nor a carrying result.
+The retained Rapier solver-point arrays are empty after consumption, so their
+positions are not claimed as measured contact geometry; subsequent output keeps
+the actual positive impulse/body identity only. No task capability is enabled.

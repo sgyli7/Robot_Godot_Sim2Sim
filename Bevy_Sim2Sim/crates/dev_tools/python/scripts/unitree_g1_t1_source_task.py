@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -172,6 +173,26 @@ def run(args, receipt, output):
                 joint_names=names, camera_config=camera.cfg.to_dict(),
                 task_assets=list(description.scene.assets), action_shape=list(env.action_space.shape))
             env.reset(seed=args.seed)
+            contact_view = None
+            original_success = {'value': False, 'first_control_tick': None, 'calls': 0}
+            if args.placement_continuation:
+                from unitree_g1_t1_source_contacts import make_apple_contact_view
+                contact_view, metadata = make_apple_contact_view(raw, launch.object, launch.destination)
+                receipt['placement_contact_view'] = metadata
+                success_cfg = copy.deepcopy(raw.termination_manager.get_term_cfg('success'))
+                original_success_func = success_cfg.func
+                def observe_success_without_reset(environment, **params):
+                    value = original_success_func(environment, **params)
+                    original_success['value'] = bool(value.any())
+                    original_success['calls'] += 1
+                    if original_success['value'] and original_success['first_control_tick'] is None:
+                        original_success['first_control_tick'] = int(raw._sim_step_counter) // 4
+                    return torch.zeros_like(value)
+                success_cfg.func = observe_success_without_reset
+                raw.termination_manager.set_term_cfg('success', success_cfg)
+                receipt['success_auto_reset_suppressed_for_audit_only'] = True
+                receipt['original_drop_and_timeout_terms_unchanged'] = True
+                receipt['original_success_observation'] = original_success
             if args.reset_camera_refresh:
                 # Lab's RTX dedup key contains only sim id + physics step. A
                 # reset at that same step can re-read the pre-reset annotator
@@ -259,6 +280,14 @@ def run(args, receipt, output):
                             'pose': measured(raw.scene[name].data.root_pose_w).tolist(),
                             'velocity': measured(raw.scene[name].data.root_vel_w).tolist()}
                             for name in (launch.object, launch.destination)}}
+                    if contact_view is not None:
+                        from unitree_g1_t1_source_contacts import sample_apple_contacts
+                        counters = (int(raw._sim_step_counter), int(raw.sim._physics_step_count))
+                        sample['acceptance_contacts_only'] = sample_apple_contacts(contact_view, raw.cfg.sim.dt)
+                        sample['acceptance_robot_body_link_poses_w'] = measured(robot.data.body_link_pose_w).tolist()
+                        sample['original_success_before_audit_suppression'] = dict(original_success)
+                        if counters != (int(raw._sim_step_counter), int(raw.sim._physics_step_count)):
+                            raise ValueError('Read-only source acceptance query advanced physics')
                     log.write(json.dumps(sample, allow_nan=False) + '\n'); log.flush()
                     receipt['last_state'] = sample
                     receipt['completed_control_ticks'] = tick
@@ -440,6 +469,8 @@ def main():
     parser.add_argument('--expert-sha256')
     parser.add_argument('--joint-kinematics-audit', action='store_true',
                         help='Read-only SDK Jacobian/body-pose evidence at existing 40-Tick boundaries')
+    parser.add_argument('--placement-continuation', action='store_true',
+                        help='Source-only audit: observe original success without resetting, retain drop/timeout and200/50Hz physics, query existing contacts')
     parser.add_argument('--reset-camera-refresh', action='store_true', default=True,
                         help='Render-only source reset cache diagnostic; assert unchanged physical state/counters')
     args = parser.parse_args()
@@ -447,6 +478,9 @@ def main():
         parser.error('Use 1..300 ticks within the original six-second episode and a positive episode identity')
     if bool(args.expert_sequence) != bool(args.expert_sha256):
         parser.error('Expert diagnostics require both sequence and its SHA-256 identity')
+    if args.placement_continuation and (not args.policy_socket or args.renderer_socket
+            or args.policy_prefetch_after_ticks is not None or args.ticks != 300):
+        parser.error('Placement continuation requires one originalRTX300Tick policy rollout, no renderer/delay/expert diagnostic')
     if args.policy_prefetch_after_ticks is not None and (
             not args.policy_socket or args.renderer_socket or args.ticks % 40 != 0
             or not 80 <= args.ticks <= 240):

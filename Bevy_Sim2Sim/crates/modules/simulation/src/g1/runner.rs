@@ -105,7 +105,6 @@ pub struct G1StationContact {
     pub robot_body_index: usize,
     pub other_body_fixed: bool,
     pub normal_impulse_n_s: f32,
-    pub station_surface_points_source: Vec<[f32; 3]>,
 }
 
 /// Readable even after a failed boundary; no rendered-frame counts are inferred.
@@ -274,16 +273,6 @@ impl G1Runner {
                 robot_body_index,
                 other_body_fixed,
                 normal_impulse_n_s: pair.total_impulse_magnitude(),
-                // Fixed-side anchors remain world-space in Rapier. Never
-                // reinterpret a dynamic-side CoM-local anchor as a world point.
-                station_surface_points_source: pair.manifolds.iter()
-                    .flat_map(|m| m.data.solver_contacts.iter())
-                    .filter(|_| other_body_fixed)
-                    .map(|p| engine_to_source_vector(if other == pair.collider1 {
-                        p.anchor1.to_array()
-                    } else {
-                        p.anchor2.to_array()
-                    })).collect(),
             })
         }).collect())
     }

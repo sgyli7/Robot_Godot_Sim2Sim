@@ -685,3 +685,20 @@ pass, with6individual control misses. The robot stands but placement still
 fails. Therefore extra standing initialization is not established as the main
 transfer failure; this negative result is retained without further startup
 duration searches or any upgrade to the2/10frozen profile.
+
+The retained original SDK run0036 stopped at control140/560physical steps when
+the original success term triggered auto-reset. It has4fresh original VLA
+calls, but no complete two-second release/support window; that weak source
+termination never qualifies the native task. An explicit source-only
+`--placement-continuation` audit retains300controls, original200/50Hz physics,
+drop/timeout terms, camera, actions and dynamics. It records the original success
+term while suppressing only its early reset, queries existing apple/plate/all53
+robot contact reporting without adding schemas, and traces body poses only to
+the independent auditor. All2517apple collision vertices must fit the same
+moving plate footprint; plate upward force, original speed/standing bounds and
+two continuous seconds remain required. Release additionally needs strictly
+positive same-Tick exported-collider AABB separation from every robot shape;
+overlap remains inconclusive, even with zero reported force. Source results
+remain separate from native/formal acceptance. Contact tensors use the
+[documented impulse-to-force timestep](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/extensions/runtime/source/omni.physics.tensors/docs/api/python.html),
+here the actual original last-solve0.005seconds; no extra step is performed.
