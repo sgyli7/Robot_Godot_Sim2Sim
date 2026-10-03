@@ -658,3 +658,22 @@ the resulting observation age is measured, not erased. Late replies or missed
 replacement slots pause explicitly; no chunk is rebased. This changes the
 observation/execution schedule and must be separately tested for task behavior;
 the paused2/10profile is neither overwritten nor promoted.
+
+The actual startup-prefetch pilot (`0337`,262a41c) completes380single50Hz
+integrations/WBC calls and8fresh N1.7inferences. Every original frame executes
+once, at fixed starts60,100,...,340; subsequent RGB comes from70,110,...,310
+without restamping. The320Tick task section has6.379914s between first and last
+completed boundaries, a1.000013sim/wall ratio and0observed pending ticks.
+Four individual control deadlines are missed. InferenceP50 is0.317s/P95 0.680s
+(including the first cold request). The robot stands throughout, but placement
+fails: the apple has48hand-only support samples before slipping during transfer.
+Owned app/model processes are reaped. This proves one uninterrupted task clock,
+not successful continuous task execution or an8/10qualification.
+
+Original source rollouts0034/0036apply the first original policy block at reset
+Tick0, whereas0337adds60standing initialization ticks. The source's ordinary
+success term also immediately auto-resets and therefore does not establish
+the required2second stability. A separate bounded no-extra-startup comparison
+uses the existing ordinary task owner and320original frames; no frequency,
+actuator, scene, weight, age threshold or physics setting changes. Its audit
+keeps0/60startup identities explicit rather than mixing their counts or scores.

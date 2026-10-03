@@ -16,8 +16,8 @@ def audit(case,seed_offset=0):
     config=json.loads((case/'config.json').read_text())
     execution=json.loads((case/'execution.json').read_text())
     receipt=json.loads((native/'capture_receipt.json').read_text())
+    startup_ticks=60 if config.get('static_startup',False) else 0
     if (digest(case/'config.json')!=execution['config_sha256']
-            or not config['static_startup']
             or config['policy'].get('prefetch_after_ticks')!=10
             or config['policy']['max_calls']!=8
             or receipt['pauses_for_camera_and_policy']
@@ -34,14 +34,15 @@ def audit(case,seed_offset=0):
                 or step['num_solver_iterations']!=1 or step['max_ccd_substeps']!=1
                 or step['additional_solver_iterations_max']!=0):
             raise ValueError('Owner violated original integration or episode contract')
-        if tick<=60:
+        if tick<=startup_ticks:
             if row['execution']['startup']['ticks']!=tick:
                 raise ValueError('Initialization timeline is incomplete')
             continue
-        applied=row['execution']['original_vla'];sequence=1+(tick-61)//40
+        applied=row['execution']['original_vla'] if startup_ticks else row['execution']
+        sequence=1+(tick-startup_ticks-1)//40
         if (applied['sequence_id']!=sequence or applied['admitted_chunks']!=sequence
-                or applied['frame_index']!=(tick-61)%40
-                or applied['execution_start_sim_ns']!=(60+(sequence-1)*40)*20_000_000
+                or applied['frame_index']!=(tick-startup_ticks-1)%40
+                or applied['execution_start_sim_ns']!=(startup_ticks+(sequence-1)*40)*20_000_000
                 or applied['observation_age_ns']!=(tick-1)*20_000_000-applied['observation']['sim_time_ns']):
             raise ValueError('Original actions were restarted, skipped or restamped')
         sequences.setdefault(sequence,[]).append(applied)
@@ -49,13 +50,13 @@ def audit(case,seed_offset=0):
     for sample in sorted((case/'policy_captures').iterdir()):
         model=json.loads((sample/'receipt.json').read_text());sequence=model['sequence_id']
         stamp=json.loads((native/f'live_stamp_{sequence:04}.json').read_text())
-        image_tick=stamp['source_ticks'][0];start_tick=60+(sequence-1)*40
+        image_tick=stamp['source_ticks'][0];start_tick=startup_ticks+(sequence-1)*40
         if (stamp['source_ticks']!=[image_tick,image_tick]
                 or stamp['episode_id']!=episode
                 or stamp['sim_time_ns']!=image_tick*20_000_000
                 or model['sampling_seed']!=seed_offset+sequence
                 or model['seed_offset']!=seed_offset
-                or (sequence==1 and image_tick!=60)
+                or (sequence==1 and image_tick!=startup_ticks)
                 or (sequence>1 and not start_tick-30<=image_tick<start_tick)):
             raise ValueError('Actual prefetch image or sampling identity is invalid')
         with np.load(sample/'observation.npz',allow_pickle=False) as observation:
@@ -89,16 +90,16 @@ def audit(case,seed_offset=0):
             or receipt['owner_step_records']!=len(rows)
             or not receipt['owner_step_trace_complete'] or receipt['owner_step_trace_dropped']):
         raise ValueError('Actual owner/WBC/evidence counters disagree')
-    task_rows=rows[60:]
+    task_rows=rows[startup_ticks:]
     task_wall=(task_rows[-1]['last_boundary_wall_ms']-task_rows[0]['last_boundary_wall_ms'])/1000 if len(task_rows)>1 else None
     ratio=(len(task_rows)-1)*.02/task_wall if task_wall and task_wall>0 else None
-    complete=(len(rows)==380 and len(images)==8 and all(len(sequences.get(s,[]))==40 for s in range(1,9)))
+    complete=(len(rows)==startup_ticks+320 and len(images)==8 and all(len(sequences.get(s,[]))==40 for s in range(1,9)))
     placement_path=case/'placement_geometry_audit.json'
     placement=json.loads(placement_path.read_text()) if placement_path.exists() else None
     if placement and placement['input_sha256']['trace']!=digest(native/'owner_steps.jsonl'):
         raise ValueError('Placement auditor consumed a different trace')
     return {'schema':'g1_native_static_prefetch_audit_v1','protocol_verified':True,
-        'complete':complete,'actual_integrations':len(rows),'startup_integrations':min(len(rows),60),
+        'complete':complete,'actual_integrations':len(rows),'startup_integrations':min(len(rows),startup_ticks),
         'original_task_integrations':len(task_rows),'actual_captured_model_inputs':len(images),
         'images':images,'task_boundary_wall_seconds':task_wall,'task_boundary_sim_wall_ratio':ratio,
         'task_boundary_ratio_in_accepted_range':bool(complete and ratio is not None and .98<=ratio<=1.02),
