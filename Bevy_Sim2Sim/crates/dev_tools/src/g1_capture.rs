@@ -1269,6 +1269,7 @@ pub(super) struct CaptureRuntime {
     main_saved: Arc<Mutex<Result<bool, String>>>,
     live_policy: Option<LivePolicyRuntime>,
     owner_evidence: Option<OwnerEvidence>,
+    mobile_stand_evidence: Option<OwnerEvidence<simulation_minigame::g1::runner::G1Step>>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     startup_evidence:
         Option<OwnerEvidence<simulation_minigame::g1::static_startup::StaticStartupStep>>,
@@ -1355,14 +1356,16 @@ impl CaptureRuntime {
 /// Development-only file output. No consumer I/O runs on the physics thread.
 trait CapturedTaskStep {
     type Execution: Serialize;
+    type Body: Serialize;
     fn execution(&self) -> &Self::Execution;
-    fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep;
+    fn body(&self) -> &Self::Body;
     fn image_admission(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
         Ok(None)
     }
 }
 impl CapturedTaskStep for ArenaTaskStep {
     type Execution = simulation_minigame::g1::task_runner::ArenaTaskExecution;
+    type Body = simulation_minigame::g1::task_runner::ArenaBodyStep;
     fn execution(&self) -> &Self::Execution {
         &self.execution
     }
@@ -1373,6 +1376,7 @@ impl CapturedTaskStep for ArenaTaskStep {
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl CapturedTaskStep for simulation_minigame::g1::static_startup::StaticStartupStep {
     type Execution = simulation_minigame::g1::static_startup::StaticStartupExecution;
+    type Body = simulation_minigame::g1::task_runner::ArenaBodyStep;
     fn execution(&self) -> &Self::Execution {
         &self.execution
     }
@@ -1383,6 +1387,7 @@ impl CapturedTaskStep for simulation_minigame::g1::static_startup::StaticStartup
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl CapturedTaskStep for simulation_minigame::g1::mobile_assist::MobileAssistStep {
     type Execution = simulation_minigame::g1::mobile_assist::MobileAssistExecution;
+    type Body = simulation_minigame::g1::task_runner::ArenaBodyStep;
     fn execution(&self) -> &Self::Execution {
         &self.execution
     }
@@ -1394,6 +1399,17 @@ impl CapturedTaskStep for simulation_minigame::g1::mobile_assist::MobileAssistSt
             .as_ref()
             .map(serde_json::to_value)
             .transpose()
+    }
+}
+
+impl CapturedTaskStep for simulation_minigame::g1::runner::G1Step {
+    type Execution = robot_minigame::g1::policy::HomieResult;
+    type Body = Self;
+    fn execution(&self) -> &Self::Execution {
+        &self.inference
+    }
+    fn body(&self) -> &Self::Body {
+        self
     }
 }
 
@@ -1903,24 +1919,27 @@ fn run_capture_owner(
             || assisted_carry
             || source_rect_lighting.is_some()
         {
-            return Err("station T1 preparation rejects source background overlays, render-only poses or mobile factories".into());
+            return Err("station preparation rejects source background overlays, render-only poses or unvalidated assisted task factories".into());
         }
-        let body = match &mut config {
-            CaptureRunnerConfig::Static(body) => body,
+        let (floor_contact_friction, startup_environment) = match &mut config {
+            CaptureRunnerConfig::Static(body) =>
+                (body.floor_contact_friction, &mut body.startup_environment),
+            CaptureRunnerConfig::Mobile(body) if body.task_objects.is_none() =>
+                (body.floor_contact_friction, &mut body.startup_environment),
             CaptureRunnerConfig::Task(task) => {
                 let ArenaTaskBodyConfig::StaticAgile(body) = &mut task.body else {
-                    return Err("initial scientific-station integration requires the independent T1 AGILE profile".into());
+                    return Err("scientific-station mobile task scenes require separate physical qualification; only standalone mobile standing is admitted".into());
                 };
-                body
+                (body.floor_contact_friction, &mut body.startup_environment)
             }
             _ => return Err(
-                "initial scientific-station integration requires the independent T1 AGILE profile"
+                "scientific-station preparation requires static AGILE or mobile standing without task objects"
                     .into(),
             ),
         };
         let (static_scene, environment, receipt) =
-            super::g1_station_environment::prepare(&scene, station, body.floor_contact_friction)?;
-        body.startup_environment = Some(environment);
+            super::g1_station_environment::prepare(&scene, station, floor_contact_friction)?;
+        *startup_environment = Some(environment);
         scene = static_scene;
         station_preparation = Some(receipt);
     }
@@ -2004,7 +2023,12 @@ fn run_capture_owner(
     }
     if let Some(preparation) = station_preparation {
         let mut receipt = outcome.0.lock().unwrap();
-        receipt.environment = "scientific_station_native_static_world_t1_development";
+        receipt.environment = if matches!(&config, CaptureRunnerConfig::Mobile(_)) {
+            receipt.scope = "native_scientific_station_mobile_standing_camera_diagnostic";
+            "scientific_station_native_static_world_mobile_stand_development"
+        } else {
+            "scientific_station_native_static_world_t1_development"
+        };
         receipt.native_station_preparation = Some(preparation);
         receipt.floor_center_engine = [0.; 3];
         receipt.floor_full_extents_m = [0.; 3];
@@ -2033,6 +2057,21 @@ fn run_capture_owner(
         CaptureWorker::AssistedMobile(_) => None,
         #[cfg(feature = "g1_constraint_diagnostic")]
         CaptureWorker::StaticStartup(_) => None,
+    };
+    let mobile_stand_evidence = match &worker {
+        CaptureWorker::Mobile(worker) if station.is_some() => Some(OwnerEvidence {
+            trace: worker.subscribe_steps(256).map_err(|e| e.to_string())?,
+            output: BufWriter::new(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output.join("owner_steps.jsonl"))
+                    .map_err(|e| e.to_string())?,
+            ),
+            records: 0,
+            first_boundary_wall_ms: None,
+        }),
+        _ => None,
     };
     #[cfg(feature = "g1_constraint_diagnostic")]
     let assist_evidence = match &worker {
@@ -2121,6 +2160,7 @@ fn run_capture_owner(
             main_saved: Arc::new(Mutex::new(Ok(false))),
             live_policy,
             owner_evidence,
+            mobile_stand_evidence,
             #[cfg(feature = "g1_constraint_diagnostic")]
             startup_evidence,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -4423,6 +4463,9 @@ fn drive_capture(
         if let Some(evidence) = &mut runtime.owner_evidence {
             evidence.drain(&mut outcome.0.lock().unwrap())?;
         }
+        if let Some(evidence) = &mut runtime.mobile_stand_evidence {
+            evidence.drain(&mut outcome.0.lock().unwrap())?;
+        }
         #[cfg(feature = "g1_constraint_diagnostic")]
         if let Some(evidence) = &mut runtime.assist_evidence {
             evidence.drain(&mut outcome.0.lock().unwrap())?;
@@ -4807,6 +4850,12 @@ fn drive_capture(
                 evidence.drain(&mut outcome.0.lock().unwrap())?;
                 if !outcome.0.lock().unwrap().owner_step_trace_complete {
                     return Err("owner evidence did not cover every actual integration".into());
+                }
+            }
+            if let Some(evidence) = &mut runtime.mobile_stand_evidence {
+                evidence.drain(&mut outcome.0.lock().unwrap())?;
+                if !outcome.0.lock().unwrap().owner_step_trace_complete {
+                    return Err("mobile standing evidence did not cover every integration".into());
                 }
             }
             #[cfg(feature = "g1_constraint_diagnostic")]

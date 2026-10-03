@@ -2,6 +2,7 @@
 //! integration. Rendering receives immutable completed frames only.
 
 use super::assembly::{self, G1Assembly};
+use super::static_environment::{PreparedStaticEnvironment, StaticEnvironmentReceipt};
 use super::task_objects::{
     TaskObjectFrame, TaskObjectKind, TaskObjectScene, TaskObjectSceneConfig,
 };
@@ -18,7 +19,7 @@ use robot_minigame::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 /// Homie actuator discretization, recorded independently of policy identity.
 /// Existing configurations retain the original explicit-PD path.
@@ -49,6 +50,10 @@ pub struct G1RunnerConfig {
     pub floor_contact_friction: f32,
     #[serde(default)]
     pub task_objects: Option<TaskObjectSceneConfig>,
+    /// Prepared from the same public station geometry as rendering, before
+    /// the owner clock starts. JSON cannot inject physics geometry here.
+    #[serde(skip)]
+    pub startup_environment: Option<Arc<PreparedStaticEnvironment>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -58,6 +63,12 @@ pub struct G1Step {
     /// Native state sampled at the same completed boundary as `frame`.
     pub measurement: G1Measurement,
     pub task_objects: Option<TaskObjectFrame>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_static_environment: Option<StaticEnvironmentReceipt>,
+    /// Completed last-solve contacts for an independent station auditor only.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_station_contacts: Option<Vec<G1StationContact>>,
     pub joint_positions: Vec<f32>,
     pub joint_velocities: Vec<f32>,
     /// Applied external PD efforts. Native motor rows apply their own bounded
@@ -87,6 +98,16 @@ pub struct G1Measurement {
     pub root_velocity_source: [f32; 3],
 }
 
+/// Last-solve evidence; never supplied to a policy or command source.
+#[cfg(feature = "g1_constraint_diagnostic")]
+#[derive(Clone, Debug, Serialize)]
+pub struct G1StationContact {
+    pub robot_body_index: usize,
+    pub other_body_fixed: bool,
+    pub normal_impulse_n_s: f32,
+    pub station_surface_points_source: Vec<[f32; 3]>,
+}
+
 /// Readable even after a failed boundary; no rendered-frame counts are inferred.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct G1ProgressCounts {
@@ -104,6 +125,7 @@ pub struct G1Runner {
     simulation: SimulationWorld,
     assembly: G1Assembly,
     task_objects: Option<TaskObjectScene>,
+    native_static_environment: Option<StaticEnvironmentReceipt>,
     policy: HomiePolicy,
     actuator_backend: G1ActuatorBackend,
     halted: bool,
@@ -111,6 +133,9 @@ pub struct G1Runner {
 
 impl G1Runner {
     pub fn load(config: &G1RunnerConfig) -> Result<Self, RobotError> {
+        if config.startup_environment.is_some() && config.task_objects.is_some() {
+            return Err(error("mobile station stand entry cannot overlay an unvalidated task scene"));
+        }
         let definition = G1Definition::load(&config.definition, &config.definition_sha256)?;
         if !config.floor_contact_friction.is_finite() || config.floor_contact_friction < 0. {
             return Err(error("invalid G1 floor material"));
@@ -162,11 +187,17 @@ impl G1Runner {
                 )
             })
             .transpose()?;
+        let native_static_environment = config
+            .startup_environment
+            .as_ref()
+            .map(|environment| environment.replace_startup_floor(&mut simulation, floor))
+            .transpose()?;
         Ok(Self {
             episode_id: config.episode_id,
             simulation,
             assembly,
             task_objects,
+            native_static_environment,
             policy,
             actuator_backend: config.actuator_backend,
             halted: false,
@@ -217,6 +248,44 @@ impl G1Runner {
                 Ok(frame)
             })
             .transpose()
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn native_station_contacts(&self) -> Option<Vec<G1StationContact>> {
+        self.native_static_environment.as_ref()?;
+        let world = &self.simulation.world;
+        let handles = self.assembly.diagnostic_body_handles();
+        Some(world.narrow_phase.contact_pairs().filter_map(|pair| {
+            if !pair.has_any_active_contact() || pair.total_impulse_magnitude() <= 1e-8 {
+                return None;
+            }
+            let left = world.colliders[pair.collider1].parent()
+                .and_then(|h| handles.iter().position(|r| *r == h));
+            let right = world.colliders[pair.collider2].parent()
+                .and_then(|h| handles.iter().position(|r| *r == h));
+            let (robot_body_index, other) = match (left, right) {
+                (Some(index), None) => (index, pair.collider2),
+                (None, Some(index)) => (index, pair.collider1),
+                _ => return None,
+            };
+            let other_body_fixed = world.colliders[other].parent()
+                .is_some_and(|h| world.bodies[h].is_fixed());
+            Some(G1StationContact {
+                robot_body_index,
+                other_body_fixed,
+                normal_impulse_n_s: pair.total_impulse_magnitude(),
+                // Fixed-side anchors remain world-space in Rapier. Never
+                // reinterpret a dynamic-side CoM-local anchor as a world point.
+                station_surface_points_source: pair.manifolds.iter()
+                    .flat_map(|m| m.data.solver_contacts.iter())
+                    .filter(|_| other_body_fixed)
+                    .map(|p| engine_to_source_vector(if other == pair.collider1 {
+                        p.anchor1.to_array()
+                    } else {
+                        p.anchor2.to_array()
+                    })).collect(),
+            })
+        }).collect())
     }
 
     /// Completed last-solve evidence only; no additional collision refresh/step.
@@ -379,6 +448,9 @@ impl G1Runner {
             root_velocity_source: measurement.root_velocity_source,
             measurement,
             task_objects: self.task_object_frame()?,
+            native_static_environment: self.native_static_environment.clone(),
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            native_station_contacts: self.native_station_contacts(),
             root_upright_cosine: (*root.rotation() * Vector::Y).y,
             active_contact_pairs: snapshot.active_contact_pair_count,
             integration_count: snapshot.integration_count,
@@ -395,6 +467,39 @@ fn error(e: impl std::fmt::Display) -> RobotError {
 mod tests {
     use super::*;
     use std::{env, fs};
+
+    fn portable_mobile_configuration() -> serde_json::Value {
+        serde_json::json!({"episode_id":1,"definition":"not-loaded.json",
+            "definition_sha256":"1".repeat(64),"ort_library":"not-loaded.so",
+            "ort_sha256":"2".repeat(64),"stand_model":"stand.onnx","walk_model":"walk.onnx",
+            "root_pose":{"position":[0.,0.,0.78],"rotation_wxyz":[1.,0.,0.,0.]},
+            "robot_contact_friction":0.5,"floor_contact_friction":1.0})
+    }
+
+    #[test]
+    fn serialized_mobile_inputs_cannot_inject_prepared_environment() {
+        let original=portable_mobile_configuration();
+        let legacy: G1RunnerConfig=serde_json::from_value(original.clone()).unwrap();
+        assert!(legacy.startup_environment.is_none());
+        let mut injected=original;
+        injected["startup_environment"]=serde_json::json!({"colliders":[]});
+        assert!(serde_json::from_value::<G1RunnerConfig>(injected).is_err());
+    }
+
+    #[test]
+    fn mobile_station_task_overlay_is_rejected_before_loading_models() {
+        use super::super::static_environment::{StaticEnvironmentIdentity,StaticEnvironmentShape};
+        let mut config: G1RunnerConfig=serde_json::from_value(portable_mobile_configuration()).unwrap();
+        config.startup_environment=Some(Arc::new(PreparedStaticEnvironment::prepare(
+            StaticEnvironmentIdentity{source:"public fixture".into(),model_sha256:"1".repeat(64),
+                manifest_sha256:"2".repeat(64),layout_sha256:"3".repeat(64)},
+            vec![StaticEnvironmentShape::Triangles{vertices:vec![[-1.,0.,-1.],[1.,0.,-1.],[0.,0.,1.]],
+                indices:vec![[0,1,2]]}],1.).unwrap()));
+        config.task_objects=Some(TaskObjectSceneConfig{definition:"not-loaded.json".into(),
+            definition_sha256:"4".repeat(64),placements:vec![],source_t1_shelf:None,source_t2_background:None});
+        assert!(matches!(G1Runner::load(&config),Err(RobotError::Contract(message))
+            if message.contains("unvalidated task scene")));
+    }
 
     fn config() -> G1RunnerConfig {
         let models = PathBuf::from(env::var("G1_MODEL_DIR").unwrap());
@@ -418,6 +523,7 @@ mod tests {
             robot_contact_friction: 0.5,
             floor_contact_friction: 1.,
             task_objects: None,
+            startup_environment: None,
         }
     }
 

@@ -1995,3 +1995,14 @@ integration and4nonintegratingPGS, unchanged gains/friction/mass/grip targets.
 They supply causal mechanical evidence only, with0fresh RGB/VLA calls and no
 real-time or task qualification. Inspect actual palm/box geometry and supporting
 contacts before any further control change.
+
+The native scientific-station foundation is now available to standalone Homie
+standing diagnostics. The mobile owner receives the same immutable, hash-bound
+prepared geometry as rendering and replaces its broad startup floor before
+Tick0. Its original50Hz clock, actuator backend, gains, mass, limits and normal
+one-PGS setting are unchanged. Each completed body step exposes the environment
+identity/installation receipt for independent auditing; no environment truth
+enters policy self state. Serialized inputs cannot inject prepared geometry.
+This first mobile station entry rejects all task objects and assisted factories
+before model loading, so an unvalidated original background cannot silently
+overlap the station. Actual carrying in the station remains unqualified.

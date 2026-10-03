@@ -677,3 +677,11 @@ the required2second stability. A separate bounded no-extra-startup comparison
 uses the existing ordinary task owner and320original frames; no frequency,
 actuator, scene, weight, age threshold or physics setting changes. Its audit
 keeps0/60startup identities explicit rather than mixing their counts or scores.
+
+The no-extra-startup pilot (`0338`,11a1fd9) completes320native/WBC ticks and
+8fresh unchanged original model calls. All frames and actual inputs pass the
+independent prefetch audit; task clock ratio1.000344 and0pending ticks again
+pass, with6individual control misses. The robot stands but placement still
+fails. Therefore extra standing initialization is not established as the main
+transfer failure; this negative result is retained without further startup
+duration searches or any upgrade to the2/10frozen profile.
