@@ -38,10 +38,12 @@ class FixturePolicy:
         self.block = block
         self.calls = 0
         self.inputs = None
+        self.last_seed = None
 
     def infer(self, observation, seed):
         self.calls += 1
         self.inputs = observation
+        self.last_seed = seed
         self.entered.set()
         if self.block and not self.release.wait(2):
             raise RuntimeError("fixture inference gate timed out")
@@ -49,6 +51,37 @@ class FixturePolicy:
 
 
 class DecoderTests(unittest.TestCase):
+    def test_run_seed_changes_only_sampling_and_is_recorded_by_real_http_handler(self):
+        for offset in [0, 42]:
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
+                policy = FixturePolicy()
+                server = protocol.BoundedPolicyServer(("127.0.0.1", 0),
+                    protocol.handler(policy, Path(temporary), offset))
+                thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+                thread.start()
+                try:
+                    body = request()
+                    with closing(http.client.HTTPConnection(*server.server_address, timeout=2)) as connection:
+                        connection.request("POST", "/infer", json.dumps(body), {"Content-Type": "application/json"})
+                        response = connection.getresponse()
+                        result = json.loads(response.read())
+                        self.assertEqual(response.status, 200)
+                    self.assertEqual(policy.last_seed, offset + body["sequence_id"])
+                    self.assertEqual(result["observation"], body["observation"])
+                    self.assertEqual(result["frames"], protocol.action_chunk(body, outputs())["frames"])
+                    receipt = json.loads((Path(temporary) / "e2_f5_q7/receipt.json").read_text())
+                    self.assertEqual(receipt["sampling_seed"], policy.last_seed)
+                    self.assertEqual(receipt["seed_offset"], offset)
+                    np.testing.assert_array_equal(policy.inputs["ego_view"], protocol.decode_request(body)["ego_view"])
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(2)
+                    self.assertFalse(thread.is_alive())
+        for invalid in [True, -1, 2**32, 1.5]:
+            with self.assertRaises(ValueError):
+                protocol.handler(FixturePolicy(), None, invalid)
+
     def test_legacy_hand_label_contract_is_rejected_and_canonical_values_are_preserved(self):
         body = request()
         body["schema"] = "unitree_g1_static_observation_v1"

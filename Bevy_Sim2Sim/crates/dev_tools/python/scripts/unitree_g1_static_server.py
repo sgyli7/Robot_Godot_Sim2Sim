@@ -135,7 +135,7 @@ def require_full_policy(policy):
         raise ValueError("Unrecognized execution provider")
 
 
-def write_capture(directory: Path, body, observation, outputs, result, timings, elapsed):
+def write_capture(directory: Path, body, observation, outputs, result, timings, elapsed, seed_offset=0):
     # mkdir(exist_ok=False) reserves this request identity atomically. Partial
     # captures stay as failure evidence; a repeated identity never overwrites it.
     name = f"e{body['observation']['episode_id']}_f{body['observation']['frame_id']}_q{body['sequence_id']}"
@@ -147,6 +147,7 @@ def write_capture(directory: Path, body, observation, outputs, result, timings, 
         np.savez_compressed(stream, **outputs)
     evidence = {"stamp": result["observation"], "sequence_id": result["sequence_id"],
                 "profile": result["profile"], "model_revision": result["model_revision"],
+                "sampling_seed": seed_offset + body["sequence_id"], "seed_offset": seed_offset,
                 "stage_seconds": timings, "inference_seconds": elapsed,
                 "observation_sha256": sha256(sample / "observation.npz"),
                 "actions_sha256": sha256(sample / "actions.npz"),
@@ -194,8 +195,10 @@ class BoundedPolicyServer(ThreadingHTTPServer):
             self.handler_slots.release()
 
 
-def handler(policy, capture_dir: Path | None):
+def handler(policy, capture_dir: Path | None, seed_offset: int = 0):
     require_full_policy(policy)
+    if type(seed_offset) is not int or not 0 <= seed_offset < 2**32:
+        raise ValueError("Seed offset must be an unsigned 32-bit integer")
     lock = threading.Lock()
     status_lock = threading.Lock()
     status = {"successful_inferences": 0, "failed_inferences": 0, "last_inference_seconds": None}
@@ -224,6 +227,7 @@ def handler(policy, capture_dir: Path | None):
             self.reply(200, {"profile": "static_apple", "revision": PROFILES["static_apple"]["revision"],
                              "provider": policy.provider, "loaded_graphs": sorted(policy.sessions),
                              "instruction": PROFILES["static_apple"]["fixed_instruction"],
+                             "sampling_scheme": "seed_offset_plus_sequence_id", "seed_offset": seed_offset,
                              "source_rollout_verified": False, "bevy_rollout_verified": False,
                              "task_qualified": False, **snapshot})
 
@@ -252,13 +256,13 @@ def handler(policy, capture_dir: Path | None):
                 body = parse_json(payload)
                 observation = decode_request(body)
                 started = time.perf_counter()
-                outputs, timings = policy.infer(observation, seed=body["sequence_id"])
+                outputs, timings = policy.infer(observation, seed=seed_offset + body["sequence_id"])
                 elapsed = time.perf_counter() - started
                 result = action_chunk(body, outputs)
                 if type(timings) is not dict or set(timings) != FULL_GRAPH_NAMES or any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in timings.values()):
                     raise ValueError("Full five-stage timing receipt is invalid")
                 if capture_dir:
-                    write_capture(capture_dir, body, observation, outputs, result, timings, elapsed)
+                    write_capture(capture_dir, body, observation, outputs, result, timings, elapsed, seed_offset)
                 with status_lock:
                     status["successful_inferences"] += 1
                     status["last_inference_seconds"] = elapsed
@@ -288,16 +292,20 @@ def main():
     parser.add_argument("--device", choices=["cpu", "cuda"], required=True)
     parser.add_argument("--port", type=int, default=5557)
     parser.add_argument("--capture-dir", type=Path)
+    parser.add_argument("--seed-offset", type=int, default=0,
+                        help="Fixed per-run offset added to request sequence; default preserves existing sampling")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be 1..65535")
+    if not 0 <= args.seed_offset < 2**32:
+        parser.error("seed-offset must be 0..4294967295")
     root = verify_receipt(args.receipt)
     from unitree_g1_static_onnx import StaticAppleOnnx
     policy = StaticAppleOnnx(root, args.device, small_only=False)
     require_full_policy(policy)
     if args.capture_dir:
         args.capture_dir.mkdir(parents=True, exist_ok=True)
-    server = BoundedPolicyServer(("127.0.0.1", args.port), handler(policy, args.capture_dir))
+    server = BoundedPolicyServer(("127.0.0.1", args.port), handler(policy, args.capture_dir, args.seed_offset))
     print(json.dumps({"event": "ready", "address": f"127.0.0.1:{args.port}",
                       "profile": "static_apple", "revision": PROFILES["static_apple"]["revision"],
                       "provider": policy.provider, "task_qualified": False}), flush=True)

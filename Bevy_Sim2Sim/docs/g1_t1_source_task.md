@@ -421,3 +421,34 @@ light or floor is added. The ECS integration test verifies both the unchanged
 default entities and effective overrides; all43development tests pass. The next
 fixed known-baseline comparison must additionally verify actual effective
 lighting and changed pixels before it is considered a valid visual comparison.
+
+The first effective-lighting station pilot (`0310`, clean25bb013) passes the
+independent placement rule for2.98seconds, with minimum full-apple footprint
+margin0.009105m, positive plate support, actual robot release and standing.
+It performs380real single50Hz integrations and8fresh original N1.7 forwards.
+All8RGB inputs, original action arrays and image stamps are independently
+matched to native execution. Its first60startup body steps exactly match the
+failed0305run aside from episode identity; only after actual lighting/pixels
+change does the first original task chunk change. This demonstrates a concrete
+perception/configuration fix, not that all mechanical migration risks vanished.
+Active ratio0.98897,1control miss and0pending debt are recorded separately from
+continuous boundary ratio0.67613with explicit camera/model pauses. This one case
+does not establish8of10, Qwen task selection or continuous real-time performance.
+
+The static server now accepts a fixed `--seed-offset` (unsigned32-bit, default0)
+added to each request sequence for the original graph's initial noise. Default
+sampling is unchanged. Both health and capture receipts identify the offset and
+actual sampling seed; no model/action/preprocessing contract field changes.
+The14CPU protocol tests include real HTTP calls proving changed sampling input,
+unchanged actual RGB/stamps/action transport and exclusive evidence writes.
+
+`unitree_g1_static_suite.py` consumes a byte-frozen manifest of5positions x2seed
+offsets(0,42). It checks code/tool/model/build identity before starting, executes
+one fresh physical owner per case, and serially shares the original five-graph
+service within each seed group. The paired read-only capture auditor validates
+all380owner records, original model arrays, images, sampling identity and actual
+station light entities. Placement thresholds and75second application timeout
+are frozen before any case runs. This intermediate profile suite explicitly
+retains camera/model pauses and cannot qualify Qwen or continuous execution;
+its task score is reported separately. Failed/partial cases and owned process
+cleanup remain in the output rather than being silently retried or dropped.
