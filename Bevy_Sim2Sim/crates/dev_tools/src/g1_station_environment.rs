@@ -16,6 +16,9 @@ mod mobile_stand;
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod static_contact_revalidation;
 
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod observed_grasp_diagnostic;
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct G1StationConfiguration {

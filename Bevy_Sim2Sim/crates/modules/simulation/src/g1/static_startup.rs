@@ -22,6 +22,8 @@ pub enum StaticStartupCommand {
     OriginalVla(ArenaTaskCommand),
     /// Explicit one-chunk probe after the visually unverified fixed lift.
     OriginalRegrasp(ArenaTaskCommand),
+    /// Finite classical correction from a current preclosure RGB observation.
+    ObservedGrasp(super::static_grasp::StaticObservedGraspGoal),
     VisualTransfer(super::static_transfer::StaticVisualTransferGoal),
     MemoryPlace(super::static_place::StaticMemoryPlaceGoal),
     ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalGoal),
@@ -32,6 +34,7 @@ impl StaticStartupCommand {
             Self::Startup { episode_id } if *episode_id != 0 => Ok(()),
             Self::OriginalVla(command) => command.validate(),
             Self::OriginalRegrasp(command) => command.validate(),
+            Self::ObservedGrasp(goal) => goal.validate(),
             Self::VisualTransfer(goal) => goal.validate(),
             Self::MemoryPlace(goal) => goal.validate(),
             Self::ObservationWithdrawal(goal) => goal.validate(),
@@ -52,6 +55,7 @@ pub enum StaticStartupExecution {
     },
     OriginalVla(ArenaTaskExecution),
     OriginalRegrasp(ArenaTaskExecution),
+    ObservedGrasp(super::static_grasp::StaticObservedGraspStep),
     VisualTransfer(super::static_transfer::StaticVisualTransferStep),
     MemoryPlace(super::static_place::StaticMemoryPlaceStep),
     ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalStep),
@@ -76,6 +80,7 @@ pub(super) struct StaticStartupRunner {
     placement: Option<super::static_place::StaticMemoryPlace>,
     observation_withdrawal: Option<super::static_observe::StaticObservationWithdrawal>,
     regrasp_started: bool,
+    observed_grasp: Option<super::static_grasp::StaticObservedGrasp>,
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
@@ -116,6 +121,7 @@ impl StaticStartupRunner {
             placement: None,
             observation_withdrawal: None,
             regrasp_started: false,
+            observed_grasp: None,
             owner: if native_four_passes {
                 ArenaTaskRunner::load_static_predictive_limit_diagnostic(config)?
             } else {
@@ -198,6 +204,7 @@ impl StaticStartupRunner {
                 }
                 StaticStartupCommand::OriginalVla(command) => {
                     if self.regrasp_started
+                        || self.observed_grasp.is_some()
                         || !self.ready
                         || command.chunk.profile != task_minigame::types::TaskProfile::StaticApple
                         || command.chunk.observation.episode_id != self.episode_id
@@ -221,7 +228,10 @@ impl StaticStartupRunner {
                 }
                 StaticStartupCommand::OriginalRegrasp(command) => {
                     let count = self.owner.progress_counts().integration_count;
-                    if !self.ready || !valid_regrasp_request(command, self.episode_id, count) {
+                    if self.observed_grasp.is_some()
+                        || !self.ready
+                        || !valid_regrasp_request(command, self.episode_id, count)
+                    {
                         return Err(invalid(
                             "finite original regrasp requires a fresh190Tick third original chunk",
                         ));
@@ -256,7 +266,7 @@ impl StaticStartupRunner {
                     })
                 }
                 StaticStartupCommand::VisualTransfer(goal) => {
-                    if self.regrasp_started {
+                    if self.regrasp_started || self.observed_grasp.is_some() {
                         return Err(invalid(
                             "finite regrasp probe does not qualify a new transfer",
                         ));
@@ -301,6 +311,54 @@ impl StaticStartupRunner {
                         .step_static_visual_transfer_with_guard(&step.command, guard)?;
                     Ok(StaticStartupStep {
                         execution: StaticStartupExecution::VisualTransfer(step),
+                        body,
+                    })
+                }
+                StaticStartupCommand::ObservedGrasp(goal) => {
+                    let state = self.owner.measurement()?;
+                    if self.observed_grasp.is_none() {
+                        if !self.ready
+                            || self.regrasp_started
+                            || self.transfer.is_some()
+                            || self.placement.is_some()
+                            || self
+                                .last_original_execution
+                                .as_ref()
+                                .is_none_or(|e| e.admitted_chunks != 1 || e.frame_index != 39)
+                            || state.source_tick != 100
+                        {
+                            return Err(invalid(
+                                "observed grasp requires one completed open-hand original chunk",
+                            ));
+                        }
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .as_millis() as u64;
+                        if goal.observation.captured_at_unix_ms > now
+                            || now - goal.observation.captured_at_unix_ms > 2000
+                        {
+                            return Err(invalid("observed grasp current RGB wall age expired"));
+                        }
+                        let command = self.owner.executed_static_command(
+                            self.last_original_execution.as_ref().unwrap(),
+                        )?;
+                        self.observed_grasp = Some(super::static_grasp::StaticObservedGrasp::new(
+                            goal.clone(),
+                            &state,
+                            command,
+                        )?);
+                    }
+                    let grasp = self.observed_grasp.as_mut().unwrap();
+                    if grasp.goal() != goal {
+                        return Err(invalid("observed grasp immutable goal changed"));
+                    }
+                    let step = grasp.update(&state, &self.kinematics)?;
+                    let body = self
+                        .owner
+                        .step_static_observed_grasp_with_guard(&step.command, guard)?;
+                    Ok(StaticStartupStep {
+                        execution: StaticStartupExecution::ObservedGrasp(step),
                         body,
                     })
                 }

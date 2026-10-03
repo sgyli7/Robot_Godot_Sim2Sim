@@ -42,6 +42,12 @@ pub struct StaticCartesianReceipt {
     pub original_vla_output: bool,
     pub task_qualified: bool,
 }
+/// Explicit bounded orientation increment; no VLA output is rewritten.
+#[derive(Clone, Debug, Serialize)]
+pub struct StaticPoseReceipt {
+    pub translation: StaticCartesianReceipt,
+    pub rotation_increment_root_source_rad: [f64; 3],
+}
 impl StaticLeftPalmKinematics {
     pub fn new(definition: &G1Definition) -> Result<Self, RobotError> {
         let model = definition.model();
@@ -122,6 +128,52 @@ impl StaticLeftPalmKinematics {
         previous: &AgileCommand,
         offset: [f64; 3],
     ) -> Result<(AgileCommand, StaticCartesianReceipt), RobotError> {
+        self.solve_increment(state, previous, offset, [0.; 3])
+    }
+    /// FK of the current actuator targets, with the measured lower body.
+    /// Planning from measured upper joints would introduce tracking lag twice.
+    pub fn commanded_left_palm(
+        &self,
+        state: &G1Measurement,
+        command: &AgileCommand,
+    ) -> Result<Isometry3<f64>, RobotError> {
+        command.validate()?;
+        self.measured_left_palm(state)?;
+        let mut q = std::array::from_fn(|i| f64::from(state.joint_positions[i]));
+        for i in LOWER_COUNT..JOINT_COUNT {
+            q[i] = f64::from(command.upper_positions[i - LOWER_COUNT]);
+            if q[i] < self.limits[i][0] || q[i] > self.limits[i][1] {
+                return Err(invalid("commanded palm has an out-of-limit upper target"));
+            }
+        }
+        Ok(self.forward(&q)[LEFT_PALM])
+    }
+    /// One <=1.6mm / <=0.01rad pose increment at 50Hz, with the same original
+    /// joint limits, <=0.05rad arm steps and rounded residual as translation.
+    pub fn move_by(
+        &self,
+        state: &G1Measurement,
+        previous: &AgileCommand,
+        offset: [f64; 3],
+        rotation_increment: [f64; 3],
+    ) -> Result<(AgileCommand, StaticPoseReceipt), RobotError> {
+        let (command, translation) =
+            self.solve_increment(state, previous, offset, rotation_increment)?;
+        Ok((
+            command,
+            StaticPoseReceipt {
+                translation,
+                rotation_increment_root_source_rad: rotation_increment,
+            },
+        ))
+    }
+    fn solve_increment(
+        &self,
+        state: &G1Measurement,
+        previous: &AgileCommand,
+        offset: [f64; 3],
+        rotation_increment: [f64; 3],
+    ) -> Result<(AgileCommand, StaticCartesianReceipt), RobotError> {
         previous.validate()?;
         if state.episode_id == 0
             || state.source_tick.checked_mul(20_000_000) != Some(state.sim_time_ns)
@@ -129,6 +181,8 @@ impl StaticLeftPalmKinematics {
             || !state.joint_positions.iter().all(|x| x.is_finite())
             || !offset.iter().all(|x| x.is_finite())
             || Vector3::from(offset).norm() > 0.001600001
+            || !rotation_increment.iter().all(|x| x.is_finite())
+            || Vector3::from(rotation_increment).norm() > 0.010000001
             || previous.navigation.iter().any(|x| x.abs() > 0.01)
         {
             return Err(invalid("static increment/self-state admission failed"));
@@ -147,6 +201,10 @@ impl StaticLeftPalmKinematics {
         let initial = q;
         let mut goal = self.forward(&q)[LEFT_PALM];
         goal.translation.vector += Vector3::from(offset);
+        if rotation_increment != [0.; 3] {
+            goal.rotation =
+                UnitQuaternion::from_scaled_axis(Vector3::from(rotation_increment)) * goal.rotation;
+        }
         let mut iterations = 0;
         let mut converged = false;
         for n in 0..60 {

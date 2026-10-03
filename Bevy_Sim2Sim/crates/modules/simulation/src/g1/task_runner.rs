@@ -380,14 +380,27 @@ impl ArenaTaskRunner {
         command: &robot_minigame::g1::agile::AgileCommand,
         guard: &mut dyn FnMut() -> Result<(), RobotError>,
         ticks:std::ops::Range<u64>) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_admitted_with_guard(command,guard,ticks,2)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_observed_grasp_with_guard(&mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_admitted_with_guard(command,guard,100..500,1)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn step_static_classical_admitted_with_guard(&mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+        ticks:std::ops::Range<u64>,required_chunks:u64) -> Result<ArenaBodyStep, RobotError> {
         if self.halted { return Err(error("static transfer owner is halted")); }
         let result = (|| {
             guard()?;command.validate()?;
             let accepted = self.executor.accepted.as_ref().ok_or_else(||error("static transfer has no original grasp"))?;
             if accepted.profile != TaskProfile::StaticApple || self.executor.pending.is_some()
-                || self.executor.admitted_chunks != 2 || command.navigation.iter().any(|v|v.abs()>0.01)
+                || self.executor.admitted_chunks != required_chunks || command.navigation.iter().any(|v|v.abs()>0.01)
                 || !ticks.contains(&self.progress_counts().integration_count) {
-                return Err(error("static transfer requires its completed two-chunk grasp boundary"));
+                return Err(error("static classical phase requires its own completed original-chunk boundary"));
             }
             let frame = task_minigame::policy::PolicyActionFrame {
                 left_arm: command.upper_positions[..7].try_into().unwrap(),
