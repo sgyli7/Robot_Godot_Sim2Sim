@@ -1673,9 +1673,10 @@ fn run_capture_owner(
         || !(0.0..=50_000.).contains(&directional_illuminance)
         || ((diagnostic_ambient_brightness.is_some()
             || diagnostic_directional_illuminance.is_some())
-            && background_visual.is_none())
+            && background_visual.is_none()
+            && station.is_none())
     {
-        return Err("diffuse-light calibration needs the original background and finite bounded ambient/directional energies".into());
+        return Err("diffuse-light comparison requires an explicit source or native station environment and finite bounded ambient/directional energies".into());
     }
     if !exposure_ev100.is_finite() || !(0.0..=20.0).contains(&exposure_ev100) {
         return Err("diagnostic exposure must be finite EV100 in 0..=20".into());

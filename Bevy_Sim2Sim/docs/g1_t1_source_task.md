@@ -385,3 +385,22 @@ admitted at the new boundary. This offline fixture explicitly refreshes its
 image admission stamp and does not claim fresh vision. Its first failed test
 attempt executed60real startup ticks before a test-side consumed-snapshot
 assertion failed; that failure and its log are retained separately.
+
+The first same-world startup/vision pilot (`0305`, clean5f4d5fb) performs all380
+real integrations and8fresh original N1.7 calls. All8RGB inputs match captured
+pixels and retain Tick60/100/.../340stamps. The robot stands throughout, but the
+apple has54positive robot-contact ticks and0ticks without shelf contact. Strict
+placement remains0seconds: startup readiness has not solved grasping. Active
+sim/wall ratio0.993with2misses is separate from camera/model-paused continuous
+ratio0.640and does not qualify continuous1x operation.
+
+The station entry also retained default450ambient/15000directional/shadow-on
+lighting rather than the successful source-near0071baseline's fixed
+2328.263982ambient/981.363192directional/shadow-off settings at the sameEV100=11.7.
+This is a disclosed rendering/profile difference in addition to the mechanical
+floor comparison. The initial explicit lighting comparison (`0306`) is rejected
+before world creation because the prior diffuse-light guard allowed only a
+source background. It has0physics integrations and0VLA calls. Native station
+captures now accept explicitly supplied finite bounded light energies as well;
+normal defaults and geometry remain unchanged. The next comparison restores
+those three known baseline fields, with no lighting or physical parameter sweep.
