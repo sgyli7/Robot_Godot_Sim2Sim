@@ -367,13 +367,26 @@ impl ArenaTaskRunner {
     pub(super) fn step_static_visual_transfer_with_guard(&mut self,
         command: &robot_minigame::g1::agile::AgileCommand,
         guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_with_guard(command,guard,140..390)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_memory_place_with_guard(&mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_with_guard(command,guard,390..715)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn step_static_classical_with_guard(&mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+        ticks:std::ops::Range<u64>) -> Result<ArenaBodyStep, RobotError> {
         if self.halted { return Err(error("static transfer owner is halted")); }
         let result = (|| {
             guard()?;command.validate()?;
             let accepted = self.executor.accepted.as_ref().ok_or_else(||error("static transfer has no original grasp"))?;
             if accepted.profile != TaskProfile::StaticApple || self.executor.pending.is_some()
                 || self.executor.admitted_chunks != 2 || command.navigation.iter().any(|v|v.abs()>0.01)
-                || !(140..390).contains(&self.progress_counts().integration_count) {
+                || !ticks.contains(&self.progress_counts().integration_count) {
                 return Err(error("static transfer requires its completed two-chunk grasp boundary"));
             }
             let frame = task_minigame::policy::PolicyActionFrame {

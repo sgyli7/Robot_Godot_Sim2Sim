@@ -19,6 +19,7 @@ pub enum StaticStartupCommand {
     Startup { episode_id: u64 },
     OriginalVla(ArenaTaskCommand),
     VisualTransfer(super::static_transfer::StaticVisualTransferGoal),
+    MemoryPlace(super::static_place::StaticMemoryPlaceGoal),
 }
 impl StaticStartupCommand {
     pub(super) fn validate(&self) -> Result<(), RobotError> {
@@ -26,6 +27,7 @@ impl StaticStartupCommand {
             Self::Startup { episode_id } if *episode_id != 0 => Ok(()),
             Self::OriginalVla(command) => command.validate(),
             Self::VisualTransfer(goal) => goal.validate(),
+            Self::MemoryPlace(goal) => goal.validate(),
             _ => Err(invalid("invalid explicit static startup episode")),
         }
     }
@@ -43,6 +45,7 @@ pub enum StaticStartupExecution {
     },
     OriginalVla(ArenaTaskExecution),
     VisualTransfer(super::static_transfer::StaticVisualTransferStep),
+    MemoryPlace(super::static_place::StaticMemoryPlaceStep),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -60,6 +63,8 @@ pub(super) struct StaticStartupRunner {
     kinematics: super::static_transfer::StaticLeftPalmKinematics,
     last_original_execution: Option<ArenaTaskExecution>,
     transfer: Option<super::static_transfer::StaticVisualTransfer>,
+    placement_geometry: Option<super::static_place::StaticPlacementGeometry>,
+    placement: Option<super::static_place::StaticMemoryPlace>,
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
@@ -74,10 +79,18 @@ impl StaticStartupRunner {
             &body.definition_sha256,
         )?;
         let kinematics = super::static_transfer::StaticLeftPalmKinematics::new(&definition)?;
+        // Prepare immutable public geometry before the physical clock starts.
+        let placement_geometry = body
+            .task_objects
+            .as_ref()
+            .map(super::static_place::StaticPlacementGeometry::load)
+            .transpose()?;
         Ok(Self {
             kinematics,
             last_original_execution: None,
             transfer: None,
+            placement_geometry,
+            placement: None,
             owner: ArenaTaskRunner::load_static_predictive_constraint_diagnostic(config)?,
             episode_id: config.body.episode_id(),
             stable_ticks: 0,
@@ -217,6 +230,48 @@ impl StaticStartupRunner {
                         .step_static_visual_transfer_with_guard(&step.command, guard)?;
                     Ok(StaticStartupStep {
                         execution: StaticStartupExecution::VisualTransfer(step),
+                        body,
+                    })
+                }
+                StaticStartupCommand::MemoryPlace(goal) => {
+                    let state = self.owner.measurement()?;
+                    if self.placement.is_none() {
+                        let command = self
+                            .transfer
+                            .as_ref()
+                            .and_then(|t| t.completed_command())
+                            .ok_or_else(|| {
+                                invalid("placement requires completed typed static transfer")
+                            })?;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .as_millis() as u64;
+                        if goal.current_observation.captured_at_unix_ms > now
+                            || now - goal.current_observation.captured_at_unix_ms > 2000
+                        {
+                            return Err(invalid("placement current observation wall age expired"));
+                        }
+                        let geometry = self.placement_geometry.as_ref().ok_or_else(|| {
+                            invalid("placement requires original public task geometry")
+                        })?;
+                        self.placement = Some(super::static_place::StaticMemoryPlace::new(
+                            goal.clone(),
+                            &state,
+                            command,
+                            geometry,
+                        )?);
+                    }
+                    let placement = self.placement.as_mut().unwrap();
+                    if placement.goal() != goal {
+                        return Err(invalid("placement goal changed during execution"));
+                    }
+                    let step = placement.update(&state, &self.kinematics)?;
+                    let body = self
+                        .owner
+                        .step_static_memory_place_with_guard(&step.command, guard)?;
+                    Ok(StaticStartupStep {
+                        execution: StaticStartupExecution::MemoryPlace(step),
                         body,
                     })
                 }

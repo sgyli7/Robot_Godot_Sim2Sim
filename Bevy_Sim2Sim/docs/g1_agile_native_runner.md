@@ -113,3 +113,32 @@ an invalid first replay comparison remain preserved with their explicit review.
 These flat-floor standing diagnostics remain `qualified=false`: original task
 materials/layout, full source physics parity, walking, real grasp/release and
 visual task success still require their own actual evidence.
+
+
+The development-only `StaticStartupWorker` also has a separate typed
+`StaticMemoryPlaceGoal`, admitted only after the two unchanged N1.7 chunks
+and all 250 traditional static transfer ticks (the actual 390-Tick boundary).
+This goal explicitly preserves the 140-Tick RGB origin and 390-Tick observation,
+rigid grasp/static target assumptions and public geometry identity. It does not
+claim current object detections. Mixed/reset episodes, changed goals, invalid
+rigid transforms, old timestamps and foreign geometry are rejected.
+
+The bounded placement uses published collision vertices and self IMU to derive
+an initial lowering displacement; it changes only the left arm and left hand.
+It lowers for 100 ticks, opens the original seven hand targets toward zero for
+50 ticks, retracts 4 cm over 50 ticks, and physically settles for 125 ticks.
+AGILE, original force/gain/material settings and one 20 ms integration per tick
+remain unchanged. Whole-path geometry preparation belongs outside the physical
+Tick; the owner checks one increment per update. No contact or world truth drives
+these commands. The goal permits at most 8 seconds of disclosed RGB memory age;
+this finite diagnostic is not an unbounded perception fallback.
+
+The ignored development test
+`g1_station_environment::static_transfer_diagnostic::saved_memory_static_place_in_original_world`
+accepts a hash-bound `G1_STATIC_TRANSFER_FIXTURE` and
+`G1_STATIC_TRANSFER_FIXTURE_SHA256`. Its saved camera/action wall timestamps
+are explicitly refreshed only for offline mechanical testing, preserving the
+origin/current memory age. It executes 715 real native/WBC ticks and records
+all steps for the independent active-contact placement audit. Passing the Rust
+execution test alone is not proof of release, support, a two-second placement
+window, fresh model execution, Qwen task execution, or formal task qualification.

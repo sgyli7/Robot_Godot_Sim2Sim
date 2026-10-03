@@ -106,6 +106,14 @@ pub struct TaskObjectsDefinition {
 }
 
 impl TaskObjectsDefinition {
+    /// Published immutable collision vertices only; no poses, contacts or world.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn static_placement_vertices(&self) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+        let vertices = |kind| self.document.objects.iter().filter(|o| o.kind == kind)
+            .flat_map(|o| o.convex_parts.iter()).flat_map(|c| c.points.iter().copied()).collect();
+        (vertices(TaskObjectKind::Apple), vertices(TaskObjectKind::Plate))
+    }
+
     pub fn load(path: &Path, expected_sha256: &str) -> Result<Self, RobotError> {
         if std::fs::metadata(path)
             .map_err(|e| invalid(e.to_string()))?

@@ -291,6 +291,9 @@ impl StaticVisualTransfer {
     pub fn goal(&self) -> &StaticVisualTransferGoal {
         &self.goal
     }
+    pub(super) fn completed_command(&self) -> Option<AgileCommand> {
+        (self.ticks == 250).then(|| self.command.clone())
+    }
     pub fn update(
         &mut self,
         state: &G1Measurement,
@@ -323,7 +326,7 @@ impl StaticVisualTransfer {
         })
     }
 }
-fn self_rotation(state: &G1Measurement) -> Result<UnitQuaternion<f64>, RobotError> {
+pub(super) fn self_rotation(state: &G1Measurement) -> Result<UnitQuaternion<f64>, RobotError> {
     let [w, x, y, z] = state.root_rotation_wxyz.map(f64::from);
     if ![w, x, y, z].iter().all(|q| q.is_finite())
         || (w * w + x * x + y * y + z * z - 1.).abs() > 2e-5

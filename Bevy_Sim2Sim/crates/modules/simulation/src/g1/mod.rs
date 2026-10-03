@@ -26,6 +26,8 @@ pub mod static_environment;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod static_transfer;
 #[cfg(feature = "g1_constraint_diagnostic")]
+pub mod static_place;
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub mod static_startup;
 pub mod task_background;
 pub mod task_objects;
