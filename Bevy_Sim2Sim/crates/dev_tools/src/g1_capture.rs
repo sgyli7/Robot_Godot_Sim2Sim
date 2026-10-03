@@ -5163,13 +5163,9 @@ fn drive_capture(
             let image_directory = if runtime.static_grasp_pair_secondary {
                 let directory = runtime.options.output.join("static_grip_secondary_vision_input");
                 fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
-                let observation = marker_observation(&frame.stamp)?;
+                let observation = super::g1_marker_vision::static_observation(&frame.stamp)?;
                 let first: serde_json::Value = serde_json::from_slice(&fs::read(runtime.options.output.join("static_grip_vision_input/observation.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-                if observation["measured_joints"] != first["measured_joints"]
-                    || observation["stamp"]["episode_id"] != first["stamp"]["episode_id"]
-                    || observation["stamp"]["sim_time_ns"] != first["stamp"]["sim_time_ns"] {
-                    return Err("fixed camera pair changed its native Tick/self state".into());
-                }
+                super::g1_marker_vision::validate_fixed_pair(&first,&observation)?;
                 fs::write(directory.join("observation.json"),serde_json::to_vec_pretty(&observation).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
                 Some(directory)
             } else {None};

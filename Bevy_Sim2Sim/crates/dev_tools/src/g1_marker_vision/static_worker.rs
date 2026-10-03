@@ -371,13 +371,7 @@ impl StaticMarkerWorker {
         )
         .map_err(|e| e.to_string())?;
         fs::write(directory.join("ego.png"), rgb.png()).map_err(|e| e.to_string())?;
-        fs::write(directory.join("observation.json"), serde_json::to_vec_pretty(&json!({
-            "schema":"g1_static_marker_observation_v1","stamp":observation,
-            "camera":{"fx":458.1245526,"fy":458.1245526,"cx":320.,"cy":240.,"near_m":0.1,"far_m":5.,
-                "vertical_fov_radians":2. * (240_f64 / 458.1245526).atan(),
-                "mount_profile":frame.stamp.mount_profile},
-            "measured_joints":state.measured_joints,
-        })).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        fs::write(directory.join("observation.json"), serde_json::to_vec_pretty(&super::static_observation(&frame.stamp)?).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let image_hash = digest(&directory.join("ego.png"), 16 * 1024 * 1024)?;
         let input_hash = digest(&directory.join("observation.json"), 128 * 1024)?;
         let mut bytes =
