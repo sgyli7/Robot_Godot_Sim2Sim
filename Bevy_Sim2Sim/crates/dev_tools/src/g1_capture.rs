@@ -812,6 +812,7 @@ pub struct G1CaptureReceipt {
     pub diagnostic_prefetch_after_ticks: Option<u32>,
     pub prefetch_discarded_image_stamps: Vec<serde_json::Value>,
     pub prefetch_image_events: Vec<serde_json::Value>,
+    pub final_camera_progress: Option<rendering_minigame::g1_camera::G1CaptureProgress>,
     pub continuous_boundary_sim_seconds: f64,
     pub continuous_boundary_wall_seconds: f64,
     pub active_wall_seconds: f64,
@@ -941,6 +942,7 @@ impl G1CaptureReceipt {
             diagnostic_prefetch_after_ticks: None,
             prefetch_discarded_image_stamps: Vec::new(),
             prefetch_image_events: Vec::new(),
+            final_camera_progress: None,
             continuous_boundary_sim_seconds: 0.,
             continuous_boundary_wall_seconds: 0.,
             active_wall_seconds: 0.,
@@ -4030,7 +4032,9 @@ fn drive_capture(
     });
     if let Some(error) = error {
         runtime.worker.pause();
-        outcome.0.lock().unwrap().failure_reason = Some(error);
+        let mut receipt = outcome.0.lock().unwrap();
+        receipt.failure_reason = Some(error);
+        receipt.final_camera_progress = Some(port.capture_progress());
         exit.write(AppExit::error());
     }
 }

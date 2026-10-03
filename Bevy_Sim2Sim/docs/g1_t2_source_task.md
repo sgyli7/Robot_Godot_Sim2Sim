@@ -1654,3 +1654,16 @@ their behavior. Request, extraction/copy/readback and consumption timing is
 recorded separately; the original action start/deadline and trigger stay fixed.
 Two camera regression tests check old-scene rejection, unchanged actual stamps
 and reset isolation. Live timing remains to be checked in fresh0265.
+
+Fresh0265 registers the next camera request at Tick7with an actual-scene floor
+of25, and copies/discards no old scene. It still pauses at50before a second
+image/model admission; all50original frames have zero missed deadlines/debt,
+continuous boundary sim/wall1.000293 and complete evidence. This validates the
+old-copy correction but leaves the remaining extraction/readback latency
+unresolved; the paused outcome is not a continuous-grasp pass. Trace SHA256:
+`c7a59d1a27aaa8ad8438e4d9f64d1d1e67e6569b29b64ec1465d869b8145855c`.
+The failure receipt now snapshots read-only camera pipeline progress: last
+considered/copy scene Tick, skipped old scenes and independent extraction/copy/
+readback times. It retains the same single slot, image floor, physical behavior
+and action deadlines. This instrumentation is acceptance evidence only and is
+never passed to model/control input.

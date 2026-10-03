@@ -312,6 +312,21 @@ pub struct G1CapturedRgb {
     pub rgb: Vec<u8>,
 }
 
+/// Read-only pipeline timing; never a camera observation or model input.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct G1CaptureProgress {
+    pub episode_id: u64,
+    pub capture_sequence: u64,
+    pub phase: String,
+    pub minimum_physics_tick: Option<u64>,
+    pub last_considered_scene_tick: Option<u64>,
+    pub old_scenes_skipped: u64,
+    pub copy_scene_tick: Option<u64>,
+    pub captured_at_unix_ms: Option<u64>,
+    pub copy_encoded_at_unix_ms: Option<u64>,
+    pub readback_completed_at_unix_ms: Option<u64>,
+}
+
 #[derive(Default)]
 struct CaptureSlot {
     episode_id: u64,
@@ -320,6 +335,7 @@ struct CaptureSlot {
     minimum_physics_tick: Option<u64>,
     active: Option<(u64, u64)>,
     completed: Option<Result<G1CapturedRgb, String>>,
+    progress: G1CaptureProgress,
 }
 
 /// A single shared slot: a pending GPU copy or an unconsumed observation blocks
@@ -354,6 +370,12 @@ impl G1CameraPort {
             .ok_or("capture sequence exhausted")?;
         slot.requested = true;
         slot.minimum_physics_tick = minimum.map(|(_, tick)| tick);
+        slot.progress = G1CaptureProgress {
+            episode_id: slot.episode_id,
+            capture_sequence: slot.next_sequence,
+            minimum_physics_tick: slot.minimum_physics_tick,
+            ..Default::default()
+        };
         Ok(slot.next_sequence)
     }
 
@@ -370,6 +392,7 @@ impl G1CameraPort {
         slot.requested = false;
         slot.minimum_physics_tick = None;
         slot.completed = None;
+        slot.progress = G1CaptureProgress::default();
         // A mapping already in flight is retained until its callback releases
         // it. No second buffer is allocated while that old operation completes.
         Ok(())
@@ -395,6 +418,28 @@ impl G1CameraPort {
         }
     }
 
+    pub fn capture_progress(&self) -> G1CaptureProgress {
+        let Ok(slot) = self.0.lock() else {
+            return G1CaptureProgress {
+                phase: "poisoned".into(),
+                ..Default::default()
+            };
+        };
+        let phase = if slot.completed.is_some() {
+            "completed"
+        } else if slot.active.is_some() {
+            "gpu_mapping"
+        } else if slot.requested {
+            "awaiting_render_extraction"
+        } else {
+            "idle"
+        };
+        G1CaptureProgress {
+            phase: phase.into(),
+            ..slot.progress.clone()
+        }
+    }
+
     fn begin(&self, frame: &ExtractedFrame) -> Option<G1CaptureStamp> {
         let mut slot = self.0.lock().ok()?;
         if !slot.requested
@@ -404,12 +449,14 @@ impl G1CameraPort {
         {
             return None;
         }
+        slot.progress.last_considered_scene_tick = Some(frame.source.source_ticks[0]);
         if slot.minimum_physics_tick.is_some_and(|tick| {
             frame.source.source != CameraPoseSource::PhysicsBody
                 || frame.source.source_ticks[0] < tick
                 || frame.source.source_ticks[0] != frame.source.source_ticks[1]
         }) {
             // Retain the one request; do not allocate a GPU copy for old pixels.
+            slot.progress.old_scenes_skipped = slot.progress.old_scenes_skipped.saturating_add(1);
             return None;
         }
         if frame.source.source == CameraPoseSource::PhysicsBody
@@ -424,6 +471,10 @@ impl G1CameraPort {
         slot.requested = false;
         slot.minimum_physics_tick = None;
         slot.active = Some((slot.episode_id, slot.next_sequence));
+        let encoded_at = unix_ms();
+        slot.progress.copy_scene_tick = Some(frame.source.source_ticks[0]);
+        slot.progress.captured_at_unix_ms = Some(frame.captured_at_unix_ms);
+        slot.progress.copy_encoded_at_unix_ms = Some(encoded_at);
         Some(G1CaptureStamp {
             episode_id: slot.episode_id,
             capture_sequence: slot.next_sequence,
@@ -434,7 +485,7 @@ impl G1CameraPort {
             source: frame.source.source,
             mount_profile: frame.source.mount_profile,
             captured_at_unix_ms: frame.captured_at_unix_ms,
-            copy_encoded_at_unix_ms: unix_ms(),
+            copy_encoded_at_unix_ms: encoded_at,
             readback_completed_at_unix_ms: 0,
             camera_translation: frame.source.world_from_camera.translation.to_array(),
             camera_rotation_xyzw: frame.source.world_from_camera.rotation.to_array(),
@@ -453,6 +504,7 @@ impl G1CameraPort {
         if slot.episode_id != stamp.episode_id {
             return;
         }
+        slot.progress.readback_completed_at_unix_ms = Some(stamp.readback_completed_at_unix_ms);
         slot.completed = Some(result.map(|rgb| G1CapturedRgb {
             stamp,
             width: EGO_WIDTH,
@@ -910,6 +962,11 @@ mod tests {
         old.source.native_state = Some(state);
         assert!(port.begin(&old).is_none());
         assert_eq!(port.progress(), "awaiting_render_extraction");
+        let timing = port.capture_progress();
+        assert_eq!(timing.minimum_physics_tick, Some(12));
+        assert_eq!(timing.old_scenes_skipped, 2);
+        assert_eq!(timing.last_considered_scene_tick, Some(10));
+        assert!(timing.copy_scene_tick.is_none());
         assert!(port.request().is_err());
         let mut current = frame(1);
         let state = native(1, 13);
@@ -924,6 +981,10 @@ mod tests {
             13
         );
         assert_eq!(port.progress(), "gpu_mapping");
+        let timing = port.capture_progress();
+        assert_eq!(timing.copy_scene_tick, Some(13));
+        assert_eq!(timing.captured_at_unix_ms, Some(1234));
+        assert!(timing.readback_completed_at_unix_ms.is_none());
         port.finish(stamp, Ok(Vec::new()));
         assert_eq!(port.take().unwrap().unwrap().stamp.source_ticks, [13, 13]);
         assert_eq!(port.progress(), "idle");
@@ -937,6 +998,7 @@ mod tests {
         port.reset(2).unwrap();
         assert!(port.begin(&frame(1)).is_none());
         assert!(port.request_physics_frame(1, 0).is_err());
+        assert!(port.capture_progress().minimum_physics_tick.is_none());
         port.request().unwrap();
         assert!(port.begin(&frame(2)).is_some());
     }
