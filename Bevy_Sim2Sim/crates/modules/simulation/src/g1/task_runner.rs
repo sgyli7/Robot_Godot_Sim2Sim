@@ -571,6 +571,47 @@ impl ArenaTaskRunner {
             .map(|step| ArenaBodyStep::StaticAgile(Box::new(step)))
     }
 
+    /// Test-only mechanical alignment fixture after the explicit60Tick startup.
+    /// No VLA admission, observations, world truth or runtime recovery path.
+    /// The caller labels saved/revised commands separately; this160Tick bound
+    /// includes startup and cannot extend the normal task queue's lifetime.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn diagnostic_static_alignment_step(
+        &mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        let tick = self.progress_counts().integration_count;
+        if self.halted
+            || self.executor.accepted.is_some()
+            || self.executor.pending.is_some()
+            || !(60..160).contains(&tick)
+            || command.navigation != [0.; 3]
+        {
+            return Err(error("finite offline alignment fixture admission failed"));
+        }
+        let frame = task_minigame::policy::PolicyActionFrame {
+            left_arm: command.upper_positions[..7].try_into().unwrap(),
+            left_hand: command.upper_positions[7..14].try_into().unwrap(),
+            right_arm: command.upper_positions[14..21].try_into().unwrap(),
+            right_hand: command.upper_positions[21..28].try_into().unwrap(),
+            waist: [0.; 3],
+            base_height_m: command.pelvis_height,
+            navigate_mps_rps: command.navigation,
+        };
+        frame.validate(&self.executor.limits).map_err(error)?;
+        let ArenaBodyRunner::StaticAgile(body) = &mut self.body else {
+            return Err(error("offline alignment requires original static AGILE"));
+        };
+        let result = body
+            .step(command)
+            .map(|step| ArenaBodyStep::StaticAgile(Box::new(step)));
+        if result.is_err() {
+            self.halted = true;
+            self.executor.queue.stop();
+        }
+        result
+    }
+
     pub fn step_with_guard(
         &mut self,
         command: &ArenaTaskCommand,

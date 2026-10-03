@@ -473,3 +473,27 @@ case and checks the closed owner's40actual calls before starting only seed42.
 The combined report retains separate source identities and new/retained counts;
 it never rewrites or reruns the first five cases. Even five further successes
 would give at most7of10, so this batch cannot meet the frozen8of10 threshold.
+
+The completed continuation (`0319`) gives2of10, all10standing,3800actual native
+integrations and80fresh original forwards. The first five were independently
+re-audited rather than repeated; the last five use0fdab26with the same Rust binary.
+This is a failed intermediate paused profile score, not formal task acceptance.
+An offline source-FK audit (`0320`) matches native fingertip-link origins within
+submicrometre error in nine cases; one case reaches1.9mm. Tracking-error maxima
+also occur in successful cases and do not establish an actuator root cause.
+Link origins are only geometric proxies; contact truth remains auditor-only.
+
+The source-bound material comparison (`0321`) uses all49bound original USD
+materials with exactly the same mesh data and USD identity. Startup's60full body
+steps are unchanged, actual pixels change, and the failed position still does
+not lift the apple. It is retained as a negative comparison, not promoted as a
+grasp fix. No physical parameter or graph contract changes.
+
+The ignored `finite_static_grasp_alignment_comparison` is a bounded mechanical
+fixture: two fresh native station owners, each60startup +80saved commands
++20explicit last-target hold ticks. Only the candidate's left-arm targets change,
+using one fixed oracle-derived initial-position translation and source FK/IK;
+fingers, body commands, gains, physics and all original saved bytes stay intact.
+It creates no images or task-policy calls and cannot earn an autonomous score.
+The diagnostic API rejects VLA admission, navigation and steps outside60..160;
+normal workers/queues do not call it or acquire a new fallback behavior.

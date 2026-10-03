@@ -140,6 +140,102 @@ mod tests {
         }
         Ok(())
     }
+
+    /// Saved commands and an explicitly oracle-derived Cartesian comparison.
+    /// This isolates a grasp hypothesis; it never contributes autonomous scores.
+    #[test]
+    #[ignore = "pinned two-case mechanical fixture;160single50Hz steps each;0freshimages/models"]
+    fn finite_static_grasp_alignment_comparison() -> Result<(), String> {
+        use robot_minigame::g1::agile::AgileCommand;
+        use simulation_minigame::g1::task_runner::ArenaBodyStep;
+        let read = |name: &str| -> Result<Vec<u8>, String> {
+            let path = PathBuf::from(std::env::var(name).map_err(|e| e.to_string())?);
+            let sha = std::env::var(format!("{name}_SHA256")).map_err(|e| e.to_string())?;
+            bound_bytes(&path, &sha).map_err(|e| e.to_string())
+        };
+        let value: serde_json::Value =
+            serde_json::from_slice(&read("G1_ALIGNMENT_CONFIG")?).map_err(|e| e.to_string())?;
+        let mut config: ArenaTaskRunnerConfig =
+            serde_json::from_value(value["runner"].clone()).map_err(|e| e.to_string())?;
+        let scene =
+            StationScene::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"))?;
+        let identity: G1StationConfiguration =
+            serde_json::from_value(value["station"].clone()).map_err(|e| e.to_string())?;
+        let ArenaTaskBodyConfig::StaticAgile(body) = &mut config.body else {
+            return Err("alignment requires static AGILE".into());
+        };
+        let (_, prepared, _) = prepare(&scene, &identity, body.floor_contact_friction)?;
+        body.startup_environment = Some(prepared);
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&read("G1_ALIGNMENT_COMMANDS")?).map_err(|e| e.to_string())?;
+        if fixture["schema"] != "g1_oracle_alignment_mechanical_fixture_v1"
+            || fixture["autonomous_task_qualified"] != false
+            || fixture["oracle_diagnostic_only"] != true
+        {
+            return Err("alignment fixture scope changed".into());
+        }
+        let reference: Vec<AgileCommand> =
+            serde_json::from_value(fixture["reference"].clone()).map_err(|e| e.to_string())?;
+        let candidate: Vec<AgileCommand> =
+            serde_json::from_value(fixture["candidate"].clone()).map_err(|e| e.to_string())?;
+        if reference.len() != 100 || candidate.len() != 100 {
+            return Err("alignment must use80saved plus20explicit hold commands".into());
+        }
+        for (r, c) in reference.iter().zip(&candidate) {
+            if r.upper_positions[7..] != c.upper_positions[7..]
+                || r.navigation != c.navigation
+                || r.pelvis_height != c.pelvis_height
+            {
+                return Err("candidate changed fingers/body or source gain semantics".into());
+            }
+        }
+        let output =
+            PathBuf::from(std::env::var("G1_ALIGNMENT_OUTPUT").map_err(|e| e.to_string())?);
+        let mut log = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&output)
+            .map_err(|e| e.to_string())?;
+        for (label, commands) in [
+            ("saved_reference", reference),
+            ("oracle_translation_candidate", candidate),
+        ] {
+            let mut owner = ArenaTaskRunner::load_static_predictive_constraint_diagnostic(&config)
+                .map_err(|e| e.to_string())?;
+            for tick in 1..=160 {
+                let step = if tick <= 60 {
+                    owner.diagnostic_static_startup_step(&mut || Ok(()))
+                } else {
+                    owner.diagnostic_static_alignment_step(&commands[tick as usize - 61])
+                }
+                .map_err(|e| e.to_string())?;
+                let ArenaBodyStep::StaticAgile(body) = &step else {
+                    return Err("alignment changed body profile".into());
+                };
+                if body.integration_count != tick
+                    || body.motor_update_count != tick
+                    || body.inference.inference_count != tick
+                    || body.step_configuration.dt != 0.02
+                    || body.step_configuration.num_internal_pgs_iterations != 16
+                {
+                    return Err("alignment changed clock/body update counts".into());
+                }
+                writeln!(log,"{}",serde_json::json!({"label":label,"body":step,
+                    "phase":if tick<=60 {"explicit_static_startup"} else if tick<=140 {"saved_or_explicitly_aligned_command"} else {"explicit20Tick_last_target_hold"},
+                    "fresh_images":0,"fresh_vla_calls":0,"oracle_diagnostic_only":true,
+                    "autonomous_task_qualified":false})).map_err(|e|e.to_string())?;
+            }
+            let before = owner.progress_counts();
+            assert!(
+                owner
+                    .diagnostic_static_alignment_step(&commands[99])
+                    .is_err()
+            );
+            assert_eq!(before, owner.progress_counts());
+        }
+        log.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[derive(bevy::prelude::Resource)]
