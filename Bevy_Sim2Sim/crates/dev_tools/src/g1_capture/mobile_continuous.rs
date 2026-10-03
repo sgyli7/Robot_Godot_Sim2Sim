@@ -4,6 +4,7 @@
 //! consumer of the full owner trace.
 
 use super::*;
+use crate::g1_marker_vision::PersistentMarkerWorker;
 use simulation_minigame::g1::{
     mobile_assist::{MobileAssistCommand, MobileAssistExecution, MobileObservedSkill},
     mobile_hold::MobileHoldGoal,
@@ -22,13 +23,20 @@ enum Stage {
     Finish,
 }
 
+struct PendingVision {
+    observation: ObservationStamp,
+    started: Instant,
+    reply: Option<serde_json::Value>,
+}
+
 pub(super) struct ContinuousMobileRoute {
     stage: Stage,
     vision: MarkerVisionConfiguration,
     search_heading: f32,
     expected_wait_request: u64,
     image_min_tick: Option<u64>,
-    job: Option<MarkerVisionJob>,
+    job: Option<PendingVision>,
+    worker: Option<PersistentMarkerWorker>,
     fine_goals: u32,
     images: u32,
     completed: bool,
@@ -41,6 +49,9 @@ impl ContinuousMobileRoute {
             .clone()
             .ok_or("continuous route requires the bound marker worker")?;
         vision.validate()?;
+        if vision.persistent_worker.is_none() {
+            return Err("continuous route requires its pinned persistent CPU worker".into());
+        }
         Ok(Self {
             stage: Stage::Grasp,
             vision,
@@ -48,6 +59,7 @@ impl ContinuousMobileRoute {
             expected_wait_request: 4,
             image_min_tick: None,
             job: None,
+            worker: None,
             fine_goals: 0,
             images: 0,
             completed: false,
@@ -72,6 +84,23 @@ impl ContinuousMobileRoute {
             .ok_or("continuous route owner absent")?
             .clone();
         let tick = latest.timing.episode_integrations;
+        if self.worker.is_none() {
+            self.worker = Some(PersistentMarkerWorker::spawn(
+                self.vision.clone(),
+                &runtime.options.output,
+                runtime.episode_id,
+            )?);
+        }
+        if let Some(reply) = self.worker.as_mut().unwrap().poll()? {
+            let job = self
+                .job
+                .as_mut()
+                .ok_or("continuous worker returned an unsolicited result")?;
+            if job.reply.is_some() {
+                return Err("continuous worker repeated its result".into());
+            }
+            job.reply = Some(reply);
+        }
         if tick > u64::from(runtime.options.ticks) || latest.phase == G1WorkerPhase::Failed {
             return Err(latest
                 .reason
@@ -102,20 +131,20 @@ impl ContinuousMobileRoute {
                     "marker_activation_requires_actual_fourth_chunk_completion":true,
                     "actual_grasp_wait_ready_tick":tick,"qwen_target_selection":false,"world_or_contact_truth_input":false,
                     "traditional_public_map_heading_rad":self.search_heading,"events":[],"task_qualified":false,
+                    "persistent_cpu_worker":self.worker.as_ref().unwrap().provenance(),
                 }));
                 return Ok(false);
             }
             drive_waited_mobile_policy(runtime, outcome, port)?;
             return Ok(false);
         }
-        if self.stage == Stage::Finish || !ready {
+        if self.stage == Stage::Finish || !ready || !self.worker.as_ref().unwrap().ready() {
             return Ok(false);
         }
         if let Some(job) = &self.job {
-            let Some(reply) = job.try_take() else {
+            let Some(reply) = job.reply.clone() else {
                 return Ok(false);
             };
-            let reply = reply?;
             let observation = job.observation;
             self.record(outcome,serde_json::json!({"event":"current_rgb_localization","stage":format!("{:?}",self.stage),"observation":observation,
                 "arrival_display_tick":tick,"localization_wall_ms":job.started.elapsed().as_secs_f64()*1000.,
@@ -217,10 +246,15 @@ impl ContinuousMobileRoute {
             )?;
             self.stage = Stage::Coarse;
         } else {
-            self.job = Some(if self.stage == Stage::Placement {
-                MarkerVisionJob::start_placement_view(self.vision.clone(), directory, observation)?
-            } else {
-                MarkerVisionJob::start(self.vision.clone(), directory, observation)?
+            self.worker.as_mut().unwrap().submit(
+                &directory,
+                observation,
+                self.stage == Stage::Placement,
+            )?;
+            self.job = Some(PendingVision {
+                observation,
+                started: Instant::now(),
+                reply: None,
             });
         }
         Ok(false)

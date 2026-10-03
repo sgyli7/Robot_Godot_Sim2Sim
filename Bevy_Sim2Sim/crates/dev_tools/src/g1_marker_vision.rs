@@ -21,6 +21,15 @@ pub(super) struct MarkerVisionConfiguration {
     pub task_geometry: Option<MarkerTaskGeometry>,
     #[serde(default)]
     pub fiducial_calibration: Option<MarkerTaskGeometry>,
+    #[serde(default)]
+    pub persistent_worker: Option<MarkerPersistentProgram>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MarkerPersistentProgram {
+    pub path: PathBuf,
+    pub sha256: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -77,12 +86,21 @@ impl MarkerVisionConfiguration {
                 return Err("fixed marker calibration path/hash mismatch".into());
             }
         }
+        if let Some(program) = &self.persistent_worker {
+            if !program.path.is_absolute() || digest(&program.path, 128 * 1024)? != program.sha256 {
+                return Err("persistent marker program path/hash mismatch".into());
+            }
+        }
         Ok(())
     }
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub(super) use worker::{MarkerTargetMemory, MarkerVisionJob};
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod persistent;
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub(super) use persistent::PersistentMarkerWorker;
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod worker {
@@ -489,7 +507,7 @@ mod worker {
         )
     }
 
-    fn validate_reply_for_policy(
+    pub(super) fn validate_reply_for_policy(
         reply: &serde_json::Value,
         observation: ObservationStamp,
         image: &str,
@@ -672,7 +690,7 @@ mod worker {
         Ok(())
     }
 
-    fn validate_fine_reply(
+    pub(super) fn validate_fine_reply(
         reply: &serde_json::Value,
         observation: ObservationStamp,
         geometry_hash: &str,
@@ -749,7 +767,7 @@ mod worker {
         Ok(())
     }
 
-    fn validate_release_reply(
+    pub(super) fn validate_release_reply(
         reply: &serde_json::Value,
         observation: ObservationStamp,
         geometry_hash: &str,
@@ -811,7 +829,7 @@ mod worker {
         Ok(())
     }
 
-    fn validate_clearance_reply(
+    pub(super) fn validate_clearance_reply(
         reply: &serde_json::Value,
         observation: ObservationStamp,
         geometry_hash: &str,

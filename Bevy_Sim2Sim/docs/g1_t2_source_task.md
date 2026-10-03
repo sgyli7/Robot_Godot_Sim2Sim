@@ -1872,3 +1872,23 @@ Late perception runs alongside explicit standing. This separates the original
 VLA's moving self observation from stricter classical geometric admission,
 while avoiding an image taken halfway through an unfinished learned action.
 Neither pipeline grants grasp, full-route or formal task qualification.
+
+Fresh0282uses completed-boundary images0/51/143/232and actual next-chunk starts
+0/93/177/266. All200original frames are unchanged, and all581postgrasp samples
+through897retain hand-only support, including442real scan Ticks. Its coarse
+image846arrives at owner897:1.02seconds old, despite only3.58mm measured palm
+motion and0.008245rad self rotation. The frozen1second bound correctly rejects
+the carry before any carry integration. There is0strict placement,0deadline
+misses and1due terminal Tick; the full-route/zero-debt checks remain failed.
+Trace SHA256:
+`2c0e4a282bf5c7341d6ef98f999d04a24bf6f8427a38033219a046f7a40b5c14`.
+
+Entry0283loads a hash-bound single-episode CPU worker during initial scene/model
+preparation. It wraps the unchanged pinned RGB/local-geometry implementation,
+keeps one pending request and at most12images, and rejects repeated, foreign or
+unbound observations. Physics never reads its pipes. The saved actual846image
+returns a localization exactly equal to the original CLI result; CPU processing
+is190.1ms after91.5ms preparation. Busy/repeated/old-episode inputs are rejected
+and the owned process is reaped. This check uses0newRGB/physics/VLA, and does not
+establish full-route success. Image age,5mm palm motion,0.01rad self rotation,
+grip targets, source geometry, motors, contacts and50Hz physics remain unchanged.
