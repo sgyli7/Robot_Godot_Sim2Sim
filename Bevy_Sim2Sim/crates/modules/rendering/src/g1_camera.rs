@@ -75,6 +75,8 @@ pub enum G1CameraMountProfile {
     #[default]
     ArenaEgo,
     AuxiliaryGripOverview,
+    /// Declared near-table T1 sensor;150mm above original,+25degree downward view.
+    StaticPlacementOverview,
 }
 
 impl G1CameraMountProfile {
@@ -248,6 +250,9 @@ pub fn native_head_camera(
         G1CameraMountProfile::ArenaEgo => (0., Quat::IDENTITY),
         G1CameraMountProfile::AuxiliaryGripOverview => {
             (0.15, Quat::from_rotation_x(std::f32::consts::PI / 12.))
+        }
+        G1CameraMountProfile::StaticPlacementOverview => {
+            (0.15, Quat::from_rotation_x(-25_f32.to_radians()))
         }
     };
     let ros_from_bevy_camera = Quat::from_rotation_x(std::f32::consts::PI);
@@ -1096,6 +1101,25 @@ mod tests {
                 .0
                 .is_none()
         );
+    }
+
+    #[test]
+    fn placement_mount_retains_native_identity_and_rejects_foreign_mount_label() {
+        let state = native(1, 0);
+        let original = arena_head_camera(&state.body_frame).unwrap();
+        let mut placement = native_head_camera(
+            &state.body_frame, G1CameraMountProfile::StaticPlacementOverview,
+        ).unwrap();
+        placement.native_state = Some(state);
+        placement.validate().unwrap();
+        assert_eq!(placement.source_ticks, original.source_ticks);
+        assert_eq!(placement.sim_time_ns, original.sim_time_ns);
+        assert!(((placement.world_from_camera.translation - original.world_from_camera.translation)
+            .length() - 0.15).abs() < 1e-6);
+        assert!((placement.world_from_camera.rotation.angle_between(original.world_from_camera.rotation)
+            - 25_f32.to_radians()).abs() < 1e-5);
+        placement.mount_profile = G1CameraMountProfile::AuxiliaryGripOverview;
+        assert!(placement.validate().is_err());
     }
 
     #[test]

@@ -681,6 +681,12 @@ pub fn run_static_visual_transfer_auxiliary_from_file(path: &Path, options: G1Ca
     run_from_file(path, options, CaptureMode::StaticVisualTransferAuxiliary)
 }
 
+/// The declared near-table T1 sensor after the identical held transfer.
+pub fn run_static_visual_transfer_placement_from_file(path: &Path, options: G1CaptureOptions)
+    -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticVisualTransferPlacement)
+}
+
 /// Four fresh original chunks separated by explicit native standing waits.
 /// This source-scene timing preflight has no Qwen/task qualification.
 pub fn run_mobile_wait_grasp_from_file(
@@ -800,6 +806,7 @@ enum CaptureMode {
     StaticVisualGrasp,
     StaticVisualTransfer,
     StaticVisualTransferAuxiliary,
+    StaticVisualTransferPlacement,
     MobileWaitGrasp,
     MobileContinuousRelease,
     TaskLab,
@@ -830,7 +837,7 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::TaskLab | Self::MobileCarry => None,
         }
     }
 }
@@ -1321,6 +1328,7 @@ pub(super) struct CaptureRuntime {
     static_visual_grasp: bool,
     static_visual_transfer: bool,
     static_transfer_auxiliary: bool,
+    static_transfer_placement: bool,
     static_auxiliary_activation_frame: Option<u32>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     static_transfer_route: Option<static_visual_transfer::StaticTransferRoute>,
@@ -1583,9 +1591,10 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
-    let static_transfer_auxiliary = mode == CaptureMode::StaticVisualTransferAuxiliary;
-    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary);
-    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary);
+    let static_transfer_placement = mode == CaptureMode::StaticVisualTransferPlacement;
+    let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement);
+    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement);
+    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement);
     let static_visual_budget = if static_visual_transfer { 390 } else { 140 };
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
@@ -1601,7 +1610,7 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement)
             || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
@@ -1698,7 +1707,7 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some() != static_visual_grasp
             || if static_visual_grasp {
@@ -2273,6 +2282,7 @@ fn run_capture_owner(
             static_visual_grasp,
             static_visual_transfer,
             static_transfer_auxiliary,
+            static_transfer_placement,
             static_auxiliary_activation_frame: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             static_transfer_route,
@@ -4739,7 +4749,9 @@ fn drive_capture(
         if runtime.static_transfer_auxiliary && latest.timing.episode_integrations == 390
             && latest.phase == G1WorkerPhase::Paused
             && camera_mount.0 == G1CameraMountProfile::ArenaEgo {
-            camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
+            camera_mount.0 = if runtime.static_transfer_placement {
+                G1CameraMountProfile::StaticPlacementOverview
+            } else {G1CameraMountProfile::AuxiliaryGripOverview};
             runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
             return Ok(());
         }
@@ -4933,7 +4945,9 @@ fn drive_capture(
                     .is_some_and(|r| r.needs_auxiliary_view());
             if frame.stamp.source != CameraPoseSource::PhysicsBody
                 || frame.stamp.mount_profile
-                    != if use_auxiliary {
+                    != if runtime.static_transfer_placement {
+                        G1CameraMountProfile::StaticPlacementOverview
+                    } else if use_auxiliary {
                         G1CameraMountProfile::AuxiliaryGripOverview
                     } else {
                         G1CameraMountProfile::ArenaEgo

@@ -23,12 +23,15 @@ class StaticObservationTests(unittest.TestCase):
                 bad=json.loads(json.dumps(value));mutation(bad);path.write_text(json.dumps(bad))
                 with self.assertRaises(ValueError):observation(path)
 
-    def test_only_the_two_published_camera_mounts_are_admitted(self):
+    def test_only_published_camera_mounts_are_admitted(self):
         with tempfile.TemporaryDirectory() as root:
             path,value=self.fixture(root)
             value['camera']['mount_profile']='auxiliary_grip_overview'
             path.write_text(json.dumps(value))
             self.assertEqual(observation(path)['camera']['mount_profile'],'auxiliary_grip_overview')
+            value['camera']['mount_profile']='static_placement_overview'
+            path.write_text(json.dumps(value))
+            self.assertEqual(observation(path)['camera']['mount_profile'],'static_placement_overview')
             value['camera']['mount_profile']='custom_pose'
             path.write_text(json.dumps(value))
             with self.assertRaises(ValueError):observation(path)

@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import cv2
 import numpy as np
-from unitree_g1_mobile_vision import DEFINITION_SHA256, root_from_camera, rotation
+from unitree_g1_mobile_vision import DEFINITION_SHA256, root_from_camera, original_self_body_frames, rotation
 from unitree_g1_static_label_fit import apple_label
 
 LAYOUT = {31: ('t1_apple', .02, [.002, 0., .046]), 32: ('t1_plate', .06, [0., 0., .0255])}
@@ -46,7 +46,7 @@ def observation(path):
     camera_fields = {'fx','fy','cx','cy','vertical_fov_radians','near_m','far_m'}
     if set(camera) not in (camera_fields, camera_fields | {'mount_profile'}):
         raise ValueError('Foreign camera fields')
-    if camera.get('mount_profile', 'arena_ego') not in ('arena_ego', 'auxiliary_grip_overview'):
+    if camera.get('mount_profile', 'arena_ego') not in ('arena_ego', 'auxiliary_grip_overview', 'static_placement_overview'):
         raise ValueError('Unsupported published static camera mount')
     expected = {'fx':458.1245526,'fy':458.1245526,'cx':320.,'cy':240.,'near_m':.1,'far_m':5.}
     if not all(np.isfinite(camera[k]) for k in camera_fields) or any(abs(camera[k]-v)>1e-4 for k,v in expected.items()):
@@ -104,6 +104,12 @@ class PinnedPublicStaticVisionAssets:
                 raise ValueError('Prepared static public asset bytes changed')
 
     def root_camera(self, measured_positions, camera_profile='arena_ego'):
+        if camera_profile == 'static_placement_overview':
+            camera = root_from_camera(self._definition, measured_positions)
+            head = original_self_body_frames(self._definition, measured_positions)[19]
+            camera[:3, 3] += head[:3, :3] @ np.array([0., 0., .15])
+            camera[:3, :3] = camera[:3, :3] @ cv2.Rodrigues(np.array([-25*np.pi/180, 0., 0.]))[0]
+            return camera
         return root_from_camera(self._definition, measured_positions, camera_profile)
 
 

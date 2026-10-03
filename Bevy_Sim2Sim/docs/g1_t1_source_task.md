@@ -900,3 +900,20 @@ self FK; arbitrary camera matrices/profiles remain forbidden. Default static
 input retains the original mount and output. This is one visibility comparison
 with unchanged body actions/physics, not a sensor-angle sweep, and provides no
 placement or task qualification by itself.
+
+
+The actual auxiliary comparison (`0358`,ef9d110) fails visibility: no apple or
+plate marker is detected; near tabletop targets fall below its upward-facing
+image. All390body records exactly match0357 and all owned processes are
+reaped. This failed sensor entry supplies no release goal or task score.
+A read-only geometric design (`0359`) propagates the earlier actual RGB plate
+estimate using original self IMU/velocity/FK only, with a disclosed stationary
+plate assumption. At the raised head mount the analytic target-center optical-X
+angle is-25.175degrees using the actual head-local vertical offset (the initial
+root-vertical approximation was-24.692degrees). The distinct fixed T1 sensor
+`StaticPlacementOverview` therefore publishes150mm head-source-Z offset and
+-25degree optical-X rotation. Its physical validation is still pending; no
+camera pose is supplied from auditor world state and no angle grid is run.
+The390Tick `g1_static_visual_transfer_placement_diagnostic` selects it only
+after the unchanged grasp/transfer and waits for two render updates. Default
+VLA/ego camera and the failed upward auxiliary view remain separately named.
