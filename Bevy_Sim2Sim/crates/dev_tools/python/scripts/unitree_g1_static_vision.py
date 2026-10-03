@@ -43,10 +43,13 @@ def observation(path):
             raise ValueError(f'Invalid original self sensor:{name}')
     rotation(state['root_rotation_wxyz'])
     camera = value['camera']
-    if set(camera) != {'fx','fy','cx','cy','vertical_fov_radians','near_m','far_m'}:
+    camera_fields = {'fx','fy','cx','cy','vertical_fov_radians','near_m','far_m'}
+    if set(camera) not in (camera_fields, camera_fields | {'mount_profile'}):
         raise ValueError('Foreign camera fields')
+    if camera.get('mount_profile', 'arena_ego') not in ('arena_ego', 'auxiliary_grip_overview'):
+        raise ValueError('Unsupported published static camera mount')
     expected = {'fx':458.1245526,'fy':458.1245526,'cx':320.,'cy':240.,'near_m':.1,'far_m':5.}
-    if not all(np.isfinite(v) for v in camera.values()) or any(abs(camera[k]-v)>1e-4 for k,v in expected.items()):
+    if not all(np.isfinite(camera[k]) for k in camera_fields) or any(abs(camera[k]-v)>1e-4 for k,v in expected.items()):
         raise ValueError('Original static pinhole calibration changed')
     if abs(camera['vertical_fov_radians'] - 2*np.arctan(240/camera['fy'])) > 1e-5:
         raise ValueError('Original static field of view changed')
@@ -100,8 +103,8 @@ class PinnedPublicStaticVisionAssets:
             if path.stat().st_size > limit or sha(path) != expected:
                 raise ValueError('Prepared static public asset bytes changed')
 
-    def root_camera(self, measured_positions):
-        return root_from_camera(self._definition, measured_positions)
+    def root_camera(self, measured_positions, camera_profile='arena_ego'):
+        return root_from_camera(self._definition, measured_positions, camera_profile)
 
 
 def localize(image_path, observation_path, definition_path, fiducial_path, fiducial_sha256,
@@ -116,7 +119,8 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
     image = cv2.imread(str(image_path),cv2.IMREAD_COLOR)
     if image is None or image.shape != (480,640,3):
         raise ValueError('Static actual camera requires640x480PNG')
-    root_camera=public_assets.root_camera(value['measured_joints']['positions'])
+    camera_profile = value['camera'].get('mount_profile', 'arena_ego')
+    root_camera=public_assets.root_camera(value['measured_joints']['positions'], camera_profile)
     c=value['camera'];K=np.array([[c['fx'],0,c['cx']],[0,c['fy'],c['cy']],[0,0,1.]])
     parameters=cv2.aruco.DetectorParameters();parameters.cornerRefinementMethod=cv2.aruco.CORNER_REFINE_SUBPIX
     detector=cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),parameters)
@@ -155,7 +159,7 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
         'source':'actual_rgb_printed_label_pnp_and_original_self_FK',
         'image_sha256':sha(image_path),'input_sha256':sha(observation_path),
         'definition_sha256':DEFINITION_SHA256,'fiducial_sha256':fiducial_sha256,
-        'camera_profile':'arena_ego','detections':detections,'rejected_marker_candidates':len(rejected),
+        'camera_profile':camera_profile,'detections':detections,'rejected_marker_candidates':len(rejected),
         'world_or_contact_truth_input':False,'actuation_proposed':False,'task_qualified':False}
 
 

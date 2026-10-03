@@ -878,3 +878,25 @@ bounded geometric increment and one original body/physics update. The final
 as the actual control observation, never relabeled as that final image. This
 bounded transfer entry still performs no release/Qwen decision and remains a
 paused diagnostic with explicit16PGS/predictive limits, not formal acceptance.
+
+
+The fresh native RGB transfer (`0357`,c1995f4) confirms the mechanical result
+with390actual native/WBC calls, two new original N1.7 calls and four new images.
+The140Tick control image passes the unchanged gate (apple3.382mm/plate1.006mm,
+90ms full image age), and all140physical prefix records match0354. All250
+transfer records show current hand-only support; final XY error remains15.354mm
+and all390Ticks remain upright. All owned processes are reaped. Release and
+formal task qualification are still absent. The final original ego image
+actually shows forearm occlusion; that image is not treated as fresh target
+localization or silently replaced with auditor truth.
+
+A separate390Tick `g1_static_visual_transfer_auxiliary_diagnostic` keeps the
+same original primary camera and transfer, then shows the already published
+fixed `AuxiliaryGripOverview` sensor (original head mount plus150mm source-Z
+and15degree optical-X rotation). Two render updates precede its new readback.
+The final stamp explicitly names that mount. Static CPU localization can
+interpret an explicitly named one of these two public mounts using original
+self FK; arbitrary camera matrices/profiles remain forbidden. Default static
+input retains the original mount and output. This is one visibility comparison
+with unchanged body actions/physics, not a sensor-angle sweep, and provides no
+placement or task qualification by itself.

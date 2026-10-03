@@ -23,6 +23,20 @@ class StaticObservationTests(unittest.TestCase):
                 bad=json.loads(json.dumps(value));mutation(bad);path.write_text(json.dumps(bad))
                 with self.assertRaises(ValueError):observation(path)
 
+    def test_only_the_two_published_camera_mounts_are_admitted(self):
+        with tempfile.TemporaryDirectory() as root:
+            path,value=self.fixture(root)
+            value['camera']['mount_profile']='auxiliary_grip_overview'
+            path.write_text(json.dumps(value))
+            self.assertEqual(observation(path)['camera']['mount_profile'],'auxiliary_grip_overview')
+            value['camera']['mount_profile']='custom_pose'
+            path.write_text(json.dumps(value))
+            with self.assertRaises(ValueError):observation(path)
+            value['camera']['mount_profile']='auxiliary_grip_overview'
+            value['camera']['root_from_camera']=[[1.,0.,0.,0.]]
+            path.write_text(json.dumps(value))
+            with self.assertRaises(ValueError):observation(path)
+
     def test_stale_or_changed_print_mount_cannot_reinterpret_an_observation(self):
         base=Path(__file__).resolve().parents[4];labels=base/'assets/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
