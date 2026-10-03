@@ -1495,3 +1495,24 @@ autonomous demonstration. It supports testing actual RGB after every bounded
 segment; it does not justify blindly executing a saved four-segment sequence.
 Trace SHA256:
 `8f5b3d2cc46d7676444373f6aebf90cbdf8a9da19a56f18556463eaa98474b7f`.
+
+The native release entry now reobserves at every completed fine segment,
+with at most five segments. Each actual two-marker image derives a new
+whole-box containment interval and current floor margin. If the current margin
+already meets0.02m, no further walking command is admitted; otherwise one
+0.1m requested step uses the unchanged navigator/0.05m stop margin and0.3m/s
+command. A step beyond the far containment boundary, insufficient geometric
+interval or exhausted segment budget leaves the owner paused. The protocol
+explicitly distinguishes intermediate movement from achieved containment;
+an intermediate prediction can still be outside the target and cannot admit
+opening. Another current image is mandatory after each step. Only new current
+containment admits the separate real hold and newer placement-only release
+image. No saved/synthetic image stamp enters this runtime path.
+
+Entry controls0250 pass41development tests/2ignored,12CLI tests,7navigation
+tests, default compilation and a real saved-RGB local-worker round trip, with
+zero physics/model calls. Five numeric-only geometry controls cover partial
+advance, final step, already aligned, minimum-step blockage and a passed
+containment interval. The0.02m release gate and strict physical acceptance
+rules remain unchanged. Actual closed-loop physical release still requires
+a new live test; these entry checks do not qualify it.

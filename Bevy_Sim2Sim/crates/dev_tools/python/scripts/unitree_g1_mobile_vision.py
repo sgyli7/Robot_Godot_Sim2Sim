@@ -224,7 +224,7 @@ def placement_from_visible_markers(detections, observation, geometry_path, mount
 
 
 def fine_from_visible_markers(detections, observation, geometry_path, mounts, heading):
-    """Containment interval along one bounded carry direction; no world state."""
+    """One short observed approach step, then another image; no world state."""
     objects = {o["kind"]: o for o in json.loads(Path(geometry_path).read_text())["objects"]}
     poses = {d["marker_id"]: np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[d["marker_id"]]) for d in detections}
     if set(poses) != {21, 22}:
@@ -235,7 +235,8 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
     floor = np.asarray(objects["t2_bin"]["convex_parts"][2]["points"])
     lower, upper = floor[:, :2].min(axis=0)+.02, floor[:, :2].max(axis=0)-.02
     direction = poses[21][:3, :3].T @ rotation(observation["measured_joints"]["root_rotation_wxyz"]).T @ np.array([math.cos(heading), math.sin(heading), 0.])
-    lo, hi = .15, .70
+    current_margin = float(min((points[:, :2]-(lower-.02)).min(), ((upper+.02)-points[:, :2]).min()))
+    lo, hi = 0., .70
     for axis in (0, 1):
         for coordinate in points[:, axis]:
             if abs(direction[axis]) < 1e-8:
@@ -244,17 +245,23 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             else:
                 ends = sorted([(lower[axis]-coordinate)/direction[axis], (upper[axis]-coordinate)/direction[axis]])
                 lo, hi = max(lo, ends[0]), min(hi, ends[1])
-    if hi-lo < .04:
+    if hi < lo:
         return None
-    physical_distance = (lo+hi)*.5
-    shifted = points[:, :2] + physical_distance*direction[:2]
+    aligned = current_margin >= .02
+    blocked = not aligned and (hi-lo < .04 or hi < .15)
+    physical_distance = None if aligned or blocked else .15
+    shifted = points[:, :2] if physical_distance is None else points[:, :2]+physical_distance*direction[:2]
     margin = float(min((shifted-(lower-.02)).min(), ((upper+.02)-shifted).min()))
-    return {"schema": "g1_visible_marker_fine_carry_v1", "observation": observation["stamp"],
+    return {"schema": "g1_visible_marker_fine_carry_v2", "observation": observation["stamp"],
             "source_geometry_sha256": TASK_GEOMETRY_SHA256, "world_or_contact_truth_input": False,
+            "state": "aligned" if aligned else "blocked" if blocked else "advance",
+            "current_floor_margin_m": current_margin, "maximum_physical_step_m": .15,
             "physical_containment_distance_interval_m": [lo, hi], "selected_physical_distance_m": physical_distance,
             "existing_navigation_stop_margin_m": .05, "predicted_floor_margin_m": margin,
-            "task_qualified": False, "goal": {"observation": observation["stamp"],
-            "heading_yaw_source_rad": heading, "relative_distance_m": physical_distance-.05}}
+            "step_is_final": bool(physical_distance is not None and lo <= physical_distance <= hi),
+            "new_image_required_after_step": True, "task_qualified": False,
+            "goal": None if physical_distance is None else {"observation": observation["stamp"],
+            "heading_yaw_source_rad": heading, "relative_distance_m": .1}}
 
 
 def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False):

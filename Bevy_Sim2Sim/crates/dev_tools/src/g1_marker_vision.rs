@@ -667,33 +667,60 @@ mod worker {
         let interval: [f64; 2] =
             serde_json::from_value(p["physical_containment_distance_interval_m"].clone())
                 .map_err(|e| e.to_string())?;
-        let selected = p["selected_physical_distance_m"]
+        let current_margin = p["current_floor_margin_m"]
             .as_f64()
-            .ok_or("fine distance absent")?;
+            .ok_or("current fine margin absent")?;
         let margin = p["predicted_floor_margin_m"]
             .as_f64()
             .ok_or("fine margin absent")?;
-        let goal: simulation_minigame::g1::mobile_navigation::MobileCarryGoal =
-            serde_json::from_value(p["goal"].clone()).map_err(|e| e.to_string())?;
-        goal.validate().map_err(|e| e.to_string())?;
-        if p["schema"] != "g1_visible_marker_fine_carry_v1"
+        if p["schema"] != "g1_visible_marker_fine_carry_v2"
             || actual != observation
             || p["source_geometry_sha256"] != geometry_hash
             || p["world_or_contact_truth_input"] != false
             || p["task_qualified"] != false
             || reply["camera_mount_profile"] != "auxiliary_grip_overview"
             || !interval.iter().all(|n| n.is_finite())
-            || interval[0] < 0.15
+            || interval[0] < 0.
             || interval[1] > 0.70
-            || interval[1] - interval[0] < 0.04
-            || !selected.is_finite()
-            || (selected - (interval[0] + interval[1]) * 0.5).abs() > 1e-7
+            || interval[0] > interval[1]
+            || !current_margin.is_finite()
+            || p["maximum_physical_step_m"] != 0.15
+            || p["new_image_required_after_step"] != true
             || p["existing_navigation_stop_margin_m"] != 0.05
             || !margin.is_finite()
-            || margin < 0.02
+        {
+            return Err("foreign/unsafe current whole-object fine interval".into());
+        }
+        if p["state"] == "aligned" || p["state"] == "blocked" {
+            let aligned = current_margin >= 0.02;
+            if (p["state"] == "aligned") != aligned
+                || !p["goal"].is_null()
+                || !p["selected_physical_distance_m"].is_null()
+                || p["step_is_final"] != false
+                || (margin - current_margin).abs() > 1e-9
+                || (!aligned && interval[1] - interval[0] >= 0.04 && interval[1] >= 0.15)
+            {
+                return Err("fine alignment/block cannot admit movement or bypass geometry".into());
+            }
+            return Ok(());
+        }
+        let selected = p["selected_physical_distance_m"]
+            .as_f64()
+            .ok_or("fine step absent")?;
+        let goal: simulation_minigame::g1::mobile_navigation::MobileCarryGoal =
+            serde_json::from_value(p["goal"].clone()).map_err(|e| e.to_string())?;
+        goal.validate().map_err(|e| e.to_string())?;
+        let final_step = selected >= interval[0] && selected <= interval[1];
+        if p["state"] != "advance"
+            || current_margin >= 0.02
+            || interval[1] - interval[0] < 0.04
+            || interval[1] < 0.15
+            || selected != 0.15
+            || p["step_is_final"] != final_step
+            || (final_step && margin < 0.02)
             || goal.observation != observation
             || (f64::from(goal.relative_distance_m) + 0.05 - selected).abs() > 1e-6
-            || !(0.1..=0.65).contains(&goal.relative_distance_m)
+            || (goal.relative_distance_m - 0.1).abs() > 1e-7
             || (f64::from(goal.heading_yaw_source_rad)
                 - reply["navigation_proposal"]["heading_yaw_source_rad"]
                     .as_f64()
@@ -701,7 +728,7 @@ mod worker {
             .abs()
                 > 1e-6
         {
-            return Err("foreign/unsafe current whole-object fine interval".into());
+            return Err("unsafe/unobserved segmented fine approach".into());
         }
         Ok(())
     }
@@ -978,14 +1005,16 @@ mod worker {
             let (mut reply, stamp) = fixture();
             reply["camera_mount_profile"] = "auxiliary_grip_overview".into();
             reply["fine_approach_proposal"] = serde_json::json!({
-                "schema":"g1_visible_marker_fine_carry_v1","observation":stamp,
+                "schema":"g1_visible_marker_fine_carry_v2","observation":stamp,
                 "source_geometry_sha256":"geometry","world_or_contact_truth_input":false,"task_qualified":false,
-                "physical_containment_distance_interval_m":[0.56,0.68],"selected_physical_distance_m":0.62,
-                "existing_navigation_stop_margin_m":0.05,"predicted_floor_margin_m":0.08,
-                "goal":{"observation":stamp,"heading_yaw_source_rad":-1.57,"relative_distance_m":0.57},
+                "physical_containment_distance_interval_m":[0.56,0.68],"selected_physical_distance_m":0.15,
+                "state":"advance","current_floor_margin_m":-0.4,"maximum_physical_step_m":0.15,
+                "new_image_required_after_step":true,"step_is_final":false,
+                "existing_navigation_stop_margin_m":0.05,"predicted_floor_margin_m":-0.25,
+                "goal":{"observation":stamp,"heading_yaw_source_rad":-1.57,"relative_distance_m":0.1},
             });
             assert!(validate_fine_reply(&reply, stamp, "geometry").is_ok());
-            for mutation in 0..6 {
+            for mutation in 0..9 {
                 let mut bad = reply.clone();
                 let p = &mut bad["fine_approach_proposal"];
                 match mutation {
@@ -993,11 +1022,28 @@ mod worker {
                     1 => p["source_geometry_sha256"] = "foreign".into(),
                     2 => p["selected_physical_distance_m"] = 0.69.into(),
                     3 => p["existing_navigation_stop_margin_m"] = 0.1.into(),
-                    4 => p["predicted_floor_margin_m"] = 0.019.into(),
-                    _ => p["goal"]["heading_yaw_source_rad"] = (-1.5).into(),
+                    4 => p["step_is_final"] = true.into(),
+                    5 => p["goal"]["heading_yaw_source_rad"] = (-1.5).into(),
+                    6 => p["new_image_required_after_step"] = false.into(),
+                    7 => p["goal"]["relative_distance_m"] = 0.57.into(),
+                    _ => p["state"] = "aligned".into(),
                 }
                 assert!(validate_fine_reply(&bad, stamp, "geometry").is_err());
             }
+            let p = &mut reply["fine_approach_proposal"];
+            p["state"] = "aligned".into();
+            p["current_floor_margin_m"] = 0.022.into();
+            p["predicted_floor_margin_m"] = 0.022.into();
+            p["selected_physical_distance_m"] = serde_json::Value::Null;
+            p["goal"] = serde_json::Value::Null;
+            p["physical_containment_distance_interval_m"] = serde_json::json!([0., 0.1]);
+            assert!(validate_fine_reply(&reply, stamp, "geometry").is_ok());
+            let mut bad = reply.clone();
+            bad["fine_approach_proposal"]["current_floor_margin_m"] = 0.019.into();
+            bad["fine_approach_proposal"]["predicted_floor_margin_m"] = 0.019.into();
+            assert!(validate_fine_reply(&bad, stamp, "geometry").is_err());
+            bad["fine_approach_proposal"]["state"] = "blocked".into();
+            assert!(validate_fine_reply(&bad, stamp, "geometry").is_ok());
         }
         fn memory_fixture() -> (MarkerTargetMemory, ObservationStamp) {
             let current = ObservationStamp {

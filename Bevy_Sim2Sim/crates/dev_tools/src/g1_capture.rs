@@ -173,7 +173,9 @@ struct MobileAssistCaptureRuntime {
     auxiliary_approach: bool,
     auxiliary_release: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
-    fine_goal_submitted: bool,
+    fine_alignment_confirmed: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fine_goals_submitted: u32,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -235,7 +237,9 @@ impl MobileAssistCaptureRuntime {
             auxiliary_approach,
             auxiliary_release,
             #[cfg(feature = "g1_constraint_diagnostic")]
-            fine_goal_submitted: false,
+            fine_alignment_confirmed: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            fine_goals_submitted: 0,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2126,12 +2130,12 @@ fn drive_mobile_assist(
         }
         let carry_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalCarry { navigation, .. } if navigation.completed));
-        if assist.auxiliary_release && carry_complete && !assist.fine_goal_submitted {
+        if assist.auxiliary_release && carry_complete && !assist.fine_alignment_confirmed {
             return drive_auxiliary_fine_approach(runtime, outcome, port);
         }
         if assist.auxiliary_release
             && carry_complete
-            && assist.fine_goal_submitted
+            && assist.fine_alignment_confirmed
             && !assist.hold_submitted
         {
             return drive_auxiliary_hold(runtime, outcome, port);
@@ -2332,8 +2336,8 @@ fn drive_auxiliary_fine_approach(
         .mobile_assist
         .as_ref()
         .ok_or("fine approach stage absent")?;
-    if latest.phase != G1WorkerPhase::Paused || assist.fine_goal_submitted {
-        return Err("fine approach requires a new completed coarse boundary".into());
+    if latest.phase != G1WorkerPhase::Paused || assist.fine_alignment_confirmed {
+        return Err("fine approach requires a new completed carry boundary".into());
     }
     if let Some(job) = &assist.vision_job {
         let Some(reply) = job.try_take() else {
@@ -2353,41 +2357,76 @@ fn drive_auxiliary_fine_approach(
                     .into(),
             );
         }
-        let goal: MobileCarryGoal = serde_json::from_value(
-            reply["fine_approach_proposal"]["goal"].clone(),
-        )
-        .map_err(|e| format!("current whole-object containment interval unavailable: {e}"))?;
-        goal.validate().map_err(|e| e.to_string())?;
-        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
-            return Err("fine approach lost sole native owner".into());
-        };
-        owner
-            .submit(TimedCommand {
-                episode_id: runtime.episode_id,
-                valid_until_sim_ns: observation.sim_time_ns + 41_000_000_000,
-                valid_until_wall: Instant::now() + Duration::from_secs(42),
-                command: MobileAssistCommand::ClassicalCarry(goal.clone()),
-            })
-            .map_err(|e| e.to_string())?;
-        outcome
-            .0
-            .lock()
-            .unwrap()
-            .mobile_assist_handoff
-            .as_mut()
-            .ok_or("fine provenance absent")?["visual_fine_approach"] = serde_json::json!({
+        let state = reply["fine_approach_proposal"]["state"]
+            .as_str()
+            .ok_or("current fine containment state unavailable")?;
+        let aligned = state == "aligned";
+        let mut goal = None;
+        if !aligned {
+            if state != "advance" || assist.fine_goals_submitted >= 5 {
+                return Err("current geometry cannot admit another bounded fine segment; owner remains paused".into());
+            }
+            let parsed: MobileCarryGoal =
+                serde_json::from_value(reply["fine_approach_proposal"]["goal"].clone())
+                    .map_err(|e| format!("current short fine step unavailable: {e}"))?;
+            parsed.validate().map_err(|e| e.to_string())?;
+            let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+                return Err("fine approach lost sole native owner".into());
+            };
+            owner
+                .submit(TimedCommand {
+                    episode_id: runtime.episode_id,
+                    valid_until_sim_ns: observation.sim_time_ns + 8_000_000_000,
+                    valid_until_wall: Instant::now() + Duration::from_secs(10),
+                    command: MobileAssistCommand::ClassicalCarry(parsed.clone()),
+                })
+                .map_err(|e| e.to_string())?;
+            goal = Some(parsed);
+        }
+        let record = serde_json::json!({
                 "actual_localization":reply,"executed_goal":goal,"whole_object_containment_interval":true,
+                "alignment_confirmed":aligned,"new_image_before_each_segment":true,
             "same_owner_boundary_tick":latest.timing.episode_integrations,
             "localization_wall_ms":job.started.elapsed().as_secs_f64()*1000.,
             "object_truth_in_command":false,"task_qualified":false,
         });
+        {
+            let mut receipt = outcome.0.lock().unwrap();
+            let handoff = receipt
+                .mobile_assist_handoff
+                .as_mut()
+                .ok_or("fine provenance absent")?;
+            if assist.fine_goals_submitted == 0 {
+                handoff["visual_fine_approach"] = record.clone();
+            }
+            let object = handoff
+                .as_object_mut()
+                .ok_or("fine provenance not an object")?;
+            object
+                .entry("visual_fine_steps")
+                .or_insert_with(|| serde_json::json!([]))
+                .as_array_mut()
+                .ok_or("fine step provenance not an array")?
+                .push(record);
+        }
         let assist = runtime.mobile_assist.as_mut().unwrap();
         assist.vision_job.take();
-        assist.fine_goal_submitted = true;
+        assist.fine_alignment_confirmed = aligned;
+        if !aligned {
+            assist.fine_goals_submitted += 1;
+        }
         runtime.requested = false;
         return Ok(false);
     }
-    start_marker_job(runtime, port, "visual_fine_approach")?;
+    let directory = if assist.fine_goals_submitted == 0 {
+        "visual_fine_approach".to_string()
+    } else {
+        format!(
+            "visual_fine_approach_{:02}",
+            assist.fine_goals_submitted + 1
+        )
+    };
+    start_marker_job(runtime, port, &directory)?;
     Ok(false)
 }
 
@@ -2453,7 +2492,7 @@ fn drive_auxiliary_release(
         .ok_or("release stage absent")?;
     if latest.phase != G1WorkerPhase::Paused
         || assist.release_submitted
-        || !assist.fine_goal_submitted
+        || !assist.fine_alignment_confirmed
     {
         return Err("release requires its completed fine approach boundary".into());
     }
