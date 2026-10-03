@@ -757,8 +757,9 @@ configuration with hash-bound `python_path`, `worker_path`, `localizer_path`,
 `definition_path` and `fiducial_path` (each paired with its `_sha256`). Its
 calibration must equal the labels actually installed in that scene. This port
 has a distinct static protocol, one owned CPU process and one final image;
-it cannot substitute for a mobile task or run alongside the original static
-VLA in this diagnostic. Preparation precedes image submission. Bevy polls a
+it cannot substitute for a mobile task. The original0/60Tick calibration
+entry has no VLA; a separate140Tick visual handoff below explicitly permits
+two preceding original static chunks. Preparation precedes image submission. Bevy polls a
 bounded reply channel while the separate physical owner completes its original
 Tick budget. Only actual RGB and matching joint/IMU/velocity sensors enter
 `static_vision_input`; body/object world poses remain outside that directory.
@@ -798,3 +799,32 @@ solver, actuator, frequency or physical-world parameter change. Revalidation
 can resume a bounded subset with unique episodes; completed cases are retained
 instead of silently restarted. Formal8/10and current task scores stay unverified
 until complete independent audits finish.
+
+
+The compact continuation (`0352`,ab94954) executes only the four remaining
+cases (1520new integrations); the six completed cases remain retained. All
+ten380Tick physical body trajectories match their original records exactly.
+Current active-contact placement windows pass in P0/seed0 (2.98s) and
+P4/seed0 (2.52s); the other eight never fully enter the plate. Thus the
+historical2/10diagnostic window score survives revalidation, but is not
+formal task, fresh-model, autonomous or continuous1x qualification.
+
+A read-only grasp-phase audit (`0353`) separates inadequate acquisition from
+transfer/release failures. P1/seed42 lifts the apple103.5mm and has a
+conservative hand-only active-support interval1.38s, yet misses the plate.
+P3/seed42 similarly lifts102.6mm with0.96s of hand-only support. Other cases
+barely lift the object. These observations do not establish a single friction
+or standing cause. They justify testing current perception at a grasp boundary
+before adding any geometric correction; no physical parameters are changed.
+
+`--scene g1_static_visual_grasp_diagnostic --g1-ticks140` is a distinct paused
+T1 diagnostic. It requires the original static startup, exactly two fresh
+original40frame chunks, no prefetch/mobile wait, and the hash-bound static
+marker assets/CPU worker. The original VLA receives unmarked RGB. Only after
+the sole owner completes60startup+80actionTicks are the public labels shown;
+two render updates precede the current140Tick capture and localization.
+The receipt discloses this phase, original action budget and marker activation.
+This entry performs no subsequent geometric correction, Qwen decision or task
+qualification. Missing/currently occluded labels fail closed; the frozen
+perception gate is unchanged. Formal physics still has one20ms integration per
+Tick, with the existing explicit16PGS/predictive-limit diagnostic identified.

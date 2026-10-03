@@ -658,6 +658,15 @@ pub fn run_capture_from_file(
     run_from_file(path, options, CaptureMode::Camera)
 }
 
+/// Two unchanged original T1 chunks, then disclose markers and observe the
+/// current physical grasp boundary. No geometric correction is executed here.
+pub fn run_static_visual_grasp_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticVisualGrasp)
+}
+
 /// Four fresh original chunks separated by explicit native standing waits.
 /// This source-scene timing preflight has no Qwen/task qualification.
 pub fn run_mobile_wait_grasp_from_file(
@@ -774,6 +783,7 @@ pub fn run_mobile_auxiliary_release_from_file(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureMode {
     Camera,
+    StaticVisualGrasp,
     MobileWaitGrasp,
     MobileContinuousRelease,
     TaskLab,
@@ -804,7 +814,7 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera | Self::StaticVisualGrasp | Self::TaskLab | Self::MobileCarry => None,
         }
     }
 }
@@ -948,6 +958,8 @@ pub struct G1CaptureReceipt {
     pub disclosed_fiducials: Option<G1TaskFiducialReceipt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_marker_localization: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_visual_grasp_handoff: Option<serde_json::Value>,
     pub camera_exposure_ev100: f32,
     pub diagnostic_directional_shadow_maps: bool,
     pub camera_ambient_brightness: f32,
@@ -1083,6 +1095,7 @@ impl G1CaptureReceipt {
             mobile_assist_handoff: None,
             disclosed_fiducials: None,
             static_marker_localization: None,
+            static_visual_grasp_handoff: None,
             camera_exposure_ev100: Exposure::default().ev100,
             diagnostic_directional_shadow_maps: true,
             camera_ambient_brightness: 450.,
@@ -1289,6 +1302,8 @@ pub(super) struct CaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     continuous_route: Option<mobile_continuous::ContinuousMobileRoute>,
     static_marker_worker: Option<StaticMarkerWorker>,
+    static_visual_grasp: bool,
+    static_marker_activation_render_frame: Option<u32>,
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1547,6 +1562,7 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
+    let static_visual_grasp = mode == CaptureMode::StaticVisualGrasp;
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
     let continuous = mode == CaptureMode::MobileContinuousRelease;
@@ -1561,13 +1577,14 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (mode != CaptureMode::Camera
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp)
             || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
             || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || if static_marker_assets.is_some() {
-                policy.is_some() || options.ticks != 60
+                policy.is_some() != static_visual_grasp
+                    || options.ticks != if static_visual_grasp { 140 } else { 60 }
             } else {
                 policy
                     .as_ref()
@@ -1657,23 +1674,37 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (mode != CaptureMode::Camera
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
-            || policy.is_some()
-            || static_startup != (options.ticks == 60)
+            || policy.is_some() != static_visual_grasp
+            || if static_visual_grasp {
+                !static_startup || options.ticks != 140
+            } else {
+                static_startup != (options.ticks == 60) || !matches!(options.ticks, 0 | 60)
+            }
             || mobile_scan.is_some()
             || task_visual.is_none()
             || station.is_none()
-            || !matches!(options.ticks, 0 | 60)
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16))
     {
-        return Err("static labels require their explicit0/60Tick no-policy original AGILE station RGB diagnostic".into());
+        return Err("static labels require explicit0/60Tick calibration or the distinct140Tick original two-chunk visual handoff".into());
+    }
+    if static_visual_grasp
+        && (static_marker_assets.is_none()
+            || static_marker_vision.is_none()
+            || policy.as_ref().is_none_or(|p| {
+                p.max_calls != 2 || p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait
+            })
+            || !static_startup
+            || options.ticks != 140)
+    {
+        return Err("static visual handoff requires exactly two original40frame chunks after60startupTicks and its distinct current RGB worker".into());
     }
     let static_labels = static_marker_assets.is_some();
     if let Some(vision) = &static_marker_vision {
-        if !static_labels || interactive || policy.is_some() {
-            return Err("static CPU localization requires the separate no-policy native label capture".into());
+        if !static_labels || interactive || (policy.is_some() && !static_visual_grasp) {
+            return Err("static CPU localization requires calibration or the separate original two-chunk visual handoff".into());
         }
         vision.validate()?;
         let labels = static_marker_assets.as_ref().unwrap();
@@ -2208,6 +2239,8 @@ fn run_capture_owner(
             #[cfg(feature = "g1_constraint_diagnostic")]
             continuous_route,
             static_marker_worker,
+            static_visual_grasp,
+            static_marker_activation_render_frame: None,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
         .add_plugins(
@@ -2259,7 +2292,7 @@ fn run_capture_owner(
         app.insert_resource(model).add_plugins(G1TaskVisualPlugin);
     }
     if let Some(model) = fiducial_model {
-        if continuous {
+        if continuous || static_visual_grasp {
             app.insert_resource(G1TaskFiducialGate { enabled: false });
         }
         outcome.0.lock().unwrap().disclosed_fiducials = Some(model.receipt.clone());
@@ -4726,6 +4759,30 @@ fn drive_capture(
                     && latest.timing.total_integrations == u64::from(runtime.options.ticks))
         };
         if capture_boundary && !runtime.requested {
+            if runtime.static_visual_grasp {
+                if latest.phase != G1WorkerPhase::Paused || latest.timing.total_integrations != 140 {
+                    return Err("static visual handoff did not reach its completed140Tick boundary".into());
+                }
+                if runtime.static_marker_activation_render_frame.is_none() {
+                    marker_gate
+                        .as_mut()
+                        .ok_or("static visual marker gate absent")?
+                        .enabled = true;
+                    runtime.static_marker_activation_render_frame = Some(runtime.render_frames);
+                    outcome.0.lock().unwrap().static_visual_grasp_handoff = Some(serde_json::json!({
+                        "phase":"two_original_unmarked_chunks_then_current_marker_rgb",
+                        "markers_activated_at_completed_tick":140,"unmarked_original_vla_calls":2,
+                        "first_original_action_tick":60,"current_observation_required_tick":140,
+                        "geometric_correction_executed":false,"task_qualified":false,
+                    }));
+                    return Ok(());
+                }
+                if runtime.render_frames
+                    < runtime.static_marker_activation_render_frame.unwrap() + 2
+                {
+                    return Ok(());
+                }
+            }
             if runtime.static_marker_worker.as_ref().is_some_and(|w| !w.ready()) {
                 return Ok(());
             }

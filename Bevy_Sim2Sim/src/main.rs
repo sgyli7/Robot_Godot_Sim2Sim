@@ -44,6 +44,7 @@ fn run() -> Result<(), String> {
         arguments.scene.as_deref(),
         Some(
             "g1_camera_diagnostic"
+                | "g1_static_visual_grasp_diagnostic"
                 | "g1_mobile_wait_grasp_diagnostic"
                 | "g1_mobile_continuous_release_diagnostic"
                 | "g1_task_lab"
@@ -223,7 +224,9 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
             },
         ),
     };
-    let receipt = if interactive {
+    let receipt = if arguments.scene.as_deref() == Some("g1_static_visual_grasp_diagnostic") {
+        dev_tools_minigame::g1_capture::run_static_visual_grasp_from_file(&path, options)
+    } else if interactive {
         dev_tools_minigame::g1_capture::run_task_lab_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_mobile_wait_grasp_diagnostic") {
         dev_tools_minigame::g1_capture::run_mobile_wait_grasp_from_file(&path, options)
@@ -357,7 +360,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_static_visual_grasp_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
@@ -410,7 +413,11 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             value => return Err(format!("unknown argument '{value}'")),
         }
     }
-    if options.scene.as_deref() == Some("g1_mobile_carry_diagnostic") {
+    if options.scene.as_deref() == Some("g1_static_visual_grasp_diagnostic") {
+        if options.g1_ticks != Some(140) {
+            return Err("static visual grasp requires exactly60startup+80original action Ticks (--g1-ticks140)".into());
+        }
+    } else if options.scene.as_deref() == Some("g1_mobile_carry_diagnostic") {
         if !matches!(options.g1_ticks, Some(1000 | 1500)) {
             return Err("mobile carry scene requires --g1-ticks1000 or1500".into());
         }
@@ -859,6 +866,21 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn static_visual_grasp_has_its_distinct_exact_tick_budget() {
+        let parse = |ticks: &str| {
+            parse_arguments(
+                ["--scene", "g1_static_visual_grasp_diagnostic", "--g1-ticks", ticks]
+                    .map(str::to_owned)
+                    .into_iter(),
+            )
+        };
+        assert!(parse("140").is_ok());
+        for ticks in ["0", "60", "80", "139", "141", "380"] {
+            assert!(parse(ticks).is_err());
         }
     }
     #[test]
