@@ -52,6 +52,10 @@ fn wait(
         }
         if let Some(s) = worker.take_latest() {
             if s.phase == G1WorkerPhase::Failed {
+                // Retain actual counters even if a post-integration guard
+                // rejects the last boundary before emitting a complete step.
+                writeln!(file,"{}",serde_json::json!({"failed_owner_snapshot":true,"target_tick":target,"phase":s.phase,"reason":s.reason,"timing":s.timing})).map_err(|e|e.to_string())?;
+                file.flush().map_err(|e| e.to_string())?;
                 return Err(s.reason.clone().unwrap_or("static owner failed".into()));
             }
             if s.phase == G1WorkerPhase::Paused && s.timing.episode_integrations == target {
@@ -67,14 +71,19 @@ fn wait(
 #[test]
 #[ignore = "one offline saved-original140Tick prefix plus250classical50HzTicks;0freshcamera/model calls"]
 fn saved_visual_static_transfer_in_original_world() -> Result<(), String> {
-    run(false)
+    run(false, false)
 }
 #[test]
 #[ignore = "one offline390Tick saved prefix plus325bounded memory-placement50HzTicks;0freshcamera/model calls"]
 fn saved_memory_static_place_in_original_world() -> Result<(), String> {
-    run(true)
+    run(true, false)
 }
-fn run(place: bool) -> Result<(), String> {
+#[test]
+#[ignore = "one fixed-input native4PGS/predictive comparator against16diagnostic;715Ticklimit,0freshcamera/models;no parameter grid"]
+fn saved_memory_static_place_with_native_four_passes() -> Result<(), String> {
+    run(true, true)
+}
+fn run(place: bool, native_four_passes: bool) -> Result<(), String> {
     let p = PathBuf::from(std::env::var("G1_STATIC_TRANSFER_FIXTURE").map_err(|e| e.to_string())?);
     let h = std::env::var("G1_STATIC_TRANSFER_FIXTURE_SHA256").map_err(|e| e.to_string())?;
     let bytes = bound_bytes(&p, &h).map_err(|e| e.to_string())?;
@@ -140,7 +149,12 @@ fn run(place: bool) -> Result<(), String> {
     let (_, environment, _) = prepare(&scene, &identity, body.floor_contact_friction)?;
     body.startup_environment = Some(environment);
     let episode = config.body.episode_id();
-    let worker = StaticStartupWorker::spawn_static_startup(config).map_err(|e| e.to_string())?;
+    let worker = if native_four_passes {
+        StaticStartupWorker::spawn_static_native_four_passes_comparison(config)
+    } else {
+        StaticStartupWorker::spawn_static_startup(config)
+    }
+    .map_err(|e| e.to_string())?;
     let trace = worker.subscribe_steps(512).map_err(|e| e.to_string())?;
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -207,5 +221,17 @@ fn run(place: bool) -> Result<(), String> {
         final_state.timing.total_integrations,
         if place { 715 } else { 390 }
     );
+    let last = final_state
+        .step
+        .as_ref()
+        .ok_or("final static step absent")?;
+    let simulation_minigame::g1::task_runner::ArenaBodyStep::StaticAgile(body) = &last.body else {
+        return Err("final body is foreign".into());
+    };
+    assert_eq!(
+        body.step_configuration.num_internal_pgs_iterations,
+        if native_four_passes { 4 } else { 16 }
+    );
+    assert_eq!(body.step_configuration.dt, 0.02);
     Ok(())
 }

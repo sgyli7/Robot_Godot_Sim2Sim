@@ -72,6 +72,18 @@ pub(super) struct StaticStartupRunner {
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        Self::load_profile(config, false)
+    }
+    /// Single explicit fixed-input comparator; no runtime/default fallback.
+    pub(super) fn load_native_four_passes_comparison(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        Self::load_profile(config, true)
+    }
+    fn load_profile(
+        config: &ArenaTaskRunnerConfig,
+        native_four_passes: bool,
+    ) -> Result<Self, RobotError> {
         if config.body.profile() != task_minigame::types::TaskProfile::StaticApple {
             return Err(invalid("static startup requires original AGILE/N1.7"));
         }
@@ -96,7 +108,11 @@ impl StaticStartupRunner {
             placement_geometry,
             placement: None,
             observation_withdrawal: None,
-            owner: ArenaTaskRunner::load_static_predictive_constraint_diagnostic(config)?,
+            owner: if native_four_passes {
+                ArenaTaskRunner::load_static_predictive_limit_diagnostic(config)?
+            } else {
+                ArenaTaskRunner::load_static_predictive_constraint_diagnostic(config)?
+            },
             episode_id: config.body.episode_id(),
             stable_ticks: 0,
             ready: false,

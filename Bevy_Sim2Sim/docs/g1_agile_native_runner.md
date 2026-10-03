@@ -154,3 +154,19 @@ final speeds were 1.84e-6 m/s and 5.41e-5 rad/s. This is one saved-original
 P1/seed42 mechanical diagnostic, with zero new VLA/Qwen requests or images;
 it is not a formal autonomous task trial or an 8/10 result. Raw steps and the
 independent result are retained in scratch case 0363 for immutable sealing.
+
+
+The separate ignored test `saved_memory_static_place_with_native_four_passes`
+uses `spawn_static_native_four_passes_comparison` only for one fixed-input
+mechanical comparison. It selects the existing native four PGS passes before
+clock startup and retains the same existing predictive bounds. Normal/static
+sixteen-pass diagnostic constructors remain unchanged; there is no runtime
+parameter selection or fallback. Reset recreates the selected comparison.
+The hash-bound saved 16-pass reference images/actions/memory are explicitly
+reused, with offline-only wall age refresh. Their geometry is a fixed input,
+not newly measured four-pass RGB. Cadence, forces/materials and model bytes are
+unchanged; the comparison must not count as autonomous or formal qualification.
+Failed owner snapshots preserve actual integration/inference counters if a
+post-integration guard refuses the last completed record. No parameter grid is
+performed. The frozen trajectory and independent physical audit, not the test
+exit status alone, determine what this comparison shows.
