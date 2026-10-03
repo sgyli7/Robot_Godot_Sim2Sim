@@ -515,3 +515,20 @@ stiffness and5Nm motor caps do not change. Error is a load proxy, not proof of
 object contact. The candidate has no runtime/UI path and no autonomous score.
 Its paired worlds start with the same prior oracle-aligned prefix, allowing the
 independent auditor to isolate this feedback change and retain any failure.
+
+The paired self-encoder comparison (`0324`) also fails: support improves from
+9/20 to13/20wait ticks, but both apples fall. All320integrations and original
+body updates are retained; the reference exactly reproduces0323and both140Tick
+prefixes match. No preload threshold or gain search follows. An offline audit
+(`0325`) separates approximately26mm of palm joint motion from approximately2mm
+of root motion. At the hold boundary the elbow still moves at -1.37rad/s with
+a -0.152rad last-target error; this is an unsettled arm, not a proven finger
+force problem. Original robot masses/COM and measured self-state predict the
+gravity-support target offset using the unchanged source stiffness.
+
+The same finite test can now preload both reference and candidate during their
+20Tick hold. It starts that feedback from command80(the first explicit hold
+command), allowing one separately declared gravity-compensated arm-hold
+comparison. This test seam still has no worker/UI path, object-truth controller
+input or autonomous score. Previously frozen fixtures retain their behavior:
+their commands79and80are identical and the new reference flag defaults false.

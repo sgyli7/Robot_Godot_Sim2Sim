@@ -212,14 +212,15 @@ mod tests {
                 } else {
                     None
                 };
-                if tick > 140
-                    && label == "oracle_translation_candidate"
-                    && fixture["candidate_hold_self_preload"] == true
-                {
+                let self_preload = match label {
+                    "saved_reference" => fixture["reference_hold_self_preload"] == true,
+                    _ => fixture["candidate_hold_self_preload"] == true,
+                };
+                if tick > 140 && self_preload {
                     let measurement = owner.measurement().map_err(|e| e.to_string())?;
                     if preload.is_none() {
                         preload = Some(super::static_preload::StaticFingerPreload::new(
-                            commands[79].clone(),
+                            commands[80].clone(),
                             config.limits.clone(),
                             &measurement,
                         )?);
@@ -246,6 +247,7 @@ mod tests {
                 writeln!(log,"{}",serde_json::json!({"label":label,"body":step,
                     "applied_offline_command":applied,
                     "candidate_hold_self_preload":fixture["candidate_hold_self_preload"],
+                    "reference_hold_self_preload":fixture["reference_hold_self_preload"],
                     "phase":if tick<=60 {"explicit_static_startup"} else if tick<=140 {"saved_or_explicitly_aligned_command"} else {"explicit20Tick_last_target_hold"},
                     "fresh_images":0,"fresh_vla_calls":0,"oracle_diagnostic_only":true,
                     "autonomous_task_qualified":false})).map_err(|e|e.to_string())?;
