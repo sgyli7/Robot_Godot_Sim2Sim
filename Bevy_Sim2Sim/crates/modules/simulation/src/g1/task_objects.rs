@@ -308,6 +308,31 @@ pub struct TaskObjectContactSample {
     /// Last-solve normal impulse acting on this object, in source Z-up axes.
     /// Tangential/friction impulse is excluded; acceptance-only evidence.
     pub normal_impulse_on_object_source: [f32; 3],
+    /// Diagnostic cache/impulse records. Solver-basis friction components are
+    /// not world-space forces, and cached anchors are not fresh shape queries.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub diagnostic_solver_contacts: Vec<TaskObjectSolverContactSample>,
+}
+
+/// Read-only evidence from active solver-contact identities. These records
+/// never enter robot measurements, action admission or task control.
+#[cfg(feature = "g1_constraint_diagnostic")]
+#[derive(Clone, Debug, Serialize)]
+pub struct TaskObjectSolverContactSample {
+    pub manifold_index: usize,
+    pub point_index: usize,
+    pub cached_contact_new_bit: bool,
+    pub normal_impulse_n_s: f32,
+    /// None for the simplified rigid-body solver, whose pointwise actual
+    /// tangent impulses are not written back. Warmstart data is not substituted.
+    pub tangent_impulse_solver_basis_n_s: Option<[f32; 2]>,
+    pub effective_friction: f32,
+    pub cached_manifold_normal_source: [f32; 3],
+    /// Body-CoM-relative world lever arm frozen at the last full pair update.
+    pub cached_solver_lever_arm_on_object_source_m: [f32; 3],
+    /// Cached body-local anchors resolved at this published body's pose.
+    pub cached_anchor_on_object_source_m: [f32; 3],
+    pub cached_anchor_on_other_source_m: [f32; 3],
 }
 
 /// A render/independent-acceptance sample, never a model observation field.
@@ -561,6 +586,14 @@ impl TaskObjectScene {
                             pair,
                             instance.collider,
                         ),
+                        #[cfg(feature = "g1_constraint_diagnostic")]
+                        diagnostic_solver_contacts: diagnostic_solver_contacts(
+                            pair,
+                            instance.collider,
+                            &world.world.bodies,
+                            &world.world.multibody_joints,
+                            world.world.integration_parameters.friction_model,
+                        ),
                     }
                 })
                 .collect();
@@ -642,6 +675,69 @@ fn normal_impulse_on_collider(
     )
 }
 
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn diagnostic_solver_contacts(
+    pair: &rapier3d::geometry::ContactPair,
+    object: ColliderHandle,
+    bodies: &RigidBodySet,
+    multibodies: &MultibodyJointSet,
+    friction_model: FrictionModel,
+) -> Vec<TaskObjectSolverContactSample> {
+    let object_first = pair.collider1 == object;
+    pair.manifolds
+        .iter()
+        .enumerate()
+        .flat_map(|(manifold_index, manifold)| {
+            let pointwise_friction = friction_model == FrictionModel::Coulomb
+                || [manifold.data.rigid_body1, manifold.data.rigid_body2]
+                    .into_iter()
+                    .flatten()
+                    .any(|body| multibodies.rigid_body_link(body).is_some());
+            manifold
+                .data
+                .solver_contacts
+                .iter()
+                .filter_map(move |contact| {
+                    let point_index =
+                        (contact.contact_id[0] & !rapier3d::geometry::NEW_CONTACT_BIT) as usize;
+                    let point = manifold.points.get(point_index)?;
+                    let (anchor1, anchor2) =
+                        manifold.data.solver_contact_world_points(contact, bodies);
+                    let (object_anchor, other_anchor, lever) = if object_first {
+                        (anchor1, anchor2, point.data.solver_dp1)
+                    } else {
+                        (anchor2, anchor1, point.data.solver_dp2)
+                    };
+                    Some(TaskObjectSolverContactSample {
+                        manifold_index,
+                        point_index,
+                        cached_contact_new_bit: contact.contact_id[0]
+                            & rapier3d::geometry::NEW_CONTACT_BIT
+                            != 0,
+                        normal_impulse_n_s: point.data.impulse,
+                        tangent_impulse_solver_basis_n_s: pointwise_friction.then_some([
+                            point.data.tangent_impulse[0],
+                            point.data.tangent_impulse[1],
+                        ]),
+                        effective_friction: manifold.data.friction,
+                        cached_manifold_normal_source: engine_to_source_vector(
+                            manifold.data.normal.to_array(),
+                        ),
+                        cached_solver_lever_arm_on_object_source_m: engine_to_source_vector(
+                            lever.to_array(),
+                        ),
+                        cached_anchor_on_object_source_m: engine_to_source_vector(
+                            object_anchor.to_array(),
+                        ),
+                        cached_anchor_on_other_source_m: engine_to_source_vector(
+                            other_anchor.to_array(),
+                        ),
+                    })
+                })
+        })
+        .collect()
+}
+
 fn engine_vector(value: [f64; 3]) -> Vector {
     Vector::from_array(source_to_engine_vector(value.map(|v| v as f32)))
 }
@@ -709,6 +805,96 @@ mod tests {
             );
             assert!(impulse[0].abs() < 1e-6 && impulse[1].abs() < 1e-6);
             assert_eq!(world.snapshot().integration_count, 100);
+        }
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[test]
+    fn solver_contact_audit_retains_sliding_impulses_for_both_orders() {
+        for object_first in [false, true] {
+            let mut world = SimulationWorld::with_game_frequency(50).unwrap();
+            let object = world
+                .world
+                .bodies
+                .insert(RigidBodyBuilder::dynamic().translation(Vector::new(0., 0.2, 0.)));
+            let floor = world.world.bodies.insert(RigidBodyBuilder::fixed());
+            let insert_object = |world: &mut SimulationWorld| {
+                world.world.colliders.insert_with_parent(
+                    ColliderBuilder::cuboid(0.1, 0.1, 0.1)
+                        .mass(0.1)
+                        .friction(0.5),
+                    object,
+                    &mut world.world.bodies,
+                )
+            };
+            let insert_floor = |world: &mut SimulationWorld| {
+                world.world.colliders.insert_with_parent(
+                    ColliderBuilder::cuboid(1., 0.1, 1.).friction(0.5),
+                    floor,
+                    &mut world.world.bodies,
+                )
+            };
+            let collider = if object_first {
+                let c = insert_object(&mut world);
+                insert_floor(&mut world);
+                c
+            } else {
+                insert_floor(&mut world);
+                insert_object(&mut world)
+            };
+            for _ in 0..20 {
+                world.step_with_torques(&[]).unwrap();
+            }
+            world.world.bodies[object].set_linvel(Vector::new(0.4, 0., 0.), true);
+            world.step_with_torques(&[]).unwrap();
+            let pair = world
+                .world
+                .narrow_phase
+                .contact_pairs_with(collider)
+                .find(|p| p.total_impulse_magnitude() > 0.)
+                .expect("loaded sliding contact");
+            let unavailable = diagnostic_solver_contacts(
+                pair,
+                collider,
+                &world.world.bodies,
+                &world.world.multibody_joints,
+                world.world.integration_parameters.friction_model,
+            );
+            assert!(!unavailable.is_empty());
+            assert!(
+                unavailable
+                    .iter()
+                    .all(|s| s.tangent_impulse_solver_basis_n_s.is_none())
+            );
+            // This isolated audit test exercises the supported pointwise path;
+            // no G1 or default world changes its original friction model.
+            world.world.integration_parameters.friction_model = FrictionModel::Coulomb;
+            world.step_with_torques(&[]).unwrap();
+            let pair = world
+                .world
+                .narrow_phase
+                .contact_pairs_with(collider)
+                .find(|p| p.total_impulse_magnitude() > 0.)
+                .expect("pointwise sliding contact");
+            let samples = diagnostic_solver_contacts(
+                pair,
+                collider,
+                &world.world.bodies,
+                &world.world.multibody_joints,
+                world.world.integration_parameters.friction_model,
+            );
+            assert!(!samples.is_empty());
+            let normal_sum: f32 = samples.iter().map(|s| s.normal_impulse_n_s).sum();
+            assert!((normal_sum - pair.total_impulse_magnitude()).abs() < 1e-6);
+            assert!(samples.iter().any(|s| {
+                let [x, y] = s
+                    .tangent_impulse_solver_basis_n_s
+                    .expect("Coulomb writeback");
+                x.hypot(y) > 1e-5
+            }));
+            assert!(samples.iter().all(|s| s.effective_friction == 0.5));
+            assert!(world.world.bodies[object].linvel().x < 0.4);
+            assert_eq!(world.snapshot().integration_count, 22);
         }
     }
 

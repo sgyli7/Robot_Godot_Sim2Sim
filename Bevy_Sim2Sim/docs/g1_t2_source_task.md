@@ -2018,3 +2018,26 @@ limits: this is neither long-term stationary stability nor a carrying result.
 The retained Rapier solver-point arrays are empty after consumption, so their
 positions are not claimed as measured contact geometry; subsequent output keeps
 the actual positive impulse/body identity only. No task capability is enabled.
+
+The single saved-walking convergence comparison (`0343`,9e4fcf5) retains all1460
+commands and an identical996Tick grasp/hold prefix. The original4PGS reference
+reproduces every retained0300body step exactly. Changing only nonintegrating
+PGS to16 at997 loses all hand support at1038 instead of1282; it is rejected,
+and neither normal nor live diagnostic solver settings change. Both worlds
+complete1460native/WBC updates with one20ms integration per Tick,0fresh images,
+VLA or Qwen calls. There is no solver-parameter grid or task qualification.
+
+Read-only audits show the two palms' measured-joint FK agrees with actual body
+positions within3.31e-7m; maximum joint-anchor discrepancy is below1.92e-7m.
+Thus this trace does not support an assembly/anchor-drift explanation. During
+the common bilateral-contact interval997..1035, arm tracking RMS medians are
+0.072903rad(reference) and0.073814rad(candidate); the apparently lower candidate
+error over the longer walking window includes its unloaded, dropped-box state.
+Palm-origin gaps are not collision-surface clearance. In the reference, box
+angular speed first exceeds2rad/s at the first stop Tick1264 (7.212rad/s); the
+candidate reaches that threshold at1027 during walking. Contact-loss timing and
+normal magnitudes alone cannot establish a friction/torque cause. Diagnostic
+point records therefore preserve active contact identities, raw solver-basis
+friction impulses and cached lever arms/anchors without feeding them to control.
+Cached anchors and normals are explicitly distinct from fresh post-step shape
+queries and from measured world-space friction forces.
