@@ -15,7 +15,7 @@ use robot_minigame::{
     },
     goose::{
         contract::GooseNativeState,
-        plant::{GooseBody, GoosePlant},
+        plant::{GooseBody, GooseCollider, GoosePlant},
     },
 };
 use serde::Serialize;
@@ -97,32 +97,14 @@ impl GooseAssembly {
             (Vec<(Pose, SharedShape)>, Vec<String>),
         > = BTreeMap::new();
         for body in &plant.bodies {
-            let mut pose = engine_pose(body.translation_world_m, body.rotation_world_wxyz)?;
+            let mut pose = native_source_pose(body.translation_world_m, body.rotation_world_wxyz)?;
             pose.translation += lift;
             poses.insert(body.name.clone(), pose);
         }
         // Validate hull conversion before changing native state. Individual hulls
         // retain the exported source mapping and do not fill an entire hollow body.
         for collider in &plant.colliders {
-            let leaf = match collider.kind.as_str() {
-                "box" => {
-                    let extent = engine_vector(collider.half_extents_m.unwrap())?.abs();
-                    ColliderBuilder::cuboid(extent.x, extent.y, extent.z)
-                }
-                "convex_mesh" => {
-                    let vertices = collider
-                        .vertices_local_m
-                        .as_ref()
-                        .unwrap()
-                        .iter()
-                        .map(|value| engine_vector(*value))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    ColliderBuilder::convex_hull(&vertices).ok_or_else(|| {
-                        invalid(format!("Goose hull collapsed: {}", collider.name))
-                    })?
-                }
-                _ => return Err(invalid("Unsupported Goose geometry")),
-            };
+            let leaf = native_collider_leaf(collider)?;
             // Pack unchanged hulls sharing a body and physical parameters into
             // one compound; keep each original hull and its source identity.
             let group = shape_groups
@@ -133,10 +115,7 @@ impl GooseAssembly {
                     collider.friction.to_bits(),
                 ))
                 .or_default();
-            group.0.push((
-                engine_pose(collider.local_position_m, collider.local_rotation_wxyz)?,
-                leaf.shape,
-            ));
+            group.0.push(leaf);
             group.1.push(collider.name.clone());
         }
         let mut body_handles = HashMap::new();
@@ -427,11 +406,64 @@ fn engine_vector(source: [f64; 3]) -> Result<Vector, RobotError> {
     }
     Ok(Vector::from_array(source_to_engine_vector(values)))
 }
-fn engine_pose(position: [f64; 3], rotation: [f64; 4]) -> Result<Pose, RobotError> {
+/// Convert the same source pose for native body placement and collider inspection.
+/// The caller owns any initial world lift; this conversion never adds one.
+pub fn native_source_pose(position: [f64; 3], rotation: [f64; 4]) -> Result<Pose, RobotError> {
     let quaternion = source_to_engine_rotation(rotation.map(|value| value as f32))?;
     Ok(Pose::from_parts(
         engine_vector(position)?,
         Rotation::from_xyzw(quaternion[0], quaternion[1], quaternion[2], quaternion[3]),
+    ))
+}
+
+/// Build one unchanged source collider, shared by the articulation and zero-step tools.
+/// This does not construct a robot or bypass its condensed-contact guard.
+pub fn native_collider_leaf(collider: &GooseCollider) -> Result<(Pose, SharedShape), RobotError> {
+    let shape = match collider.kind.as_str() {
+        "box" => {
+            let source = collider
+                .half_extents_m
+                .ok_or_else(|| invalid("Goose box extents absent"))?;
+            if source
+                .iter()
+                .any(|extent| !extent.is_finite() || *extent <= 0.0)
+            {
+                return Err(invalid("Invalid Goose box extent"));
+            }
+            let extent = engine_vector(source)?.abs();
+            ColliderBuilder::cuboid(extent.x, extent.y, extent.z).shape
+        }
+        "convex_mesh" => {
+            let source = collider
+                .vertices_local_m
+                .as_ref()
+                .ok_or_else(|| invalid("Goose convex vertices absent"))?;
+            if source.len() < 4 {
+                return Err(invalid("Goose convex shape has too few vertices"));
+            }
+            let vertices = source
+                .iter()
+                .map(|value| engine_vector(*value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let shape = ColliderBuilder::convex_hull(&vertices)
+                .ok_or_else(|| invalid(format!("Goose hull collapsed: {}", collider.name)))?
+                .shape;
+            // Parry can construct a two-sided flat polygon. MuJoCo rejects that
+            // input; accepting it here would silently cross the native boundary.
+            let volume = shape.mass_properties(1.0).mass();
+            if !volume.is_finite() || volume <= 0.0 {
+                return Err(invalid(format!(
+                    "Goose convex hull has no positive native volume: {}",
+                    collider.name
+                )));
+            }
+            shape
+        }
+        _ => return Err(invalid("Unsupported Goose geometry")),
+    };
+    Ok((
+        native_source_pose(collider.local_position_m, collider.local_rotation_wxyz)?,
+        shape,
     ))
 }
 fn engine_inertia(source: [[f64; 3]; 3]) -> Matrix {
@@ -482,6 +514,48 @@ pub fn native_mass_properties(body: &GooseBody) -> Result<MassProperties, RobotE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn component_leaf_reports_invalid_input_without_panicking() {
+        let mut collider = GooseCollider {
+            name: "component".into(),
+            body: "rig".into(),
+            kind: "convex_mesh".into(),
+            local_position_m: [0.0; 3],
+            local_rotation_wxyz: [1.0, 0.0, 0.0, 0.0],
+            vertices_local_m: None,
+            half_extents_m: None,
+            friction: 0.5,
+            contact_patch: None,
+            contype: 1,
+            conaffinity: 1,
+        };
+        assert!(
+            native_collider_leaf(&collider)
+                .unwrap_err()
+                .to_string()
+                .contains("vertices absent")
+        );
+        collider.vertices_local_m = Some(vec![
+            [0.0, 0.0, 0.0],
+            [0.01, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.01, 0.01, 0.0],
+        ]);
+        assert!(
+            native_collider_leaf(&collider)
+                .unwrap_err()
+                .to_string()
+                .contains("no positive native volume: component")
+        );
+        collider.vertices_local_m.as_mut().unwrap()[3][2] = f64::MAX;
+        assert!(
+            native_collider_leaf(&collider)
+                .unwrap_err()
+                .to_string()
+                .contains("f32 boundary")
+        );
+    }
 
     #[test]
     fn full_tensor_survives_basis_and_massless_colliders() {
