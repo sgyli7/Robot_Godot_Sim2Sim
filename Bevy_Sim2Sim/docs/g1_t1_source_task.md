@@ -716,3 +716,12 @@ Actual SDK normal scalars are signed; multiplying each scalar by its reported
 normal reconstructs the measured pair-force matrix. The final auditor handles
 that sign explicitly and retains earlier serialization/sign failures alongside
 the unchanged raw run. No physics/model rerun is used to repair the auditor.
+
+The RGB performance checks retain both outcomes.0341shares the coverage through
+a matrix sum: all5frozen image gates still pass, but P50/P95are2.836/2.932s,
+so it does not establish an overall speed improvement.0342caches six intervals
+while preserving the original floating-point subtraction order; the same5
+images/calibration/10mm gate still pass with P50/P951.077/1.324s versus
+0336's2.161/3.165s. Fifteen static CPU tests pass. There are0new physics,
+captures or model calls in either check; this remains offline perception
+evidence and does not yet satisfy a live one-second observation-age gate.
