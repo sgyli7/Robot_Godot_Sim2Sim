@@ -725,3 +725,29 @@ images/calibration/10mm gate still pass with P50/P951.077/1.324s versus
 0336's2.161/3.165s. Fifteen static CPU tests pass. There are0new physics,
 captures or model calls in either check; this remains offline perception
 evidence and does not yet satisfy a live one-second observation-age gate.
+
+CPU profiling of two retained views (`0347`) identifies repeated public-model
+parsing and tiny-matrix OpenBLAS thread overhead. A child-process-only
+`OPENBLAS_NUM_THREADS=1`/`OMP_NUM_THREADS=1` check (`0348`) preserves all five
+localization results exactly, with P50/P95 0.619/0.671s. It changes no global
+thread setting, physical parameter, learned model or admission threshold.
+
+The distinct static CPU worker (`0349`, a9cbb7a) prepares dependencies and the
+hash-bound public model before accepting an image. Each request rechecks asset
+bytes and computes camera FK from that image's current joint sensors. Actual
+stdin/stdout round trips on the same five retained images pass the unchanged
+perception gate and exactly match the stateless results, at P50/P95
+0.483/0.528s. All five owned processes exit and are reaped. The port admits
+only one episode, increasing original frame/time identities, at most twelve
+requests and bounded lines; repeated or foreign requests and world-state
+fields are rejected. Twenty-three static CPU tests pass. These checks have
+zero new native integrations, camera captures, VLA or Qwen calls. Native
+runtime integration, current-image age and successful physical tasks remain
+unqualified.
+
+The independent contact audit subsequently found that Rapier's aggregate
+normal-impulse receipt includes inactive cached points. Strict native
+placement now requires impulses from the current solver contact selection;
+missing active evidence does not fall back to the cached total. Consequently
+the historical cached-contact T1 result of 2/10 requires revalidation and is
+not a currently verified formal score. Raw historical runs are retained.
