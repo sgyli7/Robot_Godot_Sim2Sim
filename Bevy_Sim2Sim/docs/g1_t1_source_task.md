@@ -606,3 +606,14 @@ now explicit byte-bound document fields checked by renderer and localizer;
 stale/changed mounts are rejected rather than applying new parameters to old
 pictures. The original0330document, localizer, raw RGB, partial result and
 independent audit remain retained. No physics or learned-policy field changes.
+
+The v2 native P1 view (`0331`,9421b78) passes the pre-frozen 10mm position,
+8px edge and 1px reprojection gate for both targets: apple2.137mm and
+plate2.913mm. Its60body records remain identical to the unmarked reference.
+The subsequent unchanged five-position check (`0332`) retains this P1 result
+and adds four60Tick views, for240new integrations and300unique integrations
+overall, with0VLA/Qwen. Only3/5perception gates pass. P0apple error is19.522mm
+despite0.172px reprojection RMS; P3apple is visible in RGB but not decoded.
+Plate errors in all five views remain below4mm. These are perception failures,
+not task successes or permission to actuate. The original 10mm gate is retained;
+native frozen T1 remains2/10 and full-task qualification remains false.
