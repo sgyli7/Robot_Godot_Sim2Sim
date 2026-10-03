@@ -374,3 +374,18 @@ This is independent failure classification, never controller input or an actual
 new ten-case test. A fixed two-chunk grasp cannot simply be assumed to provide
 8/10 acquisition. Actual visual grasp admission/recovery and the formal native
 profile still require evidence before enabling the public execute-task action.
+
+
+At `3b3ba8a`, the unchanged owned local Qwen profile cold-started in 236.35s,
+performed one clearly separated old-image warmup, and remained resident during
+one new 840-Tick native/VLA/camera run. All 840 body records matched the preceding
+run apart from episode identity; its physical release window stayed 6.06s.
+The existing typed decision probe then consumed the new final actual image and
+43 bit-identical joint measurements with the original acquisition timestamp.
+One loopback-only, non-thinking, structured response was live-admitted under
+the unchanged 30s frame TTL: `observe`, reason "Apple visible on plate; no action
+skills enabled." Service time was 12.451s and complete image age 16.708s.
+No independent success/contact/object pose label was sent to Qwen. There were
+zero Qwen executor actions; this is final semantic feedback, not Qwen-driven
+physical task execution or formal acceptance. Owned Qwen/N1.7/app/CPU processes
+were stopped/reaped immediately. Evidence: scratch 0371/0372.
