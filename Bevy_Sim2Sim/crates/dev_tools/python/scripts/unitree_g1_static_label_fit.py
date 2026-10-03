@@ -36,18 +36,22 @@ def register(gray, points):
     observed = gray[yy,xx].ravel()/255.
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     bits = (cv2.aruco.generateImageMarker(dictionary,31,60)[5::10,5::10]>127)
-    black = np.argwhere(~bits)
+    black = (~bits).astype(np.float64)
+    cell_edges = -.5 + np.arange(7)/6
     sigma = .45/np.linalg.norm(pts-np.roll(pts,-1,axis=0),axis=1).mean()
 
     def prediction(p):
         H = cv2.getPerspectiveTransform(SQUARE,p.reshape(4,2).astype(np.float32))
         uv = np.linalg.inv(H)@coordinates
         u,v = uv[0]/uv[2],-uv[1]/uv[2]
-        tone = np.ones(len(u))
-        for row,col in black:
-            xa,ya = -.5+col/6,-.5+row/6
-            tone -= ((ndtr((u-xa)/sigma)-ndtr((u-xa-1/6)/sigma))
-                     *(ndtr((v-ya)/sigma)-ndtr((v-ya-1/6)/sigma)))
+        # The public cells share six horizontal/vertical intervals. Evaluate
+        # each interval once and sum the same separable Gaussian coverage;
+        # no pattern, antialias kernel or admission threshold changes.
+        xcoverage = (ndtr((u[:,None]-cell_edges[:-1])/sigma)
+                     - ndtr((u[:,None]-cell_edges[1:])/sigma))
+        ycoverage = (ndtr((v[:,None]-cell_edges[:-1])/sigma)
+                     - ndtr((v[:,None]-cell_edges[1:])/sigma))
+        tone = 1. - ((xcoverage @ black.T) * ycoverage).sum(axis=1)
         valid = (abs(u)<.61)&(abs(v)<.61)
         if valid.sum() < 16:
             raise ValueError('Too few actual label pixels')
