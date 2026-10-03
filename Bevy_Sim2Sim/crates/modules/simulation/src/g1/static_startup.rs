@@ -18,12 +18,14 @@ pub const STATIC_STARTUP_TICKS: u64 = 60;
 pub enum StaticStartupCommand {
     Startup { episode_id: u64 },
     OriginalVla(ArenaTaskCommand),
+    VisualTransfer(super::static_transfer::StaticVisualTransferGoal),
 }
 impl StaticStartupCommand {
     pub(super) fn validate(&self) -> Result<(), RobotError> {
         match self {
             Self::Startup { episode_id } if *episode_id != 0 => Ok(()),
             Self::OriginalVla(command) => command.validate(),
+            Self::VisualTransfer(goal) => goal.validate(),
             _ => Err(invalid("invalid explicit static startup episode")),
         }
     }
@@ -40,6 +42,7 @@ pub enum StaticStartupExecution {
         original_vla_output: bool,
     },
     OriginalVla(ArenaTaskExecution),
+    VisualTransfer(super::static_transfer::StaticVisualTransferStep),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -54,13 +57,27 @@ pub(super) struct StaticStartupRunner {
     stable_ticks: u32,
     ready: bool,
     halted: bool,
+    kinematics: super::static_transfer::StaticLeftPalmKinematics,
+    last_original_execution: Option<ArenaTaskExecution>,
+    transfer: Option<super::static_transfer::StaticVisualTransfer>,
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
         if config.body.profile() != task_minigame::types::TaskProfile::StaticApple {
             return Err(invalid("static startup requires original AGILE/N1.7"));
         }
+        let super::task_runner::ArenaTaskBodyConfig::StaticAgile(body) = &config.body else {
+            return Err(invalid("static transfer preparation requires AGILE"));
+        };
+        let definition = robot_minigame::g1::definition::G1Definition::load(
+            &body.definition,
+            &body.definition_sha256,
+        )?;
+        let kinematics = super::static_transfer::StaticLeftPalmKinematics::new(&definition)?;
         Ok(Self {
+            kinematics,
+            last_original_execution: None,
+            transfer: None,
             owner: ArenaTaskRunner::load_static_predictive_constraint_diagnostic(config)?,
             episode_id: config.body.episode_id(),
             stable_ticks: 0,
@@ -147,10 +164,60 @@ impl StaticStartupRunner {
                             "original task requires completed startup and a newer actual image",
                         ));
                     }
+                    if self.transfer.is_some() {
+                        return Err(invalid(
+                            "original VLA cannot replace an admitted geometric phase",
+                        ));
+                    }
                     let step = self.owner.step_with_guard(command, guard)?;
+                    self.last_original_execution = Some(step.execution.clone());
                     Ok(StaticStartupStep {
                         execution: StaticStartupExecution::OriginalVla(step.execution),
                         body: step.body,
+                    })
+                }
+                StaticStartupCommand::VisualTransfer(goal) => {
+                    goal.validate()?;
+                    let state = self.owner.measurement()?;
+                    if self.transfer.is_none() {
+                        let execution = self.last_original_execution.as_ref().ok_or_else(|| {
+                            invalid("static transfer has no original executed grasp")
+                        })?;
+                        if execution.frame_index != 39
+                            || execution.admitted_chunks != 2
+                            || state.source_tick != 140
+                        {
+                            return Err(invalid(
+                                "static transfer requires two complete original chunks",
+                            ));
+                        }
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .as_millis() as u64;
+                        if goal.observation.captured_at_unix_ms > now
+                            || now - goal.observation.captured_at_unix_ms > 2000
+                        {
+                            return Err(invalid("static transfer current camera wall age expired"));
+                        }
+                        let command = self.owner.executed_static_command(execution)?;
+                        self.transfer = Some(super::static_transfer::StaticVisualTransfer::new(
+                            goal.clone(),
+                            &state,
+                            command,
+                        )?);
+                    }
+                    let transfer = self.transfer.as_mut().unwrap();
+                    if transfer.goal() != goal {
+                        return Err(invalid("static transfer goal changed during execution"));
+                    }
+                    let step = transfer.update(&state, &self.kinematics)?;
+                    let body = self
+                        .owner
+                        .step_static_visual_transfer_with_guard(&step.command, guard)?;
+                    Ok(StaticStartupStep {
+                        execution: StaticStartupExecution::VisualTransfer(step),
+                        body,
                     })
                 }
             }

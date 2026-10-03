@@ -208,6 +208,131 @@ impl StaticLeftPalmKinematics {
         ))
     }
 }
+/// Current RGB-derived object centers. They are relative to the measured root,
+/// with no simulator world pose, contacts or accepted model-output mutation.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticVisualTransferGoal {
+    pub observation: task_minigame::types::ObservationStamp,
+    pub apple_root_source_m: [f64; 3],
+    pub plate_root_source_m: [f64; 3],
+}
+impl StaticVisualTransferGoal {
+    pub fn validate(&self) -> Result<(), RobotError> {
+        let stamp = self.observation;
+        let delta =
+            Vector3::from(self.plate_root_source_m) - Vector3::from(self.apple_root_source_m);
+        if stamp.episode_id == 0
+            || stamp.frame_id == 0
+            || stamp.captured_at_unix_ms == 0
+            || stamp.sim_time_ns != 140 * 20_000_000
+            || !self
+                .apple_root_source_m
+                .iter()
+                .chain(self.plate_root_source_m.iter())
+                .all(|x| x.is_finite())
+            || delta.norm() > 0.35
+            || delta.norm() < 0.05
+        {
+            return Err(invalid(
+                "static visual transfer requires bounded two-target140Tick observation",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct StaticVisualTransferStep {
+    pub goal: StaticVisualTransferGoal,
+    pub transfer_ticks: u32,
+    pub completed: bool,
+    pub classical_geometry: StaticCartesianReceipt,
+    pub command: AgileCommand,
+    pub world_or_contact_truth_input: bool,
+}
+pub struct StaticVisualTransfer {
+    goal: StaticVisualTransferGoal,
+    source_horizontal_increment: Vector3<f64>,
+    ticks: u32,
+    command: AgileCommand,
+}
+impl StaticVisualTransfer {
+    pub fn new(
+        goal: StaticVisualTransferGoal,
+        state: &G1Measurement,
+        command: AgileCommand,
+    ) -> Result<Self, RobotError> {
+        goal.validate()?;
+        if goal.observation.episode_id != state.episode_id
+            || goal.observation.sim_time_ns != state.sim_time_ns
+        {
+            return Err(invalid(
+                "static transfer image does not match current owner boundary",
+            ));
+        }
+        let rotation = self_rotation(state)?;
+        let mut delta = rotation
+            * (Vector3::from(goal.plate_root_source_m) - Vector3::from(goal.apple_root_source_m));
+        delta.z = 0.;
+        if delta.norm() > 0.30 {
+            return Err(invalid("static horizontal path exceeds30cm"));
+        }
+        let source_horizontal_increment = delta / 200.;
+        // Whole-path FK admission belongs before command submission while the
+        // diagnostic owner is explicitly paused. Never run250geometry solves
+        // inside a physical Tick; each owner update checks its one increment.
+        Ok(Self {
+            goal,
+            source_horizontal_increment,
+            ticks: 0,
+            command,
+        })
+    }
+    pub fn goal(&self) -> &StaticVisualTransferGoal {
+        &self.goal
+    }
+    pub fn update(
+        &mut self,
+        state: &G1Measurement,
+        kinematics: &StaticLeftPalmKinematics,
+    ) -> Result<StaticVisualTransferStep, RobotError> {
+        if self.ticks >= 250
+            || state.episode_id != self.goal.observation.episode_id
+            || state.source_tick != 140 + u64::from(self.ticks)
+            || state.sim_time_ns != state.source_tick * 20_000_000
+        {
+            return Err(invalid("static transfer repeated/foreign/excessive Tick"));
+        }
+        let rotation = self_rotation(state)?;
+        let source = if self.ticks < 50 {
+            Vector3::new(0., 0., 0.001)
+        } else {
+            self.source_horizontal_increment
+        };
+        let (command, receipt) =
+            kinematics.translate(state, &self.command, (rotation.inverse() * source).into())?;
+        self.command = command;
+        self.ticks += 1;
+        Ok(StaticVisualTransferStep {
+            goal: self.goal.clone(),
+            transfer_ticks: self.ticks,
+            completed: self.ticks == 250,
+            classical_geometry: receipt,
+            command: self.command.clone(),
+            world_or_contact_truth_input: false,
+        })
+    }
+}
+fn self_rotation(state: &G1Measurement) -> Result<UnitQuaternion<f64>, RobotError> {
+    let [w, x, y, z] = state.root_rotation_wxyz.map(f64::from);
+    if ![w, x, y, z].iter().all(|q| q.is_finite())
+        || (w * w + x * x + y * y + z * z - 1.).abs() > 2e-5
+    {
+        return Err(invalid("invalid static self orientation"));
+    }
+    Ok(UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z)))
+}
+
 fn pose(p: &SourcePose) -> Isometry3<f64> {
     let [w, x, y, z] = p.rotation_wxyz;
     Isometry3::from_parts(

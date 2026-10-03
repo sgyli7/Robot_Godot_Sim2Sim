@@ -355,6 +355,42 @@ impl ArenaTaskRunner {
         }
     }
 
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn executed_static_command(&self, execution: &ArenaTaskExecution)
+        -> Result<robot_minigame::g1::agile::AgileCommand, RobotError> {
+        match self.executor.command_for_execution(execution)? {
+            ArenaControllerCommand::StaticAgile(command) => Ok(command),
+            _ => Err(error("static visual handoff selected a foreign controller")),
+        }
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_visual_transfer_with_guard(&mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
+        if self.halted { return Err(error("static transfer owner is halted")); }
+        let result = (|| {
+            guard()?;command.validate()?;
+            let accepted = self.executor.accepted.as_ref().ok_or_else(||error("static transfer has no original grasp"))?;
+            if accepted.profile != TaskProfile::StaticApple || self.executor.pending.is_some()
+                || self.executor.admitted_chunks != 2 || command.navigation.iter().any(|v|v.abs()>0.01)
+                || !(140..390).contains(&self.progress_counts().integration_count) {
+                return Err(error("static transfer requires its completed two-chunk grasp boundary"));
+            }
+            let frame = task_minigame::policy::PolicyActionFrame {
+                left_arm: command.upper_positions[..7].try_into().unwrap(),
+                left_hand: command.upper_positions[7..14].try_into().unwrap(),
+                right_arm: command.upper_positions[14..21].try_into().unwrap(),
+                right_hand: command.upper_positions[21..28].try_into().unwrap(),
+                waist: [0.;3],base_height_m:command.pelvis_height,navigate_mps_rps:command.navigation,
+            };
+            frame.validate(&self.executor.limits).map_err(error)?;
+            let ArenaBodyRunner::StaticAgile(body) = &mut self.body else {return Err(error("static transfer requires AGILE"));};
+            body.step_with_guard(command,guard).map(|step|ArenaBodyStep::StaticAgile(Box::new(step)))
+        })();
+        if result.is_err() {self.halted=true;self.executor.queue.stop();}
+        result
+    }
+
     /// Explicit development-only traditional commands share this existing
     /// world/controller. The original accepted VLA bytes remain untouched.
     #[cfg(feature = "g1_constraint_diagnostic")]

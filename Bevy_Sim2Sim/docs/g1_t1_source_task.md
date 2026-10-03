@@ -841,3 +841,19 @@ owned CPU round trip97ms. At that boundary the apple is31.43mm above its
 robot/external support (no unavailable touching pair). All ticks remain upright
 and owned model/app/CPU processes are reaped. No Qwen call, geometric transfer,
 release or physical task qualification has been executed by this handoff.
+
+
+The separate AGILE left-palm FK preflight (`0355`,3512d5b) computes all250
+geometry points from0354's actual RGB estimates, original self joints/IMU and
+last unchanged command. It raises50mm over50Ticks, then translates the
+RGB-derived horizontal separation262.42mm over200Ticks. All points satisfy
+original joint limits,1.6mm Cartesian/0.05rad arm-increment limits and1e-6
+rounded pose residuals. Hand targets, right arm, pelvis and navigation remain
+bit-identical. There are0physical integrations or fresh model/images. The
+traditional implementation uses an independent typed AGILE interface and reads
+no Homie observation/history, simulator object pose or contact. Whole-path
+preflight runs outside the physical Tick; native transfer has one incremental
+FK solve and one original AGILE/physics update per Tick, with bounded failure.
+The first mechanical exercise explicitly reuses saved original actions/current
+RGB estimates and refreshes wall expiry only offline; it cannot earn an
+autonomous, fresh-model or formal task score.

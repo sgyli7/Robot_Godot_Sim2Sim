@@ -344,3 +344,6 @@ pub(super) fn prepare(
         receipt,
     ))
 }
+
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod static_transfer_diagnostic;
