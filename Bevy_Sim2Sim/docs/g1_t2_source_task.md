@@ -1892,3 +1892,27 @@ is190.1ms after91.5ms preparation. Busy/repeated/old-episode inputs are rejected
 and the owned process is reaped. This check uses0newRGB/physics/VLA, and does not
 establish full-route success. Image age,5mm palm motion,0.01rad self rotation,
 grip targets, source geometry, motors, contacts and50Hz physics remain unchanged.
+
+
+The fresh persistent-worker route0284 performs1535actual single50Hz integrations,
+four original VLA calls and three actual RGB localizations. All1227postgrasp
+samples retain hand-only support; the box travels1.55478m and minimum upright
+is0.992687. Its third image is rejected before another movement at0.8s age:
+measured maximum palm motion0.00601613m exceeds the unchanged0.005m gate.
+Strict placement is0seconds; the terminal rejected Tick remains pending, so
+this run is neither task success nor a zero-debt timing pass. CPU/model children
+are both explicitly reaped. Full trace SHA256 is
+`f8f2feef99a815d57a59763d9bf4589537c184726cf25faed74b82c0090eb8ff`.
+
+CPU profiling of that saved actual image locates0.135s of0.180s in repeated
+parsing of frozen public JSON, while marker detection consumes0.005s.
+`PinnedPublicVisionAssets` now parses the hash-bound public robot, task geometry
+and fiducial calibration once during worker preparation. Observations and RGB
+are still read afresh. The coarse and both fine results are exactly value-equal
+to the original0284 outputs, at0.0102–0.0129s on this CPU-only comparison.
+The cache cannot load an observation path. No physical parameters, image age,
+self-motion limits, marker geometry or perception math changes. Saved self
+history also shows the rejected image already exceeds5mm at0.34s; faster JSON
+alone therefore does not prove the entire route will pass. Bounded reobservation
+while the existing safe standing wait remains active is the next missing
+recovery behavior; rejected inputs must never become an executed skill.

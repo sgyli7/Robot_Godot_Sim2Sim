@@ -34,6 +34,44 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+class PinnedPublicVisionAssets:
+    """One preparation-time copy of public calibration, never observations.
+
+    Only these three explicitly supplied files can use this cache. Their hashes
+    bind the in-memory data; localize still reads every actual RGB/self frame.
+    The localizer uses these records only as calibration and never mutates them.
+    """
+    def __init__(self, definition, geometry, fiducials):
+        self._files = {}
+        for path, expected, limit in ((definition, DEFINITION_SHA256, 64*1024*1024),
+                                      (geometry, TASK_GEOMETRY_SHA256, 1024*1024),
+                                      (fiducials, None, 16*1024)):
+            path = Path(path).resolve(strict=True)
+            if not path.is_file() or path.stat().st_size > limit:
+                raise ValueError("public calibration exceeds its preparation byte budget")
+            raw = path.read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            if expected is not None and digest != expected:
+                raise ValueError("public calibration identity mismatch")
+            self._files[str(path)] = (digest, json.loads(raw))
+        if len(self._files) != 3:
+            raise ValueError("public calibration paths must be distinct")
+
+    def _bound(self, path):
+        try:
+            return self._files[str(Path(path).resolve(strict=True))]
+        except KeyError as error:
+            raise ValueError("unknown path cannot enter public calibration cache") from error
+
+
+def public_json(path, assets=None):
+    return json.loads(Path(path).read_text()) if assets is None else assets._bound(path)[1]
+
+
+def public_sha(path, assets=None):
+    return sha(path) if assets is None else assets._bound(path)[0]
+
+
 def rotation(wxyz):
     q = np.asarray(wxyz, dtype=np.float64)
     if q.shape != (4,) or not np.isfinite(q).all() or abs(q @ q - 1) > 2e-5:
@@ -126,7 +164,7 @@ def propagate_target_memory(memory_path, observation):
             "root_from_marker": result.tolist(), "task_qualified": False}
 
 
-def fixed_marker_layout(path, camera_profile):
+def fixed_marker_layout(path, camera_profile, public_assets=None):
     sizes = MARKER_SIZES.copy()
     mounts = {21: transform({"position": [.008351, .0113635, .0045], "rotation_wxyz": [1., 0., 0., 0.]}),
               22: transform({"position": [.1005, 0., 0.], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})}
@@ -135,12 +173,12 @@ def fixed_marker_layout(path, camera_profile):
     if path is not None:
         if Path(path).stat().st_size > 16*1024:
             raise ValueError("public fiducial document exceeds byte budget")
-        doc = json.loads(Path(path).read_text())
+        doc = public_json(path, public_assets)
         fields = {"schema", "dictionary", "png_paths", "png_sha256"}
         if set(doc) not in (fields, fields | {"layout_profile"}) or doc["schema"] != "g1_task_fiducials_v1" or doc["dictionary"] != "DICT_4X4_50":
             raise ValueError("foreign fixed public marker layout")
         layout = doc.get("layout_profile", "original_arena")
-        digest = sha(path)
+        digest = public_sha(path, public_assets)
     if layout == "auxiliary_grip_targets":
         if camera_profile != "auxiliary_grip_overview":
             raise ValueError("auxiliary labels require their explicitly declared sensor")
@@ -152,11 +190,11 @@ def fixed_marker_layout(path, camera_profile):
     return sizes, mounts, layout, digest
 
 
-def clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts=None):
+def clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts=None, public_assets=None):
     """Public immutable geometry and actual RGB poses, never world coordinates."""
-    if Path(geometry_path).stat().st_size > 1024 * 1024 or sha(geometry_path) != TASK_GEOMETRY_SHA256:
+    if Path(geometry_path).stat().st_size > 1024 * 1024 or public_sha(geometry_path, public_assets) != TASK_GEOMETRY_SHA256:
         raise ValueError("original public task geometry identity mismatch")
-    objects = json.loads(Path(geometry_path).read_text())["objects"]
+    objects = public_json(geometry_path, public_assets)["objects"]
     by_id = {d["marker_id"]: d for d in detections}
     if set(by_id) != {21, 22}:
         raise ValueError("clearance requires both current visible markers")
@@ -256,9 +294,9 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
             "prediction_is_not_physical_detachment": True}
 
 
-def placement_from_visible_markers(detections, observation, geometry_path, mounts, definition):
+def placement_from_visible_markers(detections, observation, geometry_path, mounts, definition, public_assets=None):
     """Conservative release admission from current RGB and public geometry only."""
-    objects = {o["kind"]: o for o in json.loads(Path(geometry_path).read_text())["objects"]}
+    objects = {o["kind"]: o for o in public_json(geometry_path, public_assets)["objects"]}
     poses = {d["marker_id"]: np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[d["marker_id"]]) for d in detections}
     if set(poses) != {21, 22}:
         raise ValueError("placement requires both current visible markers")
@@ -287,9 +325,9 @@ def placement_from_visible_markers(detections, observation, geometry_path, mount
                              "duration_ticks": 100} if admitted else None, **opening}
 
 
-def fine_from_visible_markers(detections, observation, geometry_path, mounts, heading):
+def fine_from_visible_markers(detections, observation, geometry_path, mounts, heading, public_assets=None):
     """One short observed approach step, then another image; no world state."""
-    objects = {o["kind"]: o for o in json.loads(Path(geometry_path).read_text())["objects"]}
+    objects = {o["kind"]: o for o in public_json(geometry_path, public_assets)["objects"]}
     poses = {d["marker_id"]: np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[d["marker_id"]]) for d in detections}
     if set(poses) != {21, 22}:
         raise ValueError("fine approach requires both current visible markers")
@@ -328,7 +366,7 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             "heading_yaw_source_rad": heading, "relative_distance_m": .1}}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None):
     if box_view_only and (geometry_path is not None or memory_path is not None):
         raise ValueError("current box view cannot request navigation geometry or target memory")
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
@@ -348,11 +386,11 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     for key in ("root_angular_velocity_body", "root_velocity_source"):
         if len(state[key]) != 3 or not np.isfinite(state[key]).all():
             raise ValueError("invalid original self motion sensor")
-    if sha(definition_path) != DEFINITION_SHA256:
+    if public_sha(definition_path, public_assets) != DEFINITION_SHA256:
         raise ValueError("original robot definition identity mismatch")
-    definition = json.loads(Path(definition_path).read_text())
+    definition = public_json(definition_path, public_assets)
     camera_profile = observation.get("camera_mount_profile", "arena_ego")
-    marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile)
+    marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile, public_assets)
     if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile != "auxiliary_grip_targets"):
         raise ValueError("placement view requires its bound auxiliary labels/public geometry and no other mode")
     camera_in_root = root_from_camera(definition, state["positions"], camera_profile)
@@ -432,7 +470,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         heading = float(np.arctan2(bin_world[1], bin_world[0]))
         distance = float(np.linalg.norm(bin_world[:2])-np.linalg.norm(box_world[:2]))
         if camera_profile == "auxiliary_grip_overview" and geometry_path is not None and memory_path is None:
-            fine_proposal = fine_from_visible_markers(detections, observation, geometry_path, marker_mounts, heading)
+            fine_proposal = fine_from_visible_markers(detections, observation, geometry_path, marker_mounts, heading, public_assets)
         if not (0.1 <= distance <= 2.5):
             # Whole-box current containment admits no walking command. The
             # original navigation minimum remains in force for all movement.
@@ -467,12 +505,12 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory
     if geometry_path is not None and not used_memory:
-        result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts)
+        result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts, public_assets)
         if camera_profile == "auxiliary_grip_overview" and not placement_view_only:
             result["fine_approach_proposal"] = fine_proposal
     if placement_view_only:
         result["placement_view_only"] = True
-        result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts, definition)
+        result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts, definition, public_assets)
     return result
 
 

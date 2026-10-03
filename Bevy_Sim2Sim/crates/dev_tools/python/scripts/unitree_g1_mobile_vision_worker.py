@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-episode CPU worker around the unchanged, pinned RGB localizer.
+"""Single-episode CPU worker around the pinned RGB localizer.
 
 Loads dependencies before requesting an image. Input stays actual RGB and the
 named self observation; no task/world/contact frame is accepted by this port.
@@ -38,6 +38,7 @@ def main():
     spec = importlib.util.spec_from_file_location("g1_bound_rgb_localizer", args.vision_script)
     vision = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(vision)
+    public_assets = vision.PinnedPublicVisionAssets(args.definition, args.geometry, args.fiducials)
     # Release's CPU geometry dependencies are loaded during initial preparation.
     from scipy.optimize import linprog
     from scipy.spatial import ConvexHull
@@ -78,7 +79,8 @@ def main():
         began = time.monotonic()
         try:
             result = vision.localize(image, observation, args.definition, args.geometry,
-                                     None, False, args.fiducials, request["placement_view_only"])
+                                     None, False, args.fiducials, request["placement_view_only"],
+                                     public_assets=public_assets)
             with (directory/"localization.json").open("x") as output:
                 json.dump(result, output, indent=2, allow_nan=False)
                 output.write("\n")
