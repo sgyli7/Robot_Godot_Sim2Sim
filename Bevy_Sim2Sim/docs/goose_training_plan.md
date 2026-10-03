@@ -4,6 +4,8 @@
 
 当前仍在 **M0-S／M0-T，尚无合格训练本体；两环境真实 GPU 反馈／65 观测已通过独立复核，原生 mjlab 环境接入已通过 CPU 回归与整机编译身份核对，PPO／优化器更新为零**。下一步验证整机原生 mjlab GPU 环境及网络 kernels，完整源端物理、策略与游戏资格仍未取得。主线保持 **统一 MJCF → 原生 MuJoCo → mjlab／RSL-RL → Rapier／Bevy 验收**。源端资格、目标端资格与最终任务资格分别报告。以下为现行派工，历史“下一批”不作为当前任务。
 
+**当前 GPU 排队状态：** 整机原生 mjlab 短跑及独立复核脚本已冻结；锁定 `Torch 2.9.1+cu129` 环境中的原生 RSL-RL `MLPModel` 完成 actor 65→18、critic 65→1 的 CPU 前向／反向各一次，参数未更新，CUDA 未初始化。首次误用旧 CPU 包被版本检查拒绝，纠正环境后通过，原日志保留。现场 `VLLM::EngineCore` 正在 G1 的 Qwen 验证窗口内，本主线已发送简短排队消息；未运行 GPU、整机积分或优化器。收到短窗口确认后，重新核对现场进程，单次运行冻结两世界协议，释放后再做 CPU 独立复核；没有确认时由既有低频 heartbeat 接续，不反复占用或重启对方进程。[冻结运行协议](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_mjlab_gpu_env_admission_001/manifest.json)、[CPU API 收据](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_mjlab_gpu_env_admission_001/cpu_preflight.json)、[当前排队检查点](/home/ethan/ProjectBackups/2026-10-03/Sai_Lab/goose_mjlab_gpu_env_admission_001/queue_checkpoint.json)。本轮准备不替代实际 GPU 环境、网络兼容或完整 M0 准入；没有新硬件依赖，性能子 agent 保持闲置。
+
 | 负责人 | 已沟通的责任与当前动作 |
 | --- | --- |
 | Goose Robot 硬件工程（Sai_Rotbots） | 机械复核 `2b79fec2f`、足底定义 `a751758d4` 和**受载静力 v2 `3c47c94aa` 均已交付**。约 24 分钟完成名义双脚及原左右单脚五组自洽全状态，未改 CAD／BOM／轴位／质量／SI／实验域。来源工程负责后续真实硬件、材料证据与必要的版本化修订；当前静力接续已收齐，不再等它处理 Lab 的积分／训练问题。 |
