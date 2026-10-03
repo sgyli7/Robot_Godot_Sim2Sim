@@ -57,9 +57,10 @@ pub struct StaticPlacementGeometry {
     sha256: String,
 }
 impl StaticPlacementGeometry {
-    pub(super) fn load(
-        config: &super::task_objects::TaskObjectSceneConfig,
-    ) -> Result<Self, RobotError> {
+    pub fn definition_sha256(&self) -> &str {
+        &self.sha256
+    }
+    pub fn load(config: &super::task_objects::TaskObjectSceneConfig) -> Result<Self, RobotError> {
         let d = super::task_objects::TaskObjectsDefinition::load(
             &config.definition,
             &config.definition_sha256,
@@ -95,7 +96,7 @@ pub struct StaticMemoryPlace {
     closed_hand: [f32; 7],
 }
 impl StaticMemoryPlace {
-    pub(super) fn new(
+    pub fn new(
         goal: StaticMemoryPlaceGoal,
         state: &G1Measurement,
         command: AgileCommand,
@@ -146,6 +147,9 @@ impl StaticMemoryPlace {
     }
     pub fn goal(&self) -> &StaticMemoryPlaceGoal {
         &self.goal
+    }
+    pub fn source_displacement_m(&self) -> [f64; 3] {
+        self.delta.into()
     }
     pub(super) fn update(
         &mut self,

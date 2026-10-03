@@ -687,6 +687,11 @@ pub fn run_static_visual_transfer_placement_from_file(path: &Path, options: G1Ca
     run_from_file(path, options, CaptureMode::StaticVisualTransferPlacement)
 }
 
+/// Fresh original grasp/RGB transfer followed by explicitly disclosed memory placement.
+pub fn run_static_memory_place_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
+    run_from_file(path,options,CaptureMode::StaticMemoryPlace)
+}
+
 /// Four fresh original chunks separated by explicit native standing waits.
 /// This source-scene timing preflight has no Qwen/task qualification.
 pub fn run_mobile_wait_grasp_from_file(
@@ -807,6 +812,7 @@ enum CaptureMode {
     StaticVisualTransfer,
     StaticVisualTransferAuxiliary,
     StaticVisualTransferPlacement,
+    StaticMemoryPlace,
     MobileWaitGrasp,
     MobileContinuousRelease,
     TaskLab,
@@ -837,7 +843,7 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::StaticMemoryPlace | Self::TaskLab | Self::MobileCarry => None,
         }
     }
 }
@@ -1327,6 +1333,7 @@ pub(super) struct CaptureRuntime {
     static_marker_worker: Option<StaticMarkerWorker>,
     static_visual_grasp: bool,
     static_visual_transfer: bool,
+    static_memory_place: bool,
     static_transfer_auxiliary: bool,
     static_transfer_placement: bool,
     static_auxiliary_activation_frame: Option<u32>,
@@ -1412,6 +1419,7 @@ trait CapturedTaskStep {
     type Body: Serialize;
     fn execution(&self) -> &Self::Execution;
     fn body(&self) -> &Self::Body;
+    fn static_self_measurement(&self) -> Option<&simulation_minigame::g1::runner::G1Measurement> {None}
     fn image_admission(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
         Ok(None)
     }
@@ -1436,6 +1444,10 @@ impl CapturedTaskStep for simulation_minigame::g1::static_startup::StaticStartup
     fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep {
         &self.body
     }
+    fn static_self_measurement(&self)->Option<&simulation_minigame::g1::runner::G1Measurement> {
+        match &self.body { simulation_minigame::g1::task_runner::ArenaBodyStep::StaticAgile(s)=>Some(&s.measurement), _=>None }
+    }
+
 }
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl CapturedTaskStep for simulation_minigame::g1::mobile_assist::MobileAssistStep {
@@ -1471,11 +1483,21 @@ struct OwnerEvidence<S = ArenaTaskStep> {
     output: BufWriter<fs::File>,
     records: u64,
     first_boundary_wall_ms: Option<f64>,
+    static_self_samples: Vec<simulation_minigame::g1::runner::G1Measurement>,
 }
 
 impl<S: CapturedTaskStep> OwnerEvidence<S> {
     fn drain(&mut self, receipt: &mut G1CaptureReceipt) -> Result<(), String> {
         for record in self.trace.drain() {
+            // Separate bounded self-sensor copy; task/body truth never enters
+            // the memory estimator, despite sharing this audit subscription.
+            if let Some(state)=record.step.static_self_measurement() {
+                if (140..=390).contains(&state.source_tick) {
+                    if self.static_self_samples.len()>=251 {return Err("static self history overflow".into());}
+                    self.static_self_samples.push(state.clone());
+                }
+            }
+
             let mut value = serde_json::json!({
                 "schema": "g1_owner_completed_step_evidence_v1",
                 "episode_id": record.episode_id,
@@ -1591,11 +1613,12 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
-    let static_transfer_placement = mode == CaptureMode::StaticVisualTransferPlacement;
-    let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement);
-    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement);
-    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement);
-    let static_visual_budget = if static_visual_transfer { 390 } else { 140 };
+    let static_memory_place = mode == CaptureMode::StaticMemoryPlace;
+    let static_transfer_placement = matches!(mode, CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
+    let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
+    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
+    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
+    let static_visual_budget = if static_memory_place { 715 } else if static_visual_transfer { 390 } else { 140 };
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
     let continuous = mode == CaptureMode::MobileContinuousRelease;
@@ -1610,7 +1633,7 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace)
             || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
@@ -1707,7 +1730,7 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some() != static_visual_grasp
             || if static_visual_grasp {
@@ -1927,6 +1950,8 @@ fn run_capture_owner(
         .transpose()?;
     let tick_limit = if let Some(limit) = mode.assisted_tick_limit() {
         limit
+    } else if static_memory_place {
+        715
     } else if mobile_carry {
         1500
     } else if matches!(config, CaptureRunnerConfig::Task(_)) {
@@ -2123,7 +2148,7 @@ fn run_capture_owner(
     let static_transfer_route = if static_visual_transfer {
         let CaptureRunnerConfig::Task(c) = &config else {return Err("static transfer task owner absent".into());};
         let ArenaTaskBodyConfig::StaticAgile(b) = &c.body else {return Err("static transfer AGILE body absent".into());};
-        Some(static_visual_transfer::StaticTransferRoute::new(&b.definition,&b.definition_sha256)?)
+        Some(static_visual_transfer::StaticTransferRoute::new(&b.definition,&b.definition_sha256,if static_memory_place { b.task_objects.as_ref() } else { None })?)
     } else {None};
     let worker = config.spawn(
         predictive_limit_diagnostic,
@@ -2143,6 +2168,7 @@ fn run_capture_owner(
             ),
             records: 0,
             first_boundary_wall_ms: None,
+            static_self_samples: Vec::new(),
         }),
         CaptureWorker::Mobile(_) | CaptureWorker::Static { .. } => None,
         #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2162,6 +2188,7 @@ fn run_capture_owner(
             ),
             records: 0,
             first_boundary_wall_ms: None,
+            static_self_samples: Vec::new(),
         }),
         _ => None,
     };
@@ -2178,6 +2205,7 @@ fn run_capture_owner(
             ),
             records: 0,
             first_boundary_wall_ms: None,
+            static_self_samples: Vec::new(),
         }),
         _ => None,
     };
@@ -2194,6 +2222,7 @@ fn run_capture_owner(
             ),
             records: 0,
             first_boundary_wall_ms: None,
+            static_self_samples: Vec::new(),
         }),
         _ => None,
     };
@@ -2281,6 +2310,7 @@ fn run_capture_owner(
             static_marker_worker,
             static_visual_grasp,
             static_visual_transfer,
+            static_memory_place,
             static_transfer_auxiliary,
             static_transfer_placement,
             static_auxiliary_activation_frame: None,

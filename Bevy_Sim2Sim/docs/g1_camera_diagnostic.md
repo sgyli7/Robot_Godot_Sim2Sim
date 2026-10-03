@@ -298,3 +298,25 @@ The legacy scalar lighting fields also report those actual values in station
 captures. With no override, the station's own defaults remain intact. Receipts
 before this fix recorded requested capture parameters even when the station
 branch skipped them;0308's separate application audit corrects that interpretation.
+
+
+`g1_static_memory_place_diagnostic` is an explicit 715-Tick development entry:
+60 original AGILE initialization ticks, two fresh unmarked N1.7 chunks,
+current 140-Tick marked RGB localization, 250 classical transfer ticks,
+then 325 disclosed grasp-memory placement ticks. It also records a distinct
+actual 390-Tick near-table image and a final 715-Tick image. Only named joint,
+IMU and self velocity telemetry is copied from the bounded owner subscription
+into the memory input; task object poses and contacts are excluded. The original
+140-Tick localization is never restamped as a current detection. Public robot
+FK and a rigid-grasp assumption update the apple estimate; self odometry and a
+static-target assumption update the plate estimate. Goal and input hashes,
+origin/current timestamps and all 150 lowering/retraction FK receipts are saved
+before placement admission. A current observation does not claim current object
+detections. The owner remains explicitly paused at each image/decision boundary;
+this entry does not qualify uninterrupted 1x, Qwen execution or the ten-case suite.
+
+Use the frozen matched static JSON with `policy.max_calls=2` and valid static
+marker worker identities, and invoke the ordinary app with
+`--scene g1_static_memory_place_diagnostic --robot g1 --g1-config CONFIG
+--g1-ticks 715 --output NEW_DIRECTORY`. The exact budget belongs only to this
+entry; ordinary camera, task-lab and other transfer budgets remain unchanged.

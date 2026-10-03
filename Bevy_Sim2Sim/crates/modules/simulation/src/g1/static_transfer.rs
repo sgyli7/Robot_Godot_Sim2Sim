@@ -102,6 +102,18 @@ impl StaticLeftPalmKinematics {
         }
         poses
     }
+    /// Original root-relative FK of the measured palm; named self sensors only.
+    pub fn measured_left_palm(&self, state: &G1Measurement) -> Result<Isometry3<f64>, RobotError> {
+        if state.joint_positions.len() != JOINT_COUNT
+            || !state.joint_positions.iter().all(|v| v.is_finite())
+            || state.episode_id == 0
+            || state.sim_time_ns != state.source_tick * 20_000_000
+        {
+            return Err(invalid("invalid measured static palm self state"));
+        }
+        let q = std::array::from_fn(|i| f64::from(state.joint_positions[i]));
+        Ok(self.forward(&q)[LEFT_PALM])
+    }
     /// One <=1.6mm increment (<=0.08m/s at50Hz). Only seven left-arm targets
     /// change. Both hands, right arm, pelvis and navigation are preserved.
     pub fn translate(
