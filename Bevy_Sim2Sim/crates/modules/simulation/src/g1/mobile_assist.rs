@@ -38,9 +38,9 @@ pub enum MobileAssistCommand {
     /// The owner transitions without pausing or repeating a VLA frame.
     OriginalVlaThenWait(ArenaTaskCommand),
     /// Same unchanged original frames and finite wait, but the next original
-    /// image may be acquired during the second half of its predecessor chunk.
+    /// image may be acquired just after all frames of its predecessor chunk.
     /// Geometric classical skills still require stationary self admission.
-    OriginalVlaInFlightThenWait(ArenaTaskCommand),
+    OriginalVlaBoundaryImageThenWait(ArenaTaskCommand),
     ObservedSkillThenWait(MobileObservedSkill),
     ClassicalCarry(MobileCarryGoal),
     ClassicalScan(MobileScanGoal),
@@ -85,7 +85,7 @@ impl MobileAssistCommand {
             Self::ObservedSkillThenWait(skill) => skill.command().validate(),
             Self::OriginalVla(command)
             | Self::OriginalVlaThenWait(command)
-            | Self::OriginalVlaInFlightThenWait(command) => {
+            | Self::OriginalVlaBoundaryImageThenWait(command) => {
                 command.validate()?;
                 if command.chunk.profile != TaskProfile::MobileBox {
                     return Err(invalid("assisted mobile owner rejects static VLA"));
@@ -448,7 +448,7 @@ impl MobileAssistRunner {
             command,
             MobileAssistCommand::ClassicalModelWait(_)
                 | MobileAssistCommand::OriginalVlaThenWait(_)
-                | MobileAssistCommand::OriginalVlaInFlightThenWait(_)
+                | MobileAssistCommand::OriginalVlaBoundaryImageThenWait(_)
                 | MobileAssistCommand::ObservedSkillThenWait(_)
         ) {
             self.waiting = None;
@@ -494,9 +494,11 @@ impl MobileAssistRunner {
                 self.step_inner(&skill.command(), guard)
             }
             MobileAssistCommand::OriginalVlaThenWait(vla)
-            | MobileAssistCommand::OriginalVlaInFlightThenWait(vla) => {
-                let in_flight =
-                    matches!(command, MobileAssistCommand::OriginalVlaInFlightThenWait(_));
+            | MobileAssistCommand::OriginalVlaBoundaryImageThenWait(vla) => {
+                let boundary_image = matches!(
+                    command,
+                    MobileAssistCommand::OriginalVlaBoundaryImageThenWait(_)
+                );
                 let command = vla;
                 if command.scheduled_start_sim_ns.is_some() {
                     return Err(invalid(
@@ -525,15 +527,15 @@ impl MobileAssistRunner {
                             return self
                                 .step_inner(&MobileAssistCommand::ClassicalModelWait(goal), guard);
                         }
-                    } else if in_flight {
-                        if !in_flight_image_window(
+                    } else if boundary_image {
+                        if !original_boundary_image_window(
                             previous,
                             &state,
                             command,
                             self.maximum_observation_age_ns,
                         ) {
                             return Err(invalid(
-                                "next original image is not from the completed predecessor second-half window",
+                                "next original image is not from the completed predecessor observation window",
                             ));
                         }
                     } else if self.waiting.as_ref().is_none_or(|w| {
@@ -979,7 +981,7 @@ fn invalid(message: impl Into<String>) -> RobotError {
     RobotError::Contract(message.into())
 }
 
-fn in_flight_image_window(
+fn original_boundary_image_window(
     previous: &ArenaTaskExecution,
     state: &G1Measurement,
     next: &ArenaTaskCommand,
@@ -994,11 +996,11 @@ fn in_flight_image_window(
         && previous
             .execution_start_sim_ns
             .checked_add(1_000_000_000)
-            .is_some_and(|end| state.sim_time_ns >= end && image.sim_time_ns < end)
+            .is_some_and(|end| state.sim_time_ns >= end && image.sim_time_ns >= end)
         && previous
             .execution_start_sim_ns
-            .checked_add(500_000_000)
-            .is_some_and(|start| image.sim_time_ns >= start)
+            .checked_add(1_500_000_000)
+            .is_some_and(|end| image.sim_time_ns < end)
         && image.sim_time_ns % 20_000_000 == 0
         && state
             .sim_time_ns
@@ -1020,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_original_reply_cannot_replace_an_active_or_foreign_chunk() {
+    fn boundary_original_reply_cannot_replace_an_active_or_foreign_chunk() {
         let stamp = ObservationStamp {
             episode_id: 1,
             frame_id: 1,
@@ -1053,7 +1055,7 @@ mod tests {
             sequence_id: 2,
             observation: ObservationStamp {
                 frame_id: 2,
-                sim_time_ns: 500_000_000,
+                sim_time_ns: 1_000_000_000,
                 ..stamp
             },
             model_revision: String::new(),
@@ -1064,32 +1066,32 @@ mod tests {
             chunk: Arc::new(c.clone()),
             scheduled_start_sim_ns: None,
         };
-        assert!(in_flight_image_window(
+        assert!(original_boundary_image_window(
             &previous,
             &state,
             &command(&chunk),
             1_000_000_000
         ));
         previous.frame_index = 48;
-        assert!(!in_flight_image_window(
+        assert!(!original_boundary_image_window(
             &previous,
             &state,
             &command(&chunk),
             1_000_000_000
         ));
         previous.frame_index = 49;
-        for tick in [24, 50] {
+        for tick in [49, 75] {
             chunk.observation.sim_time_ns = tick * 20_000_000;
-            assert!(!in_flight_image_window(
+            assert!(!original_boundary_image_window(
                 &previous,
                 &state,
                 &command(&chunk),
                 1_000_000_000
             ));
         }
-        chunk.observation.sim_time_ns = 500_000_000;
+        chunk.observation.sim_time_ns = 1_000_000_000;
         chunk.sequence_id = 3;
-        assert!(!in_flight_image_window(
+        assert!(!original_boundary_image_window(
             &previous,
             &state,
             &command(&chunk),
@@ -1097,16 +1099,16 @@ mod tests {
         ));
         chunk.sequence_id = 2;
         chunk.observation.episode_id = 2;
-        assert!(!in_flight_image_window(
+        assert!(!original_boundary_image_window(
             &previous,
             &state,
             &command(&chunk),
             1_000_000_000
         ));
         chunk.observation.episode_id = 1;
-        state.source_tick = 76;
-        state.sim_time_ns = 1_520_000_000;
-        assert!(!in_flight_image_window(
+        state.source_tick = 101;
+        state.sim_time_ns = 2_020_000_000;
+        assert!(!original_boundary_image_window(
             &previous,
             &state,
             &command(&chunk),

@@ -296,7 +296,7 @@ struct LivePolicyConfiguration {
     #[serde(default)]
     prefetch_after_ticks: Option<u32>,
     #[serde(default)]
-    in_flight_images_with_wait: bool,
+    boundary_images_with_wait: bool,
 }
 
 struct LivePolicyRuntime {
@@ -309,8 +309,8 @@ struct LivePolicyRuntime {
     next_boundary_tick: u64,
     prefetch_after_ticks: Option<u32>,
     wait_after_chunks: bool,
-    in_flight_images_with_wait: bool,
-    in_flight_image_window: Option<[u64; 2]>,
+    boundary_images_with_wait: bool,
+    boundary_image_window: Option<[u64; 2]>,
     wait_image_min_tick: Option<u64>,
     completed: bool,
 }
@@ -1379,16 +1379,14 @@ fn run_capture_owner(
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
-    if policy
-        .as_ref()
-        .is_some_and(|p| p.in_flight_images_with_wait)
+    if policy.as_ref().is_some_and(|p| p.boundary_images_with_wait)
         && (!waited_grasp
             || policy
                 .as_ref()
                 .is_some_and(|p| p.prefetch_after_ticks.is_some()))
     {
         return Err(
-            "in-flight original images require the explicit finite waited mobile scene".into(),
+            "boundary original images require the explicit finite waited mobile scene".into(),
         );
     }
     let mobile_prefetch = matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile() == TaskProfile::MobileBox)
@@ -1692,8 +1690,8 @@ fn run_capture_owner(
                 next_boundary_tick: 0,
                 prefetch_after_ticks: policy.prefetch_after_ticks,
                 wait_after_chunks: waited_grasp,
-                in_flight_images_with_wait: policy.in_flight_images_with_wait,
-                in_flight_image_window: None,
+                boundary_images_with_wait: policy.boundary_images_with_wait,
+                boundary_image_window: None,
                 wait_image_min_tick: None,
                 completed: false,
             })
@@ -3626,7 +3624,7 @@ fn drive_waited_mobile_policy(
         || waiting.is_some_and(|(g, w)| {
             g.request_id == u64::from(live.submitted_chunks)
                 && !w.completed
-                && (live.in_flight_images_with_wait || w.observation_ready)
+                && (live.boundary_images_with_wait || w.observation_ready)
         });
     let reply = if reply_boundary {
         live.worker.try_take_reply()
@@ -3642,7 +3640,7 @@ fn drive_waited_mobile_policy(
             || (!initial
                 && !waiting.is_some_and(|(g, w)| {
                     g.request_id == u64::from(live.submitted_chunks)
-                        && (live.in_flight_images_with_wait || w.observation_ready)
+                        && (live.boundary_images_with_wait || w.observation_ready)
                         && !w.completed
                 }))
         {
@@ -3672,8 +3670,8 @@ fn drive_waited_mobile_policy(
             chunk: Arc::new(chunk),
             scheduled_start_sim_ns: None,
         };
-        let command = if live.in_flight_images_with_wait {
-            MobileAssistCommand::OriginalVlaInFlightThenWait(original)
+        let command = if live.boundary_images_with_wait {
+            MobileAssistCommand::OriginalVlaBoundaryImageThenWait(original)
         } else {
             MobileAssistCommand::OriginalVlaThenWait(original)
         };
@@ -3693,7 +3691,7 @@ fn drive_waited_mobile_policy(
             "frame_count":50,"original_frame_interval_ns":ARENA_ACTION_PERIOD_NS,
             "following_classical_wait_maximum_ticks":200,"observation_restamped":false,
             "future_slot_rebased":false,"same_owner_world":true,"task_qualified":false,
-            "in_flight_predecessor_image":live.in_flight_images_with_wait && !initial,
+            "completed_predecessor_boundary_image":live.boundary_images_with_wait && !initial,
         }));
         live.submitted_chunks += 1;
         return Ok(false);
@@ -3703,7 +3701,7 @@ fn drive_waited_mobile_policy(
     }
     let initial = live.submitted_chunks == 0;
     if !initial
-        && !live.in_flight_images_with_wait
+        && !live.boundary_images_with_wait
         && !waiting.is_some_and(|(g, w)| {
             g.request_id == u64::from(live.submitted_chunks) && w.observation_ready && !w.completed
         })
@@ -3711,7 +3709,7 @@ fn drive_waited_mobile_policy(
         return Ok(false);
     }
     if !runtime.requested {
-        let image_min_tick = if !initial && live.in_flight_images_with_wait {
+        let image_min_tick = if !initial && live.boundary_images_with_wait {
             let Some(MobileAssistExecution::OriginalVla(execution)) =
                 latest.assist_step.as_ref().map(|s| &s.execution)
             else {
@@ -3721,8 +3719,8 @@ fn drive_waited_mobile_policy(
                 return Ok(false);
             }
             let start = execution.execution_start_sim_ns / ARENA_ACTION_PERIOD_NS;
-            live.in_flight_image_window = Some([start + 25, start + 50]);
-            start + 25
+            live.boundary_image_window = Some([start + 50, start + 75]);
+            start + 50
         } else {
             tick
         };
@@ -3733,7 +3731,7 @@ fn drive_waited_mobile_policy(
         if receipt.prefetch_image_events.len() >= 16 {
             return Err("waited image event budget exhausted".into());
         }
-        receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_request","capture_sequence":sequence,"minimum_physics_tick":image_min_tick,"in_flight_predecessor_window":live.in_flight_image_window,"submitted_chunks":live.submitted_chunks,"runtime_elapsed_ms":runtime.started.elapsed().as_millis()}));
+        receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_request","capture_sequence":sequence,"minimum_physics_tick":image_min_tick,"completed_predecessor_image_window":live.boundary_image_window,"submitted_chunks":live.submitted_chunks,"runtime_elapsed_ms":runtime.started.elapsed().as_millis()}));
         return Ok(false);
     }
     if let Some(frame) = port.take() {
@@ -3750,9 +3748,9 @@ fn drive_waited_mobile_policy(
             || frame_tick > tick
             || (initial && frame_tick != 0)
             || (!initial
-                && live.in_flight_images_with_wait
+                && live.boundary_images_with_wait
                 && live
-                    .in_flight_image_window
+                    .boundary_image_window
                     .is_none_or(|[start, end]| frame_tick < start || frame_tick >= end))
         {
             return Err(

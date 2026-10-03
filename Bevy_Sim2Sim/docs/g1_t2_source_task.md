@@ -1852,3 +1852,23 @@ and keeps the1second image-age bound. Classical geometry still requires the
 separate stationary self-history proof with5mm/0.01rad bounds. The earlier
 stationary-only and fixed scheduled diagnostics retain their original guards.
 This opt-in pipeline is not qualified until fresh physical evidence exists.
+
+Fresh0280validates that the second-half-image pipeline still consumes all200
+original frames exactly once: images0/25/88/163admit at0/58/132/198, without
+restamping. It completes332native integrations but the box remains supported
+by the original shelf; the source-gap correction exceeds its unchanged0.1rad
+joint-change envelope before the first turn. No classical motion is integrated
+and strict placement is0seconds. Ratios are0.996934active/0.999634continuous;
+the rejected owner step leaves1due Tick in the terminal snapshot, so the
+strict zero-debt timing audit does not pass. Trace SHA256:
+`fa57a90ebd733266b8561143c411685f0bd102a1dd9aa9a269bd2e8de66b6ab1`.
+
+The second-half candidate is not promoted. Entry0281instead requests original
+images at the completed full action boundary, before adding any stationary
+settling requirement. A bounded next-chunk admission accepts only images from
+the first25Ticks after that exact predecessor end, keeps the1second age limit,
+and still starts the unchanged next50frames at the actual current owner Tick.
+Late perception runs alongside explicit standing. This separates the original
+VLA's moving self observation from stricter classical geometric admission,
+while avoiding an image taken halfway through an unfinished learned action.
+Neither pipeline grants grasp, full-route or formal task qualification.
