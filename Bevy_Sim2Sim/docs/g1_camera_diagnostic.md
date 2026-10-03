@@ -339,3 +339,17 @@ result is retained; further camera-angle search is stopped. A bounded physical
 observation withdrawal must be preflighted against current self state before
 another fresh final visual observation can be evaluated. Existing evidence is
 scratch case 0364 (live/physical) and 0365 (read-only final visibility).
+
+
+`g1_static_memory_place_observe_diagnostic` has its own exact 840-Tick budget.
+It retains the original 715-Tick entry and adds 100 fixed left-palm increments
+of source +Y=1 mm (10 cm total), then 25 real hold ticks. Admission requires
+completed typed placement at Tick 715, matching self identity, all left-hand
+commands open, measured finger positions within 0.05 rad of open and speeds
+within 0.02 rad/s. This self gate does not claim contact-based release. The
+current 100-step FK path is checked before submitting the bounded command;
+only one increment is checked within each physical Tick. Camera mounts, gains,
+friction, mass, original policy outputs and the single20ms integration stay
+unchanged. The purpose is to physically withdraw the occluding hand/forearm
+before capturing the final actual near-table image. Independent truth must still
+check uninterrupted physical placement; this movement does not qualify a task.

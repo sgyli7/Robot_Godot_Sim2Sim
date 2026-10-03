@@ -4,6 +4,7 @@ use super::*;
 use rapier3d::na::{Matrix4, Quaternion, UnitQuaternion, Vector3};
 use sha2::{Digest, Sha256};
 use simulation_minigame::g1::{
+    static_observe::{StaticObservationWithdrawal, StaticObservationWithdrawalGoal},
     static_place::{StaticMemoryPlace, StaticMemoryPlaceGoal, StaticPlacementGeometry},
     static_startup::StaticStartupCommand,
     static_transfer::{StaticLeftPalmKinematics, StaticVisualTransferGoal},
@@ -18,6 +19,7 @@ pub(super) struct StaticTransferRoute {
     placement_geometry: Option<StaticPlacementGeometry>,
     submitted_placement: bool,
     memory_image_requested: bool,
+    submitted_withdrawal: bool,
 }
 impl StaticTransferRoute {
     pub(super) fn new(
@@ -37,6 +39,7 @@ impl StaticTransferRoute {
                 .map_err(|e| e.to_string())?,
             submitted_placement: false,
             memory_image_requested: false,
+            submitted_withdrawal: false,
         })
     }
     fn drive(
@@ -220,6 +223,9 @@ impl StaticTransferRoute {
             .ok_or("static placement owner snapshot absent")?;
         let tick = latest.timing.episode_integrations;
         if self.submitted_placement {
+            if runtime.static_memory_observe {
+                return self.drive_observation_withdrawal(runtime, outcome);
+            }
             return Ok(tick == 715 && latest.phase == G1WorkerPhase::Paused);
         }
         if tick < 390 {
@@ -464,6 +470,81 @@ impl StaticTransferRoute {
             serde_json::json!({"phase":"current140Tick_RGB_transfer_then_disclosed390Tick_grasp_memory_place","goal":goal,
             "geometric_correction_executed":true,"requested_classical_transfer_ticks":250,"requested_classical_place_ticks":325,"original_vla_calls":2,"whole_path_preflight_outside_physical_tick":true,"world_or_contact_truth_input":false,"task_qualified":false}),
         );
+        Ok(false)
+    }
+    fn drive_observation_withdrawal(
+        &mut self,
+        runtime: &mut CaptureRuntime,
+        outcome: &CaptureOutcome,
+    ) -> Result<bool, String> {
+        let latest = runtime
+            .latest
+            .clone()
+            .ok_or("observation withdrawal owner absent")?;
+        let tick = latest.timing.episode_integrations;
+        if self.submitted_withdrawal {
+            return Ok(tick == 840 && latest.phase == G1WorkerPhase::Paused);
+        }
+        if tick < 715 {
+            return Ok(false);
+        }
+        if tick != 715 || latest.phase != G1WorkerPhase::Paused {
+            return Err("observation withdrawal requires715Tick pause".into());
+        }
+        let state = latest
+            .measurement
+            .as_ref()
+            .ok_or("observation withdrawal self absent")?;
+        let step = latest
+            .startup_step
+            .as_ref()
+            .ok_or("observation withdrawal placement step absent")?;
+        let simulation_minigame::g1::static_startup::StaticStartupExecution::MemoryPlace(place) =
+            &step.execution
+        else {
+            return Err("observation withdrawal requires typed placement".into());
+        };
+        if !place.completed {
+            return Err("observation withdrawal placement incomplete".into());
+        }
+        let goal = StaticObservationWithdrawalGoal {
+            episode_id: runtime.episode_id,
+            start_sim_time_ns: 715 * 20_000_000,
+        };
+        StaticObservationWithdrawal::new(goal.clone(), state, place.command.clone())
+            .map_err(|e| e.to_string())?;
+        let [w, x, y, z] = state.root_rotation_wxyz.map(f64::from);
+        let rotation = UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z));
+        let mut command = place.command.clone();
+        let mut receipts = Vec::new();
+        for _ in 0..100 {
+            let (next, receipt) = self
+                .kinematics
+                .translate(
+                    state,
+                    &command,
+                    (rotation.inverse() * Vector3::new(0., 0.001, 0.)).into(),
+                )
+                .map_err(|e| e.to_string())?;
+            command = next;
+            receipts.push(receipt);
+        }
+        fs::write(runtime.options.output.join("static_observation_withdrawal_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"source_displacement_m":[0.,0.1,0.],"computed_geometry_points":100,"receipts":receipts,"physics_integrations":0,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
+            return Err("observation withdrawal selected foreign owner".into());
+        };
+        worker
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: 840 * 20_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(4),
+                command: StaticStartupCommand::ObservationWithdrawal(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        self.submitted_withdrawal = true;
+        if let Some(handoff) = &mut outcome.0.lock().unwrap().static_visual_grasp_handoff {
+            handoff["observation_withdrawal"] = serde_json::json!({"goal":goal,"requested_classical_ticks":125,"source_displacement_m":[0.,0.1,0.],"purpose":"recover actual final target view with unchanged camera","open_hand_self_gate_passed":true,"whole_path_preflight_outside_physical_tick":true,"world_or_contact_truth_input":false,"task_qualified":false});
+        }
         Ok(false)
     }
 }

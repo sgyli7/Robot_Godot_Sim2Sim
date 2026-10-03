@@ -148,6 +148,9 @@ impl StaticMemoryPlace {
     pub fn goal(&self) -> &StaticMemoryPlaceGoal {
         &self.goal
     }
+    pub(super) fn completed_command(&self) -> Option<AgileCommand> {
+        (self.ticks == 325).then(|| self.command.clone())
+    }
     pub fn source_displacement_m(&self) -> [f64; 3] {
         self.delta.into()
     }

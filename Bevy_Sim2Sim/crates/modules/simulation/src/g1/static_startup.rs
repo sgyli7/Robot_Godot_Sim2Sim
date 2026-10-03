@@ -20,6 +20,7 @@ pub enum StaticStartupCommand {
     OriginalVla(ArenaTaskCommand),
     VisualTransfer(super::static_transfer::StaticVisualTransferGoal),
     MemoryPlace(super::static_place::StaticMemoryPlaceGoal),
+    ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalGoal),
 }
 impl StaticStartupCommand {
     pub(super) fn validate(&self) -> Result<(), RobotError> {
@@ -28,6 +29,7 @@ impl StaticStartupCommand {
             Self::OriginalVla(command) => command.validate(),
             Self::VisualTransfer(goal) => goal.validate(),
             Self::MemoryPlace(goal) => goal.validate(),
+            Self::ObservationWithdrawal(goal) => goal.validate(),
             _ => Err(invalid("invalid explicit static startup episode")),
         }
     }
@@ -46,6 +48,7 @@ pub enum StaticStartupExecution {
     OriginalVla(ArenaTaskExecution),
     VisualTransfer(super::static_transfer::StaticVisualTransferStep),
     MemoryPlace(super::static_place::StaticMemoryPlaceStep),
+    ObservationWithdrawal(super::static_observe::StaticObservationWithdrawalStep),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -65,6 +68,7 @@ pub(super) struct StaticStartupRunner {
     transfer: Option<super::static_transfer::StaticVisualTransfer>,
     placement_geometry: Option<super::static_place::StaticPlacementGeometry>,
     placement: Option<super::static_place::StaticMemoryPlace>,
+    observation_withdrawal: Option<super::static_observe::StaticObservationWithdrawal>,
 }
 impl StaticStartupRunner {
     pub(super) fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
@@ -91,6 +95,7 @@ impl StaticStartupRunner {
             transfer: None,
             placement_geometry,
             placement: None,
+            observation_withdrawal: None,
             owner: ArenaTaskRunner::load_static_predictive_constraint_diagnostic(config)?,
             episode_id: config.body.episode_id(),
             stable_ticks: 0,
@@ -230,6 +235,36 @@ impl StaticStartupRunner {
                         .step_static_visual_transfer_with_guard(&step.command, guard)?;
                     Ok(StaticStartupStep {
                         execution: StaticStartupExecution::VisualTransfer(step),
+                        body,
+                    })
+                }
+                StaticStartupCommand::ObservationWithdrawal(goal) => {
+                    let state = self.owner.measurement()?;
+                    if self.observation_withdrawal.is_none() {
+                        let command = self
+                            .placement
+                            .as_ref()
+                            .and_then(|p| p.completed_command())
+                            .ok_or_else(|| {
+                                invalid("observation withdrawal requires completed typed placement")
+                            })?;
+                        self.observation_withdrawal =
+                            Some(super::static_observe::StaticObservationWithdrawal::new(
+                                goal.clone(),
+                                &state,
+                                command,
+                            )?);
+                    }
+                    let withdrawal = self.observation_withdrawal.as_mut().unwrap();
+                    if withdrawal.goal() != goal {
+                        return Err(invalid("observation withdrawal goal changed"));
+                    }
+                    let step = withdrawal.update(&state, &self.kinematics)?;
+                    let body = self
+                        .owner
+                        .step_static_observation_withdrawal_with_guard(&step.command, guard)?;
+                    Ok(StaticStartupStep {
+                        execution: StaticStartupExecution::ObservationWithdrawal(step),
                         body,
                     })
                 }

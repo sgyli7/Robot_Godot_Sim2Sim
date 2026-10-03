@@ -403,6 +403,12 @@ impl ArenaTaskRunner {
         if result.is_err() {self.halted=true;self.executor.queue.stop();}
         result
     }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_observation_withdrawal_with_guard(&mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_with_guard(command,guard,715..840)
+    }
 
     /// Explicit development-only traditional commands share this existing
     /// world/controller. The original accepted VLA bytes remain untouched.

@@ -692,6 +692,11 @@ pub fn run_static_memory_place_from_file(path:&Path,options:G1CaptureOptions)->R
     run_from_file(path,options,CaptureMode::StaticMemoryPlace)
 }
 
+/// Same live placement plus a finite physical withdrawal to recover the final view.
+pub fn run_static_memory_place_observe_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
+    run_from_file(path,options,CaptureMode::StaticMemoryPlaceObserve)
+}
+
 /// Four fresh original chunks separated by explicit native standing waits.
 /// This source-scene timing preflight has no Qwen/task qualification.
 pub fn run_mobile_wait_grasp_from_file(
@@ -813,6 +818,7 @@ enum CaptureMode {
     StaticVisualTransferAuxiliary,
     StaticVisualTransferPlacement,
     StaticMemoryPlace,
+    StaticMemoryPlaceObserve,
     MobileWaitGrasp,
     MobileContinuousRelease,
     TaskLab,
@@ -843,7 +849,7 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::StaticMemoryPlace | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::StaticMemoryPlace | Self::StaticMemoryPlaceObserve | Self::TaskLab | Self::MobileCarry => None,
         }
     }
 }
@@ -1334,6 +1340,7 @@ pub(super) struct CaptureRuntime {
     static_visual_grasp: bool,
     static_visual_transfer: bool,
     static_memory_place: bool,
+    static_memory_observe: bool,
     static_transfer_auxiliary: bool,
     static_transfer_placement: bool,
     static_auxiliary_activation_frame: Option<u32>,
@@ -1613,12 +1620,13 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
-    let static_memory_place = mode == CaptureMode::StaticMemoryPlace;
-    let static_transfer_placement = matches!(mode, CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
-    let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
-    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
-    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace);
-    let static_visual_budget = if static_memory_place { 715 } else if static_visual_transfer { 390 } else { 140 };
+    let static_memory_observe = mode == CaptureMode::StaticMemoryPlaceObserve;
+    let static_memory_place = matches!(mode,CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
+    let static_transfer_placement = matches!(mode, CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
+    let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
+    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
+    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
+    let static_visual_budget = if static_memory_observe {840} else if static_memory_place { 715 } else if static_visual_transfer { 390 } else { 140 };
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
     let continuous = mode == CaptureMode::MobileContinuousRelease;
@@ -1633,7 +1641,7 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve)
             || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
@@ -1730,7 +1738,7 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some() != static_visual_grasp
             || if static_visual_grasp {
@@ -1950,6 +1958,8 @@ fn run_capture_owner(
         .transpose()?;
     let tick_limit = if let Some(limit) = mode.assisted_tick_limit() {
         limit
+    } else if static_memory_observe {
+        840
     } else if static_memory_place {
         715
     } else if mobile_carry {
@@ -2311,6 +2321,7 @@ fn run_capture_owner(
             static_visual_grasp,
             static_visual_transfer,
             static_memory_place,
+            static_memory_observe,
             static_transfer_auxiliary,
             static_transfer_placement,
             static_auxiliary_activation_frame: None,
