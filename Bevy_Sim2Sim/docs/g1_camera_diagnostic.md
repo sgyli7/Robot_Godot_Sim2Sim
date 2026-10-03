@@ -465,3 +465,16 @@ This finite probe tests original-strategy recovery; it does not grant a
 recovered grasp, geometric continuation, arbitrary-goal capability or formal
 task success. Use `--scene g1_static_unheld_regrasp_diagnostic --g1-ticks230`
 with a matching three-call config and unique output directory.
+
+The first finite P2/seed0 probe at `2d6ad69` completes230native/WBC ticks and
+three fresh original requests. All three actual RGB arrays equal the model's
+captured inputs, including the new unmarked190image. The first190physical
+records match0380 exactly after excluding episode IDs; third-chunk frames0..39
+execute once in that same world. All ticks remain upright. During all40new
+frames the apple has positive current table support and zero positive robot
+support: acquisition does not recover. No horizontal transfer or placement
+executes. This negative result does not justify appending more original chunks.
+The original first chunk ends at100with an open hand; the second chunk closes
+it. Current perception and geometry admission before closing are the next
+bounded question. Scratch0381 retains original/model pixels, full steps and
+the independent negative contact classification; all owned children are reaped.
