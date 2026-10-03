@@ -1667,3 +1667,20 @@ considered/copy scene Tick, skipped old scenes and independent extraction/copy/
 readback times. It retains the same single slot, image floor, physical behavior
 and action deadlines. This instrumentation is acceptance evidence only and is
 never passed to model/control input.
+
+Fresh0267 resolves that missing timing: the requested scene is actually copied
+at Tick30, extraction-to-copy124ms and copy-to-readback202ms. At the fixed
+Tick50pause the camera is already completed, but the render/main pipeline has
+not consumed it in time to issue another model request. Only one original call
+occurs; all50physical frames complete without misses/debt. This is a camera/
+consumer scheduling failure, not a failed second model inference. Trace SHA256:
+`a0b6c869ddee597ac171344be93595d41baa1ba172cbe4c360444150d8b7e68c`.
+
+The ego render target is now drawn only for its one outstanding eligible
+capture request, instead of drawing a second view while idle, waiting for the
+minimum scene, holding an in-flight copy or awaiting consumption. Its pose
+continues to follow the exact native snapshot; original640x480/MSAA8/projection/
+materials/lighting and the1920x1080main view are unchanged. The existing bounded
+slot checks cover activation/deactivation and minimum-scene gating. Fresh0269
+will measure the resulting latency with the same Tick25/50window; no deadline,
+physics parameter or action horizon is relaxed.

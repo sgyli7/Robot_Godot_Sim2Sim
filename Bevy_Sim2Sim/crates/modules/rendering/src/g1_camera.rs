@@ -440,6 +440,21 @@ impl G1CameraPort {
         }
     }
 
+    fn needs_render(&self, source: &G1CameraSourceFrame) -> bool {
+        let Ok(slot) = self.0.lock() else {
+            return false;
+        };
+        slot.requested
+            && slot.active.is_none()
+            && slot.completed.is_none()
+            && source.episode_id == slot.episode_id
+            && slot.minimum_physics_tick.is_none_or(|tick| {
+                source.source == CameraPoseSource::PhysicsBody
+                    && source.source_ticks[0] >= tick
+                    && source.source_ticks[0] == source.source_ticks[1]
+            })
+    }
+
     fn begin(&self, frame: &ExtractedFrame) -> Option<G1CaptureStamp> {
         let mut slot = self.0.lock().ok()?;
         if !slot.requested
@@ -643,6 +658,7 @@ fn setup_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
 fn update_pose(
     input: Res<G1CameraInput>,
+    port: Res<G1CameraPort>,
     mut cameras: Query<(&mut Camera, &mut Transform), With<G1EgoCamera>>,
 ) {
     for (mut camera, mut transform) in &mut cameras {
@@ -650,7 +666,9 @@ fn update_pose(
             && frame.validate().is_ok()
         {
             *transform = frame.world_from_camera;
-            camera.is_active = true;
+            // This image target is a one-shot sensor, not a second preview.
+            // Keep its exact current pose, but draw only the requested scene.
+            camera.is_active = port.needs_render(frame);
         } else {
             camera.is_active = false;
         }
@@ -849,15 +867,19 @@ mod tests {
     fn capture_slot_has_no_backlog_and_preserves_acquisition_stamp() {
         let port = G1CameraPort::default();
         port.reset(1).unwrap();
+        assert!(!port.needs_render(&frame(1).source));
         port.request().unwrap();
+        assert!(port.needs_render(&frame(1).source));
         assert!(port.request().is_err());
         let mut stamp = port.begin(&frame(1)).unwrap();
+        assert!(!port.needs_render(&frame(1).source));
         stamp.readback_completed_at_unix_ms = 2000;
         assert!(port.begin(&frame(1)).is_none());
         assert!(port.request().is_err());
         port.finish(stamp, Ok(vec![0; (EGO_WIDTH * EGO_HEIGHT * 3) as usize]));
         assert!(port.request().is_err());
         let observation = port.take().unwrap().unwrap();
+        assert!(!port.needs_render(&frame(1).source));
         assert_eq!(observation.stamp.captured_at_unix_ms, 1234);
         assert_eq!(observation.stamp.readback_completed_at_unix_ms, 2000);
         assert_eq!(observation.stamp.source_ticks, [10, 10]);
@@ -960,6 +982,7 @@ mod tests {
         let state = native(1, 10);
         old.source = arena_head_camera(&state.body_frame).unwrap();
         old.source.native_state = Some(state);
+        assert!(!port.needs_render(&old.source));
         assert!(port.begin(&old).is_none());
         assert_eq!(port.progress(), "awaiting_render_extraction");
         let timing = port.capture_progress();
@@ -972,7 +995,9 @@ mod tests {
         let state = native(1, 13);
         current.source = arena_head_camera(&state.body_frame).unwrap();
         current.source.native_state = Some(state);
+        assert!(port.needs_render(&current.source));
         let stamp = port.begin(&current).unwrap();
+        assert!(!port.needs_render(&current.source));
         assert_eq!(stamp.source_ticks, [13, 13]);
         assert_eq!(stamp.sim_time_ns, 260_000_000);
         assert_eq!(stamp.captured_at_unix_ms, 1234);
