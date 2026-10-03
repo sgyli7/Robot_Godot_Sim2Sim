@@ -30,6 +30,8 @@ use bevy::{
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_continuous;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod static_visual_transfer;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
@@ -667,6 +669,12 @@ pub fn run_static_visual_grasp_from_file(
     run_from_file(path, options, CaptureMode::StaticVisualGrasp)
 }
 
+/// Current RGB-mediated classical transfer after exactly two original T1 chunks.
+pub fn run_static_visual_transfer_from_file(path: &Path, options: G1CaptureOptions)
+    -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticVisualTransfer)
+}
+
 /// Four fresh original chunks separated by explicit native standing waits.
 /// This source-scene timing preflight has no Qwen/task qualification.
 pub fn run_mobile_wait_grasp_from_file(
@@ -784,6 +792,7 @@ pub fn run_mobile_auxiliary_release_from_file(
 enum CaptureMode {
     Camera,
     StaticVisualGrasp,
+    StaticVisualTransfer,
     MobileWaitGrasp,
     MobileContinuousRelease,
     TaskLab,
@@ -814,7 +823,7 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::StaticVisualGrasp | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::TaskLab | Self::MobileCarry => None,
         }
     }
 }
@@ -1303,6 +1312,9 @@ pub(super) struct CaptureRuntime {
     continuous_route: Option<mobile_continuous::ContinuousMobileRoute>,
     static_marker_worker: Option<StaticMarkerWorker>,
     static_visual_grasp: bool,
+    static_visual_transfer: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    static_transfer_route: Option<static_visual_transfer::StaticTransferRoute>,
     static_marker_activation_render_frame: Option<u32>,
 }
 
@@ -1562,7 +1574,9 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
-    let static_visual_grasp = mode == CaptureMode::StaticVisualGrasp;
+    let static_visual_transfer = mode == CaptureMode::StaticVisualTransfer;
+    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer);
+    let static_visual_budget = if static_visual_transfer { 390 } else { 140 };
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
     let continuous = mode == CaptureMode::MobileContinuousRelease;
@@ -1577,14 +1591,14 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer)
             || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
             || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || if static_marker_assets.is_some() {
                 policy.is_some() != static_visual_grasp
-                    || options.ticks != if static_visual_grasp { 140 } else { 60 }
+                    || options.ticks != if static_visual_grasp { static_visual_budget } else { 60 }
             } else {
                 policy
                     .as_ref()
@@ -1674,11 +1688,11 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp)
+        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer)
             || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some() != static_visual_grasp
             || if static_visual_grasp {
-                !static_startup || options.ticks != 140
+                !static_startup || options.ticks != static_visual_budget
             } else {
                 static_startup != (options.ticks == 60) || !matches!(options.ticks, 0 | 60)
             }
@@ -1688,7 +1702,7 @@ fn run_capture_owner(
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16))
     {
-        return Err("static labels require explicit0/60Tick calibration or the distinct140Tick original two-chunk visual handoff".into());
+        return Err("static labels require explicit0/60Tick calibration,140Tick grasp view or390Tick visual transfer".into());
     }
     if static_visual_grasp
         && (static_marker_assets.is_none()
@@ -1697,9 +1711,9 @@ fn run_capture_owner(
                 p.max_calls != 2 || p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait
             })
             || !static_startup
-            || options.ticks != 140)
+            || options.ticks != static_visual_budget)
     {
-        return Err("static visual handoff requires exactly two original40frame chunks after60startupTicks and its distinct current RGB worker".into());
+        return Err("static visual mode requires60startupTicks, exactly two original40frame chunks, its bound CPUworker and exact140/390Tick scene budget".into());
     }
     let static_labels = static_marker_assets.is_some();
     if let Some(vision) = &static_marker_vision {
@@ -1917,6 +1931,7 @@ fn run_capture_owner(
                 || policy.max_calls > if mobile_carry { 30 } else { 8 }
                 || (!interactive
                     && !assisted_carry
+                    && !static_visual_transfer
                     && u64::from(options.ticks)
                         != u64::from(policy.max_calls * horizon) + startup_ticks)
                 || policy.timeout_ms == 0
@@ -2085,6 +2100,12 @@ fn run_capture_owner(
         receipt.floor_center_engine = [0.; 3];
         receipt.floor_full_extents_m = [0.; 3];
     }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    let static_transfer_route = if static_visual_transfer {
+        let CaptureRunnerConfig::Task(c) = &config else {return Err("static transfer task owner absent".into());};
+        let ArenaTaskBodyConfig::StaticAgile(b) = &c.body else {return Err("static transfer AGILE body absent".into());};
+        Some(static_visual_transfer::StaticTransferRoute::new(&b.definition,&b.definition_sha256)?)
+    } else {None};
     let worker = config.spawn(
         predictive_limit_diagnostic,
         diagnostic_constraint_sweeps,
@@ -2240,6 +2261,9 @@ fn run_capture_owner(
             continuous_route,
             static_marker_worker,
             static_visual_grasp,
+            static_visual_transfer,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            static_transfer_route,
             static_marker_activation_render_frame: None,
         })
         .insert_resource(bevy::winit::WinitSettings::continuous())
@@ -2650,6 +2674,10 @@ fn drive_bounded_task(
     outcome: &CaptureOutcome,
     port: &G1CameraPort,
 ) -> Result<bool, String> {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    if runtime.static_transfer_route.is_some() {
+        return static_visual_transfer::drive(runtime, outcome, port);
+    }
     #[cfg(feature = "g1_constraint_diagnostic")]
     if runtime.continuous_route.is_some() {
         return mobile_continuous::drive(runtime, outcome, port);
@@ -4689,6 +4717,13 @@ fn drive_capture(
             camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
             return Ok(());
         }
+        if runtime.static_visual_transfer && latest.timing.episode_integrations == 140
+            && latest.phase == G1WorkerPhase::Paused
+            && runtime.static_marker_activation_render_frame.is_none() {
+            marker_gate.as_mut().ok_or("static transfer marker gate absent")?.enabled = true;
+            runtime.static_marker_activation_render_frame = Some(runtime.render_frames);
+            return Ok(());
+        }
         let render_ready = runtime.render_frames > 30
             && health.snapshot().ready
             && input.0.is_some()
@@ -4759,7 +4794,7 @@ fn drive_capture(
                     && latest.timing.total_integrations == u64::from(runtime.options.ticks))
         };
         if capture_boundary && !runtime.requested {
-            if runtime.static_visual_grasp {
+            if runtime.static_visual_grasp && !runtime.static_visual_transfer {
                 if latest.phase != G1WorkerPhase::Paused || latest.timing.total_integrations != 140 {
                     return Err("static visual handoff did not reach its completed140Tick boundary".into());
                 }
@@ -4890,8 +4925,10 @@ fn drive_capture(
                 return Err("RGB and completed native measurements do not match".into());
             }
             frame.stamp.native_state.as_ref().unwrap().validate()?;
-            if let Some(worker) = &mut runtime.static_marker_worker {
-                worker.submit_capture(&frame)?;
+            if !runtime.static_visual_transfer {
+                if let Some(worker) = &mut runtime.static_marker_worker {
+                    worker.submit_capture(&frame)?;
+                }
             }
             if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
                 // Deliberately omit world camera/body poses and all task objects.

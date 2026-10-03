@@ -857,3 +857,24 @@ FK solve and one original AGILE/physics update per Tick, with bounded failure.
 The first mechanical exercise explicitly reuses saved original actions/current
 RGB estimates and refreshes wall expiry only offline; it cannot earn an
 autonomous, fresh-model or formal task score.
+
+
+The first same-world mechanical transfer (`0356`,6672548) completes390single
+50Hz native integrations: the140Tick original prefix is exactly identical to
+0354, followed by250traditional left-arm increments. All250transfer samples
+retain current hand-only support; none has a support gap or unavailable
+touching evidence. All390samples remain upright. Final apple-to-plate horizontal
+distance is15.354mm and the apple remains held above the plate. This explicitly
+offline saved-action/RGB test performs no fresh inference/capture and does not
+claim release, placement success or autonomous qualification.
+
+`--scene g1_static_visual_transfer_diagnostic --g1-ticks390` connects the same
+traditional skill to two fresh original VLA chunks and a new current140Tick
+RGB estimate. Marker activation stays after the original unmarked grasp.
+Whole-path FK runs on the paused caller before one immutable visual goal enters
+the separate AGILE owner; each subsequent physical Tick executes only one
+bounded geometric increment and one original body/physics update. The final
+390Tick image is separately stamped; the140Tick localization remains identified
+as the actual control observation, never relabeled as that final image. This
+bounded transfer entry still performs no release/Qwen decision and remains a
+paused diagnostic with explicit16PGS/predictive limits, not formal acceptance.
