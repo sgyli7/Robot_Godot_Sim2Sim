@@ -875,6 +875,16 @@ enum CaptureMode {
 }
 
 impl CaptureMode {
+    fn capture_tick_limit(self, task_owner: bool) -> u32 {
+        self.assisted_tick_limit().unwrap_or_else(|| match self {
+            Self::StaticObservedPlace => 1100,
+            Self::StaticMemoryPlaceObserve => 840,
+            Self::StaticMemoryPlace => 715,
+            Self::MobileCarry => 1500,
+            _ if task_owner => 400,
+            _ => 150,
+        })
+    }
     fn assisted_tick_limit(self) -> Option<u32> {
         match self {
             Self::MobileWaitGrasp => Some(1000),
@@ -2034,19 +2044,7 @@ fn run_capture_owner(
             }
         })
         .transpose()?;
-    let tick_limit = if let Some(limit) = mode.assisted_tick_limit() {
-        limit
-    } else if static_memory_observe {
-        840
-    } else if static_memory_place {
-        715
-    } else if mobile_carry {
-        1500
-    } else if matches!(config, CaptureRunnerConfig::Task(_)) {
-        400
-    } else {
-        150
-    };
+    let tick_limit = mode.capture_tick_limit(matches!(config, CaptureRunnerConfig::Task(_)));
     if options.ticks > tick_limit
         || options.timeout.is_zero()
         || options.timeout > Duration::from_secs(180)
@@ -2569,6 +2567,18 @@ mod budget_tests {
     use super::{CaptureMode, profile_prefetch_allowed};
     use task_minigame::types::TaskProfile;
 
+    #[test]
+    fn observed_place_budget_is_registered_in_the_actual_capture_guard_only() {
+        assert_eq!(CaptureMode::StaticObservedPlace.capture_tick_limit(true),1100);
+        for mode in [CaptureMode::StaticObservedGrasp,CaptureMode::StaticPregrasp,CaptureMode::StaticVisualGrasp,CaptureMode::Camera,CaptureMode::TaskLab] {
+            assert_eq!(mode.capture_tick_limit(true),400);
+            assert_eq!(mode.capture_tick_limit(false),150);
+        }
+        assert_eq!(CaptureMode::StaticMemoryPlace.capture_tick_limit(true),715);
+        assert_eq!(CaptureMode::StaticMemoryPlaceObserve.capture_tick_limit(true),840);
+        assert_eq!(CaptureMode::MobileCarry.capture_tick_limit(true),1500);
+        assert_eq!(CaptureMode::MobileContinuousRelease.capture_tick_limit(true),3150);
+    }
     #[test]
     fn prefetch_windows_do_not_mix_profiles_or_change_original_horizons() {
         assert!(profile_prefetch_allowed(
