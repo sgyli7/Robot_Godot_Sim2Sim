@@ -4808,6 +4808,13 @@ fn drive_capture(
             runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
             return Ok(());
         }
+        if runtime.static_memory_observe && latest.timing.episode_integrations == 190
+            && latest.phase == G1WorkerPhase::Paused
+            && camera_mount.0 == G1CameraMountProfile::ArenaEgo {
+            camera_mount.0 = G1CameraMountProfile::StaticPlacementOverview;
+            runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
+            return Ok(());
+        }
         if runtime.static_transfer_auxiliary
             && runtime.static_auxiliary_activation_frame.is_some_and(|n| runtime.render_frames < n + 2) {
             return Ok(());

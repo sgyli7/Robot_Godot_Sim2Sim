@@ -391,7 +391,7 @@ physical task execution or formal acceptance. Owned Qwen/N1.7/app/CPU processes
 were stopped/reaped immediately. Evidence: scratch 0371/0372.
 
 The observation-withdrawal diagnostic now pauses at Tick 190, after the fixed
-50 mm lift, before any horizontal transfer. One additional native ego RGB
+50 mm lift, before any horizontal transfer. One additional native head RGB
 capture must detect apple31 through the same 8 px / 1 px image gates. The
 original Tick 140 localization still requires both apple31 and plate32; neither
 target identity nor gate is weakened. The two image poses and all 51 named self
@@ -407,3 +407,16 @@ The initial and grip localization have separate immutable input directories and
 receipt fields; the CPU worker permits at most these two captures. Other
 diagnostic entries retain their prior single-capture route. This development
 gate is not a recovered grasp, a formal task result, or a qualified UI skill.
+
+The first actual lift check at `fa6ad75` stops after 190 native/WBC ticks:
+apple31 is occluded by fingers in the original Arena camera, although plate32
+passes. No horizontal transfer executes. A read-only geometry projection using
+only actual140RGB and190self confirms the existing published near-table mount
+places the expected whole apple-label border about90px from the frame edge,
+versus31px in ArenaEgo. This predicts image coverage, not unoccluded visibility
+or grasp. The lift check therefore uses that one already published fixed
+`StaticPlacementOverview` mount, with two render frames after switching. The
+original learned-policy images and initial two-target localization remain
+ArenaEgo. The CPU reply is bound to the requested mount. No new camera angle,
+search grid, control pose or precision relaxation is introduced. Cases0374/0375
+retain the failed actual check and public-geometry-only projection separately.

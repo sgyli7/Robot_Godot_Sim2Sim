@@ -74,6 +74,7 @@ struct Pending {
     input_hash: String,
     started: Instant,
     grip_check: bool,
+    camera_profile: G1CameraMountProfile,
 }
 
 pub(crate) struct StaticMarkerWorker {
@@ -290,7 +291,12 @@ impl StaticMarkerWorker {
             || (grip_check && (!self.submitted || self.grip_submitted))
             || frame.stamp.episode_id != self.episode_id
             || frame.stamp.source != CameraPoseSource::PhysicsBody
-            || frame.stamp.mount_profile != G1CameraMountProfile::ArenaEgo
+            || frame.stamp.mount_profile
+                != if grip_check {
+                    G1CameraMountProfile::StaticPlacementOverview
+                } else {
+                    G1CameraMountProfile::ArenaEgo
+                }
             || frame.width != 640
             || frame.height != 480
             || frame.stamp.source_ticks != [frame.stamp.sim_time_ns / 20_000_000; 2]
@@ -344,7 +350,8 @@ impl StaticMarkerWorker {
         fs::write(directory.join("observation.json"), serde_json::to_vec_pretty(&json!({
             "schema":"g1_static_marker_observation_v1","stamp":observation,
             "camera":{"fx":458.1245526,"fy":458.1245526,"cx":320.,"cy":240.,"near_m":0.1,"far_m":5.,
-                "vertical_fov_radians":2. * (240_f64 / 458.1245526).atan()},
+                "vertical_fov_radians":2. * (240_f64 / 458.1245526).atan(),
+                "mount_profile":frame.stamp.mount_profile},
             "measured_joints":state.measured_joints,
         })).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let image_hash = digest(&directory.join("ego.png"), 16 * 1024 * 1024)?;
@@ -366,6 +373,7 @@ impl StaticMarkerWorker {
             input_hash,
             started,
             grip_check,
+            camera_profile: frame.stamp.mount_profile,
         });
         self.previous_observation = Some(observation);
         if grip_check {
@@ -411,7 +419,8 @@ fn validate_reply(
         || reply["input_sha256"] != pending.input_hash
         || reply["definition_sha256"] != config.definition_sha256
         || reply["fiducial_sha256"] != config.fiducial_sha256
-        || reply["camera_profile"] != "arena_ego"
+        || reply["camera_profile"]
+            != serde_json::to_value(pending.camera_profile).map_err(|e| e.to_string())?
         || reply["world_or_contact_truth_input"] != false
         || reply["actuation_proposed"] != false
         || reply["task_qualified"] != false
@@ -449,7 +458,12 @@ fn validate_reply(
     }
     // Absence is a perception failure; no actuation or truth-based replacement.
     if !admitted[0] || (!pending.grip_check && !admitted[1]) {
-        return Err("actual static RGB did not admit both requested targets".into());
+        return Err(if pending.grip_check {
+            "actual lift RGB did not admit apple31"
+        } else {
+            "actual static RGB did not admit both requested targets"
+        }
+        .into());
     }
     Ok(())
 }
@@ -506,6 +520,7 @@ mod tests {
             input_hash: "b".repeat(64),
             started: Instant::now(),
             grip_check: false,
+            camera_profile: G1CameraMountProfile::ArenaEgo,
         };
         let reply = json!({"schema":"g1_static_actual_rgb_localization_v1","observation":pending.observation,
         "source":"actual_rgb_printed_label_pnp_and_original_self_FK","image_sha256":pending.image_hash,
@@ -565,6 +580,9 @@ mod tests {
         reply["detections"].as_array_mut().unwrap().pop();
         assert!(validate_reply(&reply, &pending, &config).is_err());
         pending.grip_check = true;
+        pending.camera_profile = G1CameraMountProfile::StaticPlacementOverview;
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        reply["camera_profile"] = json!("static_placement_overview");
         assert!(validate_reply(&reply, &pending, &config).is_ok());
         reply["detections"].as_array_mut().unwrap().clear();
         assert!(validate_reply(&reply, &pending, &config).is_err());
