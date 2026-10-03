@@ -109,9 +109,19 @@ impl TaskObjectsDefinition {
     /// Published immutable collision vertices only; no poses, contacts or world.
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub(super) fn static_placement_vertices(&self) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
-        let vertices = |kind| self.document.objects.iter().filter(|o| o.kind == kind)
-            .flat_map(|o| o.convex_parts.iter()).flat_map(|c| c.points.iter().copied()).collect();
-        (vertices(TaskObjectKind::Apple), vertices(TaskObjectKind::Plate))
+        let vertices = |kind| {
+            self.document
+                .objects
+                .iter()
+                .filter(|o| o.kind == kind)
+                .flat_map(|o| o.convex_parts.iter())
+                .flat_map(|c| c.points.iter().copied())
+                .collect()
+        };
+        (
+            vertices(TaskObjectKind::Apple),
+            vertices(TaskObjectKind::Plate),
+        )
     }
 
     pub fn load(path: &Path, expected_sha256: &str) -> Result<Self, RobotError> {
@@ -312,6 +322,10 @@ pub struct TaskObjectContactSample {
     /// Unlike cached solver distances this belongs to this exact sample Tick.
     /// Zero means intersection/touch; None means the query was unsupported.
     pub geometric_distance_after_step_m: Option<f32>,
+    /// A positive current solver impulse already prevents release. Its costly
+    /// post-step shape distance is unnecessary for that conservative decision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometric_distance_query_omission: Option<&'static str>,
     /// Legacy sum over all cached manifold points, including points no longer
     /// selected by the solver. It must not establish present support alone.
     pub normal_impulse_n_s: f32,
@@ -563,6 +577,12 @@ impl TaskObjectScene {
                         .iter()
                         .flat_map(|m| m.data.solver_contacts.iter().map(|p| p.dist))
                         .reduce(f32::min);
+                    #[cfg(feature = "g1_constraint_diagnostic")]
+                    let active_impulse = active_solver_normal_impulse(pair);
+                    #[cfg(feature = "g1_constraint_diagnostic")]
+                    let force_blocks_release = active_impulse.is_some_and(|impulse| impulse > 0.);
+                    #[cfg(not(feature = "g1_constraint_diagnostic"))]
+                    let force_blocks_release = false;
                     TaskObjectContactSample {
                         other_background_collider_path: self
                             .source_t2_background
@@ -581,34 +601,42 @@ impl TaskObjectScene {
                         manifold_count: pair.manifolds.len(),
                         solver_points,
                         min_solver_distance_m: minimum,
-                        geometric_distance_after_step_m: rapier3d::parry::query::distance(
-                            &(*body.position()
-                                * collider.position_wrt_parent().copied().unwrap_or_default()),
-                            collider.shape(),
-                            &world.world.colliders[other].parent().map_or_else(
-                                || *world.world.colliders[other].position(),
-                                |parent| {
-                                    *world.world.bodies[parent].position()
-                                        * world.world.colliders[other]
-                                            .position_wrt_parent()
-                                            .copied()
-                                            .unwrap_or_default()
-                                },
-                            ),
-                            world.world.colliders[other].shape(),
-                        )
-                        .ok()
-                        .filter(|distance| distance.is_finite() && *distance >= 0.),
+                        geometric_distance_after_step_m: if force_blocks_release {
+                            None
+                        } else {
+                            rapier3d::parry::query::distance(
+                                &(*body.position()
+                                    * collider.position_wrt_parent().copied().unwrap_or_default()),
+                                collider.shape(),
+                                &world.world.colliders[other].parent().map_or_else(
+                                    || *world.world.colliders[other].position(),
+                                    |parent| {
+                                        *world.world.bodies[parent].position()
+                                            * world.world.colliders[other]
+                                                .position_wrt_parent()
+                                                .copied()
+                                                .unwrap_or_default()
+                                    },
+                                ),
+                                world.world.colliders[other].shape(),
+                            )
+                            .ok()
+                            .filter(|distance| distance.is_finite() && *distance >= 0.)
+                        },
+                        geometric_distance_query_omission: force_blocks_release
+                            .then_some("positive_current_solver_impulse_already_blocks_release"),
                         normal_impulse_n_s: pair.total_impulse_magnitude(),
                         normal_impulse_on_object_source: normal_impulse_on_collider(
                             pair,
                             instance.collider,
                         ),
                         #[cfg(feature = "g1_constraint_diagnostic")]
-                        active_solver_normal_impulse_n_s: active_solver_normal_impulse(pair),
+                        active_solver_normal_impulse_n_s: active_impulse,
                         #[cfg(feature = "g1_constraint_diagnostic")]
-                        active_solver_normal_impulse_on_object_source:
-                            active_solver_normal_vector(pair, instance.collider),
+                        active_solver_normal_impulse_on_object_source: active_solver_normal_vector(
+                            pair,
+                            instance.collider,
+                        ),
                         #[cfg(feature = "g1_contact_point_diagnostic")]
                         diagnostic_solver_contacts: diagnostic_solver_contacts(
                             pair,
