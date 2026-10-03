@@ -88,11 +88,20 @@ def evaluate(definition, robot, receipt, rows):
         if not np.isfinite([*margins.ravel(), *gaps, *matrix.ravel()]).all():
             raise ValueError('Nonfinite geometry/contact evidence')
         contact_points = contacts['contact_points']
+        reconstructed = np.zeros_like(matrix)
+        for point in contact_points:
+            # SDK normal scalars are signed. The product with the reported
+            # normal, not a positive-only scalar test, is the body force.
+            reconstructed[point['filter_index']] += (
+                point['normal_force_n'] * np.asarray(point['normal_world']))
+        force_error = float(np.max(np.abs(reconstructed - matrix)))
+        if not np.isfinite(force_error) or force_error > 1e-4:
+            raise ValueError('Detailed signed contact forces disagree with measured pair matrix')
         robot_force = float(np.linalg.norm(matrix[1:], axis=1).sum())
-        supported = matrix[0, 2] > 0 and any(
-            p['filter_index'] == 0 and p['normal_force_n'] > 0 for p in contact_points)
+        supported = bool(matrix[0, 2] > 0 and any(
+            p['filter_index'] == 0 and abs(p['normal_force_n']) > 0 for p in contact_points))
         touching_robot_report = any(p['filter_index'] > 0 and (
-            p['separation_m'] <= 0 or p['normal_force_n'] > 0) for p in contact_points)
+            p['separation_m'] <= 0 or abs(p['normal_force_n']) > 0) for p in contact_points)
         separated = min(gaps) > 0 and robot_force == 0 and not touching_robot_report
         linear = float(np.linalg.norm(apple['velocity'][:3]))
         angular = float(np.linalg.norm(apple['velocity'][3:]))
@@ -105,6 +114,7 @@ def evaluate(definition, robot, receipt, rows):
         samples.append({'tick': tick, 'minimum_footprint_margin_m': float(margins.min()),
             'positive_plate_upward_force_n': float(matrix[0, 2]), 'plate_support': supported,
             'robot_contact_force_norm_sum_n': robot_force,
+            'signed_contact_pair_reconstruction_max_error_n': force_error,
             'minimum_robot_aabb_gap_m': min(gaps), 'separation_proved': separated,
             'linear_speed_m_s': linear, 'angular_speed_rad_s': angular,
             'standing': standing, 'ready': bool(ready),
@@ -118,7 +128,7 @@ def evaluate(definition, robot, receipt, rows):
             'actual_source_physics_integrations': receipt['measured_physics_steps_since_reset'],
             'source_samples': len(samples), 'fresh_original_vla_calls': receipt['policy_calls'],
             'apple_collision_vertices': len(apple_vertices), 'robot_collision_shapes': len(robot['collisions']),
-            'release_rule': 'strictly positive same-Tick exported-shape AABB separation from all robot colliders and no touching/positive contact report; overlap is inconclusive',
+            'release_rule': 'strictly positive same-Tick exported-shape AABB separation from all robot colliders and no touching/nonzero signed contact report; overlap is inconclusive',
             'samples': samples, 'native_task_qualified': False, 'formal_task_qualified': False,
             'scope': 'original SDK200/50Hz independent audit only; no model/command input'}
 

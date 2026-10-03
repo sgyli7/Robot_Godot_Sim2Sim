@@ -702,3 +702,17 @@ overlap remains inconclusive, even with zero reported force. Source results
 remain separate from native/formal acceptance. Contact tensors use the
 [documented impulse-to-force timestep](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.0/extensions/runtime/source/omni.physics.tensors/docs/api/python.html),
 here the actual original last-solve0.005seconds; no extra step is performed.
+
+The bounded original continuation (`0340`,b932b3a source harness) completes
+300controls/1200source200Hz steps and8fresh original model calls, then ends on
+the retained original six-second timeout. The weak success term first fires at
+124. Of the176subsequent recorded boundaries, only20satisfy both original speed
+limits; the conservative full placement window reaches just0.08seconds, and
+some robot-shape bounds still overlap (separation remains inconclusive there).
+The final apple is within the plate footprint and has upward plate support,
+but angular speed0.22156rad/s exceeds0.1. This does not establish strict source
+success or attribute the native failure to a particular physical parameter.
+Actual SDK normal scalars are signed; multiplying each scalar by its reported
+normal reconstructs the measured pair-force matrix. The final auditor handles
+that sign explicitly and retains earlier serialization/sign failures alongside
+the unchanged raw run. No physics/model rerun is used to repair the auditor.
