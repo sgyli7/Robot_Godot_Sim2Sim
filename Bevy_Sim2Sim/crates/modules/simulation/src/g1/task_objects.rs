@@ -320,13 +320,13 @@ pub struct TaskObjectContactSample {
     pub active_solver_normal_impulse_on_object_source: Option<[f32; 3]>,
     /// Diagnostic cache/impulse records. Solver-basis friction components are
     /// not world-space forces, and cached anchors are not fresh shape queries.
-    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[cfg(feature = "g1_contact_point_diagnostic")]
     pub diagnostic_solver_contacts: Vec<TaskObjectSolverContactSample>,
 }
 
 /// Read-only evidence from active solver-contact identities. These records
 /// never enter robot measurements, action admission or task control.
-#[cfg(feature = "g1_constraint_diagnostic")]
+#[cfg(feature = "g1_contact_point_diagnostic")]
 #[derive(Clone, Debug, Serialize)]
 pub struct TaskObjectSolverContactSample {
     pub manifold_index: usize,
@@ -601,7 +601,7 @@ impl TaskObjectScene {
                         #[cfg(feature = "g1_constraint_diagnostic")]
                         active_solver_normal_impulse_on_object_source:
                             active_solver_normal_vector(pair, instance.collider),
-                        #[cfg(feature = "g1_constraint_diagnostic")]
+                        #[cfg(feature = "g1_contact_point_diagnostic")]
                         diagnostic_solver_contacts: diagnostic_solver_contacts(
                             pair,
                             instance.collider,
@@ -728,7 +728,7 @@ fn active_solver_normal_vector(
     result.iter().all(|v| v.is_finite()).then_some(result)
 }
 
-#[cfg(feature = "g1_constraint_diagnostic")]
+#[cfg(feature = "g1_contact_point_diagnostic")]
 fn diagnostic_solver_contacts(
     pair: &rapier3d::geometry::ContactPair,
     object: ColliderHandle,
@@ -861,7 +861,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[cfg(feature = "g1_contact_point_diagnostic")]
     #[test]
     fn solver_contact_audit_retains_sliding_impulses_for_both_orders() {
         for object_first in [false, true] {

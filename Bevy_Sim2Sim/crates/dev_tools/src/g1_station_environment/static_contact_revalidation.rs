@@ -38,9 +38,12 @@ fn revalidate_frozen_static_active_contacts() -> Result<(), String> {
         return Err("static revalidation case manifest exceeds bound".into());
     }
     let cases: Vec<SavedCase> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if cases.len() != 10 {
-        return Err("static revalidation requires exactly the original ten cases".into());
+    if cases.is_empty() || cases.len() > 10 {
+        return Err(
+            "static revalidation requires a bounded subset of the original ten cases".into(),
+        );
     }
+    let mut episodes = std::collections::HashSet::new();
     let scene =
         StationScene::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets"))?;
     for case in cases {
@@ -57,6 +60,9 @@ fn revalidate_frozen_static_active_contacts() -> Result<(), String> {
             serde_json::from_value(value["runner"].clone()).map_err(|e| e.to_string())?;
         let chunks: Vec<PolicyActionChunk> =
             serde_json::from_slice(&action_bytes).map_err(|e| e.to_string())?;
+        if !episodes.insert(config.body.episode_id()) {
+            return Err("static revalidation manifest repeats an episode".into());
+        }
         if value["static_startup"] != true
             || value["predictive_limit_diagnostic"] != true
             || value["diagnostic_constraint_sweeps"] != 16

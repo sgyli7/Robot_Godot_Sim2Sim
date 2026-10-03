@@ -785,3 +785,16 @@ Only wall expiry is refreshed and explicitly marked offline; episode/frame/
 simulation identities and every action remain unchanged. It cannot contribute
 a fresh-model,1x or autonomous score. Its purpose is to determine whether the
 old cached-contact placement evidence survives current solver-point receipts.
+
+Detailed pointwise contact output now additionally requires the explicit
+`g1_contact_point_diagnostic` feature. Ordinary `g1_constraint_diagnostic`
+receipts keep the active normal scalar/vector and same-Tick shape distance
+needed for strict support/release, without expanding every point's cache and
+friction data. The first ten-case revalidation hit its180s driver bound after
+six complete cases and a partial seventh; a completed case generated1.3GB of
+pointwise JSON. Raw partial output and the failed timeout/audit are retained,
+and the owned job is absent. The split changes observation cost only, with no
+solver, actuator, frequency or physical-world parameter change. Revalidation
+can resume a bounded subset with unique episodes; completed cases are retained
+instead of silently restarted. Formal8/10and current task scores stay unverified
+until complete independent audits finish.
