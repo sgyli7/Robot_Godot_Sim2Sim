@@ -828,3 +828,16 @@ This entry performs no subsequent geometric correction, Qwen decision or task
 qualification. Missing/currently occluded labels fail closed; the frozen
 perception gate is unchanged. Formal physics still has one20ms integration per
 Tick, with the existing explicit16PGS/predictive-limit diagnostic identified.
+
+
+The first actual visual handoff (`0354`,986e8b9), P1/seed42, executes140native
+AGILE calls and two fresh original N1.7 inferences. All140physical records
+match the original frozen case exactly; markers remain hidden from both VLA
+images. The third new image is the current marked140Tick observation. Its
+independent apple/plate position errors are3.382/1.006mm and it passes the
+unchanged10mm/8px/1px gate. Original image-to-localization age is128ms and
+owned CPU round trip97ms. At that boundary the apple is31.43mm above its
+60Tick resting height, with positive current hand support and zero other
+robot/external support (no unavailable touching pair). All ticks remain upright
+and owned model/app/CPU processes are reaped. No Qwen call, geometric transfer,
+release or physical task qualification has been executed by this handoff.
