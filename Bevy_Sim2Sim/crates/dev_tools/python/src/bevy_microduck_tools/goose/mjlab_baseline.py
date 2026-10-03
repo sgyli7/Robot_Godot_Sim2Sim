@@ -61,10 +61,14 @@ def build_reference(parent_model: Path, parent_contract: Path, destination: Path
     root.set("model", candidate)
     # implicitfast is supported by the pinned mjlab/Warp stack. No CPU callback.
     root.find("option").set("integrator", "implicitfast")
+    # AUTORESET is a C-only failure-recovery flag rejected by pinned Warp.
+    # GooseSourceRuntime disables it on its own C model. Warp.step has no
+    # implicit reset: its caller must abort and retain nonfinite states.
     flag = root.find("./option/flag")
-    if flag is None:
-        flag = ET.SubElement(root.find("option"), "flag")
-    flag.set("autoreset", "disable")
+    if flag is not None:
+        flag.attrib.pop("autoreset", None)
+        if not flag.attrib:
+            root.find("option").remove(flag)
     destination.mkdir(parents=True)
     path = destination / "robot.xml"
     tree.write(path, encoding="unicode")
@@ -77,7 +81,11 @@ def build_reference(parent_model: Path, parent_contract: Path, destination: Path
             "parent_contract_sha256": sha256(parent_contract), "decimation": 1,
             "native_mj_step": True, "custom_constraint_callbacks": False,
             "collision_proxy_qualified": False, "source_qualified": False,
-            "target_qualified": False, "option_changes": ["implicitfast", "autoreset disabled"]})
+            "target_qualified": False,
+            "native_runtime_autoreset_disabled": True,
+            "warp_implicit_autoreset": False,
+            "external_nonfinite_abort_required": True,
+            "option_changes": ["implicitfast", "C-only autoreset flag omitted from Warp XML"]})
     write_json(destination / "contract.json", contract)
     return path, destination / "contract.json"
 

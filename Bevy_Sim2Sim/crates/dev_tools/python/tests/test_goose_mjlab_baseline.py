@@ -1,5 +1,7 @@
 """Upstream model wiring preserves effort motors, inertia and admission scope."""
 import json
+import copy
+import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -10,6 +12,7 @@ pytest.importorskip("mjlab")
 from bevy_microduck_tools.goose.artifacts import CANDIDATES, sha256
 from bevy_microduck_tools.goose.mjlab_baseline import (
     NATIVE_PARENTS, _read_native_contract, build_reference, make_entity_cfg)
+from bevy_microduck_tools.goose.runtime import GooseSourceRuntime
 from test_goose_50hz import fixture_runtime
 
 
@@ -54,6 +57,7 @@ def test_upstream_model_keeps_native_physics_and_effort_motor_order(parent, tmp_
     assert native["upstream_baseline"]["parent_candidate"] == parent_identity["candidate"]
     assert native["upstream_baseline"]["decimation"] == 1
     assert native["upstream_baseline"]["custom_constraint_callbacks"] is False
+    assert native["upstream_baseline"]["external_nonfinite_abort_required"] is True
     with pytest.raises(FileExistsError):
         build_reference(model, contract, tmp_path / "reference")
 
@@ -81,3 +85,65 @@ def test_full_body_and_unknown_parents_cannot_enter_condensed_reference(parent, 
         with pytest.raises(ValueError, match="condensed native parent"):
             build_reference(model, path, tmp_path / "rejected_reference")
         assert not (tmp_path / "rejected_reference").exists()
+
+
+def test_c_failure_flag_does_not_block_warp_or_enable_native_recovery(parent, tmp_path):
+    import warp as wp
+    import mujoco_warp as mjw
+
+    model, contract = parent
+    # Also cover adoption of a parent explicitly disabling native recovery.
+    tree = ET.fromstring(model.read_text())
+    flag = tree.find('./option/flag')
+    if flag is None:
+        flag = ET.SubElement(tree.find('option'), 'flag')
+    flag.set('autoreset', 'disable')
+    model.write_text(ET.tostring(tree, encoding='unicode'))
+    identity = json.loads(contract.read_text())
+    identity['model_sha256'] = sha256(model)
+    contract.write_text(json.dumps(identity))
+    reference, path = build_reference(model, contract, tmp_path / 'reference')
+    exported = mujoco.MjModel.from_xml_path(str(reference))
+    assert not int(exported.opt.disableflags) & int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
+    with wp.ScopedDevice('cpu'):
+        mjw.put_model(exported)  # Real upstream validation, no physics step.
+    runtime = GooseSourceRuntime(reference, path)
+    assert int(runtime.model.opt.disableflags) & int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
+    runtime.data.qvel[0] = np.nan
+    with pytest.raises(FloatingPointError, match='no automatic reset'):
+        runtime.step(np.zeros(18))
+    assert not np.isfinite(runtime.data.qvel).all()
+
+
+@pytest.mark.parametrize('allowed_foot', [False, True])
+def test_warp_host_contacts_use_canonical_ids_without_false_body_touch(tmp_path, allowed_foot):
+    import warp as wp
+    import mujoco_warp as mjw
+
+    _, path = fixture_runtime(tmp_path)
+    model_path = tmp_path / 'robot.xml'
+    tree = ET.fromstring(model_path.read_text())
+    tree.find('option').set('integrator', 'implicitfast')
+    ET.SubElement(tree.find('./worldbody/body'), 'geom', name='test_toe', type='box', size='.1 .1 .1')
+    model_path.write_text(ET.tostring(tree, encoding='unicode'))
+    contract = json.loads(path.read_text())
+    contract['model_sha256'] = sha256(model_path)
+    contract['passive_contacts'] = [{'name': 'test_toe'}] if allowed_foot else []
+    path.write_text(json.dumps(contract))
+    runtime = GooseSourceRuntime(model_path, path)
+    runtime.data.qpos[2] = .09
+    mujoco.mj_forward(runtime.model, runtime.data)  # Actual contact solve, no integration.
+    assert runtime.data.ncon == 4
+    assert runtime._nonfoot_ground_contact() is (not allowed_foot)
+    expected_ids = runtime.data.contact.geom.copy()
+    backend = copy.copy(runtime.model)
+    backend.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
+    host = mujoco.MjData(runtime.model)
+    with wp.ScopedDevice('cpu'):
+        device_data = mjw.put_data(backend, runtime.data, nworld=1, nconmax=128, njmax=512)
+        mjw.get_data_into(host, backend, device_data)
+    np.testing.assert_array_equal(host.contact.geom, expected_ids)
+    assert all(c.geom1 == c.geom2 == 0 for c in host.contact)  # Reproduces pinned bridge boundary.
+    runtime.data = host
+    assert runtime._nonfoot_ground_contact() is (not allowed_foot)
+    assert runtime.physics_integrations == runtime.controller_updates == 0

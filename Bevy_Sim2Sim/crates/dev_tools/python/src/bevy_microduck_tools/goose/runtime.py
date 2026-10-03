@@ -15,7 +15,7 @@ import mujoco
 from .artifacts import DT, JOINT_ORDER, sha256
 from .task import TaskGoal, invalid_goal_extension
 
-RUNTIME_REVISION = "goose_source_post_integration_pose_v2"
+RUNTIME_REVISION = "goose_source_canonical_contacts_v3"
 
 
 class GooseSourceRuntime:
@@ -167,8 +167,7 @@ class GooseSourceRuntime:
         self.actions = action
         upright = float(self.data.xmat[self.torso].reshape(3, 3)[2, 2])
         height = float(self.data.subtree_com[self.torso, 2])
-        nonfoot = any(self.ground in (c.geom1, c.geom2) and
-                      (c.geom2 if c.geom1 == self.ground else c.geom1) not in self.foot_geoms for c in self.data.contact)
+        nonfoot = self._nonfoot_ground_contact()
         # Recovery explicitly permits body contact and low COM. No auto reset;
         # a scorer must observe stable recovery and continuation separately.
         failure = False if self.skill in ("recovery", "pickup") else bool(height < .18 or upright < .65 or nonfoot)
@@ -182,3 +181,10 @@ class GooseSourceRuntime:
     def _integrate(self):
         """Default native implicit step; experimental subclasses must be explicit."""
         mujoco.mj_step(self.model, self.data)
+
+    def _nonfoot_ground_contact(self):
+        # Warp's public host bridge populates canonical geom[2]. The legacy
+        # geom1/geom2 members can remain zero in MuJoCo 3.10 bridge results.
+        return any(self.ground in c.geom and
+                   int(c.geom[1] if c.geom[0] == self.ground else c.geom[0])
+                   not in self.foot_geoms for c in self.data.contact)
