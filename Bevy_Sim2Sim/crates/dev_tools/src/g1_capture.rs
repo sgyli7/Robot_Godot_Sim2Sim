@@ -1810,6 +1810,7 @@ fn run_capture_owner(
         if !static_labels || interactive || (policy.is_some() && !static_visual_grasp) {
             return Err("static CPU localization requires calibration or the separate original two-chunk visual handoff".into());
         }
+        if vision.calibration_version==3 && !matches!(mode,CaptureMode::StaticObservedGrasp|CaptureMode::StaticPregrasp|CaptureMode::Camera) {return Err("multi-face static labels require their separate observed-grasp/calibration entry".into());}
         vision.validate()?;
         let labels = static_marker_assets.as_ref().unwrap();
         if labels.path != vision.fiducial_path || labels.sha256 != vision.fiducial_sha256 {
@@ -1825,8 +1826,7 @@ fn run_capture_owner(
     if let Some(model) = &fiducial_model {
         let auxiliary_labels = model.receipt.layout_profile
             == rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryGripTargets;
-        let static_profile = model.receipt.layout_profile
-            == rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::StaticApplePlate;
+        let static_profile = model.receipt.layout_profile.is_static();
         if auxiliary_labels != auxiliary_view || static_profile != static_labels {
             return Err(
                 "auxiliary printed labels require their separate fixed-sensor view entry".into(),

@@ -29,6 +29,8 @@ struct Document {
     calibration_version: Option<u32>,
     #[serde(default)]
     marker_mounts_source_m: Option<[[f32; 3]; 2]>,
+    #[serde(default)]
+    static_apple_side_markers: Vec<StaticAppleSideMarker>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -42,12 +44,101 @@ pub enum G1FiducialLayoutProfile {
     /// Public small labels for a static RGB localization diagnostic. This
     /// profile never silently enters original unmarked model observations.
     StaticApplePlate,
+    /// Separate fixed public six-face layout for grasp-induced object rotation.
+    StaticApplePlateMultiFace,
 }
 
+impl G1FiducialLayoutProfile {
+    pub fn is_static(self) -> bool {
+        matches!(
+            self,
+            Self::StaticApplePlate | Self::StaticApplePlateMultiFace
+        )
+    }
+}
+/// Fixed public marker-to-apple transform; bytes and poses are calibration only.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StaticAppleSideMarker {
+    pub marker_id: u32,
+    pub png_path: String,
+    pub png_sha256: String,
+    pub center_source_m: [f32; 3],
+    pub rotation_wxyz: [f32; 4],
+}
+fn validate_side_layout(
+    profile: G1FiducialLayoutProfile,
+    sides: &[StaticAppleSideMarker],
+) -> Result<(), String> {
+    if profile != G1FiducialLayoutProfile::StaticApplePlateMultiFace {
+        return if sides.is_empty() {
+            Ok(())
+        } else {
+            Err("side labels require their separate static multi-face profile".into())
+        };
+    }
+    let expected = [
+        (
+            33,
+            [-0.030, 0., 0.014],
+            [
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.,
+                -std::f32::consts::FRAC_1_SQRT_2,
+                0.,
+            ],
+        ),
+        (
+            34,
+            [0.002, -0.031, 0.014],
+            [
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.,
+                0.,
+            ],
+        ),
+        (
+            35,
+            [0.033, 0., 0.014],
+            [
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.,
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.,
+            ],
+        ),
+        (
+            36,
+            [0.002, 0.031, 0.014],
+            [
+                std::f32::consts::FRAC_1_SQRT_2,
+                -std::f32::consts::FRAC_1_SQRT_2,
+                0.,
+                0.,
+            ],
+        ),
+        (37, [0.002, 0., -0.017], [0., 1., 0., 0.]),
+    ];
+    if sides.len() != expected.len()
+        || sides.iter().zip(expected).any(|(a, (id, p, q))| {
+            a.marker_id != id
+                || a.center_source_m != p
+                || a.rotation_wxyz
+                    .iter()
+                    .zip(q)
+                    .any(|(a, b)| (a - b).abs() > 1e-7)
+        })
+    {
+        return Err("public multi-face marker identity/mount changed".into());
+    }
+    Ok(())
+}
 /// Asset identities only. Marker dimensions/mounts are a public fixed contract.
 #[derive(Resource)]
 pub struct G1TaskFiducialModel {
     pngs: [Vec<u8>; 2],
+    side_pngs: Vec<Vec<u8>>,
     pub receipt: G1TaskFiducialReceipt,
 }
 
@@ -82,10 +173,41 @@ pub struct G1TaskFiducialReceipt {
     pub original_grasp_images_marked: bool,
     #[serde(skip_serializing_if = "unmarked")]
     pub static_localization_images_marked: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub static_apple_side_markers: Vec<StaticAppleSideMarker>,
 }
 
 fn unmarked(value: &bool) -> bool {
     !*value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "explicit hash-bound public marker profile;0physics/camera/model calls"]
+    fn load_public_six_face_calibration_and_check_source_axes() -> Result<(), String> {
+        let path = std::env::var("G1_MULTI_FACE_FIDUCIAL_PATH").map_err(|e| e.to_string())?;
+        let hash = std::env::var("G1_MULTI_FACE_FIDUCIAL_SHA256").map_err(|e| e.to_string())?;
+        let model = G1TaskFiducialModel::load(Path::new(&path), &hash)?;
+        assert_eq!(model.receipt.calibration_version, Some(3));
+        assert_eq!(model.side_pngs.len(), 5);
+        assert!(!model.receipt.physics_modified);
+        let normals = [Vec3::NEG_X, Vec3::Z, Vec3::X, Vec3::NEG_Z, Vec3::NEG_Y];
+        for (side, normal) in model.receipt.static_apple_side_markers.iter().zip(normals) {
+            let [w, x, y, z] = side.rotation_wxyz;
+            let rotation = Quat::from_xyzw(x, z, -y, w).normalize();
+            assert!((rotation * Vec3::Y - normal).length() < 1e-6);
+        }
+        let mut sides = model.receipt.static_apple_side_markers;
+        assert!(validate_side_layout(G1FiducialLayoutProfile::StaticApplePlate, &sides).is_err());
+        sides[0].center_source_m[0] += 0.001;
+        assert!(
+            validate_side_layout(G1FiducialLayoutProfile::StaticApplePlateMultiFace, &sides)
+                .is_err()
+        );
+        Ok(())
+    }
 }
 
 impl G1TaskFiducialModel {
@@ -95,8 +217,16 @@ impl G1TaskFiducialModel {
         if document.schema != "g1_task_fiducials_v1" || document.dictionary != "DICT_4X4_50" {
             return Err("unsupported original-task printed-marker contract".into());
         }
-        if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate {
-            if document.calibration_version != Some(2)
+        if document.layout_profile.is_static() {
+            if document.calibration_version
+                != Some(
+                    if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlateMultiFace
+                    {
+                        3
+                    } else {
+                        2
+                    },
+                )
                 || document.marker_mounts_source_m != Some([[0.002, 0., 0.046], [0., 0., 0.0255]])
             {
                 return Err("static public marker calibration version/mount changed".into());
@@ -106,6 +236,7 @@ impl G1TaskFiducialModel {
         {
             return Err("static marker calibration cannot enter a mobile layout".into());
         }
+        validate_side_layout(document.layout_profile, &document.static_apple_side_markers)?;
         let png_path = |name: &str| {
             let png = Path::new(name);
             if png.is_absolute() {
@@ -126,7 +257,12 @@ impl G1TaskFiducialModel {
                 1024 * 1024,
             )?,
         ];
-        for png in &pngs {
+        let side_pngs: Vec<_> = document
+            .static_apple_side_markers
+            .iter()
+            .map(|side| checked_bytes(&png_path(&side.png_path), &side.png_sha256, 1024 * 1024))
+            .collect::<Result<_, _>>()?;
+        for png in pngs.iter().chain(side_pngs.iter()) {
             let image = Image::from_buffer(
                 png,
                 ImageType::Extension("png"),
@@ -144,17 +280,17 @@ impl G1TaskFiducialModel {
         }
         Ok(Self {
             pngs,
+            side_pngs,
             receipt: G1TaskFiducialReceipt {
                 layout_profile: document.layout_profile,
                 calibration_version: document.calibration_version,
-                schema: if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate {
+                schema: if document.layout_profile.is_static() {
                     "g1_static_disclosed_printed_markers_v1"
                 } else {
                     "g1_mobile_disclosed_printed_markers_v1"
                 },
                 dictionary: "DICT_4X4_50",
-                marker_ids: if document.layout_profile == G1FiducialLayoutProfile::StaticApplePlate
-                {
+                marker_ids: if document.layout_profile.is_static() {
                     [31, 32]
                 } else {
                     [21, 22]
@@ -162,16 +298,16 @@ impl G1TaskFiducialModel {
                 printed_black_square_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.16, 0.10],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.16, 0.06],
-                    G1FiducialLayoutProfile::StaticApplePlate => [0.02, 0.06],
+                    G1FiducialLayoutProfile::StaticApplePlate
+                    | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.02, 0.06],
                 },
                 white_margin_overall_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.20, 0.125],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.20, 0.075],
-                    G1FiducialLayoutProfile::StaticApplePlate => [0.025, 0.075],
+                    G1FiducialLayoutProfile::StaticApplePlate
+                    | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.025, 0.075],
                 },
-                object_kinds: if document.layout_profile
-                    == G1FiducialLayoutProfile::StaticApplePlate
-                {
+                object_kinds: if document.layout_profile.is_static() {
                     ["t1_apple", "t1_plate"]
                 } else {
                     ["t2_bin", "t2_box"]
@@ -183,7 +319,8 @@ impl G1TaskFiducialModel {
                     G1FiducialLayoutProfile::AuxiliaryGripTargets => {
                         [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
                     }
-                    G1FiducialLayoutProfile::StaticApplePlate => {
+                    G1FiducialLayoutProfile::StaticApplePlate
+                    | G1FiducialLayoutProfile::StaticApplePlateMultiFace => {
                         document.marker_mounts_source_m.unwrap()
                     }
                 },
@@ -195,11 +332,10 @@ impl G1TaskFiducialModel {
                         [0.70710677, 0.70710677, 0., 0.],
                         [0.70710677, 0., 0.70710677, 0.],
                     ],
-                    G1FiducialLayoutProfile::StaticApplePlate => [[1., 0., 0., 0.]; 2],
+                    G1FiducialLayoutProfile::StaticApplePlate
+                    | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [[1., 0., 0., 0.]; 2],
                 },
-                activation_tick: if document.layout_profile
-                    == G1FiducialLayoutProfile::StaticApplePlate
-                {
+                activation_tick: if document.layout_profile.is_static() {
                     0
                 } else {
                     200
@@ -207,8 +343,8 @@ impl G1TaskFiducialModel {
                 asset_sha256: sha256.into(),
                 physics_modified: false,
                 original_grasp_images_marked: false,
-                static_localization_images_marked: document.layout_profile
-                    == G1FiducialLayoutProfile::StaticApplePlate,
+                static_localization_images_marked: document.layout_profile.is_static(),
+                static_apple_side_markers: document.static_apple_side_markers,
             },
         })
     }
@@ -298,9 +434,7 @@ fn spawn(
                 MeshMaterial3d(material),
                 Transform {
                     translation: Vec3::new(x, z, -y),
-                    rotation: if model.receipt.layout_profile
-                        == G1FiducialLayoutProfile::StaticApplePlate
-                    {
+                    rotation: if model.receipt.layout_profile.is_static() {
                         Quat::IDENTITY
                     } else if marker == 1 {
                         Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
@@ -318,6 +452,82 @@ fn spawn(
             ))
             .id();
         commands.entity(parent).add_child(child);
+    }
+    // All additional quads remain renderer children; no physics component,
+    // collision shape, mass, material or actuator parameter is added.
+    if !model.side_pngs.is_empty() {
+        let index = objects
+            .object_index("t1_apple")
+            .expect("validated static apple");
+        let (parent, _) = roots
+            .iter()
+            .find(|(_, root)| root.0 == index)
+            .expect("apple root spawned");
+        for (side, png) in model
+            .receipt
+            .static_apple_side_markers
+            .iter()
+            .zip(&model.side_pngs)
+        {
+            let mut image = Image::from_buffer(
+                png,
+                ImageType::Extension("png"),
+                CompressedImageFormats::NONE,
+                true,
+                bevy::image::ImageSampler::nearest(),
+                RenderAssetUsages::default(),
+            )
+            .expect("checked side marker");
+            image.texture_descriptor.usage |=
+                bevy::render::render_resource::TextureUsages::TEXTURE_BINDING;
+            let half = 0.0125;
+            let mut mesh = Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                vec![
+                    [-half, 0., -half],
+                    [half, 0., -half],
+                    [half, 0., half],
+                    [-half, 0., half],
+                ],
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0., 1., 0.]; 4]);
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_UV_0,
+                vec![[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
+            );
+            mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 2, 1, 0, 3, 2]));
+            let material = materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(images.add(image)),
+                perceptual_roughness: 1.,
+                metallic: 0.,
+                reflectance: 0.,
+                cull_mode: Some(bevy::render::render_resource::Face::Back),
+                ..default()
+            });
+            let [x, y, z] = side.center_source_m;
+            let [w, qx, qy, qz] = side.rotation_wxyz;
+            let child = commands
+                .spawn((
+                    Name::new(format!("g1_disclosed_marker_{}", side.marker_id)),
+                    PrintedMarker,
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material),
+                    Transform {
+                        translation: Vec3::new(x, z, -y),
+                        rotation: Quat::from_xyzw(qx, qz, -qy, w).normalize(),
+                        scale: Vec3::ONE,
+                    },
+                    Visibility::Hidden,
+                    bevy::light::NotShadowCaster,
+                ))
+                .id();
+            commands.entity(parent).add_child(child);
+        }
     }
 }
 

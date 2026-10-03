@@ -14,6 +14,7 @@ import numpy as np
 from unitree_g1_mobile_vision import DEFINITION_SHA256, root_from_camera, original_self_body_frames, rotation
 from unitree_g1_static_label_fit import apple_label
 
+SIDE_LAYOUT = {33:([-.030,0.,.014],[2**-.5,0.,-2**-.5,0.]),34:([.002,-.031,.014],[2**-.5,2**-.5,0.,0.]),35:([.033,0.,.014],[2**-.5,0.,2**-.5,0.]),36:([.002,.031,.014],[2**-.5,-2**-.5,0.,0.]),37:([.002,0.,-.017],[0.,1.,0.,0.])}
 LAYOUT = {31: ('t1_apple', .02, [.002, 0., .046]), 32: ('t1_plate', .06, [0., 0., .0255])}
 
 
@@ -72,19 +73,35 @@ class PinnedPublicStaticVisionAssets:
         if Path(fiducial_path).stat().st_size > 16*1024 or sha(fiducial_path) != fiducial_sha256:
             raise ValueError('Static printed calibration identity changed')
         calibration = json.loads(Path(fiducial_path).read_text())
-        if (set(calibration) != {'schema','dictionary','layout_profile','png_paths','png_sha256','calibration_version','marker_mounts_source_m'}
+        fields={'schema','dictionary','layout_profile','png_paths','png_sha256','calibration_version','marker_mounts_source_m'}
+        multiface=calibration.get('layout_profile')=='static_apple_plate_multi_face'
+        if (set(calibration) != (fields|{'static_apple_side_markers'} if multiface else fields)
                 or calibration['schema'] != 'g1_task_fiducials_v1'
                 or calibration['dictionary'] != 'DICT_4X4_50'
-                or calibration['layout_profile'] != 'static_apple_plate'
-                or calibration['calibration_version'] != 2
+                or calibration['layout_profile'] not in ('static_apple_plate','static_apple_plate_multi_face')
+                or calibration['calibration_version'] != (3 if multiface else 2)
                 or calibration['marker_mounts_source_m'] != [LAYOUT[31][2],LAYOUT[32][2]]
                 or len(calibration['png_paths']) != 2 or len(calibration['png_sha256']) != 2):
             raise ValueError('Foreign static label profile')
+        self.layout={i:(kind,size,mount,np.eye(3)) for i,(kind,size,mount) in LAYOUT.items()}
+        sides=calibration.get('static_apple_side_markers',[])
+        if multiface:
+            if len(sides)!=len(SIDE_LAYOUT):raise ValueError('Incomplete public multi-face layout')
+            for side,(marker_id,(mount,q)) in zip(sides,SIDE_LAYOUT.items()):
+                if (set(side)!={'marker_id','png_path','png_sha256','center_source_m','rotation_wxyz'}
+                        or side['marker_id']!=marker_id or side['center_source_m']!=mount
+                        or not np.allclose(side['rotation_wxyz'],q,atol=1e-7,rtol=0)):
+                    raise ValueError('Public multi-face marker mount changed')
+                self.layout[marker_id]=('t1_apple',.02,mount,rotation(q))
         for name, expected in zip(calibration['png_paths'],calibration['png_sha256']):
             p = Path(name)
             if not p.is_absolute():p=Path(fiducial_path).parent/p
             if p.stat().st_size > 1024*1024 or sha(p) != expected:
                 raise ValueError('Public printed pixels changed')
+        for side in sides:
+            path=Path(side['png_path'])
+            if not path.is_absolute():path=Path(fiducial_path).parent/path
+            if path.stat().st_size>1024*1024 or sha(path)!=side['png_sha256']:raise ValueError('Public side marker pixels changed')
         self._definition = json.loads(Path(definition_path).read_text())
         self._files = [(self._definition_path, DEFINITION_SHA256, 64*1024*1024),
                        (self._fiducial_path, fiducial_sha256, 16*1024)]
@@ -93,6 +110,10 @@ class PinnedPublicStaticVisionAssets:
             if not path.is_absolute():
                 path = self._fiducial_path.parent/path
             self._files.append((path, expected, 1024*1024))
+        for side in sides:
+            path=Path(side['png_path'])
+            if not path.is_absolute():path=self._fiducial_path.parent/path
+            self._files.append((path,side['png_sha256'],1024*1024))
 
     def verify_request(self, definition_path, fiducial_path, fiducial_sha256):
         if (Path(definition_path).resolve(strict=True) != self._definition_path
@@ -138,9 +159,9 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
     if refined is not None:candidates.append((refined[0],31,refined[1]))
     for points,marker_id,registration in candidates:
         marker_id=int(marker_id)
-        if marker_id not in LAYOUT:continue
+        if marker_id not in public_assets.layout:continue
         if marker_id in seen:raise ValueError('Duplicate static target identity in actual RGB')
-        seen.add(marker_id);kind,size,mount=LAYOUT[marker_id];pixels=points.reshape(4,2).astype(np.float64)
+        seen.add(marker_id);kind,size,mount,mount_rotation=public_assets.layout[marker_id];pixels=points.reshape(4,2).astype(np.float64)
         edge=float(np.linalg.norm(pixels-np.roll(pixels,-1,axis=0),axis=1).min());h=size/2
         object_points=np.array([[-h,h,0],[h,h,0],[h,-h,0],[-h,-h,0]])
         ok,rvecs,tvecs,_=cv2.solvePnPGeneric(object_points,pixels,K,None,flags=cv2.SOLVEPNP_IPPE_SQUARE)
@@ -155,12 +176,20 @@ def localize(image_path, observation_path, definition_path, fiducial_path, fiduc
         if not candidates or edge<8:continue
         error,pose=min(candidates,key=lambda x:x[0])
         if error>1:continue
-        object_marker=np.eye(4);object_marker[:3,3]=mount
+        object_marker=np.eye(4);object_marker[:3,3]=mount;object_marker[:3,:3]=mount_rotation
         root_object=root_camera@pose@np.linalg.inv(object_marker)
         detection={'marker_id':marker_id,'object_kind':kind,'corners_px':pixels.tolist(),
             'minimum_edge_px':edge,'reprojection_rms_px':error,'root_from_object':root_object.tolist()}
         if registration is not None:detection['pixel_registration']=registration
         detections.append(detection)
+    # One visible physical marker per semantic object; choose the largest
+    # projected minimum edge, then the lower residual and stable physical ID.
+    # Original two-marker output order and geometry remain unchanged.
+    best={}
+    for detection in detections:
+        kind=detection['object_kind'];score=(-detection['minimum_edge_px'],detection['reprojection_rms_px'],detection['marker_id'])
+        if kind not in best or score<best[kind][0]:best[kind]=(score,detection)
+    detections=[entry[1] for entry in best.values()]
     return {'schema':'g1_static_actual_rgb_localization_v1','observation':value['stamp'],
         'source':'actual_rgb_printed_label_pnp_and_original_self_FK',
         'image_sha256':sha(image_path),'input_sha256':sha(observation_path),

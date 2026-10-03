@@ -31,14 +31,23 @@ pub(crate) struct StaticMarkerVisionConfiguration {
     pub definition_sha256: String,
     pub fiducial_path: PathBuf,
     pub fiducial_sha256: String,
+    #[serde(default = "original_static_calibration_version")]
+    pub calibration_version: u32,
 }
 
+fn original_static_calibration_version() -> u32 {
+    2
+}
 impl StaticMarkerVisionConfiguration {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        let calibration_hash = match self.calibration_version {
+            2 => "1718b8c54289b5dcbb6e3674edc176f03b1f40bdc1e507f62538ae13f336fb74",
+            3 => "66e79f02053884a1d8d70c5af2a6f6924e48cd4cb4d3e28de5ada53eb1d9a735",
+            _ => return Err("unknown static public calibration version".into()),
+        };
         if self.definition_sha256
             != "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8f13bd"
-            || self.fiducial_sha256
-                != "1718b8c54289b5dcbb6e3674edc176f03b1f40bdc1e507f62538ae13f336fb74"
+            || self.fiducial_sha256 != calibration_hash
             || self.worker_path.parent() != self.localizer_path.parent()
             || self.worker_path.file_name().and_then(|n| n.to_str())
                 != Some("unitree_g1_static_vision_worker.py")
@@ -453,6 +462,7 @@ fn validate_reply(
             detection["object_kind"].as_str(),
         ) {
             (Some(31), Some("t1_apple")) => 0,
+            (Some(33..=37), Some("t1_apple")) if config.calibration_version == 3 => 0,
             (Some(32), Some("t1_plate")) => 1,
             _ => return Err("foreign static target identity".into()),
         };
@@ -526,6 +536,7 @@ mod tests {
             definition_sha256: "d".repeat(64),
             fiducial_path: PathBuf::new(),
             fiducial_sha256: "f".repeat(64),
+            calibration_version: 2,
         };
         let pending = Pending {
             observation: ObservationStamp {
@@ -617,6 +628,20 @@ mod tests {
         pending.grip_check = true;
         assert!(validate_reply(&reply, &pending, &config).is_ok());
         reply["detections"][0]["marker_id"] = json!(99);
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+    }
+
+    #[test]
+    fn side_marker_roles_require_the_distinct_public_calibration_version() {
+        let (mut config, pending, mut reply) = fixture();
+        reply["detections"][0]["marker_id"] = json!(34);
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        config.calibration_version = 3;
+        assert!(validate_reply(&reply, &pending, &config).is_ok());
+        reply["detections"][0]["object_kind"] = json!("t1_plate");
+        assert!(validate_reply(&reply, &pending, &config).is_err());
+        reply["detections"][0]["object_kind"] = json!("t1_apple");
+        reply["detections"][0]["minimum_edge_px"] = json!(7.9);
         assert!(validate_reply(&reply, &pending, &config).is_err());
     }
 }
