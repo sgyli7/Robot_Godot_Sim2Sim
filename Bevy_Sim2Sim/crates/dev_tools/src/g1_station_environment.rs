@@ -10,6 +10,9 @@ use std::sync::Arc;
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod static_preload;
 
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod mobile_stand;
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct G1StationConfiguration {

@@ -691,7 +691,7 @@ fn normal_impulse_on_collider(
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
-fn active_solver_normal_impulse(pair: &rapier3d::geometry::ContactPair) -> Option<f32> {
+pub(super) fn active_solver_normal_impulse(pair: &rapier3d::geometry::ContactPair) -> Option<f32> {
     let mut count = 0;
     let mut total = 0.;
     for manifold in &pair.manifolds {

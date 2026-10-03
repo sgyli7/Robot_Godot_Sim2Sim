@@ -104,7 +104,11 @@ pub struct G1Measurement {
 pub struct G1StationContact {
     pub robot_body_index: usize,
     pub other_body_fixed: bool,
+    /// Legacy all-point cache sum; inactive entries may retain old impulses.
     pub normal_impulse_n_s: f32,
+    pub active_solver_normal_impulse_n_s: Option<f32>,
+    /// Same published Tick's shape distance, independent of cached anchors.
+    pub geometric_distance_after_step_m: Option<f32>,
 }
 
 /// Readable even after a failed boundary; no rendered-frame counts are inferred.
@@ -270,27 +274,57 @@ impl G1Runner {
         self.native_static_environment.as_ref()?;
         let world = &self.simulation.world;
         let handles = self.assembly.diagnostic_body_handles();
-        Some(world.narrow_phase.contact_pairs().filter_map(|pair| {
-            if !pair.has_any_active_contact() || pair.total_impulse_magnitude() <= 1e-8 {
-                return None;
-            }
-            let left = world.colliders[pair.collider1].parent()
-                .and_then(|h| handles.iter().position(|r| *r == h));
-            let right = world.colliders[pair.collider2].parent()
-                .and_then(|h| handles.iter().position(|r| *r == h));
-            let (robot_body_index, other) = match (left, right) {
-                (Some(index), None) => (index, pair.collider2),
-                (None, Some(index)) => (index, pair.collider1),
-                _ => return None,
-            };
-            let other_body_fixed = world.colliders[other].parent()
-                .is_some_and(|h| world.bodies[h].is_fixed());
-            Some(G1StationContact {
-                robot_body_index,
-                other_body_fixed,
-                normal_impulse_n_s: pair.total_impulse_magnitude(),
-            })
-        }).collect())
+        Some(
+            world
+                .narrow_phase
+                .contact_pairs()
+                .filter_map(|pair| {
+                    if !pair.has_any_active_contact() {
+                        return None;
+                    }
+                    let left = world.colliders[pair.collider1]
+                        .parent()
+                        .and_then(|h| handles.iter().position(|r| *r == h));
+                    let right = world.colliders[pair.collider2]
+                        .parent()
+                        .and_then(|h| handles.iter().position(|r| *r == h));
+                    let (robot_body_index, other) = match (left, right) {
+                        (Some(index), None) => (index, pair.collider2),
+                        (None, Some(index)) => (index, pair.collider1),
+                        _ => return None,
+                    };
+                    let other_body_fixed = world.colliders[other]
+                        .parent()
+                        .is_some_and(|h| world.bodies[h].is_fixed());
+                    let position = |handle: rapier3d::prelude::ColliderHandle| {
+                        let collider = &world.colliders[handle];
+                        collider.parent().map_or_else(
+                            || *collider.position(),
+                            |body| {
+                                *world.bodies[body].position()
+                                    * collider.position_wrt_parent().copied().unwrap_or_default()
+                            },
+                        )
+                    };
+                    let distance = rapier3d::parry::query::distance(
+                        &position(pair.collider1),
+                        world.colliders[pair.collider1].shape(),
+                        &position(pair.collider2),
+                        world.colliders[pair.collider2].shape(),
+                    )
+                    .ok()
+                    .filter(|d| d.is_finite() && *d >= 0.);
+                    Some(G1StationContact {
+                        robot_body_index,
+                        other_body_fixed,
+                        normal_impulse_n_s: pair.total_impulse_magnitude(),
+                        active_solver_normal_impulse_n_s:
+                            super::task_objects::active_solver_normal_impulse(pair),
+                        geometric_distance_after_step_m: distance,
+                    })
+                })
+                .collect(),
+        )
     }
 
     /// Completed last-solve evidence only; no additional collision refresh/step.
