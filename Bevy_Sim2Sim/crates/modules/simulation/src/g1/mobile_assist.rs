@@ -8,10 +8,7 @@ use robot_minigame::{
     g1::{contract::G1Command, definition::G1Definition},
 };
 use serde::Serialize;
-use task_minigame::{
-    policy::{ActionLimits, profile_contract},
-    types::TaskProfile,
-};
+use task_minigame::{policy::profile_contract, types::TaskProfile};
 
 use super::{
     mobile_grip::{MobileGripCalibration, MobileGripReceipt},
@@ -24,9 +21,9 @@ use super::{
     mobile_raise::{MobileGripRaising, MobileRaiseGoal, MobileRaiseStep},
     mobile_release::{MobileGripRelease, MobileReleaseGoal, MobileReleaseStep},
     mobile_restore::{MobileGripRestoring, MobileRestoreGoal, MobileRestoreStep},
+    mobile_wait::{MobileModelWaiting, MobileWaitGoal, MobileWaitStep},
     runner::{G1Measurement, G1ProgressCounts},
     task_objects::TaskObjectFrame,
-    task_policy::{ArenaControllerCommand, controller_command},
     task_runner::{
         ArenaBodyStep, ArenaTaskBodyConfig, ArenaTaskCommand, ArenaTaskExecution, ArenaTaskRunner,
         ArenaTaskRunnerConfig,
@@ -44,6 +41,7 @@ pub enum MobileAssistCommand {
     ClassicalRelease(MobileReleaseGoal),
     ClassicalRestore(MobileRestoreGoal),
     ClassicalHold(MobileHoldGoal),
+    ClassicalModelWait(MobileWaitGoal),
 }
 
 impl MobileAssistCommand {
@@ -64,6 +62,7 @@ impl MobileAssistCommand {
             Self::ClassicalRelease(goal) => goal.validate(),
             Self::ClassicalRestore(goal) => goal.validate(),
             Self::ClassicalHold(goal) => goal.validate(),
+            Self::ClassicalModelWait(goal) => goal.validate(),
         }
     }
 }
@@ -110,6 +109,10 @@ pub enum MobileAssistExecution {
         goal: MobileHoldGoal,
         holding: MobileHoldStep,
     },
+    ClassicalModelWait {
+        goal: MobileWaitGoal,
+        waiting: MobileWaitStep,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -122,10 +125,11 @@ pub struct MobileAssistStep {
 pub struct MobileAssistRunner {
     owner: ArenaTaskRunner,
     calibration: MobileGripCalibration,
-    limits: ActionLimits,
     maximum_observation_wall_age_ms: u64,
     last_vla_execution: Option<ArenaTaskExecution>,
     last_vla_command: Option<G1Command>,
+    last_controller_command: Option<G1Command>,
+    waiting: Option<MobileModelWaiting>,
     carry: Option<CarryState>,
     scan: Option<ScanState>,
     reobserve: Option<ScanState>,
@@ -161,10 +165,11 @@ impl MobileAssistRunner {
         Ok(Self {
             owner: ArenaTaskRunner::load_mobile_constraint_diagnostic(config)?,
             calibration: MobileGripCalibration::new(&definition)?,
-            limits: config.limits.clone(),
             maximum_observation_wall_age_ms: config.max_observation_wall_age_ms,
             last_vla_execution: None,
             last_vla_command: None,
+            last_controller_command: None,
+            waiting: None,
             carry: None,
             scan: None,
             reobserve: None,
@@ -198,7 +203,9 @@ impl MobileAssistRunner {
     }
 
     pub fn completed_skill(&self) -> bool {
-        if let Some(release) = &self.release {
+        if let Some(waiting) = &self.waiting {
+            waiting.completed()
+        } else if let Some(release) = &self.release {
             release.completed()
         } else if let Some(reobserve) = &self.reobserve {
             reobserve.navigator.completed()
@@ -303,6 +310,26 @@ impl MobileAssistRunner {
             return Err(invalid("mobile assist halted; reset required"));
         }
         let result = self.step_inner(command, guard);
+        if let Ok(step) = &result {
+            self.last_controller_command = Some(match &step.execution {
+                MobileAssistExecution::OriginalVla(_) => {
+                    self.last_vla_command.as_ref().unwrap().clone()
+                }
+                MobileAssistExecution::ClassicalCarry { command, .. }
+                | MobileAssistExecution::ClassicalScan { command, .. }
+                | MobileAssistExecution::ClassicalReobserve { command, .. } => command.clone(),
+                MobileAssistExecution::ClassicalLower { lowering, .. } => lowering.command.clone(),
+                MobileAssistExecution::ClassicalRaise { raising, .. } => raising.command.clone(),
+                MobileAssistExecution::ClassicalRelease { opening, .. } => opening.command.clone(),
+                MobileAssistExecution::ClassicalRestore { restoring, .. } => {
+                    restoring.command.clone()
+                }
+                MobileAssistExecution::ClassicalHold { holding, .. } => holding.command.clone(),
+                MobileAssistExecution::ClassicalModelWait { waiting, .. } => {
+                    waiting.command.clone()
+                }
+            });
+        }
         if result.is_err() {
             self.halted = true;
         }
@@ -315,7 +342,48 @@ impl MobileAssistRunner {
     ) -> Result<MobileAssistStep, RobotError> {
         guard()?;
         command.validate()?;
+        if !matches!(command, MobileAssistCommand::ClassicalModelWait(_)) {
+            self.waiting = None;
+        }
         match command {
+            MobileAssistCommand::ClassicalModelWait(goal) => {
+                let state = self.owner.measurement()?;
+                if self.waiting.is_none() {
+                    let complete_vla = self.last_vla_execution.as_ref().is_some_and(|e| {
+                        e.frame_index + 1 == profile_contract(TaskProfile::MobileBox).action_horizon
+                            && Some(state.sim_time_ns)
+                                == e.execution_start_sim_ns.checked_add(1_000_000_000)
+                    });
+                    if !self.completed_skill() && !complete_vla {
+                        return Err(invalid(
+                            "model waiting requires a completed VLA chunk or classical skill",
+                        ));
+                    }
+                    let command = self.last_controller_command.as_ref().ok_or_else(|| {
+                        invalid("model waiting has no actually executed predecessor")
+                    })?;
+                    self.waiting = Some(MobileModelWaiting::new(
+                        goal.clone(),
+                        &state,
+                        command.clone(),
+                    )?);
+                }
+                let waiting = self.waiting.as_mut().unwrap();
+                if waiting.goal() != goal {
+                    return Err(invalid("waiting goal changed during execution"));
+                }
+                let waiting_step = waiting.update(&state)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&waiting_step.command, guard)?;
+                Ok(MobileAssistStep {
+                    execution: MobileAssistExecution::ClassicalModelWait {
+                        goal: goal.clone(),
+                        waiting: waiting_step,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
             MobileAssistCommand::OriginalVla(command) => {
                 if self
                     .carry
@@ -343,15 +411,7 @@ impl MobileAssistRunner {
                     ));
                 }
                 let step = self.owner.step_with_guard(command, guard)?;
-                let admitted = controller_command(
-                    TaskProfile::MobileBox,
-                    &command.chunk.frames[step.execution.frame_index],
-                    &self.limits,
-                )
-                .map_err(|e| invalid(format!("{e:?}")))?;
-                let ArenaControllerCommand::MobileHomieV2(original) = admitted.controller else {
-                    return Err(invalid("foreign controller in mobile handoff"));
-                };
+                let original = self.owner.executed_mobile_command(&step.execution)?;
                 self.last_vla_command = Some(original);
                 self.last_vla_execution = Some(step.execution.clone());
                 self.carry = None;
@@ -362,6 +422,7 @@ impl MobileAssistRunner {
                 self.release = None;
                 self.restore = None;
                 self.hold = None;
+                self.waiting = None;
                 self.original_transport_command = None;
                 Ok(MobileAssistStep {
                     execution: MobileAssistExecution::OriginalVla(step.execution),
@@ -703,6 +764,90 @@ mod tests {
     struct Sequence {
         schema: String,
         chunks: Vec<PolicyActionChunk>,
+    }
+
+    #[test]
+    #[ignore = "frozen original1..4chunk prefix then50/100explicit waiting Ticks;0freshVLA/renderer work"]
+    fn real_mobile_model_wait_diagnostic() -> Result<(), RobotError> {
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_REPLAY_CONFIG")?)
+                .map_err(|e| invalid(e.to_string()))?;
+        let sequence: Sequence = serde_json::from_slice(&read("G1_MOBILE_REPLAY_ACTIONS")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        let prefix: usize = std::env::var("G1_MOBILE_WAIT_PREFIX_CHUNKS")
+            .map_err(|e| invalid(e.to_string()))?
+            .parse()
+            .map_err(|e| invalid(format!("{e:?}")))?;
+        let wait_ticks = std::env::var("G1_MOBILE_WAIT_DURATION_TICKS")
+            .ok()
+            .map(|v| v.parse::<u32>().map_err(|e| invalid(e.to_string())))
+            .transpose()?
+            .unwrap_or(50);
+        if sequence.schema != "g1_saved_native_mobile_action_sequence_v1"
+            || sequence.chunks.len() != 4
+            || !(1..=4).contains(&prefix)
+            || ![50, 100].contains(&wait_ticks)
+        {
+            return Err(invalid(
+                "waiting diagnostic requires an exact original1..4chunk prefix",
+            ));
+        }
+        let output =
+            std::env::var("G1_MOBILE_REPLAY_OUTPUT").map_err(|e| invalid(e.to_string()))?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::new(&output).with_extension("jsonl"))
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut owner = MobileAssistRunner::load(&config)?;
+        let mut records = 0;
+        let result = (|| -> Result<(), RobotError> {
+            for mut chunk in sequence.chunks.into_iter().take(prefix) {
+                // Only saved fixture wall freshness is renewed. Original image
+                // identity and simulation acquisition time remain unchanged.
+                chunk.observation.captured_at_unix_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| invalid(e.to_string()))?
+                    .as_millis() as u64;
+                let command = MobileAssistCommand::OriginalVla(ArenaTaskCommand {
+                    chunk: Arc::new(chunk),
+                    scheduled_start_sim_ns: None,
+                });
+                for _ in 0..50 {
+                    let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+                    serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
+                    writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+                    records += 1;
+                }
+            }
+            let state = owner.measurement()?;
+            let command = MobileAssistCommand::ClassicalModelWait(MobileWaitGoal {
+                episode_id: state.episode_id,
+                request_id: prefix as u64,
+                execution_start_sim_ns: state.sim_time_ns,
+                duration_ticks: wait_ticks,
+            });
+            for tick in 0..wait_ticks {
+                let step = owner.step_with_guard(&command, &mut || Ok(()))?;
+                assert_eq!(owner.completed_skill(), tick + 1 == wait_ticks);
+                serde_json::to_writer(&mut trace, &step).map_err(|e| invalid(e.to_string()))?;
+                writeln!(trace).map_err(|e| invalid(e.to_string()))?;
+                records += 1;
+            }
+            Ok(())
+        })();
+        trace.flush().map_err(|e| invalid(e.to_string()))?;
+        let counts = owner.progress_counts();
+        fs::write(output,serde_json::to_vec_pretty(&serde_json::json!({
+            "schema":"g1_saved_prefix_model_wait_diagnostic_v1","qualified":false,
+            "original_prefix_chunks":prefix,"explicit_wait_ticks":wait_ticks,"trace_records":records,
+            "actual_integrations":counts.integration_count,"actual_torque_updates":counts.torque_update_count,
+            "actual_body_policy_inferences":counts.successful_inference_count,"fresh_vla_calls":0,
+            "new_current_camera_used":false,"mechanical_owner_wait_clock_not_image_stamp":true,
+            "saved_fixture_wall_age_renewed":true,"world_or_contact_truth_input":false,
+            "completed":result.is_ok(),"error":result.as_ref().err().map(ToString::to_string),
+        })).map_err(|e|invalid(e.to_string()))?).map_err(|e|invalid(e.to_string()))?;
+        result
     }
     #[derive(Deserialize)]
     struct AuxiliaryHoldFixture {
@@ -1236,6 +1381,9 @@ mod tests {
                 minimum_upright = minimum_upright.min(body.root_upright_cosine);
                 let (phase, command) = match &step.execution {
                     MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
+                    MobileAssistExecution::ClassicalModelWait { .. } => {
+                        ("traditional_model_wait", None)
+                    }
                     MobileAssistExecution::ClassicalScan { .. }
                     | MobileAssistExecution::ClassicalReobserve { .. }
                     | MobileAssistExecution::ClassicalRestore { .. }
@@ -1367,6 +1515,9 @@ mod worker_diagnostic {
                     observed_steps += 1;
                     let (phase, command) = match &record.step.execution {
                         MobileAssistExecution::OriginalVla(_) => ("saved_grasp_fixture", None),
+                        MobileAssistExecution::ClassicalModelWait { .. } => {
+                            ("traditional_model_wait", None)
+                        }
                         MobileAssistExecution::ClassicalScan { .. }
                         | MobileAssistExecution::ClassicalReobserve { .. }
                         | MobileAssistExecution::ClassicalRestore { .. }

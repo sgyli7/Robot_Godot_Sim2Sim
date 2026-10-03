@@ -1684,3 +1684,57 @@ materials/lighting and the1920x1080main view are unchanged. The existing bounded
 slot checks cover activation/deactivation and minimum-scene gating. Fresh0269
 will measure the resulting latency with the same Tick25/50window; no deadline,
 physics parameter or action horizon is relaxed.
+
+The real station-fixture camera regression0268passes with actual640x480RGB and
+1920x1080main output, zero physics/model calls and explicit StationFixture
+provenance. Fresh0269still misses the same first replacement: its actual Tick29
+image takes150ms extraction-to-copy and220ms copy-to-readback. One-shot gating
+removes the old-scene draws/copies but does not make this original25/50window
+sufficient. It stops after50real frames/one new model call with no misses/debt;
+no late action or timestamp rebasing is admitted. Trace SHA256:
+`772f420c3ed35fc814362f8294fc6e0e1581332b9f18b855a3327edcb8ff1994`.
+Further trigger/physics tuning is not the next remedy.
+
+An explicit traditional model-wait controller now follows a completed original
+chunk or completed classical skill in the same owner/world. It preserves the
+actually executed upper/finger/pelvis command, sets navigation to zero, and
+performs one normal Homie/control/integration update per20ms. Its episode,
+request and execution-start identity is an owner clock, not an image stamp.
+The initial bounded interface permits at most100Ticks; nonfinite/foreign/
+repeated/expired states, upright below0.98and excessive self stop odometry
+reject. Model/image transport never runs in this controller. A separate
+20consecutive self-speed<=0.03m/s gate reports observation readiness; reaching
+the deadline alone does not grant it. It is not yet wired into the live model
+driver and grants no task or continuous1x qualification.
+
+Mechanical entry0270reproduces the exact native f32prefix after each of the four
+fresh0261chunks, then requests50waiting Ticks. Prefix2correctly trips the first
+5cm limit after21wait steps: its predecessor still commands0.289844m/sforward
+and its actual root speed is moving. This is stopping displacement, not a fall
+or an established grasp loss. The controller's finite stop envelope is therefore
+separated from image readiness:15cm bounds the zero-navigation stopping
+interval, while the low-speed consecutive gate still controls readiness. No
+gain, friction, force, model bytes or physics rate changes.
+
+Entry0271completes all four identical-prefix50Tick mechanical waits; all original
+upper/finger/height targets and prefix physics bits are preserved. The largest
+stop displacement is0.052750m after chunk2. After the completed fourth grasp,
+all50wait samples retain hand-only support. The first two prefixes have not yet
+met20stable samples and are explicitly not observation-ready. Entry0272checks
+the existing100Tickmaximum: all four complete, all prefixes remain exact, and
+the fourth grasp retains hand-only support through all100samples. Readiness
+first occurs after99/75/27/20wait samples respectively; the first prefix thus
+uses almost the entire initial budget just to settle. A live waiting contract
+must budget settling and subsequent image/model work separately before it can
+be integrated. These saved-prefix checks use zero new images/VLA calls, renew
+only fixture wall freshness, and cannot qualify fresh autonomous behavior.
+Validation passes76simulation tests/39ignored,42development tests/2ignored and
+default compilation; the initial missing exhaustive test-enum arms are retained
+beside the repaired results.
+
+The handoff now reads the controller command from the owner's actually accepted
+execution identity. It no longer decodes the incoming replacement as if it were
+already executed while an earlier chunk is active. The scheduling regression
+uses deliberately different pending targets and verifies that both the current
+and replacement command identities stay correct. This does not change original
+normalization, action bytes,50frame horizons or20ms action intervals.

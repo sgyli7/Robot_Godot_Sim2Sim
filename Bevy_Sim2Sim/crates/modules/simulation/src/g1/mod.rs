@@ -17,6 +17,8 @@ pub mod mobile_raise;
 pub mod mobile_release;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_restore;
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub mod mobile_wait;
 pub mod runner;
 pub mod task_background;
 pub mod task_objects;

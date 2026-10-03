@@ -167,6 +167,35 @@ struct TaskChunkExecutor {
 }
 
 impl TaskChunkExecutor {
+    #[cfg(any(test, feature = "g1_constraint_diagnostic"))]
+    fn command_for_execution(
+        &self,
+        execution: &ArenaTaskExecution,
+    ) -> Result<ArenaControllerCommand, RobotError> {
+        let chunk = self
+            .accepted
+            .as_ref()
+            .ok_or_else(|| error("no executed VLA chunk"))?;
+        if execution.profile != self.profile
+            || execution.sequence_id != chunk.sequence_id
+            || execution.observation != chunk.observation
+            || execution.admitted_chunks != self.admitted_chunks
+            || self.current_end_sim_ns
+                != execution
+                    .execution_start_sim_ns
+                    .checked_add(chunk.frames.len() as u64 * ARENA_ACTION_PERIOD_NS)
+        {
+            return Err(error("controller lookup is foreign to the executed chunk"));
+        }
+        let frame = chunk
+            .frames
+            .get(execution.frame_index)
+            .ok_or_else(|| error("executed frame index is outside the original horizon"))?;
+        controller_command(self.profile, frame, &self.limits)
+            .map(|admitted| admitted.controller)
+            .map_err(error)
+    }
+
     fn new(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
         let profile = config.body.profile();
         Ok(Self {
@@ -306,6 +335,19 @@ pub struct ArenaTaskRunner {
 }
 
 impl ArenaTaskRunner {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn executed_mobile_command(
+        &self,
+        execution: &ArenaTaskExecution,
+    ) -> Result<robot_minigame::g1::contract::G1Command, RobotError> {
+        match self.executor.command_for_execution(execution)? {
+            ArenaControllerCommand::MobileHomieV2(command) => Ok(command),
+            ArenaControllerCommand::StaticAgile(_) => {
+                Err(error("mobile handoff selected a static controller"))
+            }
+        }
+    }
+
     /// Explicit development-only traditional commands share this existing
     /// world/controller. The original accepted VLA bytes remain untouched.
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -620,6 +662,9 @@ mod tests {
         chunk.sequence_id = 2;
         chunk.observation.frame_id = 2;
         chunk.observation.sim_time_ns = 20 * ARENA_ACTION_PERIOD_NS;
+        for frame in &mut chunk.frames {
+            frame.left_arm = [0.7; 7];
+        }
         let future = ArenaTaskCommand {
             chunk: Arc::new(chunk),
             scheduled_start_sim_ns: Some(40 * ARENA_ACTION_PERIOD_NS),
@@ -632,6 +677,12 @@ mod tests {
                 (step.sequence_id, step.frame_index, step.admitted_chunks),
                 (1, tick as usize, 1)
             );
+            let ArenaControllerCommand::StaticAgile(actual) =
+                owner.command_for_execution(&step).unwrap()
+            else {
+                panic!("foreign controller")
+            };
+            assert_eq!(actual.upper_positions[0], tick as f32 * 0.01);
         }
         let (_, step) = owner
             .next(&future, 40 * ARENA_ACTION_PERIOD_NS, 500)
@@ -644,6 +695,15 @@ mod tests {
         assert_eq!(step.observation.sim_time_ns, 20 * ARENA_ACTION_PERIOD_NS);
         assert_eq!(step.observation_age_ns, 20 * ARENA_ACTION_PERIOD_NS);
         assert!(owner.pending.is_none());
+        let ArenaControllerCommand::StaticAgile(actual) =
+            owner.command_for_execution(&step).unwrap()
+        else {
+            panic!("foreign controller")
+        };
+        assert_eq!(actual.upper_positions[0], 0.7);
+        let mut foreign = step.clone();
+        foreign.sequence_id = 1;
+        assert!(owner.command_for_execution(&foreign).is_err());
         let (_, step) = owner
             .next(&future, 41 * ARENA_ACTION_PERIOD_NS, 500)
             .unwrap();
