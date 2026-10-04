@@ -1,10 +1,14 @@
 # Goose V0.1｜Bevy Sim2Sim 长期训练计划
 
-版本：2026-10-03。实施分支：`codex/goose50_training`。
+版本：2026-10-04。实施分支：`codex/goose50_training`。
 
 **当前执行状态：按用户最新安排收尾，等待 Goose Robot 硬件工程完整交付后再继续。** Lab 不再并行实现碰撞代理，不启动新的物理实验、GPU 或 PPO，也不唤醒闲置性能子 agent。现有两小时 heartbeat 只检查明确交付状态；没有实质变化时保持安静。硬件方已收到这一分工及直接回交本聊天的要求，用户无需传话。
 
-**2026-10-04 最新等待检查：硬件本轮已结束，但交付仍未放行。** 实际读取 `goose_external_roles_candidate_v4` 验收文件，其状态为 `held_not_a_sim2sim_delivery`；源端／目标端／训练放行及候选晋升均为 false。供应方报告 21 刚体、89 个碰撞子形状；原 50 Hz 冷出生零动作／站立动作最大脚底接触深度分别为 21.221／16.151 mm，均未通过，改变接地初始化和 margin 的案例仅作诊断。完整任务覆盖、嘴部进物／持物／放开与目标整机动态仍开放。342 个有限姿态、单块目标凸包读回或 skill 收尾不代表完整交付；Lab 本轮只读取并冻结验收状态，未接收放行整包、未独立复跑物理、未恢复实施。[等待检查收据](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_hardware_wait_review_001/wait_review_receipt.json)、[供应方验收文件冻结副本](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_hardware_wait_review_001/supplier_gate_snapshot.json)。
+**2026-10-04 最新等待检查：新版 11 凸包包已交付，整机工程仍在收尾。** `goose_task_proxy_11_v1_003` ZIP SHA256 为 `dbed165c552e3a44e8279ce6da6d31e3230ccb4c46223aa74e35275df84595a0`。Lab 只做文件与合同核验：CRC、284 个清单文件哈希、完整列举及安全路径全部通过；XML／native plant 均列 11 个碰撞子形状，模型哈希绑定一致，物理／力矩／策略各 20 ms、每 Tick 各一次，65／18 及拾物扩展合同保留。供应方报告连接过滤为 9 对忽略、46 对保留，两端各 97 个过滤用例与有界整机回归通过；这些是供应方成绩，Lab 尚未复跑或接入生产。[包完整性与合同收据](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_task_proxy_11_intake_pending_001/package_verification.json)、[冻结交付包](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_task_proxy_11_intake_pending_001/goose_task_proxy_11_v1_003.zip)。
+
+**继续等待的具体条件：** 硬件侧仍在修翼形检修门的真实间隙、铰链／锁扣并合回整机参数；新包目前绑定颈开口父提交 `89fdbe50`、名义质量 10.430690821 kg。已直接要求最终整机交付时明确 003 是否仍对应最终 CAD／SI，变化则提供具名增量或替代入口与版本／哈希，完成后回告本聊天。新接触映射 `whole_sole_native_manifold_backward_euler_v1` 和控制 revision `sampled_pd_kp_parent_kd_quarter_v1` 另立合同，源端平面足底积分假设仅覆盖水平地面与直立足底；旧 GPU、足底、控制或任务资格不能继承。等待期间不运行物理／训练、不唤醒性能子 agent；文件齐全核验不等于完整硬件交付或 Lab M0 准入。
+
+**此前 89 叶版本的拒绝继续保留（历史，已非最新候选）。** `goose_external_roles_candidate_v4` 的 `held_not_a_sim2sim_delivery` 与所有拒绝收据保持冻结。供应方原 50 Hz 冷出生零动作／站立动作最大脚底接触深度分别为 21.221／16.151 mm，完整任务／目标动态未通过；改变接地初始化与 margin 的案例仅作诊断。旧失败没有因新包的局部成功被改写。[历史等待检查](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_hardware_wait_review_001/wait_review_receipt.json)、[旧验收冻结副本](/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/goose_hardware_wait_review_001/supplier_gate_snapshot.json)。
 
 当前仍在 **M0-S／M0-T，尚无合格训练本体，PPO／优化器更新为零**。已验收的颈开口 CAD／SI 修订、真实四杆 CONNECT＋原生 Euler、CPU 开发回归和成熟 mjlab 短 GPU 接入均保留，但不代表完整游戏模型交付或策略资格。**30,105 子形状参考及后续制造面细分路线已收口，不作为训练／游戏候选继续推进。** 旧 512 几何提案不是现行交付目标；mjlab 的 `njmax=512` 是另一项约束容量，不随几何提案撤销。
 
@@ -16,8 +20,8 @@
 
 | 负责人 | 已沟通的责任与当前动作 |
 | --- | --- |
-| Goose Robot 硬件工程（Sai_Rotbots） | 按最新任务角色与精度对照收敛统一碰撞交付，完整交付后直接告知本聊天。此前最小颈开口修订已验收并收口，不因 Lab 旧代理假接触继续改 CAD；模型、示意图、实际子形状与来源说明同版本交付。 |
-| 当前 Goose 主线（Sai_Lab） | 本轮已收尾；等待上述完整交付，不并行写新代理或跑实验。接回后负责实际导入、MJCF／运行时身份、控制／观测、50 Hz 物理与性能验收，原失败保留，用户无需传话。 |
+| Goose Robot 硬件工程（Sai_Rotbots） | 11 凸包 003 包已发布；继续真实检修门和剩余整机工程收尾。最终交付须明确 CAD／SI 与冻结 Sim2Sim 包同版，变化则给出增量或替代版本，齐全后直接回告本聊天。 |
+| 当前 Goose 主线（Sai_Lab） | 已冻结 003 包并核验文件／合同；等待最终整机交付与版本绑定，不并行写新代理或跑实验。接回后负责实际导入、MJCF／运行时身份、控制／观测、50 Hz 物理与性能验收，原失败保留，用户无需传话。 |
 | 现有 bevy_performance 子 agent（Sai_Lab） | 第九周期已收口，等待期间保持闲置。硬件交付接收后，只有新冻结候选或明确安全优化才派一个有界周期；导入、性能缺陷仍由 Lab 负责。 |
 
 最新等待安排已实际发送至原硬件聊天。保持同一实施聊天、现有两小时 heartbeat，不建立新聊天或独立 PM，不频繁催问或重复启动工作。只有完整交付、明确失败或需用户行动时通知；收到部分研究或草案不视作完整交付。未来实际使用 GPU 前与释放时才联系平等共享 DGX 的 G1，等待期间不占队列。
