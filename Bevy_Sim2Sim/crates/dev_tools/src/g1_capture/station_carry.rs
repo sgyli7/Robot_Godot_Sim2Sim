@@ -7,6 +7,16 @@ use simulation_minigame::g1::{
     worker::TimedCommand,
 };
 
+pub(super) fn carry_boundary_completed(
+    execution: &MobileAssistExecution,
+    submitted: Option<ObservationStamp>,
+) -> bool {
+    // A queued fine carry may leave its completed predecessor visible until
+    // the unique owner consumes the command. Await this goal's own receipt.
+    matches!(execution, MobileAssistExecution::ClassicalCarry { goal, navigation, .. }
+        if navigation.completed && submitted.is_none_or(|stamp| goal.observation == stamp))
+}
+
 fn completed_hold_ticks(
     execution: &MobileAssistExecution,
     tick: u64,
@@ -131,7 +141,9 @@ pub(super) fn continue_after_hold(
         "original_task_profile":"mobile_box_homie_v2_n1_6",
         "world_or_contact_truth_input":false,"Qwen_calls":0,"task_qualified":false,
     });
-    runtime.mobile_assist.as_mut().unwrap().submitted = true;
+    let assist = runtime.mobile_assist.as_mut().unwrap();
+    assist.submitted = true;
+    assist.submitted_carry_observation = distance.map(|_| observation);
     runtime.requested = false;
     Ok(false)
 }
@@ -140,6 +152,80 @@ pub(super) fn continue_after_hold(
 mod tests {
     use super::*;
     use simulation_minigame::g1::task_runner::ArenaTaskExecution;
+
+    #[test]
+    fn newly_submitted_fine_carry_cannot_reuse_previous_completed_boundary() {
+        use robot_minigame::g1::contract::G1Command;
+        use simulation_minigame::g1::{
+            mobile_grip::MobileGripReceipt,
+            mobile_navigation::{MobileNavigationPhase, MobileNavigationStep},
+        };
+        let old = ObservationStamp {
+            episode_id: 20632,
+            frame_id: 7,
+            sim_time_ns: 17_560_000_000,
+            captured_at_unix_ms: 1,
+        };
+        let submitted = ObservationStamp {
+            frame_id: 8,
+            sim_time_ns: 26_680_000_000,
+            ..old
+        };
+        let mut execution = MobileAssistExecution::ClassicalCarry {
+            goal: MobileCarryGoal {
+                observation: old,
+                heading_yaw_source_rad: 0.,
+                relative_distance_m: 0.1,
+            },
+            grip: MobileGripReceipt {
+                schema: "unused_boundary_fixture",
+                episode_id: 20632,
+                source_tick: 200,
+                original_vla_output: false,
+                task_qualified: false,
+                original_palm_gap_m: 0.,
+                calibrated_palm_gap_m: 0.,
+                maximum_joint_target_change_rad: 0.,
+                maximum_palm_position_residual_m: 0.,
+                maximum_palm_rotation_residual: 0.,
+                solve_iterations: [0; 2],
+            },
+            navigation: MobileNavigationStep {
+                phase: MobileNavigationPhase::Stop,
+                navigation: [0.; 3],
+                own_velocity_odometry_xy_m: [0.; 2],
+                completed: true,
+                execution_heading_yaw_source_rad: 0.,
+                execution_relative_distance_m: 0.1,
+            },
+            command: G1Command::default(),
+        };
+        // The owner still publishes the old completed coarse carry immediately
+        // after queuing a fine carry; requesting RGB here captured Tick1334.
+        assert!(!carry_boundary_completed(&execution, Some(submitted)));
+        let MobileAssistExecution::ClassicalCarry {
+            goal, navigation, ..
+        } = &mut execution
+        else {
+            unreachable!()
+        };
+        goal.observation = submitted;
+        navigation.completed = false;
+        assert!(!carry_boundary_completed(&execution, Some(submitted)));
+        let MobileAssistExecution::ClassicalCarry { navigation, .. } = &mut execution else {
+            unreachable!()
+        };
+        navigation.completed = true;
+        assert!(carry_boundary_completed(&execution, Some(submitted)));
+        assert!(!carry_boundary_completed(
+            &execution,
+            Some(ObservationStamp {
+                episode_id: 20633,
+                ..submitted
+            })
+        ));
+        assert!(carry_boundary_completed(&execution, None));
+    }
 
     #[test]
     fn submitted_hold_waits_for_owner_acknowledgment_of_prior_completed_grasp() {

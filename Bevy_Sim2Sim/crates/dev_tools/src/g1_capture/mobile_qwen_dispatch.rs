@@ -500,11 +500,9 @@ impl Dispatch {
             "qwen_target_selection":true,"qwen_decision_id":decision.decision_id,"task_qualified":false,
         });
         self.executed_decision = Some(decision);
-        runtime
-            .mobile_assist
-            .as_mut()
-            .unwrap()
-            .visual_goal_submitted = true;
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        assist.visual_goal_submitted = true;
+        assist.submitted_carry_observation = Some(goal.observation);
         runtime.requested = false;
         Ok(false)
     }

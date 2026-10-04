@@ -217,6 +217,8 @@ struct MobileAssistCaptureRuntime {
     station_motion: bool,
     station_hold_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    submitted_carry_observation: Option<ObservationStamp>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     fine_alignment_confirmed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     fine_goals_submitted: u32,
@@ -283,6 +285,8 @@ impl MobileAssistCaptureRuntime {
             auxiliary_release,
             station_motion,
             station_hold_submitted: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            submitted_carry_observation: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             fine_alignment_confirmed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -3350,8 +3354,13 @@ fn drive_mobile_assist(
         if assist.visual_approach && !assist.visual_goal_submitted && lower_complete {
             return drive_visual_approach(runtime, outcome, port);
         }
-        let carry_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
-            .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalCarry { navigation, .. } if navigation.completed));
+        let carry_complete = latest.phase == G1WorkerPhase::Paused
+            && latest.assist_step.as_ref().is_some_and(|step| {
+                station_carry::carry_boundary_completed(
+                    &step.execution,
+                    assist.submitted_carry_observation,
+                )
+            });
         if assist.auxiliary_release && carry_complete && !assist.fine_alignment_confirmed {
             return drive_auxiliary_fine_approach(runtime, outcome, port);
         }
@@ -3651,6 +3660,7 @@ fn drive_auxiliary_fine_approach(
         assist.fine_alignment_confirmed = aligned;
         if !aligned {
             assist.fine_goals_submitted += 1;
+            assist.submitted_carry_observation = Some(observation);
         }
         runtime.requested = false;
         return Ok(false);
@@ -4324,6 +4334,7 @@ fn drive_visual_approach(
         let assist = runtime.mobile_assist.as_mut().unwrap();
         assist.vision_job.take();
         assist.visual_goal_submitted = true;
+        assist.submitted_carry_observation = Some(observation);
         runtime.requested = false;
         return Ok(false);
     }
