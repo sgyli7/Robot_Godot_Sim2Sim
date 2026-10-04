@@ -19,3 +19,9 @@ The runtime pipeline preserves the upstream fixed-target cache across force, tor
 `src/dynamics/ccd/ccd_solver.rs` adds an internal invalidation method and test-only build counter; `src/pipeline/physics_pipeline/substep.rs` classifies scene changes and invalidates before the CCD branch. Regression tests cover torque-only reuse, inactive-CCD collection avoidance, and geometry invalidation before a later sweep. These runtime changes apply independently of the observation features.
 
 The empty local `[workspace]` in `Cargo.toml` permits the vendored backend's regression tests to run independently from the parent workspace. It does not change its dependency or feature defaults.
+
+## Explicit G1 diagnostic features
+
+The default-disabled `g1-predictive-limits` feature adds a per-multibody opt-in for two unilateral velocity rows per bounded internal joint. They enforce the published limits on `q + dt * v` within the existing biased and unbiased solves. The caller must explicitly enable this switch; the normal backend path retains the original limit constraints. The rows do not project coordinates, write poses, narrow limits, or add time steps. G1 static-task experiments use this feature only through their separate diagnostic factory; it does not qualify the normal controller or task profile.
+
+The separate default-disabled `sim2sim-motor-row-trace` feature copies motor rows and aggregates at existing serial solve barriers. It is read-only evidence for actuator diagnosis, with no production controller consumer. Its snapshots report the actual native row semantics and never substitute an external-load or source-equivalence claim. These features and the standalone diagnostic PGS selections must be reported separately from the formal 50 Hz, single-integration clock.

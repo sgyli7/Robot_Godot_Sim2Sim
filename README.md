@@ -1,10 +1,10 @@
 # Sai_Lab
 
-Sai_Lab 汇集三个独立的机器人 Sim2Sim 工程，覆盖 MicroDuck、轮式变体和 Sai Robot 的仿真、控制与训练。
+Sai_Lab 汇集三个独立的机器人 Sim2Sim 工程，覆盖 MicroDuck、Unitree G1、轮式变体和 Sai Robot 的仿真、控制与训练。
 
 | 目录 | 工程 | 说明 |
 | --- | --- | --- |
-| [Bevy_Sim2Sim](Bevy_Sim2Sim/README.md) | MuJoCo → Bevy / Rapier | Rust 工程、单世界 60 Hz 物理与策略、科学站渲染和 MicroDuck 诊断。完整机器人行为仍在验收。 |
+| [Bevy_Sim2Sim](Bevy_Sim2Sim/README.md) | MuJoCo → Bevy / Rapier | Rust 工程、单世界 50 Hz 原生物理、科学站、G1 本地视觉任务与 MicroDuck 诊断。完整行为仍在验收。 |
 | [Godot_Sim2Sim](Godot_Sim2Sim/README.md) | MuJoCo ↔ Godot/Jolt | MicroDuck、轮滑版和 Sai Robot 的场景、控制与训练。 |
 | [Unity_Sim2Sim](Unity_Sim2Sim/README.md) | Unity/团结引擎 + MuJoCo 原生 | MicroDuck 的原生物理运行、ONNX 策略与场景实现。 |
 
@@ -12,10 +12,14 @@ Sai_Lab 汇集三个独立的机器人 Sim2Sim 工程，覆盖 MicroDuck、轮�
 
 ## Bevy 当前进展
 
-- **工程基础**：一个 Rapier 世界，物理与策略均为 60 Hz；实时开发窗口使用独立工作线程执行物理和 CPU ONNX 推理。
+![G1 科学站真实取放，12 秒原速开发诊断](Bevy_Sim2Sim/docs/media/g1_science_station_pick_place_12s.gif)
+
+G1 已录制科学站苹果取放和源任务近似场景搬箱的成功开发样例。科学站取放放稳 6.02 秒；搬箱水平位移约 1.99 米，放稳并松手 2.52 秒。抓取后本地 Qwen 视觉调度与反馈也已有一次真实运行。以上均为诊断成果，**尚未通过 T1/T2 各 8/10 和连续科学站搬运验收**。两段原速 GIF 与具体边界见 [Bevy 主页](Bevy_Sim2Sim/README.md#g1-阶段成果科学站真实取放)。
+
+- **工程基础**：一个 Rapier 世界，默认 50 Hz、每 Tick 一次积分；G1 与 MicroDuck 保留独立合同；实时开发窗口使用独立工作线程执行物理和 CPU ONNX 推理。
 - **科学站与显示**：当前场景为 `windpass_compound_v7`，支持固定机位、跟随相机、静态文字烘焙，以及腿式／轮式机器人的原生位姿显示。
 - **性能**：2026-09-30 在 NVIDIA GB10、Linux / Vulkan、1080p 原画质的开发诊断中，FIFO 平均约 60 FPS，不锁帧约 150–157 FPS；新增主线程纯计算预算可先按 10 ms 规划。完整条件和帧节奏限制见 [Bevy 性能进展](Bevy_Sim2Sim/README.md#性能进展)。
-- **验收状态**：工程、渲染与诊断链路已合入主干。旧 ONNX 的 60/60 重放仍会失稳；完整 BAM、源接触等价、新技能与正式游戏循环继续推进。
+- **验收状态**：工程、渲染与诊断链路已合入主干。旧 ONNX 的 60/60 重放仍会失稳；G1 诊断链路按阶段合入；正式成功率、恢复与地形验收仍缺，MicroDuck 完整 BAM、源接触等价、新技能与正式游戏循环继续推进。
 
 [Bevy 运行说明](Bevy_Sim2Sim/README.md#快速开始) · [实施计划](Bevy_Sim2Sim/docs/implementation_plan.md) · [开发交接](Bevy_Sim2Sim/docs/handoff.md) · [CPU CI](https://github.com/sgyli7/Sai_Lab/actions/workflows/bevy_sim2sim_cpu.yml)
 
