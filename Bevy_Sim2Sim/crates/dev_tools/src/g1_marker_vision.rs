@@ -453,6 +453,7 @@ mod worker {
                             }
                             if placement_view_only {
                                 validate_release_reply(&reply, observation, &geometry.sha256)?;
+                                validate_thumb_preparation_reply(&reply, observation, &geometry.sha256)?;
                             }
                             if !reply["fine_approach_proposal"].is_null() {
                                 validate_fine_reply(&reply, observation, &geometry.sha256)?;
@@ -845,6 +846,97 @@ mod worker {
         Ok(())
     }
 
+    pub(super) fn validate_thumb_preparation_reply(
+        reply: &serde_json::Value,
+        observation: ObservationStamp,
+        geometry_hash: &str,
+    ) -> Result<(), String> {
+        use simulation_minigame::g1::mobile_thumb::{
+            LEFT_THUMB_CLEARANCE_TARGETS, MobileThumbGoal,
+        };
+        let proposal = &reply["thumb_preparation_proposal"];
+        if proposal.is_null() {
+            return Ok(());
+        }
+        let release = &reply["release_proposal"];
+        let clearance = &proposal["candidate_clearance"];
+        let numeric = |value: &serde_json::Value| {
+            value
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or("nonfinite thumb proposal".to_owned())
+        };
+        let gap = numeric(&clearance["required_measured_palm_gap_m"])?;
+        let minimum = numeric(&clearance["minimum_certified_separation_at_maximum_gap_m"])?;
+        let candidate = gap <= 0.35 && minimum >= 0.016;
+        let targets = proposal["target_left_thumb_angles_rad"]
+            .as_array()
+            .ok_or("thumb targets absent")?;
+        let initial = proposal["measured_initial_left_thumb_angles_rad"]
+            .as_array()
+            .ok_or("initial thumb measurements absent")?;
+        if targets.len() != 2 || initial.len() != 2 {
+            return Err("thumb angle width mismatch".into());
+        }
+        for slot in 0..2 {
+            if (numeric(&targets[slot])? - f64::from(LEFT_THUMB_CLEARANCE_TARGETS[slot])).abs()
+                > 1e-7
+                || numeric(&initial[slot])?.abs() > 0.02
+            {
+                return Err("foreign thumb target or initial posture".into());
+            }
+        }
+        let actual: ObservationStamp =
+            serde_json::from_value(proposal["observation"].clone()).map_err(|e| e.to_string())?;
+        if proposal["schema"] != "g1_visible_station_thumb_preparation_v1"
+            || actual != observation
+            || reply["camera_mount_profile"] != "auxiliary_bin_placement"
+            || reply["placement_view_only"] != true
+            || release["release_admitted"] != false
+            || release["hand_clearance_admitted"] != false
+            || numeric(&release["minimum_signed_floor_margin_m"])? < 0.02
+            || !(0.05..=0.4).contains(&numeric(&release["estimated_drop_height_m"])?)
+            || numeric(&release["visible_bin_upward_cosine"])? < 0.98
+            || !(0. ..=0.05).contains(&numeric(&release["self_root_speed_m_s"])?)
+            || proposal["robot_collision_geometry_sha256"] != reply["robot_definition_sha256"]
+            || proposal["source_geometry_sha256"] != geometry_hash
+            || proposal["world_or_contact_truth_input"] != false
+            || proposal["candidate_is_not_measured_state"] != true
+            || proposal["fresh_release_observation_required"] != true
+            || proposal["release_authorized"] != false
+            || proposal["ramp_ticks"] != 50
+            || proposal["settling_ticks"] != 50
+            || proposal["maximum_tracking_error_rad"] != 0.02
+            || proposal["minimum_candidate_clearance_m"] != 0.016
+            || clearance["clearance_method"] != "original_convex_vertex_support_plane_v1"
+            || clearance["robot_collision_geometry_sha256"] != reply["robot_definition_sha256"]
+            || clearance["opening_profile"] != "gravity_horizontal_original_fingers"
+            || clearance["minimum_hand_clearance_m"] != 0.01
+            || clearance["maximum_commanded_palm_gap_m"] != 0.35
+            || clearance["prediction_is_not_physical_detachment"] != true
+            || clearance["certified_hand_colliders"] != 16
+            || !(0. ..=1.).contains(&gap)
+            || gap == 0.
+            || !(0. ..=1.).contains(&minimum)
+            || clearance["hand_clearance_admitted"] != (gap <= 0.35)
+            || proposal["preparation_admitted"] != candidate
+        {
+            return Err("foreign/unsafe thumb preparation admission".into());
+        }
+        if candidate {
+            let goal: MobileThumbGoal =
+                serde_json::from_value(proposal["preparation_goal"].clone())
+                    .map_err(|e| e.to_string())?;
+            goal.validate().map_err(|e| e.to_string())?;
+            if goal.observation != observation {
+                return Err("thumb preparation goal detached from its current image".into());
+            }
+        } else if !proposal["preparation_goal"].is_null() {
+            return Err("rejected thumb preparation cannot provide a goal".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_clearance_reply(
         reply: &serde_json::Value,
         observation: ObservationStamp,
@@ -1008,6 +1100,81 @@ mod worker {
                 }
                 assert!(check(&bad).is_err());
             }
+        }
+        #[test]
+        fn thumb_preparation_cannot_authorize_release_or_cross_image_and_geometry_guards() {
+            use simulation_minigame::g1::mobile_thumb::LEFT_THUMB_CLEARANCE_TARGETS;
+            let (mut reply, stamp) = fixture();
+            reply["placement_view_only"] = true.into();
+            reply["camera_mount_profile"] = "auxiliary_bin_placement".into();
+            reply["release_proposal"] = serde_json::json!({
+                "release_admitted":false,"hand_clearance_admitted":false,
+                "minimum_signed_floor_margin_m":0.03,"estimated_drop_height_m":0.25,
+                "visible_bin_upward_cosine":1.,"self_root_speed_m_s":0.01,
+            });
+            reply["thumb_preparation_proposal"] = serde_json::json!({
+                "schema":"g1_visible_station_thumb_preparation_v1","observation":stamp,
+                "source_geometry_sha256":"geometry","robot_collision_geometry_sha256":"definition",
+                "world_or_contact_truth_input":false,"candidate_is_not_measured_state":true,
+                "fresh_release_observation_required":true,"release_authorized":false,
+                "target_left_thumb_angles_rad":LEFT_THUMB_CLEARANCE_TARGETS,
+                "measured_initial_left_thumb_angles_rad":[0.,0.],
+                "ramp_ticks":50,"settling_ticks":50,"maximum_tracking_error_rad":0.02,
+                "minimum_candidate_clearance_m":0.016,"preparation_admitted":true,
+                "preparation_goal":{"observation":stamp},
+                "candidate_clearance":{
+                    "clearance_method":"original_convex_vertex_support_plane_v1",
+                    "robot_collision_geometry_sha256":"definition",
+                    "opening_profile":"gravity_horizontal_original_fingers",
+                    "minimum_hand_clearance_m":0.01,"maximum_commanded_palm_gap_m":0.35,
+                    "required_measured_palm_gap_m":0.32,"hand_clearance_admitted":true,
+                    "minimum_certified_separation_at_maximum_gap_m":0.018,
+                    "certified_hand_colliders":16,"prediction_is_not_physical_detachment":true,
+                },
+            });
+            assert!(validate_thumb_preparation_reply(&reply, stamp, "geometry").is_ok());
+            for mutation in 0..10 {
+                let mut bad = reply.clone();
+                match mutation {
+                    0 => {
+                        bad["thumb_preparation_proposal"]["preparation_goal"]["observation"]["episode_id"] =
+                            9.into()
+                    }
+                    1 => bad["thumb_preparation_proposal"]["observation"]["frame_id"] = 9.into(),
+                    2 => bad["camera_mount_profile"] = "auxiliary_grip_overview".into(),
+                    3 => bad["thumb_preparation_proposal"]["release_authorized"] = true.into(),
+                    4 => {
+                        bad["thumb_preparation_proposal"]["candidate_clearance"]["minimum_certified_separation_at_maximum_gap_m"] =
+                            0.009.into()
+                    }
+                    5 => {
+                        bad["thumb_preparation_proposal"]["target_left_thumb_angles_rad"][0] =
+                            0.1.into()
+                    }
+                    6 => {
+                        bad["thumb_preparation_proposal"]["measured_initial_left_thumb_angles_rad"]
+                            [0] = 0.1.into()
+                    }
+                    7 => bad["release_proposal"]["minimum_signed_floor_margin_m"] = 0.001.into(),
+                    8 => {
+                        bad["thumb_preparation_proposal"]["candidate_clearance"]["clearance_method"] =
+                            "other".into()
+                    }
+                    _ => {
+                        bad["thumb_preparation_proposal"]["candidate_clearance"]["certified_hand_colliders"] =
+                            15.into()
+                    }
+                }
+                assert!(
+                    validate_thumb_preparation_reply(&bad, stamp, "geometry").is_err(),
+                    "mutation {mutation}"
+                );
+            }
+            reply["thumb_preparation_proposal"]["preparation_admitted"] = false.into();
+            reply["thumb_preparation_proposal"]["preparation_goal"] = serde_json::Value::Null;
+            reply["thumb_preparation_proposal"]["candidate_clearance"]["minimum_certified_separation_at_maximum_gap_m"] =
+                0.014.into();
+            assert!(validate_thumb_preparation_reply(&reply, stamp, "geometry").is_ok());
         }
         #[test]
         fn release_cannot_cross_frame_geometry_margin_or_speed_guards() {

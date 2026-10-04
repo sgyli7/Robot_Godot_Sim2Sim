@@ -22,6 +22,7 @@ use super::{
     mobile_raise::{MobileGripRaising, MobileRaiseGoal, MobileRaiseStep},
     mobile_release::{MobileGripRelease, MobileReleaseGoal, MobileReleaseStep},
     mobile_restore::{MobileGripRestoring, MobileRestoreGoal, MobileRestoreStep},
+    mobile_thumb::{MobileThumbGoal, MobileThumbPreparation, MobileThumbStep},
     mobile_wait::{MobileModelWaiting, MobileWaitGoal, MobileWaitStep},
     runner::{G1Measurement, G1ProgressCounts},
     task_objects::TaskObjectFrame,
@@ -51,6 +52,7 @@ pub enum MobileAssistCommand {
     ClassicalRestore(MobileRestoreGoal),
     ClassicalGripSettle(MobileHoldGoal),
     ClassicalHold(MobileHoldGoal),
+    ClassicalThumbClearance(MobileThumbGoal),
     ClassicalModelWait(MobileWaitGoal),
 }
 
@@ -105,6 +107,7 @@ impl MobileAssistCommand {
             Self::ClassicalRestore(goal) => goal.validate(),
             Self::ClassicalGripSettle(goal) => goal.validate(),
             Self::ClassicalHold(goal) => goal.validate(),
+            Self::ClassicalThumbClearance(goal) => goal.validate(),
             Self::ClassicalModelWait(goal) => goal.validate(),
         }
     }
@@ -157,6 +160,10 @@ pub enum MobileAssistExecution {
         goal: MobileHoldGoal,
         holding: MobileHoldStep,
     },
+    ClassicalThumbClearance {
+        goal: MobileThumbGoal,
+        preparing: MobileThumbStep,
+    },
     ClassicalModelWait {
         goal: MobileWaitGoal,
         waiting: MobileWaitStep,
@@ -195,6 +202,7 @@ pub struct MobileAssistRunner {
     restore: Option<MobileGripRestoring>,
     grip_settle: Option<GripSettleState>,
     hold: Option<MobileGripHolding>,
+    thumb: Option<MobileThumbPreparation>,
     original_transport_command: Option<G1Command>,
     halted: bool,
 }
@@ -272,6 +280,7 @@ impl MobileAssistRunner {
             restore: None,
             grip_settle: None,
             hold: None,
+            thumb: None,
             original_transport_command: None,
             halted: false,
         })
@@ -318,6 +327,8 @@ impl MobileAssistRunner {
             raise.completed()
         } else if let Some(lower) = &self.lower {
             lower.completed()
+        } else if let Some(thumb) = &self.thumb {
+            thumb.completed()
         } else if let Some(hold) = &self.hold {
             hold.completed()
         } else if self.carry.is_none() && self.scan.is_none() {
@@ -382,6 +393,9 @@ impl MobileAssistRunner {
         if self.hold.as_ref().is_some_and(|h| !h.completed()) {
             return Err(invalid("cannot replace an active stationary hold"));
         }
+        if self.thumb.as_ref().is_some_and(|t| !t.completed()) {
+            return Err(invalid("cannot replace active thumb preparation"));
+        }
         if self.restore.as_ref().is_some_and(|r| !r.completed()) {
             return Err(invalid(
                 "cannot replace active transport-posture restoration",
@@ -418,6 +432,9 @@ impl MobileAssistRunner {
         if let Some(carry) = &self.carry {
             if !carry.navigator.stopped() {
                 return Err(invalid("cannot replace an active carry"));
+            }
+            if let Some(thumb) = &self.thumb {
+                return Ok((thumb.command().clone(), carry.grip.clone()));
             }
             if let Some(hold) = &self.hold {
                 return Ok((hold.command().clone(), carry.grip.clone()));
@@ -498,6 +515,9 @@ impl MobileAssistRunner {
                 MobileAssistExecution::ClassicalRelease { opening, .. } => opening.command.clone(),
                 MobileAssistExecution::ClassicalRestore { restoring, .. } => {
                     restoring.command.clone()
+                }
+                MobileAssistExecution::ClassicalThumbClearance { preparing, .. } => {
+                    preparing.command.clone()
                 }
                 MobileAssistExecution::ClassicalHold { holding, .. }
                 | MobileAssistExecution::ClassicalGripSettle { holding, .. } => {
@@ -1076,6 +1096,41 @@ impl MobileAssistRunner {
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
             }
+            MobileAssistCommand::ClassicalThumbClearance(goal) => {
+                let state = self.owner.measurement()?;
+                if self.thumb.is_none() {
+                    if !self.station_fixture
+                        || self.release.is_some()
+                        || self.hold.as_ref().is_none_or(|h| {
+                            !h.completed()
+                                || goal.observation.frame_id <= h.goal().observation.frame_id
+                        })
+                        || self.carry.as_ref().is_none_or(|c| !c.navigator.stopped())
+                    {
+                        return Err(invalid(
+                            "thumb preparation requires completed stationary station hold",
+                        ));
+                    }
+                    let (command, _) = self.prepare_classical(&goal.observation, &state)?;
+                    self.thumb = Some(MobileThumbPreparation::new(goal.clone(), &state, command)?);
+                }
+                let thumb = self.thumb.as_mut().unwrap();
+                if thumb.goal() != goal {
+                    return Err(invalid("thumb preparation goal changed while executing"));
+                }
+                let preparing = thumb.update(&state)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&preparing.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalThumbClearance {
+                        goal: goal.clone(),
+                        preparing,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
             MobileAssistCommand::ClassicalRelease(goal) => {
                 let state = self.owner.measurement()?;
                 if self.release.is_none() {
@@ -1084,6 +1139,10 @@ impl MobileAssistRunner {
                         || self.hold.as_ref().is_some_and(|h| {
                             !h.completed()
                                 || goal.observation.frame_id <= h.goal().observation.frame_id
+                        })
+                        || self.thumb.as_ref().is_some_and(|t| {
+                            !t.completed()
+                                || goal.observation.frame_id <= t.goal().observation.frame_id
                         })
                     {
                         return Err(invalid("release requires completed stationary carry"));
@@ -2393,6 +2452,7 @@ mod tests {
                     | MobileAssistExecution::ClassicalReobserve { .. }
                     | MobileAssistExecution::ClassicalRestore { .. }
                     | MobileAssistExecution::ClassicalHold { .. }
+                    | MobileAssistExecution::ClassicalThumbClearance { .. }
                     | MobileAssistExecution::ClassicalGripSettle { .. }
                     | MobileAssistExecution::ClassicalLower { .. }
                     | MobileAssistExecution::ClassicalRaise { .. }
@@ -2528,6 +2588,7 @@ mod worker_diagnostic {
                         | MobileAssistExecution::ClassicalReobserve { .. }
                         | MobileAssistExecution::ClassicalRestore { .. }
                         | MobileAssistExecution::ClassicalHold { .. }
+                        | MobileAssistExecution::ClassicalThumbClearance { .. }
                         | MobileAssistExecution::ClassicalGripSettle { .. }
                         | MobileAssistExecution::ClassicalLower { .. }
                         | MobileAssistExecution::ClassicalRaise { .. }

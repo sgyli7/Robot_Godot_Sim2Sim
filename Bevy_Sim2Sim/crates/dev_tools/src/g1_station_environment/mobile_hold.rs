@@ -11,6 +11,7 @@ use simulation_minigame::g1::{
         MobileCarryGoal, MobileCarryNavigator, MobileScanGoal, MobileScanNavigator,
     },
     mobile_release::{MobileGripRelease, MobileReleaseGoal},
+    mobile_thumb::{MobileThumbGoal, MobileThumbPreparation},
     runner::{G1Runner, G1Step},
     task_objects::TaskObjectKind,
     task_policy::{ArenaControllerCommand, controller_command},
@@ -81,31 +82,38 @@ fn check_clock(step: &G1Step, tick: u64) -> Result<(), String> {
 #[test]
 #[ignore = "saved actual station four50frame chunks, then one original grip calibration and finite hold; maximum450 single50Hz steps,0newRGB/VLA/Qwen"]
 fn saved_station_grasp_self_state_hold() -> Result<(), String> {
-    saved_station_hold_and_carry(false, false, false)
+    saved_station_hold_and_carry(false, false, false, false)
 }
 
 #[test]
 #[ignore = "saved station grasp/hold then unchanged traditional2m public-clear-aisle carry and stop; maximum2300 actual50Hz steps,0freshRGB/VLA/Qwen; not target-bin qualification"]
 fn saved_station_grasp_two_metre_carry_stop() -> Result<(), String> {
-    saved_station_hold_and_carry(true, false, false)
+    saved_station_hold_and_carry(true, false, false, false)
 }
 
 #[test]
 #[ignore = "saved actual station grasp/100Tick hold then source-positive RGB-derived scan/carry/hold/release goals;3300 single50Hz steps maximum,0freshRGB/VLA/Qwen;mechanics only"]
 fn saved_station_grasp_source_positive_bin_route() -> Result<(), String> {
-    saved_station_hold_and_carry(false, true, false)
+    saved_station_hold_and_carry(false, true, false, false)
 }
 
 #[test]
 #[ignore = "saved actual1982Tick station blocked prefix then finite zero-navigation hold and disclosed manual release;maximum2457steps,0freshRGB/VLA/Qwen;mechanical diagnosis only"]
 fn saved_station_blocked_bin_hold_release() -> Result<(), String> {
-    saved_station_hold_and_carry(false, false, true)
+    saved_station_hold_and_carry(false, false, true, false)
+}
+
+#[test]
+#[ignore = "saved actual2182Tick station prefix; one bounded left-thumb motor ramp/settle then manual release;2507steps,0freshRGB/VLA/Qwen;mechanical diagnosis only"]
+fn saved_station_blocked_bin_thumb_clearance_release() -> Result<(), String> {
+    saved_station_hold_and_carry(false, false, true, true)
 }
 
 fn saved_station_hold_and_carry(
     run_carry: bool,
     run_placement: bool,
     run_blocked: bool,
+    run_thumb: bool,
 ) -> Result<(), String> {
     let value: serde_json::Value =
         serde_json::from_slice(&read("G1_STATION_HOLD_CONFIG")?).map_err(|e| e.to_string())?;
@@ -246,7 +254,7 @@ fn saved_station_hold_and_carry(
         return Err("station calibrated hold exceeded250Tick bound".into());
     }
     if run_blocked {
-        return saved_blocked_bin_stop(&mut owner, &calibration, &hands, &mut trace);
+        return saved_blocked_bin_stop(&mut owner, &calibration, &hands, &mut trace, run_thumb);
     }
     if run_placement {
         return saved_bin_route(
@@ -308,13 +316,16 @@ fn saved_blocked_bin_stop(
     calibration: &MobileGripCalibration,
     hands: &HashSet<usize>,
     trace: &mut fs::File,
+    run_thumb: bool,
 ) -> Result<(), String> {
     use robot_minigame::g1::contract::G1Command;
     let commands: Vec<G1Command> =
         serde_json::from_slice(&read("G1_STATION_BLOCKED_COMMANDS")?).map_err(|e| e.to_string())?;
-    if commands.len() != 1682 || owner.measurement().map_err(|e| e.to_string())?.source_tick != 300
+    let saved_count = if run_thumb { 1882 } else { 1682 };
+    if commands.len() != saved_count
+        || owner.measurement().map_err(|e| e.to_string())?.source_tick != 300
     {
-        return Err("blocked station diagnostic requires exact saved301..1982Tick prefix".into());
+        return Err("blocked station diagnostic has an unexpected saved prefix length".into());
     }
     let mut command = commands.last().unwrap().clone();
     for saved in commands {
@@ -329,6 +340,42 @@ fn saved_blocked_bin_stop(
         )?;
     }
     command.navigation = [0.; 3];
+    if run_thumb {
+        // Single pose selected by offline original-hull/current-self-FK geometry.
+        // These are physical joint targets, never written body poses. Existing
+        // release preserves all fingers; the live path does not call this probe.
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let mut thumb = MobileThumbPreparation::new(
+            MobileThumbGoal {
+                observation: ObservationStamp {
+                    episode_id: state.episode_id,
+                    frame_id: 90,
+                    sim_time_ns: state.sim_time_ns,
+                    captured_at_unix_ms: 1,
+                },
+            },
+            &state,
+            command,
+        )
+        .map_err(|e| e.to_string())?;
+        for _ in 0..100 {
+            let state = owner.measurement().map_err(|e| e.to_string())?;
+            let preparing = thumb.update(&state).map_err(|e| e.to_string())?;
+            let step = owner.step(&preparing.command).map_err(|e| e.to_string())?;
+            write_route_step(
+                trace,
+                &step,
+                "offline_bounded_left_thumb_motor_ramp_settle",
+                &preparing,
+                true,
+                hands,
+            )?;
+        }
+        if !thumb.completed() {
+            return Err("thumb preparation exceeded its finite100Tick bound".into());
+        }
+        return saved_manual_release(owner, calibration, hands, trace, thumb.command().clone());
+    }
     let state = owner.measurement().map_err(|e| e.to_string())?;
     let mut hold = MobileGripHolding::new(
         MobileHoldGoal {
@@ -362,6 +409,16 @@ fn saved_blocked_bin_stop(
     if !hold.completed() {
         return Err("blocked zero-navigation hold exceeded250Ticks".into());
     }
+    saved_manual_release(owner, calibration, hands, trace, hold.command().clone())
+}
+
+fn saved_manual_release(
+    owner: &mut G1Runner,
+    calibration: &MobileGripCalibration,
+    hands: &HashSet<usize>,
+    trace: &mut fs::File,
+    command: robot_minigame::g1::contract::G1Command,
+) -> Result<(), String> {
     let state = owner.measurement().map_err(|e| e.to_string())?;
     let mut release = MobileGripRelease::new(
         MobileReleaseGoal {
@@ -375,7 +432,7 @@ fn saved_blocked_bin_stop(
             duration_ticks: 100,
         },
         &state,
-        hold.command().clone(),
+        command,
         calibration,
     )
     .map_err(|e| e.to_string())?;

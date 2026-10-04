@@ -20,6 +20,8 @@ pub mod mobile_release;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_restore;
 #[cfg(feature = "g1_constraint_diagnostic")]
+pub mod mobile_thumb;
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_wait;
 pub mod runner;
 pub mod static_environment;

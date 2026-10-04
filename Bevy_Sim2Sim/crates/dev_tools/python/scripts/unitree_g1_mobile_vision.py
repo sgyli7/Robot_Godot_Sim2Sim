@@ -236,12 +236,12 @@ def clearance_from_visible_markers(detections, observation, geometry_path, marke
 
 
 def horizontal_release_clearance(definition, observation, root_from_box, box_vertices):
-    """Clip original hand hulls to the visible box's perpendicular footprint.
+    """Certify separation of original hand hulls from the visible convex box.
 
     This estimates a rigid horizontal opening from measured self FK and current
     RGB. It uses no world/contact state and cannot prove physical detachment.
     """
-    from scipy.optimize import linprog
+    from scipy.optimize import LinearConstraint, minimize
     from scipy.spatial import ConvexHull
 
     frames = original_self_body_frames(definition, observation["measured_joints"]["positions"])
@@ -255,8 +255,13 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
     direction = horizontal / span
     basis = np.column_stack([direction, np.cross(direction, up), up])
     box = (box_vertices @ root_from_box[:3, :3].T + root_from_box[:3, 3]) @ basis
-    lower, upper = box.min(axis=0), box.max(axis=0)
+    if abs(vertical) >= .35:
+        raise ValueError("measured palm vertical offset exceeds the release envelope")
+    maximum_shift = .5 * (np.sqrt(.35**2 - vertical**2) - span)
+    if maximum_shift < 0.:
+        raise ValueError("measured palm span already exceeds the release envelope")
     shifts = []
+    certificates = []
     for collider in definition["collisions"]:
         index = collider["body"]
         name = definition["bodies"][index]["name"]
@@ -271,22 +276,35 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
         else:
             raise ValueError("unsupported original hand collision shape")
         points = (points @ frames[index][:3, :3].T + frames[index][:3, 3]) @ basis
-        hull = ConvexHull(points)
-        # A rectangle encloses the full visible box perpendicular to spreading.
-        # Infeasible shapes cannot overlap this footprint; no truth query occurs.
-        a = np.vstack([hull.equations[:, :3], [[0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]])
-        b = np.r_[-hull.equations[:, 3], upper[1], -lower[1], upper[2], -lower[2]]
         left = name.startswith("left_")
-        solved = linprog([1 if left else -1, 0, 0], A_ub=a, b_ub=b,
-                         bounds=[(None, None)] * 3, method="highs")
-        if solved.status == 2:
-            continue
+        outward = np.array([1. if left else -1., 0., 0.])
+        target = maximum_shift * outward
+        differences = (box[:, None, :] - points[None, :, :]).reshape(-1, 3)
+        planes = ConvexHull(differences).equations
+        solved = minimize(lambda p: .5 * np.dot(p-target, p-target), differences.mean(axis=0),
+                          jac=lambda p: p-target,
+                          constraints=LinearConstraint(planes[:, :3], -np.inf, -planes[:, 3]),
+                          method="SLSQP", options={"ftol": 1e-14, "maxiter": 500})
         if not solved.success:
             raise ValueError("original hand release clearance solve failed")
-        inner = float(solved.x[0])
-        shifts.append(max(0., float(upper[0] + .01 - inner if left else inner - lower[0] + .01)))
+        nearest_delta = target-solved.x
+        norm = float(np.linalg.norm(nearest_delta))
+        normal = nearest_delta/norm if norm > 1e-9 else outward
+        if float(normal @ outward) <= 1e-6:
+            normal = outward
+        # The optimizer proposes a direction only. Max support over ALL original
+        # vertex differences proves the plane for both complete convex hulls,
+        # independently of optimizer accuracy or its candidate feasibility.
+        support = float((differences @ normal).max())
+        projection = float(normal @ outward)
+        certificate = float(target @ normal-support)
+        required_shift = max(0., (.010000001 + support)/projection)
+        if not np.isfinite([certificate, required_shift]).all():
+            raise ValueError("nonfinite original hand separation certificate")
+        shifts.append(required_shift)
+        certificates.append(certificate)
     if not shifts:
-        raise ValueError("visible box has no measured hand footprint for release")
+        raise ValueError("visible box has no original hand collision geometry for release")
     required = float(np.hypot(span + 2 * max(shifts), vertical))
     return {"opening_profile": "gravity_horizontal_original_fingers",
             "robot_collision_geometry_sha256": DEFINITION_SHA256,
@@ -294,6 +312,9 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
             "required_measured_palm_gap_m": required,
             "maximum_commanded_palm_gap_m": .35,
             "hand_clearance_admitted": required <= .35,
+            "clearance_method": "original_convex_vertex_support_plane_v1",
+            "minimum_certified_separation_at_maximum_gap_m": min(certificates),
+            "certified_hand_colliders": len(certificates),
             "prediction_is_not_physical_detachment": True}
 
 
@@ -326,6 +347,41 @@ def placement_from_visible_markers(detections, observation, geometry_path, mount
             "self_root_speed_m_s": root_speed, "release_admitted": admitted, "task_qualified": False,
             "release_goal": {"observation": observation["stamp"], "target_palm_gap_m": .35,
                              "duration_ticks": 100} if admitted else None, **opening}
+
+
+def thumb_preparation_from_visible_markers(detections, observation, geometry_path, mounts, definition, placement, public_assets=None):
+    """Propose one disclosed finger pose; it cannot authorize physical release.
+
+    The candidate FK is labelled hypothetical. After the finite original-motor
+    preparation, another actual RGB/self observation must pass normal release
+    admission. The current measured pose remains rejected here.
+    """
+    if (placement["release_admitted"] or placement["hand_clearance_admitted"]
+            or placement["minimum_signed_floor_margin_m"] < .02
+            or not .05 <= placement["estimated_drop_height_m"] <= .4
+            or placement["visible_bin_upward_cosine"] < .98
+            or placement["self_root_speed_m_s"] > .05):
+        return None
+    positions = observation["measured_joints"]["positions"]
+    if any(abs(positions[i]) > .02 for i in (26, 27)):
+        return None
+    targets = np.asarray([-.04068526, -.18428603], dtype=np.float32).astype(float).tolist()
+    candidate = {**observation, "measured_joints": {**observation["measured_joints"], "positions": list(positions)}}
+    candidate["measured_joints"]["positions"][26:28] = targets
+    objects = {o["kind"]: o for o in public_json(geometry_path, public_assets)["objects"]}
+    vertices = np.concatenate([np.asarray(p["points"]) for p in objects["t2_box"]["convex_parts"]])
+    box_pose = next(np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[22]) for d in detections if d["marker_id"] == 22)
+    clearance = horizontal_release_clearance(definition, candidate, box_pose, vertices)
+    admitted = clearance["hand_clearance_admitted"] and clearance["minimum_certified_separation_at_maximum_gap_m"] >= .016
+    return {"schema": "g1_visible_station_thumb_preparation_v1", "observation": observation["stamp"],
+            "robot_collision_geometry_sha256": DEFINITION_SHA256, "source_geometry_sha256": TASK_GEOMETRY_SHA256,
+            "world_or_contact_truth_input": False, "candidate_is_not_measured_state": True,
+            "fresh_release_observation_required": True, "release_authorized": False,
+            "target_left_thumb_angles_rad": targets, "measured_initial_left_thumb_angles_rad": positions[26:28],
+            "ramp_ticks": 50, "settling_ticks": 50, "maximum_tracking_error_rad": .02,
+            "minimum_candidate_clearance_m": .016, "candidate_clearance": clearance,
+            "preparation_admitted": admitted,
+            "preparation_goal": {"observation": observation["stamp"]} if admitted else None}
 
 
 def fine_from_visible_markers(detections, observation, geometry_path, mounts, heading, public_assets=None):
@@ -514,6 +570,10 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     if placement_view_only:
         result["placement_view_only"] = True
         result["release_proposal"] = placement_from_visible_markers(detections, observation, geometry_path, marker_mounts, definition, public_assets)
+        if camera_profile == "auxiliary_bin_placement":
+            result["thumb_preparation_proposal"] = thumb_preparation_from_visible_markers(
+                detections, observation, geometry_path, marker_mounts, definition,
+                result["release_proposal"], public_assets)
     return result
 
 

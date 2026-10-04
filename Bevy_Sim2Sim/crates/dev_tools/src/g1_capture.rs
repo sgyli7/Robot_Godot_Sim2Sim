@@ -228,6 +228,8 @@ struct MobileAssistCaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     hold_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    thumb_preparation_submitted: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     auxiliary_view_completed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     restore_submitted: bool,
@@ -316,6 +318,8 @@ impl MobileAssistCaptureRuntime {
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             hold_submitted: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            thumb_preparation_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             auxiliary_view_completed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -3399,8 +3403,10 @@ fn drive_mobile_assist(
         }
         let hold_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|s| matches!(&s.execution, MobileAssistExecution::ClassicalHold { holding, .. } if holding.completed));
+        let thumb_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
+            .is_some_and(|s| matches!(&s.execution, MobileAssistExecution::ClassicalThumbClearance { preparing, .. } if preparing.completed));
         if assist.auxiliary_release
-            && hold_complete
+            && (hold_complete || thumb_complete)
             && assist.hold_submitted
             && !assist.release_submitted
         {
@@ -3750,7 +3756,8 @@ fn drive_auxiliary_release(
     port: &G1CameraPort,
 ) -> Result<bool, String> {
     use simulation_minigame::g1::{
-        mobile_assist::MobileAssistCommand, mobile_release::MobileReleaseGoal, worker::TimedCommand,
+        mobile_assist::MobileAssistCommand, mobile_release::MobileReleaseGoal,
+        mobile_thumb::MobileThumbGoal, worker::TimedCommand,
     };
     let latest = runtime
         .latest
@@ -3788,8 +3795,49 @@ fn drive_auxiliary_release(
         if observation.episode_id != runtime.episode_id
             || observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
             || reply["camera_mount_profile"] != assist.auxiliary_camera_name()
-            || reply["release_proposal"]["release_admitted"] != true
         {
+            return Err("release image detached from the current owner/camera".into());
+        }
+        if reply["release_proposal"]["release_admitted"] != true {
+            if assist.station_motion
+                && assist.station_placement_view_active
+                && !assist.thumb_preparation_submitted
+                && reply["thumb_preparation_proposal"]["preparation_admitted"] == true
+            {
+                let goal: MobileThumbGoal = serde_json::from_value(
+                    reply["thumb_preparation_proposal"]["preparation_goal"].clone(),
+                )
+                .map_err(|e| e.to_string())?;
+                goal.validate().map_err(|e| e.to_string())?;
+                let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+                    return Err("thumb preparation lost sole native owner".into());
+                };
+                owner
+                    .submit(TimedCommand {
+                        episode_id: runtime.episode_id,
+                        valid_until_sim_ns: observation.sim_time_ns + 4_000_000_000,
+                        valid_until_wall: Instant::now() + Duration::from_secs(6),
+                        command: MobileAssistCommand::ClassicalThumbClearance(goal.clone()),
+                    })
+                    .map_err(|e| e.to_string())?;
+                outcome
+                    .0
+                    .lock()
+                    .unwrap()
+                    .mobile_assist_handoff
+                    .as_mut()
+                    .unwrap()["visual_thumb_preparation"] = serde_json::json!({
+                    "actual_localization":reply,"executed_goal":goal,
+                    "same_owner_boundary_tick":latest.timing.episode_integrations,
+                    "object_truth_in_command":false,"release_executed":false,
+                    "fresh_release_observation_required":true,"task_qualified":false,
+                });
+                let assist = runtime.mobile_assist.as_mut().unwrap();
+                assist.vision_job.take();
+                assist.thumb_preparation_submitted = true;
+                runtime.requested = false;
+                return Ok(false);
+            }
             return Err(
                 "current visual box footprint/release envelope rejected; owner remains paused"
                     .into(),
@@ -3821,7 +3869,12 @@ fn drive_auxiliary_release(
         runtime.requested = false;
         return Ok(false);
     }
-    start_marker_job(runtime, port, "visual_release_alignment")?;
+    let directory = if assist.thumb_preparation_submitted {
+        "visual_release_alignment_after_thumb"
+    } else {
+        "visual_release_alignment"
+    };
+    start_marker_job(runtime, port, directory)?;
     Ok(false)
 }
 
@@ -4474,7 +4527,10 @@ fn start_marker_job(
         .vision
         .clone()
         .ok_or("visual localization worker config absent")?;
-    if stage_directory == "visual_release_alignment" {
+    if matches!(
+        stage_directory,
+        "visual_release_alignment" | "visual_release_alignment_after_thumb"
+    ) {
         runtime.mobile_assist.as_mut().unwrap().vision_job = Some(
             MarkerVisionJob::start_placement_view(config, directory, observation)?,
         );
