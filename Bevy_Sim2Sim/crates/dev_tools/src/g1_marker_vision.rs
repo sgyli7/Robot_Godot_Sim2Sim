@@ -854,12 +854,17 @@ mod worker {
         geometry_hash: &str,
     ) -> Result<(), String> {
         use simulation_minigame::g1::mobile_thumb::{
-            LEFT_THUMB_CLEARANCE_TARGETS, MobileThumbGoal,
+            LEFT_THUMB_CLEARANCE_TARGETS, MAXIMUM_BOUNDED_THUMB_ANGLE_RAD, MobileThumbGoal,
         };
         let proposal = &reply["thumb_preparation_proposal"];
         if proposal.is_null() {
             return Ok(());
         }
+        let both_hands = match proposal["schema"].as_str() {
+            Some("g1_visible_station_thumb_preparation_v1") => false,
+            Some("g1_visible_station_thumb_preparation_v2") => true,
+            _ => return Err("foreign thumb preparation schema".into()),
+        };
         let release = &reply["release_proposal"];
         let clearance = &proposal["candidate_clearance"];
         let numeric = |value: &serde_json::Value| {
@@ -881,17 +886,59 @@ mod worker {
             return Err("thumb angle width mismatch".into());
         }
         for slot in 0..2 {
-            if (numeric(&targets[slot])? - f64::from(LEFT_THUMB_CLEARANCE_TARGETS[slot])).abs()
-                > 1e-7
+            if (!both_hands
+                && (numeric(&targets[slot])? - f64::from(LEFT_THUMB_CLEARANCE_TARGETS[slot])).abs()
+                    > 1e-7)
+                || numeric(&targets[slot])?.abs() > f64::from(MAXIMUM_BOUNDED_THUMB_ANGLE_RAD)
                 || numeric(&initial[slot])?.abs() > 0.02
             {
                 return Err("foreign thumb target or initial posture".into());
             }
         }
+        let bounded_targets = if both_hands {
+            let right = proposal["target_right_thumb_angles_rad"]
+                .as_array()
+                .ok_or("right thumb targets absent")?;
+            let initial_right = proposal["measured_initial_right_thumb_angles_rad"]
+                .as_array()
+                .ok_or("right thumb measurements absent")?;
+            if right.len() != 2 || initial_right.len() != 2 {
+                return Err("right thumb angle width mismatch".into());
+            }
+            for slot in 0..2 {
+                if numeric(&right[slot])?.abs() > f64::from(MAXIMUM_BOUNDED_THUMB_ANGLE_RAD)
+                    || numeric(&initial_right[slot])?.abs() > 0.02
+                {
+                    return Err("foreign right thumb target or initial posture".into());
+                }
+            }
+            let path = &proposal["hypothetical_preparation_path"];
+            if !candidate
+                || proposal["maximum_absolute_thumb_angle_rad"] != 0.25
+                || proposal["planning_clearance_m"] != 0.018
+                || proposal["planning_method"] != "fixed_support_planes_bounded_slsqp_v1"
+                || path["schema"] != "g1_hypothetical_thumb_support_plane_path_v1"
+                || path["samples"] != 51
+                || !(0. ..=0.001)
+                    .contains(&numeric(&path["maximum_additional_inward_projection_m"])?)
+                || path["maximum_allowed_additional_inward_projection_m"] != 0.001
+                || path["all_original_hand_hulls"] != 16
+                || path["actual_contact_safety_proven"] != false
+            {
+                return Err("unsafe or unbounded hypothetical thumb path".into());
+            }
+            Some([
+                numeric(&targets[0])? as f32,
+                numeric(&targets[1])? as f32,
+                numeric(&right[0])? as f32,
+                numeric(&right[1])? as f32,
+            ])
+        } else {
+            None
+        };
         let actual: ObservationStamp =
             serde_json::from_value(proposal["observation"].clone()).map_err(|e| e.to_string())?;
-        if proposal["schema"] != "g1_visible_station_thumb_preparation_v1"
-            || actual != observation
+        if actual != observation
             || reply["camera_mount_profile"] != "auxiliary_bin_placement"
             || reply["placement_view_only"] != true
             || release["release_admitted"] != false
@@ -930,7 +977,8 @@ mod worker {
                 serde_json::from_value(proposal["preparation_goal"].clone())
                     .map_err(|e| e.to_string())?;
             goal.validate().map_err(|e| e.to_string())?;
-            if goal.observation != observation {
+            if goal.observation != observation || goal.bounded_thumb_targets_rad != bounded_targets
+            {
                 return Err("thumb preparation goal detached from its current image".into());
             }
         } else if !proposal["preparation_goal"].is_null() {
@@ -1103,8 +1151,7 @@ mod worker {
                 assert!(check(&bad).is_err());
             }
         }
-        #[test]
-        fn thumb_preparation_cannot_authorize_release_or_cross_image_and_geometry_guards() {
+        fn thumb_fixture() -> (serde_json::Value, ObservationStamp) {
             use simulation_minigame::g1::mobile_thumb::LEFT_THUMB_CLEARANCE_TARGETS;
             let (mut reply, stamp) = fixture();
             reply["placement_view_only"] = true.into();
@@ -1134,6 +1181,11 @@ mod worker {
                     "certified_hand_colliders":16,"prediction_is_not_physical_detachment":true,
                 },
             });
+            (reply, stamp)
+        }
+        #[test]
+        fn thumb_preparation_cannot_authorize_release_or_cross_image_and_geometry_guards() {
+            let (mut reply, stamp) = thumb_fixture();
             assert!(validate_thumb_preparation_reply(&reply, stamp, "geometry").is_ok());
             for mutation in 0..10 {
                 let mut bad = reply.clone();
@@ -1177,6 +1229,68 @@ mod worker {
             reply["thumb_preparation_proposal"]["candidate_clearance"]["minimum_certified_separation_at_maximum_gap_m"] =
                 0.014.into();
             assert!(validate_thumb_preparation_reply(&reply, stamp, "geometry").is_ok());
+        }
+        #[test]
+        fn both_hand_preparation_binds_four_targets_and_the_finite_outward_path() {
+            let (mut reply, stamp) = thumb_fixture();
+            let targets = [0.136_114_98, -0.25, 0.062_134_184, 0.181_736_25];
+            let p = &mut reply["thumb_preparation_proposal"];
+            p["schema"] = "g1_visible_station_thumb_preparation_v2".into();
+            p["target_left_thumb_angles_rad"] = serde_json::json!(&targets[..2]);
+            p["target_right_thumb_angles_rad"] = serde_json::json!(&targets[2..]);
+            p["measured_initial_right_thumb_angles_rad"] = serde_json::json!([0., 0.]);
+            p["maximum_absolute_thumb_angle_rad"] = 0.25.into();
+            p["planning_clearance_m"] = 0.018.into();
+            p["planning_method"] = "fixed_support_planes_bounded_slsqp_v1".into();
+            p["preparation_goal"]["bounded_thumb_targets_rad"] = serde_json::json!(targets);
+            p["hypothetical_preparation_path"] = serde_json::json!({
+                "schema":"g1_hypothetical_thumb_support_plane_path_v1","samples":51,
+                "maximum_additional_inward_projection_m":0.0002,
+                "maximum_allowed_additional_inward_projection_m":0.001,
+                "all_original_hand_hulls":16,"actual_contact_safety_proven":false,
+            });
+            assert!(validate_thumb_preparation_reply(&reply, stamp, "geometry").is_ok());
+            for mutation in 0..13 {
+                let mut bad = reply.clone();
+                let p = &mut bad["thumb_preparation_proposal"];
+                match mutation {
+                    0 => p["target_right_thumb_angles_rad"][0] = 0.251.into(),
+                    1 => p["target_right_thumb_angles_rad"] = serde_json::json!([0.]),
+                    2 => p["measured_initial_right_thumb_angles_rad"][0] = 0.021.into(),
+                    3 => p["preparation_goal"]["bounded_thumb_targets_rad"][2] = 0.1.into(),
+                    4 => {
+                        p["preparation_goal"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("bounded_thumb_targets_rad");
+                    }
+                    5 => {
+                        p["hypothetical_preparation_path"]["maximum_additional_inward_projection_m"] =
+                            0.0011.into()
+                    }
+                    6 => {
+                        p["hypothetical_preparation_path"]["actual_contact_safety_proven"] =
+                            true.into()
+                    }
+                    7 => p["hypothetical_preparation_path"]["all_original_hand_hulls"] = 15.into(),
+                    8 => p["hypothetical_preparation_path"]["samples"] = 50.into(),
+                    9 => {
+                        p["hypothetical_preparation_path"]["maximum_allowed_additional_inward_projection_m"] =
+                            0.002.into()
+                    }
+                    10 => p["planning_clearance_m"] = 0.01.into(),
+                    11 => p["schema"] = "g1_visible_station_thumb_preparation_v1".into(),
+                    _ => p["target_left_thumb_angles_rad"][0] = serde_json::Value::Null,
+                }
+                assert!(
+                    validate_thumb_preparation_reply(&bad, stamp, "geometry").is_err(),
+                    "mutation {mutation}"
+                );
+            }
+            let (mut legacy, stamp) = thumb_fixture();
+            legacy["thumb_preparation_proposal"]["preparation_goal"]["bounded_thumb_targets_rad"] =
+                serde_json::json!([0., 0., 0., 0.]);
+            assert!(validate_thumb_preparation_reply(&legacy, stamp, "geometry").is_err());
         }
         #[test]
         fn release_cannot_cross_frame_geometry_margin_or_speed_guards() {

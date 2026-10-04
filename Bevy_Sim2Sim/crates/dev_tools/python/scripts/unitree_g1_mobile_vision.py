@@ -235,7 +235,7 @@ def clearance_from_visible_markers(detections, observation, geometry_path, marke
                            "duration_ticks": duration} if admitted else None}
 
 
-def horizontal_release_clearance(definition, observation, root_from_box, box_vertices):
+def horizontal_release_clearance(definition, observation, root_from_box, box_vertices, *, _plane_output=None):
     """Certify separation of original hand hulls from the visible convex box.
 
     This estimates a rigid horizontal opening from measured self FK and current
@@ -275,6 +275,7 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
             points = points @ local[:3, :3].T + local[:3, 3]
         else:
             raise ValueError("unsupported original hand collision shape")
+        local_points = points
         points = (points @ frames[index][:3, :3].T + frames[index][:3, 3]) @ basis
         left = name.startswith("left_")
         outward = np.array([1. if left else -1., 0., 0.])
@@ -303,6 +304,11 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
             raise ValueError("nonfinite original hand separation certificate")
         shifts.append(required_shift)
         certificates.append(certificate)
+        if _plane_output is not None:
+            # A fixed support plane remains a complete-hull certificate when
+            # fingers rotate. The bounded planner never trusts optimizer fit.
+            _plane_output.append((index, local_points, basis @ normal,
+                                  float(target @ normal) - float((box @ normal).max())))
     if not shifts:
         raise ValueError("visible box has no original hand collision geometry for release")
     required = float(np.hypot(span + 2 * max(shifts), vertical))
@@ -316,6 +322,62 @@ def horizontal_release_clearance(definition, observation, root_from_box, box_ver
             "minimum_certified_separation_at_maximum_gap_m": min(certificates),
             "certified_hand_colliders": len(certificates),
             "prediction_is_not_physical_detachment": True}
+
+
+def bounded_thumb_candidate(definition, observation, root_from_box, vertices, planes, legacy_targets):
+    """One four-joint solve; certify all hulls and the declared 50 Tick path."""
+    from scipy.optimize import minimize
+
+    slots = np.array([26, 27, 40, 41])
+    initial = np.asarray(observation["measured_joints"]["positions"], dtype=float)
+    if np.any(np.abs(initial[slots]) > .02):
+        return None
+    by_name = {j["name"]: j for j in definition["joints"]}
+    bounds = []
+    for slot in slots:
+        limits = by_name[JOINT_NAMES[slot]]["limits"]
+        lower, upper = max(-.25, limits[0]), min(.25, limits[1])
+        if not np.isfinite([lower, upper]).all() or lower > upper:
+            return None
+        bounds.append((lower, upper))
+    seed = np.clip(np.asarray([*legacy_targets, 0., 0.]),
+                   np.asarray(bounds)[:, 0], np.asarray(bounds)[:, 1])
+
+    def certificates(targets):
+        positions = initial.copy()
+        positions[slots] = targets
+        frames = original_self_body_frames(definition, positions)
+        return np.asarray([constant + float(((points @ frames[body][:3, :3].T
+                                             + frames[body][:3, 3]) @ normal).min())
+                           for body, points, normal, constant in planes])
+
+    solved = minimize(lambda q: .5*np.dot(q-seed, q-seed), seed, jac=lambda q: q-seed,
+                      method="SLSQP", bounds=bounds,
+                      constraints={"type": "ineq", "fun": lambda q: certificates(q)-.018},
+                      options={"ftol": 1e-12, "maxiter": 30})
+    targets = np.asarray(solved.x, dtype=np.float32).astype(float)
+    if (not solved.success or not np.isfinite(targets).all()
+            or any(not low <= q <= high for q, (low, high) in zip(targets, bounds))
+            or certificates(targets).min() < .016):
+        return None
+    initial_certificates = certificates(initial[slots])
+    maximum_inward = max(float((initial_certificates - certificates(
+        initial[slots] + (targets-initial[slots])*(tick/50.))).max()) for tick in range(51))
+    if not np.isfinite(maximum_inward) or maximum_inward > .001:
+        return None
+    candidate = {**observation, "measured_joints": {**observation["measured_joints"],
+                 "positions": initial.tolist()}}
+    for slot, target in zip(slots, targets):
+        candidate["measured_joints"]["positions"][slot] = float(target)
+    clearance = horizontal_release_clearance(definition, candidate, root_from_box, vertices)
+    if (not clearance["hand_clearance_admitted"]
+            or clearance["minimum_certified_separation_at_maximum_gap_m"] < .016):
+        return None
+    path = {"schema": "g1_hypothetical_thumb_support_plane_path_v1", "samples": 51,
+            "maximum_additional_inward_projection_m": maximum_inward,
+            "maximum_allowed_additional_inward_projection_m": .001,
+            "all_original_hand_hulls": len(planes), "actual_contact_safety_proven": False}
+    return targets.tolist(), clearance, path
 
 
 def placement_from_visible_markers(detections, observation, geometry_path, mounts, definition, public_assets=None):
@@ -371,9 +433,10 @@ def thumb_preparation_from_visible_markers(detections, observation, geometry_pat
     objects = {o["kind"]: o for o in public_json(geometry_path, public_assets)["objects"]}
     vertices = np.concatenate([np.asarray(p["points"]) for p in objects["t2_box"]["convex_parts"]])
     box_pose = next(np.asarray(d["root_from_marker"]) @ np.linalg.inv(mounts[22]) for d in detections if d["marker_id"] == 22)
-    clearance = horizontal_release_clearance(definition, candidate, box_pose, vertices)
+    planes = []
+    clearance = horizontal_release_clearance(definition, candidate, box_pose, vertices, _plane_output=planes)
     admitted = clearance["hand_clearance_admitted"] and clearance["minimum_certified_separation_at_maximum_gap_m"] >= .016
-    return {"schema": "g1_visible_station_thumb_preparation_v1", "observation": observation["stamp"],
+    result = {"schema": "g1_visible_station_thumb_preparation_v1", "observation": observation["stamp"],
             "robot_collision_geometry_sha256": DEFINITION_SHA256, "source_geometry_sha256": TASK_GEOMETRY_SHA256,
             "world_or_contact_truth_input": False, "candidate_is_not_measured_state": True,
             "fresh_release_observation_required": True, "release_authorized": False,
@@ -382,6 +445,22 @@ def thumb_preparation_from_visible_markers(detections, observation, geometry_pat
             "minimum_candidate_clearance_m": .016, "candidate_clearance": clearance,
             "preparation_admitted": admitted,
             "preparation_goal": {"observation": observation["stamp"]} if admitted else None}
+    if admitted:
+        return result
+    bounded = bounded_thumb_candidate(definition, observation, box_pose, vertices, planes, targets)
+    if bounded is not None:
+        selected, clearance, path = bounded
+        result.update(schema="g1_visible_station_thumb_preparation_v2",
+                      target_left_thumb_angles_rad=selected[:2],
+                      target_right_thumb_angles_rad=selected[2:],
+                      measured_initial_right_thumb_angles_rad=positions[40:42],
+                      maximum_absolute_thumb_angle_rad=.25, planning_clearance_m=.018,
+                      planning_method="fixed_support_planes_bounded_slsqp_v1",
+                      candidate_clearance=clearance, hypothetical_preparation_path=path,
+                      preparation_admitted=True,
+                      preparation_goal={"observation": observation["stamp"],
+                                        "bounded_thumb_targets_rad": selected})
+    return result
 
 
 def fine_from_visible_markers(detections, observation, geometry_path, mounts, heading, public_assets=None):

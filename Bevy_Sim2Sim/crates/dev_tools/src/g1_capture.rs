@@ -3847,7 +3847,10 @@ mod release_boundary_tests {
         // command; the owner mailbox had not published its new phase yet.
         assert!(!release_observation_boundary(true, &old));
         let mut next = MobileAssistExecution::ClassicalThumbClearance {
-            goal: MobileThumbGoal { observation },
+            goal: MobileThumbGoal {
+                observation,
+                bounded_thumb_targets_rad: None,
+            },
             preparing: MobileThumbStep {
                 command: G1Command::default(),
                 preparation_ticks: 100,

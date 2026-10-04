@@ -7,11 +7,17 @@ use serde::{Deserialize, Serialize};
 use task_minigame::types::ObservationStamp;
 
 pub const LEFT_THUMB_CLEARANCE_TARGETS: [f32; 2] = [-0.040_685_26, -0.184_286_03];
+/// Conservative subset of the four original thumb joint limits, in radians.
+pub const MAXIMUM_BOUNDED_THUMB_ANGLE_RAD: f32 = 0.25;
+const THUMB_JOINTS: [usize; 4] = [26, 27, 40, 41];
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MobileThumbGoal {
     pub observation: ObservationStamp,
+    /// Left thumb 0/1, right thumb 0/1; absent preserves the original left pose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounded_thumb_targets_rad: Option<[f32; 4]>,
 }
 impl MobileThumbGoal {
     pub fn validate(&self) -> Result<(), RobotError> {
@@ -23,6 +29,15 @@ impl MobileThumbGoal {
         {
             return Err(invalid(
                 "thumb preparation requires a current native image identity",
+            ));
+        }
+        if self.bounded_thumb_targets_rad.is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|q| !q.is_finite() || q.abs() > MAXIMUM_BOUNDED_THUMB_ANGLE_RAD)
+        }) {
+            return Err(invalid(
+                "thumb targets exceed the finite four-joint envelope",
             ));
         }
         Ok(())
@@ -41,7 +56,9 @@ pub struct MobileThumbStep {
 pub struct MobileThumbPreparation {
     goal: MobileThumbGoal,
     command: G1Command,
-    start: [f32; 2],
+    start: [f32; 4],
+    targets: [f32; 4],
+    joint_count: usize,
     ticks: u32,
     next_tick: u64,
     completed: bool,
@@ -56,10 +73,23 @@ impl MobileThumbPreparation {
         command.validate()?;
         MobileImageAdmission::at_current_boundary(goal.observation, state)?;
         validate_state(state)?;
-        let start = [command.upper_positions[11], command.upper_positions[12]];
+        let joint_count = if goal.bounded_thumb_targets_rad.is_some() {
+            4
+        } else {
+            2
+        };
+        let start = THUMB_JOINTS.map(|joint| command.upper_positions[joint - 15]);
+        let targets = goal.bounded_thumb_targets_rad.unwrap_or([
+            LEFT_THUMB_CLEARANCE_TARGETS[0],
+            LEFT_THUMB_CLEARANCE_TARGETS[1],
+            0.,
+            0.,
+        ]);
         if command.navigation != [0.; 3]
-            || start.iter().any(|q| q.abs() > 0.01)
-            || state.joint_positions[26..28].iter().any(|q| q.abs() > 0.02)
+            || start[..joint_count].iter().any(|q| q.abs() > 0.01)
+            || THUMB_JOINTS[..joint_count]
+                .iter()
+                .any(|joint| state.joint_positions[*joint].abs() > 0.02)
         {
             return Err(invalid(
                 "thumb preparation needs stationary original near-zero fingers",
@@ -69,6 +99,8 @@ impl MobileThumbPreparation {
             goal,
             command,
             start,
+            targets,
+            joint_count,
             ticks: 0,
             next_tick: state.source_tick,
             completed: false,
@@ -93,18 +125,16 @@ impl MobileThumbPreparation {
                 "foreign/repeated/completed thumb preparation state",
             ));
         }
-        let error = (0..2)
-            .map(|slot| {
-                (state.joint_positions[26 + slot] - LEFT_THUMB_CLEARANCE_TARGETS[slot]).abs()
-            })
+        let error = (0..self.joint_count)
+            .map(|slot| (state.joint_positions[THUMB_JOINTS[slot]] - self.targets[slot]).abs())
             .fold(0., f32::max);
         if self.ticks == 99 && error > 0.02 {
             return Err(invalid("thumb motor tracking failed; pause before release"));
         }
         self.ticks += 1;
         let fraction = (self.ticks as f32 / 50.).min(1.);
-        for (slot, target) in LEFT_THUMB_CLEARANCE_TARGETS.iter().enumerate() {
-            self.command.upper_positions[11 + slot] =
+        for (slot, target) in self.targets[..self.joint_count].iter().enumerate() {
+            self.command.upper_positions[THUMB_JOINTS[slot] - 15] =
                 self.start[slot] + (target - self.start[slot]) * fraction;
         }
         self.completed = self.ticks == 100;
@@ -152,6 +182,7 @@ mod tests {
     }
     fn goal() -> MobileThumbGoal {
         MobileThumbGoal {
+            bounded_thumb_targets_rad: None,
             observation: ObservationStamp {
                 episode_id: 1,
                 frame_id: 1,
@@ -201,5 +232,64 @@ mod tests {
         }
         assert!(p.completed());
         assert!(p.update(&state(100)).is_err());
+    }
+    #[test]
+    fn bounded_both_hand_goal_drives_only_four_motors_and_checks_right_tracking() {
+        let targets = [0.136_114_98, -0.25, 0.062_134_184, 0.181_736_25];
+        let mut value = serde_json::to_value(goal()).unwrap();
+        value["bounded_thumb_targets_rad"] = serde_json::json!(targets);
+        let bounded: MobileThumbGoal = serde_json::from_value(value).unwrap();
+        let command = G1Command::default();
+        let mut preparation =
+            MobileThumbPreparation::new(bounded, &state(0), command.clone()).unwrap();
+        let first = preparation.update(&state(0)).unwrap();
+        for slot in 0..28 {
+            if let Some(i) = [11, 12, 25, 26].iter().position(|index| *index == slot) {
+                assert!((first.command.upper_positions[slot] - targets[i] / 50.).abs() < 1e-8);
+            } else {
+                assert_eq!(
+                    first.command.upper_positions[slot],
+                    command.upper_positions[slot]
+                );
+            }
+        }
+        for tick in 1..99 {
+            preparation.update(&state(tick)).unwrap();
+        }
+        let mut measured = state(99);
+        measured.joint_positions[26..28].copy_from_slice(&targets[..2]);
+        assert!(preparation.update(&measured).is_err());
+        measured.joint_positions[40..42].copy_from_slice(&targets[2..]);
+        let completed = preparation.update(&measured).unwrap();
+        assert!(completed.completed && completed.fresh_release_observation_required);
+        assert!(preparation.update(&state(100)).is_err());
+    }
+    #[test]
+    fn bounded_targets_require_original_range_and_near_zero_right_fingers() {
+        assert!(
+            serde_json::to_value(goal())
+                .unwrap()
+                .get("bounded_thumb_targets_rad")
+                .is_none()
+        );
+        for unsafe_angle in [0.251, -0.251, f32::NAN, f32::INFINITY] {
+            let mut g = goal();
+            g.bounded_thumb_targets_rad = Some([0., 0., unsafe_angle, 0.]);
+            assert!(g.validate().is_err());
+        }
+        let mut g = goal();
+        g.bounded_thumb_targets_rad = Some([0., -0.25, 0.06, 0.18]);
+        let mut s = state(0);
+        s.joint_positions[40] = 0.021;
+        assert!(MobileThumbPreparation::new(g.clone(), &s, G1Command::default()).is_err());
+        let mut command = G1Command::default();
+        command.upper_positions[26] = 0.011;
+        assert!(MobileThumbPreparation::new(g, &state(0), command.clone()).is_err());
+        // The previously admitted profile still touches only the left fingers.
+        let mut legacy = MobileThumbPreparation::new(goal(), &s, command.clone()).unwrap();
+        assert_eq!(
+            legacy.update(&s).unwrap().command.upper_positions[26],
+            command.upper_positions[26]
+        );
     }
 }

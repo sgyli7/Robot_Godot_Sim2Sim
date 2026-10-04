@@ -347,6 +347,7 @@ fn saved_blocked_bin_stop(
         let state = owner.measurement().map_err(|e| e.to_string())?;
         let mut thumb = MobileThumbPreparation::new(
             MobileThumbGoal {
+                bounded_thumb_targets_rad: None,
                 observation: ObservationStamp {
                     episode_id: state.episode_id,
                     frame_id: 90,
