@@ -190,7 +190,7 @@ def rebind_rows(contact: ContactBuffers, count: wp.array[int],
 
 
 class FrozenContactAdapter:
-    def __init__(self, model, data, cpu_model, contract):
+    def __init__(self, model, data, cpu_model, contract, *, entity_prefix=""):
         if (contract['runtime_revision'] != 'goose_task_proxy_be_contact_v1'
                 or contract['contact_mapping']['method'] != 'whole_sole_native_manifold_backward_euler_v1'
                 or cpu_model.opt.timestep != .02 or cpu_model.opt.cone != mujoco.mjtCone.mjCONE_ELLIPTIC):
@@ -203,8 +203,8 @@ class FrozenContactAdapter:
         self.model, self.data = model, data
         self.device = data.qpos.device
         self.ground = cpu_model.geom('ground').id
-        self.feet = wp.array([cpu_model.geom(p['geom']).id for p in patches], dtype=int, device=self.device)
-        self.bodies = wp.array([cpu_model.body(p['body']).id for p in patches], dtype=int, device=self.device)
+        self.feet = wp.array([cpu_model.geom(entity_prefix+p['geom']).id for p in patches], dtype=int, device=self.device)
+        self.bodies = wp.array([cpu_model.body(entity_prefix+p['body']).id for p in patches], dtype=int, device=self.device)
         self.corners = wp.array(np.array([p['bottom_corners_body_m'] for p in patches]), dtype=wp.vec3, device=self.device)
         self.scratch = dataclasses.replace(data.contact, **{
             f.name: wp.zeros_like(getattr(data.contact, f.name)) for f in dataclasses.fields(data.contact)})

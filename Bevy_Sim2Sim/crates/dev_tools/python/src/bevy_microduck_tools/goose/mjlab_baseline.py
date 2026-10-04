@@ -9,6 +9,7 @@ import copy
 import importlib.metadata
 import json
 from pathlib import Path
+import shutil
 import sys
 import xml.etree.ElementTree as ET
 
@@ -16,6 +17,8 @@ from .artifacts import CANDIDATES, DT, JOINT_ORDER, sha256, write_json
 
 CANDIDATE = "goose_460_condensed_mjlab50_reference_v1"
 EULER_CANDIDATE = "goose_task_collision_condensed_connect50_euler_reference_v1"
+TASK_PROXY_CANDIDATE = "goose_task_proxy_11_mjw_contact_v1"
+TASK_PROXY_ADAPTER_REVISION = "goose_task_proxy_mjw_contact_adapter_v1"
 NATIVE_PARENTS = {
     CANDIDATES[1]: CANDIDATE,
     "goose_task_collision_v1_condensed50":
@@ -91,6 +94,65 @@ def build_reference(parent_model: Path, parent_contract: Path, destination: Path
     return path, destination / "contract.json"
 
 
+def build_task_proxy_reference(parent_model: Path, parent_contract: Path, source_root: Path,
+                               destination: Path):
+    """Freeze the independently checked 004 -> Warp compatibility candidate.
+
+    MULTICCD is disabled; the explicit four-point/contact-row adapter remains
+    mandatory. This exporter never grants source or learned-policy admission.
+    """
+    require_upstream_stack()
+    contract = _read_native_contract(parent_model, parent_contract)
+    if (contract.get("schema") != "goose_task_proxy_si_v1"
+            or contract.get("candidate") != "goose_task_proxy_11_v1"
+            or contract.get("runtime_revision") != "goose_task_proxy_be_contact_v1"
+            or contract.get("contact_mapping", {}).get("method") != "whole_sole_native_manifold_backward_euler_v1"):
+        raise ValueError("Frozen task-proxy parent required")
+    source_root = source_root.resolve(strict=True)
+    module = source_root / "src/sai_agent/goose/stage_one_gravity.py"
+    if sha256(module) != contract["source_module_sha256"][module.name]:
+        raise ValueError("Task-proxy nominal gravity module identity mismatch")
+    for relative, digest in contract["asset_sha256"].items():
+        asset = (parent_model.parent / relative).resolve(strict=True)
+        if not asset.is_relative_to(parent_model.parent.resolve()) or sha256(asset) != digest:
+            raise ValueError("Task-proxy asset identity mismatch")
+    if destination.exists():
+        raise FileExistsError("Preserve the previous task-proxy candidate")
+    tree = ET.parse(parent_model)
+    root = tree.getroot()
+    root.set("model", TASK_PROXY_CANDIDATE)
+    option = root.find("option")
+    if option.get("integrator") != "Euler" or option.get("timestep") != "0.02":
+        raise ValueError("Task-proxy Euler/50Hz identity changed")
+    flag = option.find("flag")
+    if flag is None:
+        flag = ET.SubElement(option, "flag")
+    flag.set("multiccd", "disable")
+    flag.attrib.pop("autoreset", None)  # Warp has no implicit numerical reset.
+    destination.mkdir(parents=True)
+    for relative in contract["asset_sha256"]:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(parent_model.parent / relative, target)
+    model_path = destination / "robot.xml"
+    tree.write(model_path, encoding="unicode")
+    contract = copy.deepcopy(contract)
+    contract.update(candidate=TASK_PROXY_CANDIDATE, integrator="Euler", model_sha256=sha256(model_path),
+        status="GPU_CONTACT_DEVELOPMENT_CANDIDATE", training_release=False, optimizer_updates=0,
+        source_checkpoint={"source_root": str(source_root),
+            "source_module_sha256": {"src/sai_agent/goose/stage_one_gravity.py": sha256(module)}},
+        upstream_baseline={"versions": VERSIONS, "parent_candidate": "goose_task_proxy_11_v1",
+            "parent_model_sha256": sha256(parent_model), "parent_contract_sha256": sha256(parent_contract),
+            "contact_adapter_revision": TASK_PROXY_ADAPTER_REVISION,
+            "contact_adapter_required": True, "decimation": 1,
+            "option_changes": ["MULTICCD disabled", "C-only autoreset guard omitted"],
+            "source_qualified": False, "target_qualified": False,
+            "external_nonfinite_abort_required": True})
+    contract_path = destination / "contract.json"
+    write_json(contract_path, contract)
+    return model_path, contract_path
+
+
 def make_entity_cfg(model_path: Path, contract_path: Path):
     """Wrap native XML motors as efforts; the Goose target controller is separate."""
     require_upstream_stack()
@@ -99,7 +161,8 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
     contract = _read_native_contract(model_path, contract_path)
-    is_euler = contract["candidate"] == EULER_CANDIDATE
+    is_proxy = contract["candidate"] == TASK_PROXY_CANDIDATE
+    is_euler = contract["candidate"] == EULER_CANDIDATE or is_proxy
     expected_integrator = "Euler" if is_euler else "implicitfast"
     if (not is_euler and contract["candidate"] not in NATIVE_PARENTS.values()
             or contract["integrator"] != expected_integrator):
@@ -111,7 +174,16 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
                      else mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
     if model.opt.integrator != expected_enum:
         raise ValueError("Compiled native integration profile differs from its contract")
-    if is_euler:
+    if is_proxy:
+        baseline = contract.get("upstream_baseline", {})
+        if (baseline.get("contact_adapter_revision") != TASK_PROXY_ADAPTER_REVISION
+                or baseline.get("contact_adapter_required") is not True
+                or contract.get("runtime_revision") != "goose_task_proxy_be_contact_v1"
+                or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+                or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
+                or model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_DAMPER)):
+            raise ValueError("Task-proxy contact adapter/integration profile changed")
+    elif is_euler:
         flow = contract.get("native_integration_flow", {})
         required = {"revision": "goose_native_euler_eulerdamp_disabled_v1",
                     "dt_s": DT, "decimation": 1, "integrations_per_tick": 1,

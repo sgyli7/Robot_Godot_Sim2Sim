@@ -25,7 +25,8 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 
 from .artifacts import DT, JOINT_ORDER, sha256
 from .batch_drive import BatchedGooseDrive
-from .mjlab_baseline import _read_native_contract, make_entity_cfg, require_upstream_stack
+from .mjlab_baseline import (
+    TASK_PROXY_CANDIDATE, _read_native_contract, make_entity_cfg, require_upstream_stack)
 
 REVISION = "goose_mjlab_development_env_v1"
 
@@ -114,6 +115,8 @@ class GooseAction(ActionTerm):
             raise RuntimeError("Goose Tick must contain exactly one actual 20ms integration")
         if bool((d.nefc >= wp_data.njmax).any()) or int(d.nacon[0]) >= wp_data.naconmax:
             raise RuntimeError("Goose constraint/contact capacity exhausted; no reset")
+        if adapter := self._env.contact_adapter:
+            adapter.assert_valid()
         return (d.time-self._before_time-DT).abs()
 
     def commit_after_step(self):
@@ -170,7 +173,26 @@ class GooseDevelopmentEnv(ManagerBasedRlEnv):
                     "eulerdamp" not in cfg.sim.mujoco.disableflags
                     or "damper" in cfg.sim.mujoco.disableflags)):
             raise ValueError("Goose development integration profile changed")
+        self.contact_adapter = None
         super().__init__(cfg, device, **kwargs)
+        if contract["candidate"] == TASK_PROXY_CANDIDATE:
+            from .task_proxy_contact import FrozenContactAdapter
+            import warp as wp
+
+            if self.sim.wp_model.callback.control is not None:
+                raise ValueError("Task-proxy contact seam already occupied")
+            with wp.ScopedDevice(self.sim.wp_device):
+                self.contact_adapter = FrozenContactAdapter(self.sim.wp_model, self.sim.wp_data,
+                    self.sim.mj_model, contract, entity_prefix=action.entity_name+"/")
+                self.sim.wp_model.callback.control = self._apply_task_proxy_contact
+                # Public mjlab graphs must capture the new public Warp callback.
+                self.sim.create_graph()
+
+    def _apply_task_proxy_contact(self, model, data):
+        """Native forward/step1 contact seam; no torque update or integration."""
+        if model is not self.sim.wp_model or data is not self.sim.wp_data:
+            raise RuntimeError("Unexpected task-proxy contact callback world")
+        self.contact_adapter.apply()
 
     def reset(self, **kwargs):
         action = self.action_manager.get_term("goose")
