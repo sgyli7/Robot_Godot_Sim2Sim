@@ -3849,10 +3849,7 @@ fn drive_auxiliary_fine_approach(
         return Ok(false);
     }
     let directory = if assist.height_recovery.used() {
-        format!(
-            "visual_fine_after_height_recovery_{:02}",
-            assist.fine_goals_submitted + 1
-        )
+        mobile_height_recovery::reobservation_directory(assist.fine_goals_submitted)
     } else if assist.fine_goals_submitted == 0 {
         "visual_fine_approach".to_string()
     } else {
@@ -4730,11 +4727,7 @@ fn capture_current_marker_pair(
     port: &G1CameraPort,
     stage: &str,
 ) -> Result<Option<(ObservationStamp, [f32; 4])>, String> {
-    if !(stage == "visual_approach"
-        || stage.starts_with("visual_fine_approach")
-        || stage == "visual_release_alignment"
-        || stage == "visual_release_alignment_after_thumb")
-    {
+    if !allowed_mobile_box_pair_stage(stage) {
         return Err("box pair is limited to current auxiliary approach/release boundaries".into());
     }
     let assist = runtime
@@ -4786,6 +4779,14 @@ fn capture_current_marker_pair(
     });
     runtime.requested = false;
     Ok(None)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn allowed_mobile_box_pair_stage(stage: &str) -> bool {
+    stage == "visual_approach"
+        || stage.starts_with("visual_fine_approach")
+        || stage == "visual_release_alignment"
+        || stage == "visual_release_alignment_after_thumb"
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]

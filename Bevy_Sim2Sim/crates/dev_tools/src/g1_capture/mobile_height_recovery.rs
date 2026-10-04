@@ -14,6 +14,13 @@ pub(super) struct Recovery {
     completed: bool,
 }
 
+pub(super) fn reobservation_directory(fine_goals_submitted: u32) -> String {
+    format!(
+        "visual_fine_approach_after_height_recovery_{:02}",
+        fine_goals_submitted + 1
+    )
+}
+
 impl Recovery {
     pub fn pending(&self) -> bool {
         self.goal.is_some() && !self.completed
@@ -195,6 +202,21 @@ pub(super) fn await_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_height_recovery_routes_to_the_existing_paired_capture_stage() {
+        for segment in 0..=5 {
+            let path = reobservation_directory(segment);
+            assert!(super::super::allowed_mobile_box_pair_stage(&path));
+            assert_ne!(path, "visual_fine_approach");
+            assert!(!path.contains('/'));
+        }
+        assert!(!super::super::allowed_mobile_box_pair_stage(
+            "visual_fine_after_height_recovery_01"
+        ));
+        assert!(!super::super::allowed_mobile_box_pair_stage(
+            "station_held_transport"
+        ));
+    }
     fn fixture() -> (serde_json::Value, ObservationStamp) {
         let observation = ObservationStamp {
             episode_id: 1,
