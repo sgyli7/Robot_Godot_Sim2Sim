@@ -10,7 +10,8 @@ from bevy_microduck_tools.goose.mjlab_baseline import build_task_proxy_reference
 from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv
 from bevy_microduck_tools.goose.source_training import (
     GooseRslEnv, completed_root_state, fallen, make_low_speed_cfg,
-    make_runner_cfg, make_standing_cfg, initialize_velocity_transfer)
+    make_runner_cfg, make_standing_cfg, initialize_velocity_transfer,
+    make_asymmetric_low_speed_cfg)
 
 
 def build_environment(tmp_path, monkeypatch, config_factory):
@@ -37,6 +38,13 @@ def environment(tmp_path, monkeypatch):
 @pytest.fixture
 def low_speed_environment(tmp_path, monkeypatch):
     env = build_environment(tmp_path, monkeypatch, make_low_speed_cfg)
+    yield env
+    env.close()
+
+
+@pytest.fixture
+def asymmetric_environment(tmp_path, monkeypatch):
+    env = build_environment(tmp_path, monkeypatch, make_asymmetric_low_speed_cfg)
     yield env
     env.close()
 
@@ -89,6 +97,45 @@ def test_fall_termination_reads_integrated_quaternion(environment):
     environment.sim.data.qpos[0,term.root_q+3:term.root_q+7] = torch.tensor([.9238795,0.,.3826834,0.])
     assert fallen(environment).tolist() == [True,False]
     assert wrapper.real_integrations == 0
+
+
+def test_privileged_motion_does_not_enter_actor(asymmetric_environment):
+    env = asymmetric_environment
+    wrapper = GooseRslEnv(env)
+    term = env.action_manager.get_term("goose")
+    command = env.command_manager.get_term("velocity")
+    command.vel_command_b[:] = torch.tensor([.05,0.,0.])
+    command.is_standing_env[:] = False
+    # Diagnostic pair only: no training or reset velocity assistance.
+    env.sim.data.qvel[1,term.root_v] = .05
+    obs = env.observation_manager.compute(update_history=True)
+    assert obs["actor"].shape == (2,65) and obs["critic"].shape == (2,69)
+    torch.testing.assert_close(obs["actor"][0],obs["actor"][1],atol=0,rtol=0)
+    torch.testing.assert_close(obs["critic"][:,:65],obs["actor"],atol=0,rtol=0)
+    assert abs(float(obs["critic"][1,65]-obs["critic"][0,65])-.05)<1e-7
+    assert wrapper.real_integrations == 0
+
+
+def test_native_ppo_with_asymmetric_critic(asymmetric_environment):
+    env = asymmetric_environment
+    wrapper = GooseRslEnv(env)
+    cfg = make_runner_cfg(critic_group="critic")
+    cfg["num_steps_per_env"] = 4
+    cfg["algorithm"].update(num_learning_epochs=1,num_mini_batches=2)
+    runner = MjlabOnPolicyRunner(wrapper,cfg,log_dir=None,device="cpu")
+    checkpoint = os.environ.get("GOOSE_MOTION_CHECKPOINT") or os.environ.get("GOOSE_STANDING_CHECKPOINT")
+    if checkpoint:
+        # Supported upstream fine-tune: keep Actor, start value/optimizer fresh.
+        runner.load(checkpoint,load_cfg={"actor":True,"critic":False,
+            "optimizer":False,"iteration":False},strict=True,map_location="cpu")
+        if not runner.alg.actor.obs_normalizer._var[...,6:9].any():
+            initialize_velocity_transfer(runner,env.cfg.commands["velocity"],initialize_critic=False)
+    before = {k:v.clone() for k,v in runner.alg.actor.named_parameters()}
+    runner.learn(1)
+    assert runner.alg.actor.obs_dim == 65 and runner.alg.critic.obs_dim == 69
+    assert wrapper.real_integrations == 8
+    assert any(not torch.equal(before[k],v) for k,v in runner.alg.actor.named_parameters())
+    assert all(torch.isfinite(v).all() for v in runner.alg.critic.parameters())
 
 
 def test_commands_do_not_write_root_state(low_speed_environment):

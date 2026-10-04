@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.rl.config import (
     RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg)
@@ -20,6 +21,7 @@ from .mjlab_env import actor_observation, make_development_env_cfg
 REVISION = "goose_flat_standing_ppo_v1"
 VELOCITY_REVISION = "goose_flat_low_speed_ppo_v1"
 VELOCITY_TRANSFER_REVISION = "goose_standing_to_velocity_transfer_v1"
+ASYMMETRIC_REVISION = "goose_low_speed_asymmetric_ppo_v1"
 
 
 def completed_root_state(env):
@@ -148,7 +150,22 @@ def make_low_speed_cfg(model_path: Path, contract_path: Path, *, num_envs=16,
     return cfg
 
 
-def initialize_velocity_transfer(runner, command_cfg):
+def critic_motion_state(env):
+    """Four true-state values for training value estimates, never the Actor."""
+    position, _, velocity, _ = completed_root_state(env)
+    return torch.cat((velocity, position[:, 2:3]), dim=-1).float()
+
+
+def make_asymmetric_low_speed_cfg(model_path: Path, contract_path: Path, **kwargs):
+    cfg = make_low_speed_cfg(model_path, contract_path, **kwargs)
+    cfg.observations["critic"] = ObservationGroupCfg(terms={
+        "base": ObservationTermCfg(func=commanded_observation),
+        "motion": ObservationTermCfg(func=critic_motion_state)},
+        enable_corruption=False, concatenate_terms=True)
+    return cfg
+
+
+def initialize_velocity_transfer(runner, command_cfg, *, initialize_critic=True):
     """Initialize only previously unused goal inputs of a standing policy.
 
     The standing checkpoint saw zero commands exclusively. Its random input
@@ -164,7 +181,8 @@ def initialize_velocity_transfer(runner, command_cfg):
     means = [nonstanding*(low+high)/2 for low, high in intervals]
     variances = [nonstanding*((high-low)**2/12+((low+high)/2)**2)-mean**2
                  for (low, high), mean in zip(intervals, means)]
-    models = (runner.alg.actor, runner.alg.critic)
+    models = ((runner.alg.actor, runner.alg.critic) if initialize_critic
+              else (runner.alg.actor,))
     for model in models:
         if model.mlp[0].in_features != 65:
             raise ValueError("Standing transfer requires the original 65-value input")
@@ -223,10 +241,10 @@ class GooseRslEnv(RslRlVecEnvWrapper):
         return observations.to(dtype=torch.float32), rewards.float(), dones, extras
 
 
-def make_runner_cfg(*, seed=41):
+def make_runner_cfg(*, seed=41, critic_group="actor"):
     cfg = RslRlOnPolicyRunnerCfg(
         seed=seed, num_steps_per_env=24, max_iterations=1500,
-        obs_groups={"actor": ("actor",), "critic": ("actor",)},
+        obs_groups={"actor": ("actor",), "critic": (critic_group,)},
         actor=RslRlModelCfg(hidden_dims=(128, 128), obs_normalization=True,
             distribution_cfg={"class_name": "GaussianDistribution", "init_std": .03,
                               "std_type": "log"}),
