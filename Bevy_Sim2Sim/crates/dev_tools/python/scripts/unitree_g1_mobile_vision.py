@@ -95,6 +95,115 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def fit_current_box_camera_pair(pixels_by_view, intrinsics, cameras_in_root, marker_size):
+    """Fit both planar candidates to two current, fixed-baseline RGB views.
+
+    Only measured corners, pinhole calibration and self FK enter the solve.
+    Each candidate gets at most fifty evaluations; image residual chooses it.
+    """
+    from scipy.optimize import least_squares
+
+    pixels = np.asarray(pixels_by_view, dtype=np.float64)
+    cameras = np.asarray(cameras_in_root, dtype=np.float64)
+    if (pixels.shape != (2, 4, 2) or cameras.shape != (2, 4, 4)
+            or not np.isfinite(pixels).all() or not np.isfinite(cameras).all()
+            or not np.isfinite(intrinsics).all() or marker_size != .06
+            or (pixels < 0).any() or (pixels >= [640., 480.]).any()
+            or abs(np.linalg.norm(cameras[0, :3, 3]-cameras[1, :3, 3])-.08) > 1e-7):
+        raise ValueError("box pair requires current in-frame corners and the published8cm baseline")
+    for camera in cameras:
+        if (not np.allclose(camera[3], [0, 0, 0, 1], atol=1e-8, rtol=0)
+                or not np.allclose(camera[:3, :3].T@camera[:3, :3], np.eye(3), atol=1e-6, rtol=0)
+                or abs(np.linalg.det(camera[:3, :3])-1) > 1e-6):
+            raise ValueError("invalid self FK camera transform")
+    edges = np.linalg.norm(pixels-np.roll(pixels, -1, axis=1), axis=2).min(axis=1)
+    if edges.min() < 8:
+        raise ValueError("box pair fails the unchanged8px marker edge gate")
+    h = marker_size / 2
+    points = np.array([[-h,h,0], [h,h,0], [h,-h,0], [-h,-h,0]])
+    ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(points, pixels[0], intrinsics, None,
+                                             flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    if not ok or not 1 <= len(rvecs) <= 2:
+        raise ValueError("no finite current primary IPPE candidates")
+    inverse_cameras = np.linalg.inv(cameras)
+
+    def pose(parameters):
+        m = np.eye(4)
+        m[:3, :3], m[:3, 3] = cv2.Rodrigues(parameters[:3])[0], parameters[3:]
+        return m
+
+    def residual(parameters):
+        projected = []
+        root_pose = pose(parameters)
+        for camera in inverse_cameras:
+            m = camera @ root_pose
+            projected.append(cv2.projectPoints(points, cv2.Rodrigues(m[:3, :3])[0],
+                                                m[:3, 3], intrinsics, None)[0].reshape(4, 2))
+        return (np.asarray(projected)-pixels).ravel()
+
+    candidates, evaluations = [], []
+    for index, (rvec, tvec) in enumerate(zip(rvecs, tvecs)):
+        seed = np.eye(4)
+        seed[:3, :3], seed[:3, 3] = cv2.Rodrigues(rvec)[0], tvec.ravel()
+        seed = cameras[0] @ seed
+        parameters = np.r_[cv2.Rodrigues(seed[:3, :3])[0].ravel(), seed[:3, 3]]
+        fit = least_squares(residual, parameters, max_nfev=50,
+                            ftol=1e-10, xtol=1e-10, gtol=1e-10)
+        evaluations.append(int(fit.nfev))
+        root_pose = pose(fit.x)
+        errors = np.sqrt(np.mean(np.sum(residual(fit.x).reshape(2, 4, 2)**2, axis=2), axis=1))
+        valid = bool(fit.success and np.isfinite(root_pose).all() and np.isfinite(errors).all()
+                     and errors.max() <= 1.)
+        for camera in inverse_cameras:
+            m = camera @ root_pose
+            camera_points = points @ m[:3, :3].T + m[:3, 3]
+            valid = valid and bool(camera_points[:, 2].min() > .1
+                                   and camera_points[:, 2].max() < 5.
+                                   and float(m[:3, 2] @ camera_points.mean(axis=0)) < 0)
+        if valid:
+            candidates.append((float(fit.fun@fit.fun), index, root_pose, errors))
+    if not candidates:
+        raise ValueError("box pair failed unchanged residual, depth or front-face gate")
+    _, index, root_pose, errors = min(candidates, key=lambda item: item[0])
+    return {"schema": "g1_actual_rgb_same_tick_box_pair_pose_v1", "marker_id": 22,
+            "corners_px": pixels.tolist(), "minimum_edges_px": edges.tolist(),
+            "per_view_reprojection_rms_px": errors.tolist(), "root_from_marker": root_pose.tolist(),
+            "camera_baseline_m": float(np.linalg.norm(cameras[0, :3, 3]-cameras[1, :3, 3])),
+            "candidate_fit_evaluations": evaluations, "selected_candidate": index,
+            "solver": "two_IPPE_seeds_bounded50_joint_camera_fit", "upright_prior_used": False,
+            "world_or_contact_truth_input": False, "task_qualified": False}
+
+
+def validate_mobile_box_pair_observations(first, second):
+    """No tolerance on native f32 sensors, episode or simulation time."""
+    allowed = {"schema", "stamp", "camera", "measured_joints", "camera_mount_profile"}
+    profiles = {"auxiliary_grip_overview", "auxiliary_bin_placement"}
+    keys = {"episode_id", "frame_id", "sim_time_ns", "captured_at_unix_ms"}
+    if (set(first) != allowed or set(second) != allowed
+            or first["schema"] != "g1_mobile_marker_observation_v1"
+            or second["schema"] != first["schema"] or first["camera"] != second["camera"]
+            or {first["camera_mount_profile"], second["camera_mount_profile"]} != profiles
+            or set(first["stamp"]) != keys or set(second["stamp"]) != keys):
+        raise ValueError("box pair requires only its two published camera/self schemas")
+    a, b = first["stamp"], second["stamp"]
+    if (any(type(v) is not int or v <= 0 for stamp in (a, b) for v in stamp.values())
+            or a["episode_id"] != b["episode_id"] or a["sim_time_ns"] != b["sim_time_ns"]
+            or a["sim_time_ns"] % 20_000_000 or a["frame_id"] >= b["frame_id"]
+            or not 0 < b["captured_at_unix_ms"]-a["captured_at_unix_ms"] <= 2000):
+        raise ValueError("box pair changed episode/Tick or exceeded its2s capture budget")
+    lengths = {"positions": 43, "velocities": 43, "root_rotation_wxyz": 4,
+               "root_angular_velocity_body": 3, "root_velocity_source": 3}
+    for observation in (first, second):
+        if set(observation["measured_joints"]) != set(lengths):
+            raise ValueError("box pair has foreign self fields")
+    for key, length in lengths.items():
+        a = np.asarray(first["measured_joints"][key], dtype=np.float32)
+        b = np.asarray(second["measured_joints"][key], dtype=np.float32)
+        if (a.shape != (length,) or b.shape != a.shape or not np.isfinite(a).all()
+                or not np.isfinite(b).all() or not np.array_equal(a.view(np.uint32), b.view(np.uint32))):
+            raise ValueError("box pair changed native self-sensor bits")
+
+
 class PinnedPublicVisionAssets:
     """One preparation-time copy of public calibration, never observations.
 
@@ -573,7 +682,7 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             "heading_yaw_source_rad": heading, "relative_distance_m": .1}}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None):
     if box_view_only and (geometry_path is not None or memory_path is not None):
         raise ValueError("current box view cannot request navigation geometry or target memory")
     if Path(image_path).stat().st_size > 16 * 1024 * 1024 or Path(observation_path).stat().st_size > 128 * 1024:
@@ -615,6 +724,39 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
     detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), parameters)
     corners, ids, rejected = detector.detectMarkers(image)
+    box_pair = None
+    if secondary_image_path is not None or secondary_observation_path is not None:
+        if (secondary_image_path is None or secondary_observation_path is None
+                or box_view_only or memory_path is not None or geometry_path is None
+                or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE)):
+            raise ValueError("box pair requires its explicit auxiliary geometry mode")
+        parent = Path(observation_path).resolve(strict=True).parent
+        for path, expected, limit in ((secondary_image_path, parent/"secondary"/"ego.png", 16*1024*1024),
+                                      (secondary_observation_path, parent/"secondary"/"observation.json", 128*1024)):
+            path = Path(path)
+            if (path.is_symlink() or path.parent.is_symlink() or not path.is_file()
+                    or path.resolve(strict=True) != expected or path.stat().st_size > limit):
+                raise ValueError("box pair secondary input is outside its owned finite capture directory")
+        secondary = json.loads(Path(secondary_observation_path).read_text())
+        validate_mobile_box_pair_observations(observation, secondary)
+        other_image = cv2.imread(str(secondary_image_path), cv2.IMREAD_COLOR)
+        if other_image is None or other_image.shape != (480, 640, 3):
+            raise ValueError("box pair secondary image requires640x480RGB")
+        other_corners, other_ids, _ = detector.detectMarkers(other_image)
+        pixels = []
+        for cs, identities in ((corners, ids), (other_corners, other_ids)):
+            found = [c.reshape(4, 2).astype(np.float64) for c, identity in
+                     zip(cs, [] if identities is None else identities.flatten()) if int(identity) == 22]
+            if len(found) != 1:
+                raise ValueError("box pair requires exactly one current22label in each image")
+            pixels.append(found[0])
+        other_camera = root_from_camera(definition, secondary["measured_joints"]["positions"],
+                                        secondary["camera_mount_profile"])
+        box_pair = fit_current_box_camera_pair(pixels, intrinsics, [camera_in_root, other_camera], marker_sizes[22])
+        box_pair.update({"observations": [stamp, secondary["stamp"]],
+                         "image_sha256": [sha(image_path), sha(secondary_image_path)],
+                         "input_sha256": [sha(observation_path), sha(secondary_observation_path)],
+                         "camera_mount_profiles": [camera_profile, secondary["camera_mount_profile"]]})
     board = None
     if layout_profile == BIN_BOARD_PROFILE and not box_view_only:
         board_pixels = {}
@@ -653,6 +795,9 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         if error > 1.0:
             continue
         marker_in_root = camera_in_root @ camera_from_marker
+        if box_pair is not None and marker_id == 22:
+            marker_in_root = np.asarray(box_pair["root_from_marker"])
+            error = box_pair["per_view_reprojection_rms_px"][0]
         if board is not None and marker_id == 21:
             marker_in_root = np.asarray(board["root_from_marker"])
             error = board["per_marker_reprojection_rms_px"][0]
@@ -723,6 +868,8 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["camera_mount_profile"] = camera_profile
     if board is not None:
         result["public_bin_board_pose"] = board
+    if box_pair is not None:
+        result["same_tick_box_pair_pose"] = box_pair
     if memory_estimate is not None:
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory
@@ -751,8 +898,11 @@ def main():
     parser.add_argument("--box-view-only", action="store_true")
     parser.add_argument("--fiducials", type=Path)
     parser.add_argument("--placement-view-only", action="store_true")
+    parser.add_argument("--secondary-image", type=Path)
+    parser.add_argument("--secondary-observation", type=Path)
     args = parser.parse_args()
-    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials, args.placement_view_only)
+    result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials, args.placement_view_only,
+                      secondary_image_path=args.secondary_image, secondary_observation_path=args.secondary_observation)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

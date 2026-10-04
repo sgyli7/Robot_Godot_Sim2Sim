@@ -23,6 +23,9 @@ pub(super) struct MarkerVisionConfiguration {
     pub fiducial_calibration: Option<MarkerTaskGeometry>,
     #[serde(default)]
     pub persistent_worker: Option<MarkerPersistentProgram>,
+    /// Explicit experimental pair of the two published auxiliary head views.
+    #[serde(default)]
+    pub same_tick_box_pair: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -51,6 +54,13 @@ fn digest(path: &Path, maximum: u64) -> Result<String, String> {
 
 impl MarkerVisionConfiguration {
     pub fn validate(&self) -> Result<(), String> {
+        if self.same_tick_box_pair
+            && (self.task_geometry.is_none()
+                || self.fiducial_calibration.is_none()
+                || self.persistent_worker.is_some())
+        {
+            return Err("box pair requires bound geometry/labels and a finite worker".into());
+        }
         if self.definition_sha256
             != "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8f13bd"
         {
@@ -102,7 +112,11 @@ mod persistent;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub(super) use persistent::PersistentMarkerWorker;
 
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_pair;
 mod static_observation;
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub(crate) use mobile_pair::validate_mobile_pair_inputs;
 mod static_worker;
 pub(crate) use static_observation::{static_observation, validate_fixed_pair};
 pub(crate) use static_worker::{StaticMarkerVisionConfiguration, StaticMarkerWorker};
@@ -395,6 +409,14 @@ mod worker {
                         let camera_profile = input_document["camera_mount_profile"]
                             .as_str()
                             .unwrap_or("arena_ego");
+                        let pair = if config.same_tick_box_pair {
+                            if memory.is_some() || box_view_only {
+                                return Err("box pair cannot use memory or box-only modes".into());
+                            }
+                            Some(super::mobile_pair::read_secondary(&directory, &input_document)?)
+                        } else {
+                            None
+                        };
                         if !(camera_profile == "arena_ego" || auxiliary_camera_profile(camera_profile))
                             || (auxiliary_camera_profile(camera_profile)
                                 && config.fiducial_calibration.is_none())
@@ -446,6 +468,10 @@ mod worker {
                         if let Some(calibration) = &config.fiducial_calibration {
                             command.arg("--fiducials").arg(&calibration.path);
                         }
+                        if pair.is_some() {
+                            command.arg("--secondary-image").arg(directory.join("secondary/ego.png"))
+                                .arg("--secondary-observation").arg(directory.join("secondary/observation.json"));
+                        }
                         let mut child = command
                             .stdin(Stdio::null())
                             .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -496,6 +522,7 @@ mod worker {
                             box_view_only,
                             placement_view_only,
                         )?;
+                        super::mobile_pair::validate_reply(&reply, &input_document, pair.as_ref())?;
                         if config
                             .fiducial_calibration
                             .as_ref()

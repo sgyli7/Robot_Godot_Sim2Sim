@@ -204,6 +204,16 @@ enum MobileAssistStage {
     Scan(MobileScanCaptureConfiguration),
 }
 
+#[cfg(feature = "g1_constraint_diagnostic")]
+struct PendingMobileBoxPair {
+    stage: String,
+    observation: ObservationStamp,
+    rotation: [f32; 4],
+    primary_mount: G1CameraMountProfile,
+    secondary_mount: G1CameraMountProfile,
+    started: Instant,
+}
+
 struct MobileAssistCaptureRuntime {
     scan_only: bool,
     view_with_lowering: bool,
@@ -217,6 +227,12 @@ struct MobileAssistCaptureRuntime {
     station_motion: bool,
     station_hold_submitted: bool,
     station_placement_view_active: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pending_box_pair: Option<PendingMobileBoxPair>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    box_pair_restore_mount: Option<G1CameraMountProfile>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    box_pair_camera_activation_frame: Option<u32>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     submitted_carry_observation: Option<ObservationStamp>,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -260,6 +276,10 @@ struct MobileAssistCaptureRuntime {
 
 impl MobileAssistCaptureRuntime {
     fn camera_mount(&self) -> G1CameraMountProfile {
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(pair) = &self.pending_box_pair {
+            return pair.secondary_mount;
+        }
         if self.station_placement_view_active {
             G1CameraMountProfile::AuxiliaryBinPlacement
         } else if self.auxiliary_view {
@@ -308,6 +328,12 @@ impl MobileAssistCaptureRuntime {
             station_motion,
             station_hold_submitted: false,
             station_placement_view_active: false,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            pending_box_pair: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            box_pair_restore_mount: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            box_pair_camera_activation_frame: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             submitted_carry_observation: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -1575,6 +1601,18 @@ impl CaptureRuntime {
             live.next_boundary_tick = self.startup_ticks;
         }
         self.episode_id = episode_id;
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(assist) = &mut self.mobile_assist {
+            if let Some(pair) = assist.pending_box_pair.take() {
+                assist.box_pair_restore_mount = Some(pair.primary_mount);
+            }
+            assist.box_pair_camera_activation_frame = None;
+            if matches!(&assist.configuration, MobileAssistStage::Scan(c)
+                if c.vision.as_ref().is_some_and(|v| v.same_tick_box_pair))
+            {
+                assist.vision_job.take();
+            }
+        }
         self.startup_submitted = false;
         self.latest = None;
         self.requested = false;
@@ -4620,6 +4658,70 @@ fn capture_current_marker_frame(
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
+fn capture_current_marker_pair(
+    runtime: &mut CaptureRuntime,
+    port: &G1CameraPort,
+    stage: &str,
+) -> Result<Option<(ObservationStamp, [f32; 4])>, String> {
+    if !(stage == "visual_approach"
+        || stage.starts_with("visual_fine_approach")
+        || stage == "visual_release_alignment"
+        || stage == "visual_release_alignment_after_thumb")
+    {
+        return Err("box pair is limited to current auxiliary approach/release boundaries".into());
+    }
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("box pair stage absent")?;
+    if let Some(pair) = &assist.pending_box_pair {
+        if pair.stage != stage || pair.started.elapsed() > Duration::from_secs(2) {
+            return Err("box pair capture stage changed or timed out; owner remains paused".into());
+        }
+        let Some(_) = capture_current_marker_frame(runtime, port, &format!("{stage}/secondary"))?
+        else {
+            return Ok(None);
+        };
+        let directory = runtime.options.output.join(stage);
+        let first = serde_json::from_slice(
+            &fs::read(directory.join("observation.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let second = serde_json::from_slice(
+            &fs::read(directory.join("secondary/observation.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        super::g1_marker_vision::validate_mobile_pair_inputs(&first, &second)?;
+        let assist = runtime.mobile_assist.as_mut().unwrap();
+        let pair = assist.pending_box_pair.take().unwrap();
+        assist.box_pair_restore_mount = Some(pair.primary_mount);
+        runtime.requested = false;
+        return Ok(Some((pair.observation, pair.rotation)));
+    }
+    let primary_mount = assist.camera_mount();
+    let secondary_mount = match primary_mount {
+        G1CameraMountProfile::AuxiliaryGripOverview => G1CameraMountProfile::AuxiliaryBinPlacement,
+        G1CameraMountProfile::AuxiliaryBinPlacement => G1CameraMountProfile::AuxiliaryGripOverview,
+        G1CameraMountProfile::ArenaEgo | G1CameraMountProfile::StaticPlacementOverview => {
+            return Err("box pair cannot change the learned camera or static task profile".into());
+        }
+    };
+    let Some((observation, rotation)) = capture_current_marker_frame(runtime, port, stage)? else {
+        return Ok(None);
+    };
+    runtime.mobile_assist.as_mut().unwrap().pending_box_pair = Some(PendingMobileBoxPair {
+        stage: stage.to_owned(),
+        observation,
+        rotation,
+        primary_mount,
+        secondary_mount,
+        started: Instant::now(),
+    });
+    runtime.requested = false;
+    Ok(None)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
 fn start_marker_job(
     runtime: &mut CaptureRuntime,
     port: &G1CameraPort,
@@ -4633,12 +4735,6 @@ fn start_marker_job(
     if latest.phase != G1WorkerPhase::Paused {
         return Err("marker job requires a stationary completed skill boundary".into());
     }
-    let Some((observation, rotation)) =
-        capture_current_marker_frame(runtime, port, stage_directory)?
-    else {
-        return Ok(());
-    };
-    let directory = runtime.options.output.join(stage_directory);
     let assist = runtime
         .mobile_assist
         .as_ref()
@@ -4650,6 +4746,19 @@ fn start_marker_job(
         .vision
         .clone()
         .ok_or("visual localization worker config absent")?;
+    let captured = if config.same_tick_box_pair {
+        capture_current_marker_pair(runtime, port, stage_directory)?
+    } else {
+        capture_current_marker_frame(runtime, port, stage_directory)?
+    };
+    let Some((observation, rotation)) = captured else {
+        return Ok(());
+    };
+    let directory = runtime.options.output.join(stage_directory);
+    let assist = runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("marker job stage absent")?;
     if matches!(
         stage_directory,
         "visual_release_alignment" | "visual_release_alignment_after_thumb"
@@ -5546,6 +5655,34 @@ fn drive_capture(
                 .reason
                 .clone()
                 .unwrap_or_else(|| "worker failed before publishing a native snapshot".into()));
+        }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        let box_pair_render_frame = runtime.render_frames;
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(assist) = &mut runtime.mobile_assist {
+            let desired = assist
+                .pending_box_pair
+                .as_ref()
+                .map(|pair| pair.secondary_mount)
+                .or(assist.box_pair_restore_mount);
+            if let Some(desired) = desired {
+                if latest.phase != G1WorkerPhase::Paused {
+                    return Err("box pair camera switch requires the same paused owner Tick".into());
+                }
+                if camera_mount.0 != desired {
+                    camera_mount.0 = desired;
+                    assist.box_pair_camera_activation_frame = Some(box_pair_render_frame);
+                    return Ok(());
+                }
+                if assist
+                    .box_pair_camera_activation_frame
+                    .is_some_and(|n| box_pair_render_frame < n + 2)
+                {
+                    return Ok(());
+                }
+                assist.box_pair_camera_activation_frame = None;
+                assist.box_pair_restore_mount = None;
+            }
         }
         #[cfg(feature = "g1_constraint_diagnostic")]
         if runtime
