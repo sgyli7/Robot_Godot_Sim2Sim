@@ -48,6 +48,7 @@ mod static_observed_place;
 mod static_visual_transfer;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod station_carry;
+mod terminal_failure;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
@@ -6460,8 +6461,15 @@ fn drive_capture(
     if let Some(error) = error {
         runtime.worker.pause();
         let mut receipt = outcome.0.lock().unwrap();
-        receipt.failure_reason = Some(error);
-        receipt.final_camera_progress = Some(port.capture_progress());
+        if let Err(reason) = terminal_failure::record(
+            &runtime.options.output,
+            runtime.episode_id,
+            &mut receipt,
+            error,
+            port.capture_progress(),
+        ) {
+            bevy::log::error!("capture failure checkpoint could not be saved: {reason}");
+        }
         exit.write(AppExit::error());
     }
 }
