@@ -1,6 +1,9 @@
 # Native G1 camera diagnostic
 
 This explicit development entry renders the initialized native Homie G1 world.
+The main development window now uses the [URI spectator presentation](g1_uri_presentation.md).
+Sensor RGB retains original source materials and lighting; set
+`G1_URI_PRESENTATION=0` to restore the source main-window view for comparison.
 Its floor matches the runner's 40 × 0.5 × 40 metre floor. It does not load the
 science station and does not qualify standing, grasping or either task.
 

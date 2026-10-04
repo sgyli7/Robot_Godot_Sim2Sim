@@ -2704,6 +2704,9 @@ fn run_capture_owner(
                 .chain()
                 .in_set(CaptureSystems::OwnerSnapshot),
         );
+    if std::env::var("G1_URI_PRESENTATION").as_deref() != Ok("0") {
+        app.add_plugins(rendering_minigame::g1_uri_presentation::G1UriPresentationPlugin);
+    }
     if station.is_some() {
         app.insert_resource(super::g1_station_environment::G1StationSceneActive)
             .insert_resource(rendering_minigame::StationExternalCamera)
@@ -2995,6 +2998,7 @@ fn setup_floor_scene(
     }
     commands.spawn((
         Camera3d::default(),
+        rendering_minigame::g1_uri_presentation::G1PresentationCamera,
         Msaa::Sample8,
         Tonemapping::None,
         Transform::from_xyz(2.1, 1.45, 2.2).looking_at(Vec3::new(0., 0.7, 0.), Vec3::Y),

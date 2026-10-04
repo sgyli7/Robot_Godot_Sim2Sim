@@ -95,8 +95,15 @@ pub fn install_pbr_render_health(app: &mut App) -> Result<StationRenderHealth, S
 
 fn install_render_health(
     app: &mut App,
-    handles: RequiredRenderAssets,
+    mut handles: RequiredRenderAssets,
 ) -> Result<StationRenderHealth, String> {
+    if app.is_plugin_added::<crate::g1_uri_presentation::G1UriPresentationPlugin>() {
+        handles.fragments.push(
+            app.world()
+                .resource::<AssetServer>()
+                .load("game/shaders/g1_uri_enamel.wgsl"),
+        );
+    }
     let status = StationRenderHealth::default();
     let render = app
         .get_sub_app_mut(RenderApp)
