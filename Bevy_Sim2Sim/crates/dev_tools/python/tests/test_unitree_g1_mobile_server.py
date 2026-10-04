@@ -275,7 +275,19 @@ class HttpFixtureTests(unittest.TestCase):
         runner.start()
         try:
             self.assertTrue(self.policy.entered.wait(2))
-            self.assertEqual(self.call(request())[0], 409)
+            # Busy admission rejects from headers, before reading any image.
+            # Uploading the full image after that early response races the
+            # intentional connection close and can raise client BrokenPipe.
+            with closing(self.connection()) as connection:
+                connection.putrequest("POST", "/infer")
+                connection.putheader("Content-Type", "application/json")
+                connection.putheader("Content-Length", str(protocol.MAX_REQUEST_BYTES))
+                connection.endheaders()
+                response = connection.getresponse()
+                self.assertEqual(response.status, 409)
+                self.assertEqual(json.loads(response.read()),
+                                 {"error": "one inference is already in flight"})
+            self.assertEqual(self.policy.calls, 1)
             self.assertTrue(self.server.handler_slots.acquire(timeout=2))
             self.server.handler_slots.release()
             with closing(self.connection()) as connection:
