@@ -727,7 +727,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     box_pair = None
     if secondary_image_path is not None or secondary_observation_path is not None:
         if (secondary_image_path is None or secondary_observation_path is None
-                or box_view_only or memory_path is not None or geometry_path is None
+                or memory_path is not None or (geometry_path is None and not box_view_only)
                 or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE)):
             raise ValueError("box pair requires its explicit auxiliary geometry mode")
         parent = Path(observation_path).resolve(strict=True).parent
@@ -862,6 +862,13 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
             midpoint = (frames[28][:3, 3] + frames[45][:3, 3]) * .5
             center = (by_id[22] @ np.linalg.inv(marker_mounts[22]))[:3, 3]
             result["current_box_palm_center_distance_m"] = float(np.linalg.norm(center-midpoint))
+            if box_view_only and box_pair is not None:
+                # Finite pickup feedback uses only these measured RGB/self
+                # vectors. It never receives shelf/contact/world body poses.
+                left_relative = np.linalg.inv(frames[28]) @ np.r_[center, 1.]
+                result["current_box_gravity_center_m"] = (root_rotation @ center).tolist()
+                result["current_midpalm_gravity_center_m"] = (root_rotation @ midpoint).tolist()
+                result["current_box_relative_left_palm_m"] = left_relative[:3].tolist()
     if fiducial_path is not None:
         result["fiducial_calibration_sha256"] = fiducial_hash
         result["marker_layout_profile"] = layout_profile

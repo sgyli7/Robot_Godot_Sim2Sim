@@ -26,6 +26,9 @@ pub(super) struct MarkerVisionConfiguration {
     /// Explicit experimental pair of the two published auxiliary head views.
     #[serde(default)]
     pub same_tick_box_pair: bool,
+    /// Separate paired box-only pickup feedback; cannot request navigation.
+    #[serde(default)]
+    pub same_tick_box_only: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -54,8 +57,11 @@ fn digest(path: &Path, maximum: u64) -> Result<String, String> {
 
 impl MarkerVisionConfiguration {
     pub fn validate(&self) -> Result<(), String> {
+        if self.same_tick_box_only && (!self.same_tick_box_pair || self.task_geometry.is_some()) {
+            return Err("paired box-only feedback cannot request navigation geometry".into());
+        }
         if self.same_tick_box_pair
-            && (self.task_geometry.is_none()
+            && ((self.task_geometry.is_none() && !self.same_tick_box_only)
                 || self.fiducial_calibration.is_none()
                 || self.persistent_worker.is_some())
         {
@@ -359,6 +365,9 @@ mod worker {
             if config.task_geometry.is_some() {
                 return Err("box visibility cannot request navigation clearance".into());
             }
+            if config.same_tick_box_pair && !config.same_tick_box_only {
+                return Err("paired pickup feedback requires its explicit box-only mode".into());
+            }
             Self::start_internal(config, directory, observation, None, true, false)
         }
 
@@ -410,8 +419,8 @@ mod worker {
                             .as_str()
                             .unwrap_or("arena_ego");
                         let pair = if config.same_tick_box_pair {
-                            if memory.is_some() || box_view_only {
-                                return Err("box pair cannot use memory or box-only modes".into());
+                            if memory.is_some() || box_view_only != config.same_tick_box_only {
+                                return Err("box pair has an unrequested memory or box-only mode".into());
                             }
                             Some(super::mobile_pair::read_secondary(&directory, &input_document)?)
                         } else {
@@ -1194,6 +1203,24 @@ mod worker {
                 &fs::read(directory.join("observation.json")).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
+            if config.same_tick_box_pair {
+                let secondary = directory.join("secondary");
+                fs::create_dir(&secondary).map_err(|e| e.to_string())?;
+                fs::copy(
+                    f["secondary_image"]
+                        .as_str()
+                        .ok_or("secondary image absent")?,
+                    secondary.join("ego.png"),
+                )
+                .map_err(|e| e.to_string())?;
+                fs::copy(
+                    f["secondary_observation"]
+                        .as_str()
+                        .ok_or("secondary observation absent")?,
+                    secondary.join("observation.json"),
+                )
+                .map_err(|e| e.to_string())?;
+            }
             let stamp =
                 serde_json::from_value(input["stamp"].clone()).map_err(|e| e.to_string())?;
             let memory = if f["memory"].is_null() {

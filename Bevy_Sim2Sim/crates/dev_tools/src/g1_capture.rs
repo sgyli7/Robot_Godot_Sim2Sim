@@ -33,6 +33,8 @@ mod local_model_startup;
 mod mobile_continuous;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_height_recovery;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_pickup;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
@@ -199,6 +201,10 @@ struct MobileScanCaptureConfiguration {
     vision: Option<MarkerVisionConfiguration>,
     #[serde(default)]
     current_rgb_height_recovery: bool,
+    /// One disclosed traditional lift, verified with fresh paired RGB/self,
+    /// before any station scan/turn. Original source VLA remains unchanged.
+    #[serde(default)]
+    verified_station_pickup: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -250,6 +256,8 @@ struct MobileAssistCaptureRuntime {
     fine_goals_submitted: u32,
     #[cfg(feature = "g1_constraint_diagnostic")]
     height_recovery: mobile_height_recovery::Recovery,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pickup: mobile_pickup::Pickup,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -353,6 +361,8 @@ impl MobileAssistCaptureRuntime {
             fine_goals_submitted: 0,
             #[cfg(feature = "g1_constraint_diagnostic")]
             height_recovery: mobile_height_recovery::Recovery::default(),
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            pickup: mobile_pickup::Pickup::default(),
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -1622,6 +1632,7 @@ impl CaptureRuntime {
         #[cfg(feature = "g1_constraint_diagnostic")]
         if let Some(assist) = &mut self.mobile_assist {
             assist.height_recovery = mobile_height_recovery::Recovery::default();
+            assist.pickup = mobile_pickup::Pickup::default();
             if let Some(pair) = assist.pending_box_pair.take() {
                 assist.box_pair_restore_mount = Some(pair.primary_mount);
             }
@@ -2188,12 +2199,12 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        c.current_rgb_height_recovery
+        (c.current_rgb_height_recovery || c.verified_station_pickup)
             && (mode != CaptureMode::StationMobileRelease
                 || c.vision.as_ref().is_none_or(|v| !v.same_tick_box_pair))
     }) {
         return Err(
-            "current RGB height recovery requires the explicit paired station release profile"
+            "verified pickup and RGB height recovery require the explicit paired station release profile"
                 .into(),
         );
     }
@@ -3441,6 +3452,11 @@ fn drive_mobile_assist(
         return Ok(true);
     }
     if assist.station_motion && assist.station_hold_submitted && !assist.submitted {
+        if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.verified_station_pickup)
+            && !assist.pickup.completed()
+        {
+            return mobile_pickup::drive(runtime, outcome, port);
+        }
         return station_carry::continue_after_hold(runtime, outcome, port);
     }
     if assist.submitted {
@@ -4788,6 +4804,7 @@ fn allowed_mobile_box_pair_stage(stage: &str) -> bool {
         || stage.starts_with("visual_fine_approach")
         || stage == "visual_release_alignment"
         || stage == "visual_release_alignment_after_thumb"
+        || matches!(stage, "station_pickup_before" | "station_pickup_after")
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -4824,6 +4841,19 @@ fn start_marker_job(
         return Ok(());
     };
     let directory = runtime.options.output.join(stage_directory);
+    if matches!(
+        stage_directory,
+        "station_pickup_before" | "station_pickup_after"
+    ) {
+        config.task_geometry = None;
+        config.same_tick_box_only = true;
+        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(MarkerVisionJob::start_box_view(
+            config,
+            directory,
+            observation,
+        )?);
+        return Ok(());
+    }
     let assist = runtime
         .mobile_assist
         .as_ref()

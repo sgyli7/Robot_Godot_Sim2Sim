@@ -18,7 +18,7 @@ pub(super) fn carry_boundary_completed(
             && submitted.is_none_or(|stamp| goal.observation == stamp))
 }
 
-fn completed_hold_ticks(
+pub(super) fn completed_hold_ticks(
     execution: &MobileAssistExecution,
     tick: u64,
 ) -> Result<Option<u32>, String> {
@@ -64,10 +64,20 @@ pub(super) fn continue_after_hold(
     let Some(step) = &latest.assist_step else {
         return Err("station hold has no native execution receipt".into());
     };
-    let Some(holding_ticks) =
-        completed_hold_ticks(&step.execution, latest.timing.episode_integrations)?
-    else {
-        return Ok(false);
+    let pickup = &runtime
+        .mobile_assist
+        .as_ref()
+        .ok_or("station stage absent")?
+        .pickup;
+    let holding_ticks = if pickup.completed() {
+        pickup.completed_hold_ticks(&step.execution, latest.timing.episode_integrations)?
+    } else {
+        let Some(ticks) =
+            completed_hold_ticks(&step.execution, latest.timing.episode_integrations)?
+        else {
+            return Ok(false);
+        };
+        ticks
     };
     let config = &runtime
         .mobile_assist
