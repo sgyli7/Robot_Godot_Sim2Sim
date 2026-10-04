@@ -682,7 +682,11 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             "heading_yaw_source_rad": heading, "relative_distance_m": .1}}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None, held_box_feedback=False):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None, held_box_feedback=False, grasp_centering=False):
+    if grasp_centering and (secondary_image_path is None or secondary_observation_path is None
+            or geometry_path is None or memory_path is not None or box_view_only or placement_view_only
+            or held_box_feedback):
+        raise ValueError("grasp centering requires current paired RGB and original public geometry")
     if held_box_feedback and (secondary_image_path is None or secondary_observation_path is None
             or geometry_path is None or memory_path is not None or box_view_only or placement_view_only):
         raise ValueError("held-box feedback requires current paired RGB and normal public-geometry mode")
@@ -761,7 +765,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                          "input_sha256": [sha(observation_path), sha(secondary_observation_path)],
                          "camera_mount_profiles": [camera_profile, secondary["camera_mount_profile"]]})
     board = None
-    if layout_profile == BIN_BOARD_PROFILE and not box_view_only:
+    if layout_profile == BIN_BOARD_PROFILE and not box_view_only and not grasp_centering:
         board_pixels = {}
         for marker_corners, marker_id in zip(corners, [] if ids is None else ids.flatten()):
             marker_id = int(marker_id)
@@ -823,7 +827,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                 raise ValueError("current visible target moved outside static-memory tolerance")
         else:
             by_id[21] = np.asarray(memory_estimate["root_from_marker"])
-    if not box_view_only and not placement_view_only and 21 in by_id and 22 in by_id:
+    if not box_view_only and not placement_view_only and not grasp_centering and 21 in by_id and 22 in by_id:
         if layout_profile == "original_arena":
             bin_p = by_id[21][:3, 3]
             box_p = (by_id[22] @ np.array([0., 0., -0.1005, 1.]))[:3]
@@ -886,10 +890,17 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["public_bin_board_pose"] = board
     if box_pair is not None:
         result["same_tick_box_pair_pose"] = box_pair
+    if grasp_centering:
+        if box_pair is None or 22 not in by_id:
+            raise ValueError("grasp centering lost the current paired visible box")
+        from unitree_g1_mobile_grasp import propose
+        result["grasp_centering_proposal"] = propose(
+            definition, observation, by_id[22] @ np.linalg.inv(marker_mounts[22]),
+            public_json(geometry_path, public_assets))
     if memory_estimate is not None:
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory
-    if geometry_path is not None and not used_memory:
+    if geometry_path is not None and not used_memory and not grasp_centering:
         result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts, public_assets)
         if camera_profile in ("auxiliary_grip_overview", "auxiliary_bin_placement") and not placement_view_only:
             result["fine_approach_proposal"] = fine_proposal
@@ -917,10 +928,11 @@ def main():
     parser.add_argument("--secondary-image", type=Path)
     parser.add_argument("--secondary-observation", type=Path)
     parser.add_argument("--held-box-feedback", action="store_true")
+    parser.add_argument("--grasp-centering", action="store_true")
     args = parser.parse_args()
     result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials, args.placement_view_only,
                       secondary_image_path=args.secondary_image, secondary_observation_path=args.secondary_observation,
-                      held_box_feedback=args.held_box_feedback)
+                      held_box_feedback=args.held_box_feedback, grasp_centering=args.grasp_centering)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")
