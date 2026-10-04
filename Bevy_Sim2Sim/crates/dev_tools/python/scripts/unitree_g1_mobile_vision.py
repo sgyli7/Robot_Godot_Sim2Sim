@@ -28,6 +28,67 @@ JOINT_NAMES = tuple(
 DEFINITION_SHA256 = "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8f13bd"
 MARKER_SIZES = {21: 0.16, 22: 0.10}
 TASK_GEOMETRY_SHA256 = "19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0"
+BIN_BOARD_PROFILE = "auxiliary_bin_board_targets"
+
+
+def validate_public_bin_board(markers):
+    """Fixed calibration only; object pose is always measured from current RGB."""
+    if not isinstance(markers, list) or len(markers) != 2:
+        raise ValueError("public bin board requires exactly its two extra printed labels")
+    for marker, identity, x in zip(markers, [23, 24], [-.25, .25]):
+        if (set(marker) != {"marker_id", "png_path", "png_sha256", "center_source_m", "rotation_wxyz"}
+                or marker["marker_id"] != identity
+                or marker["center_source_m"] != [x, .18, .45]
+                or not np.allclose(marker["rotation_wxyz"], [2**-.5, 2**-.5, 0., 0.], atol=1e-7, rtol=0)
+                or not isinstance(marker["png_path"], str) or not marker["png_path"]
+                or not isinstance(marker["png_sha256"], str) or len(marker["png_sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in marker["png_sha256"])):
+            raise ValueError("public bin board identity, dimensions or rigid mount changed")
+
+
+def fit_public_bin_board(pixels_by_id, intrinsics, camera_in_root, bin_marker_mount):
+    """One bounded joint twelve-corner PnP; no gravity/upright/world prior."""
+    if set(pixels_by_id) != {21, 23, 24}:
+        raise ValueError("all three distinct current bin board labels are required")
+    original_mount = transform({"position": [0., .18, .60],
+                                "rotation_wxyz": [2**-.5, 2**-.5, 0., 0.]})
+    if not np.allclose(bin_marker_mount, original_mount, atol=1e-7, rtol=0):
+        raise ValueError("bin board cannot use a foreign rigid attachment")
+    points, pixels, edges = [], [], []
+    for marker, x, z, size in [(21, 0., .6, .16), (23, -.25, .45, .12), (24, .25, .45, .12)]:
+        measured = np.asarray(pixels_by_id[marker], dtype=np.float64)
+        if measured.shape != (4, 2) or not np.isfinite(measured).all():
+            raise ValueError("invalid current board corners")
+        edge = float(np.linalg.norm(measured-np.roll(measured, -1, axis=0), axis=1).min())
+        if edge < 8 or (measured < 0).any() or (measured >= [640., 480.]).any():
+            raise ValueError("board label lies outside its unchanged image/edge gate")
+        h = size / 2
+        local = np.array([[-h,h,0], [h,h,0], [h,-h,0], [-h,-h,0]])
+        points.append(local @ original_mount[:3, :3].T + [x, .18, z])
+        pixels.append(measured)
+        edges.append(edge)
+    points, pixels = np.concatenate(points), np.concatenate(pixels)
+    ok, rvec, tvec = cv2.solvePnP(points, pixels, intrinsics, None, flags=cv2.SOLVEPNP_SQPNP)
+    if not ok:
+        raise ValueError("current public board pose solve failed")
+    rvec, tvec = cv2.solvePnPRefineLM(points, pixels, intrinsics, None, rvec, tvec,
+                                    criteria=(cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 30, 1e-9))
+    pose = np.eye(4)
+    pose[:3, :3], pose[:3, 3] = cv2.Rodrigues(rvec)[0], tvec.ravel()
+    projected = cv2.projectPoints(points, rvec, tvec, intrinsics, None)[0].reshape(-1, 2)
+    errors = np.sqrt(np.mean(np.sum((projected-pixels).reshape(3, 4, 2)**2, axis=2), axis=1))
+    camera_points = points @ pose[:3, :3].T + pose[:3, 3]
+    normal = pose[:3, :3] @ original_mount[:3, 2]
+    if (not np.isfinite(pose).all() or not np.isfinite(errors).all() or errors.max() > 1.
+            or camera_points[:, 2].min() <= .1 or camera_points[:, 2].max() >= 5.
+            or float(normal @ camera_points.mean(axis=0)) >= 0):
+        raise ValueError("public bin board failed unchanged residual, depth or front-face gate")
+    return {"schema": "g1_actual_rgb_public_bin_board_pose_v1", "marker_ids": [21, 23, 24],
+            "corners_px": pixels.reshape(3, 4, 2).tolist(),
+            "per_marker_reprojection_rms_px": errors.tolist(), "minimum_edges_px": edges,
+            "solver": "SQPNP_then_bounded30_iteration_LM", "upright_prior_used": False,
+            "root_from_marker": (camera_in_root @ pose @ original_mount).tolist(),
+            "world_or_contact_truth_input": False, "task_qualified": False}
 
 
 def sha(path):
@@ -178,11 +239,15 @@ def fixed_marker_layout(path, camera_profile, public_assets=None):
             raise ValueError("public fiducial document exceeds byte budget")
         doc = public_json(path, public_assets)
         fields = {"schema", "dictionary", "png_paths", "png_sha256"}
-        if set(doc) not in (fields, fields | {"layout_profile"}) or doc["schema"] != "g1_task_fiducials_v1" or doc["dictionary"] != "DICT_4X4_50":
+        if set(doc) not in (fields, fields | {"layout_profile"}, fields | {"layout_profile", "mobile_bin_board_markers"}) or doc["schema"] != "g1_task_fiducials_v1" or doc["dictionary"] != "DICT_4X4_50":
             raise ValueError("foreign fixed public marker layout")
         layout = doc.get("layout_profile", "original_arena")
+        if layout == BIN_BOARD_PROFILE:
+            validate_public_bin_board(doc.get("mobile_bin_board_markers"))
+        elif "mobile_bin_board_markers" in doc:
+            raise ValueError("bin board calibration cannot enter a different marker profile")
         digest = public_sha(path, public_assets)
-    if layout == "auxiliary_grip_targets":
+    if layout in ("auxiliary_grip_targets", BIN_BOARD_PROFILE):
         if camera_profile not in ("auxiliary_grip_overview", "auxiliary_bin_placement"):
             raise ValueError("auxiliary labels require their explicitly declared sensor")
         sizes[22] = .06
@@ -533,7 +598,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     definition = public_json(definition_path, public_assets)
     camera_profile = observation.get("camera_mount_profile", "arena_ego")
     marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile, public_assets)
-    if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile != "auxiliary_grip_targets"):
+    if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE)):
         raise ValueError("placement view requires its bound auxiliary labels/public geometry and no other mode")
     camera_in_root = root_from_camera(definition, state["positions"], camera_profile)
     root_rotation = rotation(state["root_rotation_wxyz"])
@@ -550,6 +615,16 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
     detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), parameters)
     corners, ids, rejected = detector.detectMarkers(image)
+    board = None
+    if layout_profile == BIN_BOARD_PROFILE and not box_view_only:
+        board_pixels = {}
+        for marker_corners, marker_id in zip(corners, [] if ids is None else ids.flatten()):
+            marker_id = int(marker_id)
+            if marker_id in (21, 23, 24):
+                if marker_id in board_pixels:
+                    raise ValueError("duplicate identity in current bin board RGB")
+                board_pixels[marker_id] = marker_corners.reshape(4, 2).astype(np.float64)
+        board = fit_public_bin_board(board_pixels, intrinsics, camera_in_root, marker_mounts[21])
     detections = []
     for marker_corners, marker_id in zip(corners, [] if ids is None else ids.flatten()):
         marker_id = int(marker_id)
@@ -578,6 +653,9 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         if error > 1.0:
             continue
         marker_in_root = camera_in_root @ camera_from_marker
+        if board is not None and marker_id == 21:
+            marker_in_root = np.asarray(board["root_from_marker"])
+            error = board["per_marker_reprojection_rms_px"][0]
         detections.append({"marker_id": marker_id, "kind": "target_bin" if marker_id == 21 else "carried_box",
                            "corners_px": pixels.tolist(), "minimum_edge_px": shortest_edge,
                            "reprojection_rms_px": error, "root_from_marker": marker_in_root.tolist(),
@@ -643,6 +721,8 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["fiducial_calibration_sha256"] = fiducial_hash
         result["marker_layout_profile"] = layout_profile
         result["camera_mount_profile"] = camera_profile
+    if board is not None:
+        result["public_bin_board_pose"] = board
     if memory_estimate is not None:
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory

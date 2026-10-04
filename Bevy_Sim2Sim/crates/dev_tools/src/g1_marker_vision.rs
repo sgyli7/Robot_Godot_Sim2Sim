@@ -135,6 +135,74 @@ mod worker {
             .is_some_and(auxiliary_camera_profile)
     }
 
+    fn validate_public_bin_board_reply(
+        reply: &serde_json::Value,
+        box_view_only: bool,
+    ) -> Result<(), String> {
+        let proof = &reply["public_bin_board_pose"];
+        if reply["marker_layout_profile"] != "auxiliary_bin_board_targets" || box_view_only {
+            return if proof.is_null() {
+                Ok(())
+            } else {
+                Err("unrequested bin board pose proof".into())
+            };
+        }
+        let corners: [[[f64; 2]; 4]; 3] =
+            serde_json::from_value(proof["corners_px"].clone()).map_err(|e| e.to_string())?;
+        let errors: [f64; 3] =
+            serde_json::from_value(proof["per_marker_reprojection_rms_px"].clone())
+                .map_err(|e| e.to_string())?;
+        let edges: [f64; 3] =
+            serde_json::from_value(proof["minimum_edges_px"].clone()).map_err(|e| e.to_string())?;
+        let pose: [[f64; 4]; 4] =
+            serde_json::from_value(proof["root_from_marker"].clone()).map_err(|e| e.to_string())?;
+        let target = reply["detections"]
+            .as_array()
+            .and_then(|ds| ds.iter().find(|d| d["marker_id"] == 21))
+            .ok_or("current bin board target absent")?;
+        if proof["schema"] != "g1_actual_rgb_public_bin_board_pose_v1"
+            || proof["marker_ids"] != serde_json::json!([21, 23, 24])
+            || proof["solver"] != "SQPNP_then_bounded30_iteration_LM"
+            || proof["upright_prior_used"] != false
+            || proof["world_or_contact_truth_input"] != false
+            || proof["task_qualified"] != false
+            || target["root_from_marker"] != proof["root_from_marker"]
+            || target["corners_px"] != proof["corners_px"][0]
+            || target["reprojection_rms_px"].as_f64() != Some(errors[0])
+            || target["minimum_edge_px"].as_f64() != Some(edges[0])
+            || !pose.iter().flatten().all(|v| v.is_finite())
+            || pose[3] != [0., 0., 0., 1.]
+        {
+            return Err("unbound current RGB bin board pose proof".into());
+        }
+        for index in 0..3 {
+            if !errors[index].is_finite()
+                || !(0. ..=1.).contains(&errors[index])
+                || !edges[index].is_finite()
+                || edges[index] < 8.
+                || corners[index].iter().any(|p| {
+                    !p[0].is_finite()
+                        || !p[1].is_finite()
+                        || !(0. ..640.).contains(&p[0])
+                        || !(0. ..480.).contains(&p[1])
+                })
+            {
+                return Err("public bin board failed unchanged image/quality gate".into());
+            }
+            let actual_edge = (0..4)
+                .map(|i| {
+                    let a = corners[index][i];
+                    let b = corners[index][(i + 1) % 4];
+                    (a[0] - b[0]).hypot(a[1] - b[1])
+                })
+                .fold(f64::INFINITY, f64::min);
+            if (edges[index] - actual_edge).abs() > 1e-5 {
+                return Err("public bin board edge is not its measured corner span".into());
+            }
+        }
+        Ok(())
+    }
+
     #[derive(Clone, serde::Deserialize, serde::Serialize)]
     #[serde(deny_unknown_fields)]
     pub(crate) struct MarkerTargetMemory {
@@ -550,6 +618,7 @@ mod worker {
         {
             return Err("foreign/unbound marker localization reply".into());
         }
+        validate_public_bin_board_reply(reply, box_view_only)?;
         let detections = reply["detections"]
             .as_array()
             .ok_or("marker detections absent")?;
@@ -1025,6 +1094,53 @@ mod worker {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn rigid_bin_board_proof_cannot_be_missing_foreign_or_lower_quality() {
+            let corner = [[100., 100.], [110., 100.], [110., 110.], [100., 110.]];
+            let corners = serde_json::json!([corner, corner, corner]);
+            let pose = serde_json::json!([
+                [1., 0., 0., 0.],
+                [0., 1., 0., 0.],
+                [0., 0., 1., 1.],
+                [0., 0., 0., 1.]
+            ]);
+            let proof = serde_json::json!({
+                "schema":"g1_actual_rgb_public_bin_board_pose_v1", "marker_ids":[21,23,24],
+                "solver":"SQPNP_then_bounded30_iteration_LM", "upright_prior_used":false,
+                "world_or_contact_truth_input":false, "task_qualified":false,
+                "corners_px":corners, "minimum_edges_px":[10.,10.,10.],
+                "per_marker_reprojection_rms_px":[0.5,0.5,0.5], "root_from_marker":pose,
+            });
+            let reply = serde_json::json!({
+                "marker_layout_profile":"auxiliary_bin_board_targets", "public_bin_board_pose":proof,
+                "detections":[{"marker_id":21,"minimum_edge_px":10.,"reprojection_rms_px":0.5,
+                    "root_from_marker":pose,"corners_px":corners[0]}],
+            });
+            assert!(validate_public_bin_board_reply(&reply, false).is_ok());
+            assert!(validate_public_bin_board_reply(&reply, true).is_err());
+            for mutation in 0..8 {
+                let mut bad = reply.clone();
+                match mutation {
+                    0 => bad["public_bin_board_pose"] = serde_json::Value::Null,
+                    1 => {
+                        bad["public_bin_board_pose"]["marker_ids"] = serde_json::json!([21, 23, 23])
+                    }
+                    2 => {
+                        bad["public_bin_board_pose"]["per_marker_reprojection_rms_px"][1] =
+                            1.01.into()
+                    }
+                    3 => bad["public_bin_board_pose"]["corners_px"][1][0][0] = (-1.).into(),
+                    4 => bad["public_bin_board_pose"]["minimum_edges_px"][2] = 11.0.into(),
+                    5 => bad["public_bin_board_pose"]["upright_prior_used"] = true.into(),
+                    6 => bad["public_bin_board_pose"]["root_from_marker"][0][3] = 0.1.into(),
+                    _ => bad["marker_layout_profile"] = "auxiliary_grip_targets".into(),
+                }
+                assert!(
+                    validate_public_bin_board_reply(&bad, false).is_err(),
+                    "mutation {mutation}"
+                );
+            }
+        }
         #[test]
         #[ignore = "requires pinned config and saved actual RGB/self-sensor inputs; no physics/models"]
         fn real_rgb_local_worker_roundtrip() -> Result<(), String> {

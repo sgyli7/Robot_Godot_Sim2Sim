@@ -31,6 +31,8 @@ struct Document {
     marker_mounts_source_m: Option<[[f32; 3]; 2]>,
     #[serde(default)]
     static_apple_side_markers: Vec<StaticAppleSideMarker>,
+    #[serde(default)]
+    mobile_bin_board_markers: Vec<MobileBinBoardMarker>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -41,6 +43,9 @@ pub enum G1FiducialLayoutProfile {
     /// Fixed public layout validated in geometry control0236. These labels
     /// and the auxiliary sensor never enter original learned grasp images.
     AuxiliaryGripTargets,
+    /// Separate public rigid three-label T2 board. These extra observations
+    /// remain hidden throughout the original learned grasp images.
+    AuxiliaryBinBoardTargets,
     /// Public small labels for a static RGB localization diagnostic. This
     /// profile never silently enters original unmarked model observations.
     StaticApplePlate,
@@ -65,6 +70,43 @@ pub struct StaticAppleSideMarker {
     pub png_sha256: String,
     pub center_source_m: [f32; 3],
     pub rotation_wxyz: [f32; 4],
+}
+/// Same printed asset format, attached only to the explicitly selected T2 bin.
+pub type MobileBinBoardMarker = StaticAppleSideMarker;
+
+fn validate_bin_board_layout(
+    profile: G1FiducialLayoutProfile,
+    markers: &[MobileBinBoardMarker],
+) -> Result<(), String> {
+    if profile != G1FiducialLayoutProfile::AuxiliaryBinBoardTargets {
+        return if markers.is_empty() {
+            Ok(())
+        } else {
+            Err("bin board labels require their separate public profile".into())
+        };
+    }
+    let q = [
+        std::f32::consts::FRAC_1_SQRT_2,
+        std::f32::consts::FRAC_1_SQRT_2,
+        0.,
+        0.,
+    ];
+    if markers.len() != 2
+        || markers
+            .iter()
+            .zip([(23, -0.25), (24, 0.25)])
+            .any(|(m, (id, x))| {
+                m.marker_id != id
+                    || m.center_source_m != [x, 0.18, 0.45]
+                    || m.rotation_wxyz
+                        .iter()
+                        .zip(q)
+                        .any(|(a, b)| (a - b).abs() > 1e-7)
+            })
+    {
+        return Err("public rigid bin board identity/mount changed".into());
+    }
+    Ok(())
 }
 fn validate_side_layout(
     profile: G1FiducialLayoutProfile,
@@ -139,6 +181,7 @@ fn validate_side_layout(
 pub struct G1TaskFiducialModel {
     pngs: [Vec<u8>; 2],
     side_pngs: Vec<Vec<u8>>,
+    bin_board_pngs: Vec<Vec<u8>>,
     pub receipt: G1TaskFiducialReceipt,
 }
 
@@ -175,6 +218,8 @@ pub struct G1TaskFiducialReceipt {
     pub static_localization_images_marked: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub static_apple_side_markers: Vec<StaticAppleSideMarker>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mobile_bin_board_markers: Vec<MobileBinBoardMarker>,
 }
 
 fn unmarked(value: &bool) -> bool {
@@ -184,6 +229,37 @@ fn unmarked(value: &bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bin_board_cannot_change_its_rigid_mount_or_enter_an_old_profile() {
+        let markers: Vec<_> = [(23, -0.25), (24, 0.25)]
+            .into_iter()
+            .map(|(marker_id, x)| MobileBinBoardMarker {
+                marker_id,
+                png_path: "bound_print.png".into(),
+                png_sha256: "0".repeat(64),
+                center_source_m: [x, 0.18, 0.45],
+                rotation_wxyz: [
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    0.,
+                    0.,
+                ],
+            })
+            .collect();
+        let profile = G1FiducialLayoutProfile::AuxiliaryBinBoardTargets;
+        assert!(validate_bin_board_layout(profile, &markers).is_ok());
+        assert!(
+            validate_bin_board_layout(G1FiducialLayoutProfile::AuxiliaryGripTargets, &markers)
+                .is_err()
+        );
+        assert!(validate_bin_board_layout(profile, &markers[..1]).is_err());
+        let mut changed = markers.clone();
+        changed[0].center_source_m[2] += 0.001;
+        assert!(validate_bin_board_layout(profile, &changed).is_err());
+        let mut changed = markers.clone();
+        changed[1].marker_id = 23;
+        assert!(validate_bin_board_layout(profile, &changed).is_err());
+    }
     #[test]
     #[ignore = "explicit hash-bound public marker profile;0physics/camera/model calls"]
     fn load_public_six_face_calibration_and_check_source_axes() -> Result<(), String> {
@@ -237,6 +313,7 @@ impl G1TaskFiducialModel {
             return Err("static marker calibration cannot enter a mobile layout".into());
         }
         validate_side_layout(document.layout_profile, &document.static_apple_side_markers)?;
+        validate_bin_board_layout(document.layout_profile, &document.mobile_bin_board_markers)?;
         let png_path = |name: &str| {
             let png = Path::new(name);
             if png.is_absolute() {
@@ -262,7 +339,16 @@ impl G1TaskFiducialModel {
             .iter()
             .map(|side| checked_bytes(&png_path(&side.png_path), &side.png_sha256, 1024 * 1024))
             .collect::<Result<_, _>>()?;
-        for png in pngs.iter().chain(side_pngs.iter()) {
+        let bin_board_pngs: Vec<_> = document
+            .mobile_bin_board_markers
+            .iter()
+            .map(|side| checked_bytes(&png_path(&side.png_path), &side.png_sha256, 1024 * 1024))
+            .collect::<Result<_, _>>()?;
+        for png in pngs
+            .iter()
+            .chain(side_pngs.iter())
+            .chain(bin_board_pngs.iter())
+        {
             let image = Image::from_buffer(
                 png,
                 ImageType::Extension("png"),
@@ -281,6 +367,7 @@ impl G1TaskFiducialModel {
         Ok(Self {
             pngs,
             side_pngs,
+            bin_board_pngs,
             receipt: G1TaskFiducialReceipt {
                 layout_profile: document.layout_profile,
                 calibration_version: document.calibration_version,
@@ -297,13 +384,15 @@ impl G1TaskFiducialModel {
                 },
                 printed_black_square_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.16, 0.10],
-                    G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.16, 0.06],
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [0.16, 0.06],
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.02, 0.06],
                 },
                 white_margin_overall_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.20, 0.125],
-                    G1FiducialLayoutProfile::AuxiliaryGripTargets => [0.20, 0.075],
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [0.20, 0.075],
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.025, 0.075],
                 },
@@ -316,7 +405,8 @@ impl G1TaskFiducialModel {
                     G1FiducialLayoutProfile::OriginalArena => {
                         [[0.008351, 0.0113635, 0.0045], [0.1005, 0., 0.]]
                     }
-                    G1FiducialLayoutProfile::AuxiliaryGripTargets => {
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => {
                         [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
                     }
                     G1FiducialLayoutProfile::StaticApplePlate
@@ -328,7 +418,8 @@ impl G1TaskFiducialModel {
                     G1FiducialLayoutProfile::OriginalArena => {
                         [[1., 0., 0., 0.], [0.70710677, 0., 0.70710677, 0.]]
                     }
-                    G1FiducialLayoutProfile::AuxiliaryGripTargets => [
+                    G1FiducialLayoutProfile::AuxiliaryGripTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [
                         [0.70710677, 0.70710677, 0., 0.],
                         [0.70710677, 0., 0.70710677, 0.],
                     ],
@@ -345,6 +436,7 @@ impl G1TaskFiducialModel {
                 original_grasp_images_marked: false,
                 static_localization_images_marked: document.layout_profile.is_static(),
                 static_apple_side_markers: document.static_apple_side_markers,
+                mobile_bin_board_markers: document.mobile_bin_board_markers,
             },
         })
     }
@@ -438,9 +530,11 @@ fn spawn(
                         Quat::IDENTITY
                     } else if marker == 1 {
                         Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
-                    } else if model.receipt.layout_profile
-                        == G1FiducialLayoutProfile::AuxiliaryGripTargets
-                    {
+                    } else if matches!(
+                        model.receipt.layout_profile,
+                        G1FiducialLayoutProfile::AuxiliaryGripTargets
+                            | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+                    ) {
                         Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
                     } else {
                         Quat::IDENTITY
@@ -455,79 +549,85 @@ fn spawn(
     }
     // All additional quads remain renderer children; no physics component,
     // collision shape, mass, material or actuator parameter is added.
-    if !model.side_pngs.is_empty() {
+    for (side, png, kind, half) in model
+        .receipt
+        .static_apple_side_markers
+        .iter()
+        .zip(&model.side_pngs)
+        .map(|(side, png)| (side, png, "t1_apple", 0.0125))
+        .chain(
+            model
+                .receipt
+                .mobile_bin_board_markers
+                .iter()
+                .zip(&model.bin_board_pngs)
+                .map(|(side, png)| (side, png, "t2_bin", 0.075)),
+        )
+    {
         let index = objects
-            .object_index("t1_apple")
-            .expect("validated static apple");
+            .object_index(kind)
+            .expect("validated labelled task object");
         let (parent, _) = roots
             .iter()
             .find(|(_, root)| root.0 == index)
-            .expect("apple root spawned");
-        for (side, png) in model
-            .receipt
-            .static_apple_side_markers
-            .iter()
-            .zip(&model.side_pngs)
-        {
-            let mut image = Image::from_buffer(
-                png,
-                ImageType::Extension("png"),
-                CompressedImageFormats::NONE,
-                true,
-                bevy::image::ImageSampler::nearest(),
-                RenderAssetUsages::default(),
-            )
-            .expect("checked side marker");
-            image.texture_descriptor.usage |=
-                bevy::render::render_resource::TextureUsages::TEXTURE_BINDING;
-            let half = 0.0125;
-            let mut mesh = Mesh::new(
-                bevy::mesh::PrimitiveTopology::TriangleList,
-                RenderAssetUsages::default(),
-            );
-            mesh.insert_attribute(
-                Mesh::ATTRIBUTE_POSITION,
-                vec![
-                    [-half, 0., -half],
-                    [half, 0., -half],
-                    [half, 0., half],
-                    [-half, 0., half],
-                ],
-            );
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0., 1., 0.]; 4]);
-            mesh.insert_attribute(
-                Mesh::ATTRIBUTE_UV_0,
-                vec![[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
-            );
-            mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 2, 1, 0, 3, 2]));
-            let material = materials.add(StandardMaterial {
-                base_color: Color::WHITE,
-                base_color_texture: Some(images.add(image)),
-                perceptual_roughness: 1.,
-                metallic: 0.,
-                reflectance: 0.,
-                cull_mode: Some(bevy::render::render_resource::Face::Back),
-                ..default()
-            });
-            let [x, y, z] = side.center_source_m;
-            let [w, qx, qy, qz] = side.rotation_wxyz;
-            let child = commands
-                .spawn((
-                    Name::new(format!("g1_disclosed_marker_{}", side.marker_id)),
-                    PrintedMarker,
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(material),
-                    Transform {
-                        translation: Vec3::new(x, z, -y),
-                        rotation: Quat::from_xyzw(qx, qz, -qy, w).normalize(),
-                        scale: Vec3::ONE,
-                    },
-                    Visibility::Hidden,
-                    bevy::light::NotShadowCaster,
-                ))
-                .id();
-            commands.entity(parent).add_child(child);
-        }
+            .expect("labelled task root spawned");
+        let mut image = Image::from_buffer(
+            png,
+            ImageType::Extension("png"),
+            CompressedImageFormats::NONE,
+            true,
+            bevy::image::ImageSampler::nearest(),
+            RenderAssetUsages::default(),
+        )
+        .expect("checked side marker");
+        image.texture_descriptor.usage |=
+            bevy::render::render_resource::TextureUsages::TEXTURE_BINDING;
+        let mut mesh = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![
+                [-half, 0., -half],
+                [half, 0., -half],
+                [half, 0., half],
+                [-half, 0., half],
+            ],
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0., 1., 0.]; 4]);
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            vec![[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
+        );
+        mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 2, 1, 0, 3, 2]));
+        let material = materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(images.add(image)),
+            perceptual_roughness: 1.,
+            metallic: 0.,
+            reflectance: 0.,
+            cull_mode: Some(bevy::render::render_resource::Face::Back),
+            ..default()
+        });
+        let [x, y, z] = side.center_source_m;
+        let [w, qx, qy, qz] = side.rotation_wxyz;
+        let child = commands
+            .spawn((
+                Name::new(format!("g1_disclosed_marker_{}", side.marker_id)),
+                PrintedMarker,
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(material),
+                Transform {
+                    translation: Vec3::new(x, z, -y),
+                    rotation: Quat::from_xyzw(qx, qz, -qy, w).normalize(),
+                    scale: Vec3::ONE,
+                },
+                Visibility::Hidden,
+                bevy::light::NotShadowCaster,
+            ))
+            .id();
+        commands.entity(parent).add_child(child);
     }
 }
 
