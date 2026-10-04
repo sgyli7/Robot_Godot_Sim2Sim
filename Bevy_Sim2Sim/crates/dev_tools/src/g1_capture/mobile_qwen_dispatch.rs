@@ -12,7 +12,7 @@ use simulation_minigame::g1::{
 use task_minigame::{
     decision::{
         DecisionLimits, DecisionSession, DecisionWorker, ExecutionFeedback, FeedbackStatus,
-        ValidatedDecision,
+        ObservationSnapshot, RgbTarget, RgbVerifiedTargets, ValidatedDecision,
     },
     types::{SkillAvailability, SkillRequest},
 };
@@ -25,6 +25,7 @@ use task_minigame::{
 #[serde(rename_all = "snake_case")]
 enum Scope {
     PostgraspSourceMobileTransportV1,
+    PostgraspSourceMobileTransportV2RgbVerifiedSelection,
 }
 
 #[derive(Clone, Deserialize)]
@@ -42,7 +43,8 @@ impl Configuration {
         config: &CaptureRunnerConfig,
     ) -> Result<(), String> {
         match self.scope {
-            Scope::PostgraspSourceMobileTransportV1 => {}
+            Scope::PostgraspSourceMobileTransportV1
+            | Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection => {}
         }
         let CaptureRunnerConfig::Task(task) = config else {
             return Err("Qwen transport diagnostic requires the matched task owner".into());
@@ -53,8 +55,9 @@ impl Configuration {
             || task.max_observation_age_ns != 1_000_000_000
             || !(1..=20_000).contains(&self.connection.timeout_ms)
             || !(64..=512).contains(&self.connection.max_output_tokens)
+            || (self.uses_selection() && self.connection.max_output_tokens > 128)
         {
-            return Err("Qwen dispatch is only the explicit source mobile auxiliary release with unchanged20s/1s image limits and bounded20s/512token transport".into());
+            return Err("Qwen dispatch requires the explicit source mobile auxiliary release, unchanged20s/1s image limits, bounded20s transport and V1<=512/V2<=128tokens".into());
         }
         self.goal().validate().map_err(|e| e.to_string())?;
         self.client().map(|_| ())
@@ -65,6 +68,22 @@ impl Configuration {
             instruction: self.instruction.clone(),
             profile: TaskProfile::MobileBox,
             public_scene_description: "Finite post-grasp source-task development diagnostic, not task qualification. The four original grasp chunks and public-map search already completed. Only the original brown-box-to-blue-bin task is supported. The publicly printed carried-box marker22 names box_marker_22; the target-zone marker21 names bin_marker_21. Use these IDs for the visibly supported box and blue placement zone. No navigation adjustment is available.".into(),
+        }
+    }
+
+    fn uses_selection(&self) -> bool {
+        matches!(
+            self.scope,
+            Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection
+        )
+    }
+
+    fn scope_name(&self) -> &'static str {
+        match self.scope {
+            Scope::PostgraspSourceMobileTransportV1 => "postgrasp_source_mobile_transport_v1",
+            Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection => {
+                "postgrasp_source_mobile_transport_v2_rgb_verified_selection"
+            }
         }
     }
 
@@ -88,6 +107,7 @@ struct PendingTransport {
     image_sha256: String,
     stamp_sha256: String,
     input_sha256: String,
+    selection_evidence: Option<RgbVerifiedTargets>,
     started: Instant,
 }
 
@@ -156,6 +176,80 @@ fn require_marker_roles(reply: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Detector measurements stay distinct from Qwen output. Bounds describe the
+/// visible printed marker, not an invented full-object detection or world pose.
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn current_rgb_targets(
+    snapshot: &ObservationSnapshot,
+    reply: &serde_json::Value,
+    raw_image_hash: &str,
+    input_hash: &str,
+    control_stamp: ObservationStamp,
+) -> Result<RgbVerifiedTargets, String> {
+    require_marker_roles(reply)?;
+    if reply["actual_rgb_only_object_measurement"] != true
+        || reply["image_sha256"] != raw_image_hash
+        || reply["input_sha256"] != input_hash
+        || reply["observation"] != serde_json::to_value(control_stamp).unwrap()
+        || snapshot.stamp.episode_id != control_stamp.episode_id
+        || snapshot.stamp.sim_time_ns != control_stamp.sim_time_ns
+        || snapshot.stamp.captured_at_unix_ms != control_stamp.captured_at_unix_ms
+    {
+        return Err("selector detector evidence is not this exact RGB/control acquisition".into());
+    }
+    let mut targets = Vec::new();
+    for (role, marker_id, id, kind, description) in [
+        (
+            "carried_box",
+            22_u64,
+            "box_marker_22",
+            task_minigame::decision::TargetKind::Box,
+            "brown box associated with printed marker22",
+        ),
+        (
+            "target_bin",
+            21_u64,
+            "bin_marker_21",
+            task_minigame::decision::TargetKind::PlacementZone,
+            "blue placement zone associated with printed marker21",
+        ),
+    ] {
+        let detection = reply["detections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["kind"] == role && d["marker_id"] == marker_id)
+            .unwrap();
+        let corners: [[f32; 2]; 4] =
+            serde_json::from_value(detection["corners_px"].clone()).map_err(|e| e.to_string())?;
+        let minimum = corners
+            .iter()
+            .fold([f32::INFINITY; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
+        let maximum = corners.iter().fold([f32::NEG_INFINITY; 2], |a, p| {
+            [a[0].max(p[0]), a[1].max(p[1])]
+        });
+        targets.push(RgbTarget {
+            id: id.into(),
+            kind,
+            public_description: description.into(),
+            marker_id: marker_id as u32,
+            marker_bbox_xyxy: [
+                minimum[0] / snapshot.camera.width() as f32,
+                minimum[1] / snapshot.camera.height() as f32,
+                maximum[0] / snapshot.camera.width() as f32,
+                maximum[1] / snapshot.camera.height() as f32,
+            ],
+            minimum_edge_px: detection["minimum_edge_px"]
+                .as_f64()
+                .ok_or("RGB detector edge absent")? as f32,
+            reprojection_rms_px: detection["reprojection_rms_px"]
+                .as_f64()
+                .ok_or("RGB detector residual absent")? as f32,
+        });
+    }
+    RgbVerifiedTargets::bind_current_rgb(snapshot, targets).map_err(|e| e.to_string())
+}
+
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl Dispatch {
     pub(super) fn new(configuration: Configuration, episode_id: u64) -> Result<Self, String> {
@@ -183,7 +277,8 @@ impl Dispatch {
             .ok_or("Qwen transport handoff absent")?;
         if handoff["qwen_postgrasp_transport"].is_null() {
             handoff["qwen_postgrasp_transport"] = serde_json::json!({
-                "scope":"postgrasp_source_mobile_transport_v1","initial_grasp_and_search_qwen_controlled":false,
+                "scope":self.configuration.scope_name(),"rgb_verified_selection_wire":self.configuration.uses_selection(),
+                "detector_measurements_are_model_claims":false,"initial_grasp_and_search_qwen_controlled":false,
                 "physics_paused_during_qwen":true,"public_marker_roles":{"box_marker_22":22,"bin_marker_21":21},
                 "maximum_transport_admissions":1,"world_or_contact_truth_input":false,"task_qualified":false,"events":[],
             });
@@ -250,24 +345,51 @@ impl Dispatch {
             },
         )
         .map_err(|e| e.to_string())?;
-        let input = session
-            .prepare(snapshot, unix_ms()?, observation.sim_time_ns)
-            .map_err(|e| e.to_string())?;
-        self.worker.try_submit(input).map_err(|e| e.to_string())?;
+        let image_sha256 = input_hash(&directory.join("ego.png"))?;
+        let input_sha256 = input_hash(&directory.join("observation.json"))?;
+        let selection_evidence = if self.configuration.uses_selection() {
+            let evidence = current_rgb_targets(
+                &snapshot,
+                &localization,
+                &image_sha256,
+                &input_sha256,
+                observation,
+            )?;
+            let input = session
+                .prepare_selection(
+                    snapshot,
+                    evidence.clone(),
+                    unix_ms()?,
+                    observation.sim_time_ns,
+                )
+                .map_err(|e| e.to_string())?;
+            self.worker
+                .try_submit_selection(input)
+                .map_err(|e| e.to_string())?;
+            Some(evidence)
+        } else {
+            let input = session
+                .prepare(snapshot, unix_ms()?, observation.sim_time_ns)
+                .map_err(|e| e.to_string())?;
+            self.worker.try_submit(input).map_err(|e| e.to_string())?;
+            None
+        };
         self.pending = Some(PendingTransport {
             observation,
             qwen_stamp,
             localization,
             directory: directory.clone(),
-            image_sha256: input_hash(&directory.join("ego.png"))?,
+            image_sha256,
             stamp_sha256: input_hash(&directory.join("audit_stamp.json"))?,
-            input_sha256: input_hash(&directory.join("observation.json"))?,
+            input_sha256,
+            selection_evidence,
             started: Instant::now(),
         });
         self.session = Some(session);
         let pending = self.pending.as_ref().unwrap();
         self.record(outcome,serde_json::json!({"event":"transport_request_submitted","qwen_observation":qwen_stamp,"control_observation":observation,
-            "actual_rgb_only":true,"image_sha256":pending.image_sha256,"capture_stamp_sha256":pending.stamp_sha256,"geometry_input_sha256":pending.input_sha256}))
+            "actual_rgb_only":true,"image_sha256":pending.image_sha256,"capture_stamp_sha256":pending.stamp_sha256,"geometry_input_sha256":pending.input_sha256,
+            "rgb_detector_evidence":pending.selection_evidence}))
     }
 
     fn poll_transport(
@@ -296,17 +418,37 @@ impl Dispatch {
                 "Qwen transport image expired; native owner remains explicitly paused".into(),
             );
         }
-        let Some(reply) = self.worker.try_recv().map_err(|e| e.to_string())? else {
-            return Ok(false);
+        let (raw, decision) = if self.configuration.uses_selection() {
+            let Some(reply) = self
+                .worker
+                .try_recv_selection()
+                .map_err(|e| e.to_string())?
+            else {
+                return Ok(false);
+            };
+            let raw = reply
+                .result
+                .as_ref()
+                .map(|d| serde_json::to_value(d).unwrap())
+                .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
+            let decision = session
+                .accept_selection(reply, unix_ms()?, pending.observation.sim_time_ns)
+                .map_err(|e| e.to_string())?;
+            (raw, decision)
+        } else {
+            let Some(reply) = self.worker.try_recv().map_err(|e| e.to_string())? else {
+                return Ok(false);
+            };
+            let raw = reply
+                .result
+                .as_ref()
+                .map(|d| serde_json::to_value(d).unwrap())
+                .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
+            let decision = session
+                .accept(reply, unix_ms()?, pending.observation.sim_time_ns)
+                .map_err(|e| e.to_string())?;
+            (raw, decision)
         };
-        let raw = reply
-            .result
-            .as_ref()
-            .map(|d| serde_json::to_value(d).unwrap())
-            .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
-        let decision = session
-            .accept(reply, unix_ms()?, pending.observation.sim_time_ns)
-            .map_err(|e| e.to_string())?;
         self.record(outcome,serde_json::json!({"event":"transport_decision_admitted","model_decision":raw,"qwen_observation":decision.stamp,
             "image_age_ms":decision.image_to_decision_ms,"service_elapsed_ms":decision.service_elapsed_ms}))?;
         supported_request(&decision)?;
@@ -447,10 +589,21 @@ impl Dispatch {
                 .record_feedback(feedback.clone())
                 .map_err(|e| e.to_string())?;
             session.revoke_physical_skills();
-            let input = session
-                .prepare(snapshot, unix_ms()?, sim_time_ns)
-                .map_err(|e| e.to_string())?;
-            self.worker.try_submit(input).map_err(|e| e.to_string())?;
+            if self.configuration.uses_selection() {
+                let targets = RgbVerifiedTargets::bind_current_rgb(&snapshot, Vec::new())
+                    .map_err(|e| e.to_string())?;
+                let input = session
+                    .prepare_selection(snapshot, targets, unix_ms()?, sim_time_ns)
+                    .map_err(|e| e.to_string())?;
+                self.worker
+                    .try_submit_selection(input)
+                    .map_err(|e| e.to_string())?;
+            } else {
+                let input = session
+                    .prepare(snapshot, unix_ms()?, sim_time_ns)
+                    .map_err(|e| e.to_string())?;
+                self.worker.try_submit(input).map_err(|e| e.to_string())?;
+            }
             self.feedback_pending = true;
             self.record(outcome,serde_json::json!({"event":"final_feedback_submitted","executor_feedback":feedback,"physical_capabilities_revoked":true}))?;
         }
@@ -458,17 +611,37 @@ impl Dispatch {
         if session.expire_pending(unix_ms()?, sim_time_ns) {
             return Err("Qwen final observation expired; explicit pause retained".into());
         }
-        let Some(reply) = self.worker.try_recv().map_err(|e| e.to_string())? else {
-            return Ok(false);
+        let (raw, admitted) = if self.configuration.uses_selection() {
+            let Some(reply) = self
+                .worker
+                .try_recv_selection()
+                .map_err(|e| e.to_string())?
+            else {
+                return Ok(false);
+            };
+            let raw = reply
+                .result
+                .as_ref()
+                .map(|d| serde_json::to_value(d).unwrap())
+                .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
+            let admitted = session
+                .accept_selection(reply, unix_ms()?, sim_time_ns)
+                .map_err(|e| e.to_string())?;
+            (raw, admitted)
+        } else {
+            let Some(reply) = self.worker.try_recv().map_err(|e| e.to_string())? else {
+                return Ok(false);
+            };
+            let raw = reply
+                .result
+                .as_ref()
+                .map(|d| serde_json::to_value(d).unwrap())
+                .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
+            let admitted = session
+                .accept(reply, unix_ms()?, sim_time_ns)
+                .map_err(|e| e.to_string())?;
+            (raw, admitted)
         };
-        let raw = reply
-            .result
-            .as_ref()
-            .map(|d| serde_json::to_value(d).unwrap())
-            .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
-        let admitted = session
-            .accept(reply, unix_ms()?, sim_time_ns)
-            .map_err(|e| e.to_string())?;
         if !matches!(
             admitted.request,
             SkillRequest::Observe | SkillRequest::Stop { .. }
@@ -527,6 +700,103 @@ mod tests {
             supported_request(&decision(SkillRequest::Stop {
                 reason: "unsupported".into()
             }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn selector_binds_detector_capture_sequence_to_the_distinct_render_frame() {
+        let control = ObservationStamp {
+            episode_id: 7,
+            frame_id: 3,
+            sim_time_ns: 20_000_000,
+            captured_at_unix_ms: 1000,
+        };
+        let snapshot = ObservationSnapshot {
+            stamp: ObservationStamp {
+                frame_id: 19,
+                ..control
+            },
+            camera: task_minigame::decision::CameraRgb::from_rgb(
+                "aux",
+                64,
+                48,
+                vec![127; 64 * 48 * 3],
+            )
+            .unwrap(),
+            robot: task_minigame::types::RobotSelfState {
+                joint_positions: vec![0.0; 43],
+                joint_velocities: vec![0.0; 43],
+                base_velocity_mps: [0.0; 3],
+                projected_gravity: [0.0, 0.0, -1.0],
+            },
+        };
+        let reply = serde_json::json!({
+            "detections":[
+                {"kind":"carried_box","marker_id":22,"corners_px":[[8,12],[20,12],[20,24],[8,24]],"minimum_edge_px":12,"reprojection_rms_px":0.3},
+                {"kind":"target_bin","marker_id":21,"corners_px":[[32,8],[44,8],[44,20],[32,20]],"minimum_edge_px":12,"reprojection_rms_px":0.1}],
+            "world_or_contact_truth_input":false,"task_qualified":false,"camera_mount_profile":"auxiliary_grip_overview",
+            "actual_rgb_only_object_measurement":true,"image_sha256":"actual_raw_png_hash","input_sha256":"actual_input_hash","observation":control });
+        let targets = current_rgb_targets(
+            &snapshot,
+            &reply,
+            "actual_raw_png_hash",
+            "actual_input_hash",
+            control,
+        )
+        .unwrap();
+        assert_eq!(targets.stamp().frame_id, 19);
+        assert_eq!(targets.targets().len(), 2);
+        for field in ["image_sha256", "input_sha256"] {
+            let mut foreign = reply.clone();
+            foreign[field] = "foreign".into();
+            assert!(
+                current_rgb_targets(
+                    &snapshot,
+                    &foreign,
+                    "actual_raw_png_hash",
+                    "actual_input_hash",
+                    control
+                )
+                .is_err()
+            );
+        }
+        for field in ["world_or_contact_truth_input", "task_qualified"] {
+            let mut foreign = reply.clone();
+            foreign[field] = true.into();
+            assert!(
+                current_rgb_targets(
+                    &snapshot,
+                    &foreign,
+                    "actual_raw_png_hash",
+                    "actual_input_hash",
+                    control
+                )
+                .is_err()
+            );
+        }
+        let mut foreign = reply.clone();
+        foreign["observation"]["frame_id"] = 19.into();
+        assert!(
+            current_rgb_targets(
+                &snapshot,
+                &foreign,
+                "actual_raw_png_hash",
+                "actual_input_hash",
+                control
+            )
+            .is_err()
+        );
+        let mut foreign = reply;
+        foreign["detections"][0]["reprojection_rms_px"] = 1.1.into();
+        assert!(
+            current_rgb_targets(
+                &snapshot,
+                &foreign,
+                "actual_raw_png_hash",
+                "actual_input_hash",
+                control
+            )
             .is_err()
         );
     }
