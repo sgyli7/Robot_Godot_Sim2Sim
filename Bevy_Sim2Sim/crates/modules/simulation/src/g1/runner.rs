@@ -137,7 +137,9 @@ pub struct G1Runner {
 impl G1Runner {
     pub fn load(config: &G1RunnerConfig) -> Result<Self, RobotError> {
         if config.startup_environment.is_some() && config.task_objects.is_some() {
-            return Err(error("mobile station stand entry cannot overlay an unvalidated task scene"));
+            return Err(error(
+                "mobile station stand entry cannot overlay an unvalidated task scene",
+            ));
         }
         let definition = G1Definition::load(&config.definition, &config.definition_sha256)?;
         if !config.floor_contact_friction.is_finite() || config.floor_contact_friction < 0. {
@@ -243,12 +245,25 @@ impl G1Runner {
         if self.simulation.integration_count != 996
             || self.progress_counts().successful_inference_count != 996
             || self.actuator_backend != G1ActuatorBackend::NativeForceBased
-            || self.task_objects.as_ref().is_none_or(|s| !s.has_source_t2_background())
-            || self.simulation.world.integration_parameters.num_internal_pgs_iterations != 4
+            || self
+                .task_objects
+                .as_ref()
+                .is_none_or(|s| !s.has_source_t2_background())
+            || self
+                .simulation
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations
+                != 4
         {
-            return Err(error("saved walking comparison requires the exact996Tick original4PGS prefix"));
+            return Err(error(
+                "saved walking comparison requires the exact996Tick original4PGS prefix",
+            ));
         }
-        self.simulation.world.integration_parameters.num_internal_pgs_iterations = 16;
+        self.simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = 16;
         Ok(())
     }
 
@@ -517,27 +532,46 @@ mod tests {
 
     #[test]
     fn serialized_mobile_inputs_cannot_inject_prepared_environment() {
-        let original=portable_mobile_configuration();
-        let legacy: G1RunnerConfig=serde_json::from_value(original.clone()).unwrap();
+        let original = portable_mobile_configuration();
+        let legacy: G1RunnerConfig = serde_json::from_value(original.clone()).unwrap();
         assert!(legacy.startup_environment.is_none());
-        let mut injected=original;
-        injected["startup_environment"]=serde_json::json!({"colliders":[]});
+        let mut injected = original;
+        injected["startup_environment"] = serde_json::json!({"colliders":[]});
         assert!(serde_json::from_value::<G1RunnerConfig>(injected).is_err());
     }
 
     #[test]
     fn mobile_station_task_overlay_is_rejected_before_loading_models() {
-        use super::super::static_environment::{StaticEnvironmentIdentity,StaticEnvironmentShape};
-        let mut config: G1RunnerConfig=serde_json::from_value(portable_mobile_configuration()).unwrap();
-        config.startup_environment=Some(Arc::new(PreparedStaticEnvironment::prepare(
-            StaticEnvironmentIdentity{source:"public fixture".into(),model_sha256:"1".repeat(64),
-                manifest_sha256:"2".repeat(64),layout_sha256:"3".repeat(64)},
-            vec![StaticEnvironmentShape::Triangles{vertices:vec![[-1.,0.,-1.],[1.,0.,-1.],[0.,0.,1.]],
-                indices:vec![[0,1,2]]}],1.).unwrap()));
-        config.task_objects=Some(TaskObjectSceneConfig{definition:"not-loaded.json".into(),
-            definition_sha256:"4".repeat(64),placements:vec![],source_t1_shelf:None,source_t2_background:None});
-        assert!(matches!(G1Runner::load(&config),Err(RobotError::Contract(message))
-            if message.contains("unvalidated task scene")));
+        use super::super::static_environment::{StaticEnvironmentIdentity, StaticEnvironmentShape};
+        let mut config: G1RunnerConfig =
+            serde_json::from_value(portable_mobile_configuration()).unwrap();
+        config.startup_environment = Some(Arc::new(
+            PreparedStaticEnvironment::prepare(
+                StaticEnvironmentIdentity {
+                    source: "public fixture".into(),
+                    model_sha256: "1".repeat(64),
+                    manifest_sha256: "2".repeat(64),
+                    layout_sha256: "3".repeat(64),
+                },
+                vec![StaticEnvironmentShape::Triangles {
+                    vertices: vec![[-1., 0., -1.], [1., 0., -1.], [0., 0., 1.]],
+                    indices: vec![[0, 1, 2]],
+                }],
+                1.,
+            )
+            .unwrap(),
+        ));
+        config.task_objects = Some(TaskObjectSceneConfig {
+            definition: "not-loaded.json".into(),
+            definition_sha256: "4".repeat(64),
+            placements: vec![],
+            source_t1_shelf: None,
+            source_t2_background: None,
+        });
+        assert!(
+            matches!(G1Runner::load(&config),Err(RobotError::Contract(message))
+            if message.contains("unvalidated task scene"))
+        );
     }
 
     fn config() -> G1RunnerConfig {

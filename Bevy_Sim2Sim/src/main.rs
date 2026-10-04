@@ -233,10 +233,10 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
             },
         ),
     };
-    let receipt = if arguments.scene.as_deref()==Some("g1_static_observed_place_diagnostic") {
-        dev_tools_minigame::g1_capture::run_static_observed_place_from_file(&path,options)
-    } else if arguments.scene.as_deref()==Some("g1_static_observed_grasp_diagnostic") {
-        dev_tools_minigame::g1_capture::run_static_observed_grasp_from_file(&path,options)
+    let receipt = if arguments.scene.as_deref() == Some("g1_static_observed_place_diagnostic") {
+        dev_tools_minigame::g1_capture::run_static_observed_place_from_file(&path, options)
+    } else if arguments.scene.as_deref() == Some("g1_static_observed_grasp_diagnostic") {
+        dev_tools_minigame::g1_capture::run_static_observed_grasp_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_static_pregrasp_diagnostic") {
         dev_tools_minigame::g1_capture::run_static_pregrasp_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_static_unheld_regrasp_diagnostic") {
@@ -246,9 +246,13 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     } else if arguments.scene.as_deref() == Some("g1_static_memory_place_diagnostic") {
         dev_tools_minigame::g1_capture::run_static_memory_place_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_static_visual_transfer_placement_diagnostic") {
-        dev_tools_minigame::g1_capture::run_static_visual_transfer_placement_from_file(&path, options)
+        dev_tools_minigame::g1_capture::run_static_visual_transfer_placement_from_file(
+            &path, options,
+        )
     } else if arguments.scene.as_deref() == Some("g1_static_visual_transfer_auxiliary_diagnostic") {
-        dev_tools_minigame::g1_capture::run_static_visual_transfer_auxiliary_from_file(&path, options)
+        dev_tools_minigame::g1_capture::run_static_visual_transfer_auxiliary_from_file(
+            &path, options,
+        )
     } else if arguments.scene.as_deref() == Some("g1_static_visual_transfer_diagnostic") {
         dev_tools_minigame::g1_capture::run_static_visual_transfer_from_file(&path, options)
     } else if arguments.scene.as_deref() == Some("g1_static_visual_grasp_diagnostic") {
@@ -440,25 +444,46 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             value => return Err(format!("unknown argument '{value}'")),
         }
     }
-    if options.scene.as_deref()==Some("g1_static_observed_place_diagnostic") && options.g1_ticks!=Some(1100) {
+    if options.scene.as_deref() == Some("g1_static_observed_place_diagnostic")
+        && options.g1_ticks != Some(1100)
+    {
         return Err("observed placement requires --g1-ticks1100 as its finite maximum".into());
     }
-    if options.scene.as_deref()==Some("g1_static_observed_grasp_diagnostic") && options.g1_ticks!=Some(400) {
+    if options.scene.as_deref() == Some("g1_static_observed_grasp_diagnostic")
+        && options.g1_ticks != Some(400)
+    {
         return Err("observed grasp requires --g1-ticks400 as its finite maximum".into());
     }
-    if options.scene.as_deref()==Some("g1_static_pregrasp_diagnostic") && options.g1_ticks!=Some(100) {
+    if options.scene.as_deref() == Some("g1_static_pregrasp_diagnostic")
+        && options.g1_ticks != Some(100)
+    {
         return Err("pregrasp perception requires exactly100Ticks".into());
     }
-    if options.scene.as_deref()==Some("g1_static_unheld_regrasp_diagnostic") && options.g1_ticks!=Some(230) {
+    if options.scene.as_deref() == Some("g1_static_unheld_regrasp_diagnostic")
+        && options.g1_ticks != Some(230)
+    {
         return Err("finite unheld regrasp requires exactly230Ticks".into());
     }
-    if options.scene.as_deref()==Some("g1_static_memory_place_observe_diagnostic") && options.g1_ticks!=Some(840) {
-        return Err("static memory place observe requires its exact840Tick diagnostic budget".into());
+    if options.scene.as_deref() == Some("g1_static_memory_place_observe_diagnostic")
+        && options.g1_ticks != Some(840)
+    {
+        return Err(
+            "static memory place observe requires its exact840Tick diagnostic budget".into(),
+        );
     }
-    if options.scene.as_deref()==Some("g1_static_memory_place_diagnostic") && options.g1_ticks!=Some(715) {
+    if options.scene.as_deref() == Some("g1_static_memory_place_diagnostic")
+        && options.g1_ticks != Some(715)
+    {
         return Err("static memory place requires its exact715Tick diagnostic budget".into());
     }
-    if matches!(options.scene.as_deref(), Some("g1_static_visual_transfer_diagnostic" | "g1_static_visual_transfer_auxiliary_diagnostic" | "g1_static_visual_transfer_placement_diagnostic")) {
+    if matches!(
+        options.scene.as_deref(),
+        Some(
+            "g1_static_visual_transfer_diagnostic"
+                | "g1_static_visual_transfer_auxiliary_diagnostic"
+                | "g1_static_visual_transfer_placement_diagnostic"
+        )
+    ) {
         if options.g1_ticks != Some(390) {
             return Err("static visual transfer requires --g1-ticks390 (140original startup/grasp +250classical transfer)".into());
         }
@@ -506,7 +531,15 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
         if options.g1_ticks != Some(1300) {
             return Err("mobile target view requires --g1-ticks1300 as its finite maximum".into());
         }
-    } else if matches!(options.scene.as_deref(),Some("g1_static_memory_place_diagnostic" | "g1_static_memory_place_observe_diagnostic" | "g1_static_unheld_regrasp_diagnostic" | "g1_static_observed_place_diagnostic")) {
+    } else if matches!(
+        options.scene.as_deref(),
+        Some(
+            "g1_static_memory_place_diagnostic"
+                | "g1_static_memory_place_observe_diagnostic"
+                | "g1_static_unheld_regrasp_diagnostic"
+                | "g1_static_observed_place_diagnostic"
+        )
+    ) {
         // Its exact715/840Tick admission is checked above; ordinary scenes retain400.
     } else if options.g1_ticks.is_some_and(|ticks| ticks > 400) {
         return Err(
@@ -520,30 +553,126 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
 mod tests {
     #[test]
     fn observed_place_keeps_a_separate_exact_maximum() {
-        assert!(super::parse_arguments(["--scene","g1_static_observed_place_diagnostic","--g1-ticks","1100"].map(str::to_owned).into_iter()).is_ok());
-        for ticks in ["400","1046","1101"] {
-            assert!(super::parse_arguments(["--scene","g1_static_observed_place_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            super::parse_arguments(
+                [
+                    "--scene",
+                    "g1_static_observed_place_diagnostic",
+                    "--g1-ticks",
+                    "1100"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["400", "1046", "1101"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_static_observed_place_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
     }
     #[test]
     fn observed_grasp_has_a_distinct_finite_maximum() {
-        assert!(super::parse_arguments(["--scene","g1_static_observed_grasp_diagnostic","--g1-ticks","400"].map(str::to_owned).into_iter()).is_ok());
-        for ticks in ["100","345","401"] {
-            assert!(super::parse_arguments(["--scene","g1_static_observed_grasp_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            super::parse_arguments(
+                [
+                    "--scene",
+                    "g1_static_observed_grasp_diagnostic",
+                    "--g1-ticks",
+                    "400"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["100", "345", "401"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_static_observed_grasp_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
     }
     #[test]
     fn pregrasp_perception_keeps_its_exact_one_chunk_budget() {
-        assert!(super::parse_arguments(["--scene","g1_static_pregrasp_diagnostic","--g1-ticks","100"].map(str::to_owned).into_iter()).is_ok());
-        for ticks in ["60","101","140","230"] {
-            assert!(super::parse_arguments(["--scene","g1_static_pregrasp_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            super::parse_arguments(
+                [
+                    "--scene",
+                    "g1_static_pregrasp_diagnostic",
+                    "--g1-ticks",
+                    "100"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["60", "101", "140", "230"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_static_pregrasp_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
     }
     #[test]
     fn unheld_regrasp_has_a_distinct_exact_finite_budget() {
-        assert!(super::parse_arguments(["--scene","g1_static_unheld_regrasp_diagnostic","--g1-ticks","230"].map(str::to_owned).into_iter()).is_ok());
-        for ticks in ["140","190","231","840"] {
-            assert!(super::parse_arguments(["--scene","g1_static_unheld_regrasp_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            super::parse_arguments(
+                [
+                    "--scene",
+                    "g1_static_unheld_regrasp_diagnostic",
+                    "--g1-ticks",
+                    "230"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["140", "190", "231", "840"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_static_unheld_regrasp_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
     }
     #[test]
@@ -952,9 +1081,14 @@ mod tests {
     fn static_visual_grasp_has_its_distinct_exact_tick_budget() {
         let parse = |ticks: &str| {
             parse_arguments(
-                ["--scene", "g1_static_visual_grasp_diagnostic", "--g1-ticks", ticks]
-                    .map(str::to_owned)
-                    .into_iter(),
+                [
+                    "--scene",
+                    "g1_static_visual_grasp_diagnostic",
+                    "--g1-ticks",
+                    ticks,
+                ]
+                .map(str::to_owned)
+                .into_iter(),
             )
         };
         assert!(parse("140").is_ok());
@@ -964,9 +1098,18 @@ mod tests {
     }
     #[test]
     fn static_visual_transfer_requires_its_distinct_exact_budget() {
-        for scene in ["g1_static_visual_transfer_diagnostic", "g1_static_visual_transfer_auxiliary_diagnostic", "g1_static_visual_transfer_placement_diagnostic"] {
-            let parse = |ticks: &str| parse_arguments(
-                ["--scene", scene, "--g1-ticks", ticks].map(str::to_owned).into_iter());
+        for scene in [
+            "g1_static_visual_transfer_diagnostic",
+            "g1_static_visual_transfer_auxiliary_diagnostic",
+            "g1_static_visual_transfer_placement_diagnostic",
+        ] {
+            let parse = |ticks: &str| {
+                parse_arguments(
+                    ["--scene", scene, "--g1-ticks", ticks]
+                        .map(str::to_owned)
+                        .into_iter(),
+                )
+            };
             assert!(parse("390").is_ok());
             for ticks in ["0", "60", "140", "380", "389", "391"] {
                 assert!(parse(ticks).is_err());
@@ -976,25 +1119,96 @@ mod tests {
 
     #[test]
     fn memory_static_placement_budget_stays_in_its_own_scene() {
-        for args in [["--scene","g1_static_memory_place_diagnostic","--g1-ticks","715"],
-            ["--g1-ticks","715","--scene","g1_static_memory_place_diagnostic"]] {
+        for args in [
+            [
+                "--scene",
+                "g1_static_memory_place_diagnostic",
+                "--g1-ticks",
+                "715",
+            ],
+            [
+                "--g1-ticks",
+                "715",
+                "--scene",
+                "g1_static_memory_place_diagnostic",
+            ],
+        ] {
             assert!(parse_arguments(args.map(str::to_owned).into_iter()).is_ok());
         }
-        for ticks in ["0","140","390","714","716"] {
-            assert!(parse_arguments(["--scene","g1_static_memory_place_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        for ticks in ["0", "140", "390", "714", "716"] {
+            assert!(
+                parse_arguments(
+                    [
+                        "--scene",
+                        "g1_static_memory_place_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
-        for scene in ["g1_camera_diagnostic","g1_static_visual_transfer_diagnostic","g1_task_lab"] {
-            assert!(parse_arguments(["--scene",scene,"--g1-ticks","715"].map(str::to_owned).into_iter()).is_err());
+        for scene in [
+            "g1_camera_diagnostic",
+            "g1_static_visual_transfer_diagnostic",
+            "g1_task_lab",
+        ] {
+            assert!(
+                parse_arguments(
+                    ["--scene", scene, "--g1-ticks", "715"]
+                        .map(str::to_owned)
+                        .into_iter()
+                )
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn static_observation_withdrawal_has_a_separate_exact_budget() {
-        assert!(parse_arguments(["--scene","g1_static_memory_place_observe_diagnostic","--g1-ticks","840"].map(str::to_owned).into_iter()).is_ok());
-        for ticks in ["715","839","841"] {
-            assert!(parse_arguments(["--scene","g1_static_memory_place_observe_diagnostic","--g1-ticks",ticks].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            parse_arguments(
+                [
+                    "--scene",
+                    "g1_static_memory_place_observe_diagnostic",
+                    "--g1-ticks",
+                    "840"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_ok()
+        );
+        for ticks in ["715", "839", "841"] {
+            assert!(
+                parse_arguments(
+                    [
+                        "--scene",
+                        "g1_static_memory_place_observe_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .map(str::to_owned)
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
-        assert!(parse_arguments(["--scene","g1_static_memory_place_diagnostic","--g1-ticks","840"].map(str::to_owned).into_iter()).is_err());
+        assert!(
+            parse_arguments(
+                [
+                    "--scene",
+                    "g1_static_memory_place_diagnostic",
+                    "--g1-ticks",
+                    "840"
+                ]
+                .map(str::to_owned)
+                .into_iter()
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -335,9 +335,11 @@ pub struct ArenaTaskRunner {
 }
 
 impl ArenaTaskRunner {
-    #[cfg(feature="g1_constraint_diagnostic")]
-    pub(super) fn enable_static_hotpath_diagnostic(&mut self)->Result<(),RobotError> {
-        let ArenaBodyRunner::StaticAgile(body)=&mut self.body else {return Err(error("static profiling requires AGILE"));};
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn enable_static_hotpath_diagnostic(&mut self) -> Result<(), RobotError> {
+        let ArenaBodyRunner::StaticAgile(body) = &mut self.body else {
+            return Err(error("static profiling requires AGILE"));
+        };
         body.enable_hotpath_diagnostic()
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -361,78 +363,123 @@ impl ArenaTaskRunner {
     }
 
     #[cfg(feature = "g1_constraint_diagnostic")]
-    pub(super) fn executed_static_command(&self, execution: &ArenaTaskExecution)
-        -> Result<robot_minigame::g1::agile::AgileCommand, RobotError> {
+    pub(super) fn executed_static_command(
+        &self,
+        execution: &ArenaTaskExecution,
+    ) -> Result<robot_minigame::g1::agile::AgileCommand, RobotError> {
         match self.executor.command_for_execution(execution)? {
             ArenaControllerCommand::StaticAgile(command) => Ok(command),
             _ => Err(error("static visual handoff selected a foreign controller")),
         }
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
-    pub(super) fn step_static_visual_transfer_with_guard(&mut self,
-        command: &robot_minigame::g1::agile::AgileCommand,
-        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
-        self.step_static_classical_with_guard(command,guard,140..390)
-    }
-    #[cfg(feature = "g1_constraint_diagnostic")]
-    pub(super) fn step_static_memory_place_with_guard(&mut self,
-        command: &robot_minigame::g1::agile::AgileCommand,
-        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
-        self.step_static_classical_with_guard(command,guard,390..715)
-    }
-    #[cfg(feature = "g1_constraint_diagnostic")]
-    fn step_static_classical_with_guard(&mut self,
+    pub(super) fn step_static_visual_transfer_with_guard(
+        &mut self,
         command: &robot_minigame::g1::agile::AgileCommand,
         guard: &mut dyn FnMut() -> Result<(), RobotError>,
-        ticks:std::ops::Range<u64>) -> Result<ArenaBodyStep, RobotError> {
-        self.step_static_classical_admitted_with_guard(command,guard,ticks,2)
+    ) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_with_guard(command, guard, 140..390)
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
-    pub(super) fn step_static_observed_grasp_with_guard(&mut self,
-        command: &robot_minigame::g1::agile::AgileCommand,
-        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
-        self.step_static_classical_admitted_with_guard(command,guard,100..500,1)
-    }
-    #[cfg(feature = "g1_constraint_diagnostic")]
-    pub(super) fn step_static_observed_place_with_guard(&mut self,
-        command:&robot_minigame::g1::agile::AgileCommand,
-        guard:&mut dyn FnMut()->Result<(),RobotError>,start_tick:u64)->Result<ArenaBodyStep,RobotError> {
-        if !(101..=500).contains(&start_tick) {return Err(error("observed placement start exceeds its fixed contract"));}
-        self.step_static_classical_admitted_with_guard(command,guard,start_tick..start_tick+super::static_observed_place::OBSERVED_PLACE_TICKS,1)
-    }
-    #[cfg(feature = "g1_constraint_diagnostic")]
-    fn step_static_classical_admitted_with_guard(&mut self,
+    pub(super) fn step_static_memory_place_with_guard(
+        &mut self,
         command: &robot_minigame::g1::agile::AgileCommand,
         guard: &mut dyn FnMut() -> Result<(), RobotError>,
-        ticks:std::ops::Range<u64>,required_chunks:u64) -> Result<ArenaBodyStep, RobotError> {
-        if self.halted { return Err(error("static transfer owner is halted")); }
+    ) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_with_guard(command, guard, 390..715)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn step_static_classical_with_guard(
+        &mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+        ticks: std::ops::Range<u64>,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_admitted_with_guard(command, guard, ticks, 2)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_observed_grasp_with_guard(
+        &mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_admitted_with_guard(command, guard, 100..500, 1)
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub(super) fn step_static_observed_place_with_guard(
+        &mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+        start_tick: u64,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        if !(101..=500).contains(&start_tick) {
+            return Err(error("observed placement start exceeds its fixed contract"));
+        }
+        self.step_static_classical_admitted_with_guard(
+            command,
+            guard,
+            start_tick..start_tick + super::static_observed_place::OBSERVED_PLACE_TICKS,
+            1,
+        )
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn step_static_classical_admitted_with_guard(
+        &mut self,
+        command: &robot_minigame::g1::agile::AgileCommand,
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+        ticks: std::ops::Range<u64>,
+        required_chunks: u64,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        if self.halted {
+            return Err(error("static transfer owner is halted"));
+        }
         let result = (|| {
-            guard()?;command.validate()?;
-            let accepted = self.executor.accepted.as_ref().ok_or_else(||error("static transfer has no original grasp"))?;
-            if accepted.profile != TaskProfile::StaticApple || self.executor.pending.is_some()
-                || self.executor.admitted_chunks != required_chunks || command.navigation.iter().any(|v|v.abs()>0.01)
-                || !ticks.contains(&self.progress_counts().integration_count) {
-                return Err(error("static classical phase requires its own completed original-chunk boundary"));
+            guard()?;
+            command.validate()?;
+            let accepted = self
+                .executor
+                .accepted
+                .as_ref()
+                .ok_or_else(|| error("static transfer has no original grasp"))?;
+            if accepted.profile != TaskProfile::StaticApple
+                || self.executor.pending.is_some()
+                || self.executor.admitted_chunks != required_chunks
+                || command.navigation.iter().any(|v| v.abs() > 0.01)
+                || !ticks.contains(&self.progress_counts().integration_count)
+            {
+                return Err(error(
+                    "static classical phase requires its own completed original-chunk boundary",
+                ));
             }
             let frame = task_minigame::policy::PolicyActionFrame {
                 left_arm: command.upper_positions[..7].try_into().unwrap(),
                 left_hand: command.upper_positions[7..14].try_into().unwrap(),
                 right_arm: command.upper_positions[14..21].try_into().unwrap(),
                 right_hand: command.upper_positions[21..28].try_into().unwrap(),
-                waist: [0.;3],base_height_m:command.pelvis_height,navigate_mps_rps:command.navigation,
+                waist: [0.; 3],
+                base_height_m: command.pelvis_height,
+                navigate_mps_rps: command.navigation,
             };
             frame.validate(&self.executor.limits).map_err(error)?;
-            let ArenaBodyRunner::StaticAgile(body) = &mut self.body else {return Err(error("static transfer requires AGILE"));};
-            body.step_with_guard(command,guard).map(|step|ArenaBodyStep::StaticAgile(Box::new(step)))
+            let ArenaBodyRunner::StaticAgile(body) = &mut self.body else {
+                return Err(error("static transfer requires AGILE"));
+            };
+            body.step_with_guard(command, guard)
+                .map(|step| ArenaBodyStep::StaticAgile(Box::new(step)))
         })();
-        if result.is_err() {self.halted=true;self.executor.queue.stop();}
+        if result.is_err() {
+            self.halted = true;
+            self.executor.queue.stop();
+        }
         result
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
-    pub(super) fn step_static_observation_withdrawal_with_guard(&mut self,
+    pub(super) fn step_static_observation_withdrawal_with_guard(
+        &mut self,
         command: &robot_minigame::g1::agile::AgileCommand,
-        guard: &mut dyn FnMut() -> Result<(), RobotError>) -> Result<ArenaBodyStep, RobotError> {
-        self.step_static_classical_with_guard(command,guard,715..840)
+        guard: &mut dyn FnMut() -> Result<(), RobotError>,
+    ) -> Result<ArenaBodyStep, RobotError> {
+        self.step_static_classical_with_guard(command, guard, 715..840)
     }
 
     /// Explicit development-only traditional commands share this existing
@@ -1130,18 +1177,30 @@ mod tests {
             let path = std::env::var(name).map_err(error)?;
             let sha = std::env::var(format!("{name}_SHA256")).map_err(error)?;
             let bytes = bound_bytes(Path::new(&path), &sha)?;
-            if bytes.len() > 2_000_000 { return Err(error("walking comparison exceeds fixture budget")); }
+            if bytes.len() > 2_000_000 {
+                return Err(error("walking comparison exceeds fixture budget"));
+            }
             Ok(bytes)
         };
-        let config: ArenaTaskRunnerConfig = serde_json::from_slice(&read("G1_MOBILE_CONVERGENCE_CONFIG")?).map_err(error)?;
-        let fixture: Fixture = serde_json::from_slice(&read("G1_MOBILE_CONVERGENCE_FIXTURE")?).map_err(error)?;
+        let config: ArenaTaskRunnerConfig =
+            serde_json::from_slice(&read("G1_MOBILE_CONVERGENCE_CONFIG")?).map_err(error)?;
+        let fixture: Fixture =
+            serde_json::from_slice(&read("G1_MOBILE_CONVERGENCE_FIXTURE")?).map_err(error)?;
         if fixture.commands.len() != 1460
             || fixture.commands[996].navigation[0] != 0.3
             || fixture.commands[996].navigation[1] != 0.
             || fixture.commands[1263].navigation != [0.; 3]
-        { return Err(error("walking comparison changed fixed command/timeline identity")); }
+        {
+            return Err(error(
+                "walking comparison changed fixed command/timeline identity",
+            ));
+        }
         let output = std::env::var("G1_MOBILE_CONVERGENCE_OUTPUT").map_err(error)?;
-        let mut trace = fs::OpenOptions::new().write(true).create_new(true).open(output).map_err(error)?;
+        let mut trace = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .map_err(error)?;
         let mut owner = ArenaTaskRunner::load_mobile_constraint_diagnostic(&config)?;
         let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
             return Err(error("walking comparison requires original Homie_v2"));
@@ -1152,13 +1211,20 @@ mod tests {
             }
             command.validate()?;
             let step = body.step(command)?;
-            if step.integration_count != index as u64 + 1 || step.step_configuration.physics_hz != 50 {
+            if step.integration_count != index as u64 + 1
+                || step.step_configuration.physics_hz != 50
+            {
                 return Err(error("walking comparison changed physical timeline"));
             }
-            writeln!(trace,"{}",serde_json::json!({"body":{"mobile_homie_v2":step},
+            writeln!(
+                trace,
+                "{}",
+                serde_json::json!({"body":{"mobile_homie_v2":step},
                 "phase":"offline_saved_walking_contact_convergence","command":command,
                 "fixed_sixteen_pgs_candidate":fixture.use_fixed_sixteen_pgs,
-                "fresh_images":0,"fresh_vla_calls":0,"autonomous_execution":false})).map_err(error)?;
+                "fresh_images":0,"fresh_vla_calls":0,"autonomous_execution":false})
+            )
+            .map_err(error)?;
         }
         Ok(())
     }

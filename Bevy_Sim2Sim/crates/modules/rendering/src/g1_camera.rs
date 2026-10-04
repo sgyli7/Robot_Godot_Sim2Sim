@@ -1108,16 +1108,30 @@ mod tests {
         let state = native(1, 0);
         let original = arena_head_camera(&state.body_frame).unwrap();
         let mut placement = native_head_camera(
-            &state.body_frame, G1CameraMountProfile::StaticPlacementOverview,
-        ).unwrap();
+            &state.body_frame,
+            G1CameraMountProfile::StaticPlacementOverview,
+        )
+        .unwrap();
         placement.native_state = Some(state);
         placement.validate().unwrap();
         assert_eq!(placement.source_ticks, original.source_ticks);
         assert_eq!(placement.sim_time_ns, original.sim_time_ns);
-        assert!(((placement.world_from_camera.translation - original.world_from_camera.translation)
-            .length() - 0.15).abs() < 1e-6);
-        assert!((placement.world_from_camera.rotation.angle_between(original.world_from_camera.rotation)
-            - 25_f32.to_radians()).abs() < 1e-5);
+        assert!(
+            ((placement.world_from_camera.translation - original.world_from_camera.translation)
+                .length()
+                - 0.15)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (placement
+                .world_from_camera
+                .rotation
+                .angle_between(original.world_from_camera.rotation)
+                - 25_f32.to_radians())
+            .abs()
+                < 1e-5
+        );
         placement.mount_profile = G1CameraMountProfile::AuxiliaryGripOverview;
         assert!(placement.validate().is_err());
     }

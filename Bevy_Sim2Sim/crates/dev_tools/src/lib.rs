@@ -3,18 +3,18 @@
 #[cfg(feature = "rendering_preview")]
 pub mod g1_capture;
 #[cfg(feature = "rendering_preview")]
+pub mod g1_decision_diagnostic;
+#[cfg(feature = "rendering_preview")]
 mod g1_marker_vision;
+#[cfg(feature = "rendering_preview")]
+pub mod g1_policy_diagnostic;
 #[cfg(feature = "rendering_preview")]
 mod g1_source_lighting;
 #[cfg(feature = "rendering_preview")]
 mod g1_station_environment;
+pub mod g1_task_acceptance;
 #[cfg(feature = "rendering_preview")]
 pub mod g1_task_lab;
-#[cfg(feature = "rendering_preview")]
-pub mod g1_decision_diagnostic;
-#[cfg(feature = "rendering_preview")]
-pub mod g1_policy_diagnostic;
-pub mod g1_task_acceptance;
 pub mod legacy_cpu_actor;
 #[cfg(feature = "live_render_profile")]
 pub mod render_profile;

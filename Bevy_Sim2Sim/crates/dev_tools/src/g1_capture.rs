@@ -32,13 +32,13 @@ use bevy::{
 mod mobile_continuous;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
-mod static_visual_transfer;
-#[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_observed_grasp;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_observed_place;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod static_visual_transfer;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
@@ -81,9 +81,9 @@ use task_minigame::{
 };
 
 use super::g1_marker_vision::MarkerVisionConfiguration;
-use super::g1_marker_vision::{StaticMarkerVisionConfiguration, StaticMarkerWorker};
 #[cfg(feature = "g1_constraint_diagnostic")]
 use super::g1_marker_vision::{MarkerTargetMemory, MarkerVisionJob};
+use super::g1_marker_vision::{StaticMarkerVisionConfiguration, StaticMarkerWorker};
 use super::g1_source_lighting::{SourceLightingReceipt, SourceRectLighting};
 
 /// Explicit evidence settings. Zero ticks captures the native initialized world
@@ -689,51 +689,75 @@ pub fn run_static_visual_grasp_from_file(
 }
 
 /// Current RGB-mediated classical transfer after exactly two original T1 chunks.
-pub fn run_static_visual_transfer_from_file(path: &Path, options: G1CaptureOptions)
-    -> Result<G1CaptureReceipt, String> {
+pub fn run_static_visual_transfer_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
     run_from_file(path, options, CaptureMode::StaticVisualTransfer)
 }
 
 /// Same transfer and body, then one explicitly declared auxiliary sensor view.
-pub fn run_static_visual_transfer_auxiliary_from_file(path: &Path, options: G1CaptureOptions)
-    -> Result<G1CaptureReceipt, String> {
+pub fn run_static_visual_transfer_auxiliary_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
     run_from_file(path, options, CaptureMode::StaticVisualTransferAuxiliary)
 }
 
 /// The declared near-table T1 sensor after the identical held transfer.
-pub fn run_static_visual_transfer_placement_from_file(path: &Path, options: G1CaptureOptions)
-    -> Result<G1CaptureReceipt, String> {
+pub fn run_static_visual_transfer_placement_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
     run_from_file(path, options, CaptureMode::StaticVisualTransferPlacement)
 }
 
 /// Fresh original grasp/RGB transfer followed by explicitly disclosed memory placement.
-pub fn run_static_memory_place_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
-    run_from_file(path,options,CaptureMode::StaticMemoryPlace)
+pub fn run_static_memory_place_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticMemoryPlace)
 }
 
 /// Same live placement plus a finite physical withdrawal to recover the final view.
-pub fn run_static_memory_place_observe_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
-    run_from_file(path,options,CaptureMode::StaticMemoryPlaceObserve)
+pub fn run_static_memory_place_observe_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticMemoryPlaceObserve)
 }
 
 /// Current100Tick visual admission before the original second chunk closes fingers.
-pub fn run_static_pregrasp_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
-    run_from_file(path,options,CaptureMode::StaticPregrasp)
+pub fn run_static_pregrasp_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticPregrasp)
 }
 
 /// Current preclosure RGB admits a separately labelled classical grasp/lift/hold.
-pub fn run_static_observed_grasp_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
-    run_from_file(path,options,CaptureMode::StaticObservedGrasp)
+pub fn run_static_observed_grasp_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticObservedGrasp)
 }
 
 /// Same observed grasp plus current fixed-pair RGB and bounded classical placement.
-pub fn run_static_observed_place_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
-    run_from_file(path,options,CaptureMode::StaticObservedPlace)
+pub fn run_static_observed_place_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticObservedPlace)
 }
 
 /// One third original chunk from fresh190Tick RGB after an unverified lift.
-pub fn run_static_unheld_regrasp_from_file(path:&Path,options:G1CaptureOptions)->Result<G1CaptureReceipt,String>{
-    run_from_file(path,options,CaptureMode::StaticUnheldRegrasp)
+pub fn run_static_unheld_regrasp_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StaticUnheldRegrasp)
 }
 
 /// Four fresh original chunks separated by explicit native standing waits.
@@ -902,7 +926,19 @@ impl CaptureMode {
             | Self::MobileAuxiliaryApproach
             | Self::MobileAuxiliaryRelease
             | Self::MobileContinuousRelease => Some(3150),
-            Self::Camera | Self::StaticVisualGrasp | Self::StaticVisualTransfer | Self::StaticVisualTransferAuxiliary | Self::StaticVisualTransferPlacement | Self::StaticMemoryPlace | Self::StaticMemoryPlaceObserve | Self::StaticUnheldRegrasp | Self::StaticPregrasp | Self::StaticObservedGrasp | Self::StaticObservedPlace | Self::TaskLab | Self::MobileCarry => None,
+            Self::Camera
+            | Self::StaticVisualGrasp
+            | Self::StaticVisualTransfer
+            | Self::StaticVisualTransferAuxiliary
+            | Self::StaticVisualTransferPlacement
+            | Self::StaticMemoryPlace
+            | Self::StaticMemoryPlaceObserve
+            | Self::StaticUnheldRegrasp
+            | Self::StaticPregrasp
+            | Self::StaticObservedGrasp
+            | Self::StaticObservedPlace
+            | Self::TaskLab
+            | Self::MobileCarry => None,
         }
     }
 }
@@ -1506,7 +1542,9 @@ trait CapturedTaskStep {
     type Body: Serialize;
     fn execution(&self) -> &Self::Execution;
     fn body(&self) -> &Self::Body;
-    fn static_self_measurement(&self) -> Option<&simulation_minigame::g1::runner::G1Measurement> {None}
+    fn static_self_measurement(&self) -> Option<&simulation_minigame::g1::runner::G1Measurement> {
+        None
+    }
     fn image_admission(&self) -> Result<Option<serde_json::Value>, serde_json::Error> {
         Ok(None)
     }
@@ -1531,10 +1569,14 @@ impl CapturedTaskStep for simulation_minigame::g1::static_startup::StaticStartup
     fn body(&self) -> &simulation_minigame::g1::task_runner::ArenaBodyStep {
         &self.body
     }
-    fn static_self_measurement(&self)->Option<&simulation_minigame::g1::runner::G1Measurement> {
-        match &self.body { simulation_minigame::g1::task_runner::ArenaBodyStep::StaticAgile(s)=>Some(&s.measurement), _=>None }
+    fn static_self_measurement(&self) -> Option<&simulation_minigame::g1::runner::G1Measurement> {
+        match &self.body {
+            simulation_minigame::g1::task_runner::ArenaBodyStep::StaticAgile(s) => {
+                Some(&s.measurement)
+            }
+            _ => None,
+        }
     }
-
 }
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl CapturedTaskStep for simulation_minigame::g1::mobile_assist::MobileAssistStep {
@@ -1578,9 +1620,11 @@ impl<S: CapturedTaskStep> OwnerEvidence<S> {
         for record in self.trace.drain() {
             // Separate bounded self-sensor copy; task/body truth never enters
             // the memory estimator, despite sharing this audit subscription.
-            if let Some(state)=record.step.static_self_measurement() {
+            if let Some(state) = record.step.static_self_measurement() {
                 if (140..=390).contains(&state.source_tick) {
-                    if self.static_self_samples.len()>=251 {return Err("static self history overflow".into());}
+                    if self.static_self_samples.len() >= 251 {
+                        return Err("static self history overflow".into());
+                    }
                     self.static_self_samples.push(state.clone());
                 }
             }
@@ -1710,7 +1754,9 @@ fn run_capture_owner(
     let mobile_carry = mode == CaptureMode::MobileCarry;
     if let Some(qwen) = &diagnostic_qwen_dispatch {
         if !cfg!(feature = "g1_constraint_diagnostic") {
-            return Err("Qwen transport requires the explicit constraint diagnostic feature".into());
+            return Err(
+                "Qwen transport requires the explicit constraint diagnostic feature".into(),
+            );
         }
         qwen.validate_entry(mode, &config)?;
     }
@@ -1720,17 +1766,84 @@ fn run_capture_owner(
     let static_pregrasp = mode == CaptureMode::StaticPregrasp;
     let static_observed_place = mode == CaptureMode::StaticObservedPlace;
     #[cfg(not(feature = "g1_constraint_diagnostic"))]
-    if static_observed_place {return Err("observed placement requires the explicit constraint diagnostic feature".into());}
-    let static_observed_grasp = matches!(mode,CaptureMode::StaticObservedGrasp|CaptureMode::StaticObservedPlace);
-    if static_pair_program.is_some()!=static_observed_place || (static_observed_place && !static_grasp_fixed_camera_pair) {return Err("observed placement requires its explicit paired-RGB program and entry".into());}
-    if static_grasp_fixed_camera_pair && !static_observed_grasp {return Err("fixed camera pair requires the explicit observed-grasp entry".into());}
-    if static_grasp_template.is_some()!=static_observed_grasp {return Err("observed grasp template requires its explicit entry".into());}
-    let static_memory_place = matches!(mode,CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve);
-    let static_transfer_placement = matches!(mode, CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
-    let static_transfer_auxiliary = matches!(mode, CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
-    let static_visual_transfer = matches!(mode, CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp);
-    let static_visual_grasp = matches!(mode, CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp | CaptureMode::StaticPregrasp | CaptureMode::StaticObservedGrasp | CaptureMode::StaticObservedPlace);
-    let static_visual_budget = if static_observed_place {1100} else if static_observed_grasp {400} else if static_pregrasp {100} else if static_unheld_regrasp {230} else if static_memory_observe {840} else if static_memory_place { 715 } else if static_visual_transfer { 390 } else { 140 };
+    if static_observed_place {
+        return Err(
+            "observed placement requires the explicit constraint diagnostic feature".into(),
+        );
+    }
+    let static_observed_grasp = matches!(
+        mode,
+        CaptureMode::StaticObservedGrasp | CaptureMode::StaticObservedPlace
+    );
+    if static_pair_program.is_some() != static_observed_place
+        || (static_observed_place && !static_grasp_fixed_camera_pair)
+    {
+        return Err("observed placement requires its explicit paired-RGB program and entry".into());
+    }
+    if static_grasp_fixed_camera_pair && !static_observed_grasp {
+        return Err("fixed camera pair requires the explicit observed-grasp entry".into());
+    }
+    if static_grasp_template.is_some() != static_observed_grasp {
+        return Err("observed grasp template requires its explicit entry".into());
+    }
+    let static_memory_place = matches!(
+        mode,
+        CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve
+    );
+    let static_transfer_placement = matches!(
+        mode,
+        CaptureMode::StaticVisualTransferPlacement
+            | CaptureMode::StaticMemoryPlace
+            | CaptureMode::StaticMemoryPlaceObserve
+            | CaptureMode::StaticUnheldRegrasp
+    );
+    let static_transfer_auxiliary = matches!(
+        mode,
+        CaptureMode::StaticVisualTransferAuxiliary
+            | CaptureMode::StaticVisualTransferPlacement
+            | CaptureMode::StaticMemoryPlace
+            | CaptureMode::StaticMemoryPlaceObserve
+            | CaptureMode::StaticUnheldRegrasp
+    );
+    let static_visual_transfer = matches!(
+        mode,
+        CaptureMode::StaticVisualTransfer
+            | CaptureMode::StaticVisualTransferAuxiliary
+            | CaptureMode::StaticVisualTransferPlacement
+            | CaptureMode::StaticMemoryPlace
+            | CaptureMode::StaticMemoryPlaceObserve
+            | CaptureMode::StaticUnheldRegrasp
+    );
+    let static_visual_grasp = matches!(
+        mode,
+        CaptureMode::StaticVisualGrasp
+            | CaptureMode::StaticVisualTransfer
+            | CaptureMode::StaticVisualTransferAuxiliary
+            | CaptureMode::StaticVisualTransferPlacement
+            | CaptureMode::StaticMemoryPlace
+            | CaptureMode::StaticMemoryPlaceObserve
+            | CaptureMode::StaticUnheldRegrasp
+            | CaptureMode::StaticPregrasp
+            | CaptureMode::StaticObservedGrasp
+            | CaptureMode::StaticObservedPlace
+    );
+    let static_visual_budget = if static_observed_place {
+        1100
+    } else if static_observed_grasp {
+        400
+    } else if static_pregrasp {
+        100
+    } else if static_unheld_regrasp {
+        230
+    } else if static_memory_observe {
+        840
+    } else if static_memory_place {
+        715
+    } else if static_visual_transfer {
+        390
+    } else {
+        140
+    };
     let memory_view = mode == CaptureMode::MobileTargetMemoryView;
     let restored_view = mode == CaptureMode::MobileTargetRestoredView;
     let continuous = mode == CaptureMode::MobileContinuousRelease;
@@ -1745,18 +1858,33 @@ fn run_capture_owner(
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
     let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
     if static_startup
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp | CaptureMode::StaticPregrasp | CaptureMode::StaticObservedGrasp | CaptureMode::StaticObservedPlace)
-            || assisted_carry
+        && (!matches!(
+            mode,
+            CaptureMode::Camera
+                | CaptureMode::StaticVisualGrasp
+                | CaptureMode::StaticVisualTransfer
+                | CaptureMode::StaticVisualTransferAuxiliary
+                | CaptureMode::StaticVisualTransferPlacement
+                | CaptureMode::StaticMemoryPlace
+                | CaptureMode::StaticMemoryPlaceObserve
+                | CaptureMode::StaticUnheldRegrasp
+                | CaptureMode::StaticPregrasp
+                | CaptureMode::StaticObservedGrasp
+                | CaptureMode::StaticObservedPlace
+        ) || assisted_carry
             || !predictive_limit_diagnostic
             || diagnostic_constraint_sweeps != Some(16)
             || !matches!(&config,CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || if static_marker_assets.is_some() {
                 policy.is_some() != static_visual_grasp
-                    || options.ticks != if static_visual_grasp { static_visual_budget } else { 60 }
+                    || options.ticks
+                        != if static_visual_grasp {
+                            static_visual_budget
+                        } else {
+                            60
+                        }
             } else {
-                policy
-                    .as_ref()
-                    .is_none_or(|p| p.boundary_images_with_wait)
+                policy.as_ref().is_none_or(|p| p.boundary_images_with_wait)
             })
     {
         return Err("explicit static startup requires bounded T1 camera/live-policy mode and predictive 16-sweep owner without mobile boundary waits".into());
@@ -1842,8 +1970,20 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if static_marker_assets.is_some()
-        && (!matches!(mode, CaptureMode::Camera | CaptureMode::StaticVisualGrasp | CaptureMode::StaticVisualTransfer | CaptureMode::StaticVisualTransferAuxiliary | CaptureMode::StaticVisualTransferPlacement | CaptureMode::StaticMemoryPlace | CaptureMode::StaticMemoryPlaceObserve | CaptureMode::StaticUnheldRegrasp | CaptureMode::StaticPregrasp | CaptureMode::StaticObservedGrasp | CaptureMode::StaticObservedPlace)
-            || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
+        && (!matches!(
+            mode,
+            CaptureMode::Camera
+                | CaptureMode::StaticVisualGrasp
+                | CaptureMode::StaticVisualTransfer
+                | CaptureMode::StaticVisualTransferAuxiliary
+                | CaptureMode::StaticVisualTransferPlacement
+                | CaptureMode::StaticMemoryPlace
+                | CaptureMode::StaticMemoryPlaceObserve
+                | CaptureMode::StaticUnheldRegrasp
+                | CaptureMode::StaticPregrasp
+                | CaptureMode::StaticObservedGrasp
+                | CaptureMode::StaticObservedPlace
+        ) || !matches!(&config, CaptureRunnerConfig::Task(c) if c.body.profile()==TaskProfile::StaticApple)
             || policy.is_some() != static_visual_grasp
             || if static_visual_grasp {
                 !static_startup || options.ticks != static_visual_budget
@@ -1862,7 +2002,16 @@ fn run_capture_owner(
         && (static_marker_assets.is_none()
             || static_marker_vision.is_none()
             || policy.as_ref().is_none_or(|p| {
-                p.max_calls != if static_pregrasp || static_observed_grasp {1} else if static_unheld_regrasp {3} else {2} || p.prefetch_after_ticks.is_some() || p.boundary_images_with_wait
+                p.max_calls
+                    != if static_pregrasp || static_observed_grasp {
+                        1
+                    } else if static_unheld_regrasp {
+                        3
+                    } else {
+                        2
+                    }
+                    || p.prefetch_after_ticks.is_some()
+                    || p.boundary_images_with_wait
             })
             || !static_startup
             || options.ticks != static_visual_budget)
@@ -1874,11 +2023,26 @@ fn run_capture_owner(
         if !static_labels || interactive || (policy.is_some() && !static_visual_grasp) {
             return Err("static CPU localization requires calibration or the separate original two-chunk visual handoff".into());
         }
-        if vision.calibration_version==3 && !matches!(mode,CaptureMode::StaticObservedGrasp|CaptureMode::StaticObservedPlace|CaptureMode::StaticPregrasp|CaptureMode::Camera) {return Err("multi-face static labels require their separate observed-grasp/calibration entry".into());}
+        if vision.calibration_version == 3
+            && !matches!(
+                mode,
+                CaptureMode::StaticObservedGrasp
+                    | CaptureMode::StaticObservedPlace
+                    | CaptureMode::StaticPregrasp
+                    | CaptureMode::Camera
+            )
+        {
+            return Err(
+                "multi-face static labels require their separate observed-grasp/calibration entry"
+                    .into(),
+            );
+        }
         vision.validate()?;
         let labels = static_marker_assets.as_ref().unwrap();
         if labels.path != vision.fiducial_path || labels.sha256 != vision.fiducial_sha256 {
-            return Err("static CPU calibration differs from the actually printed scene labels".into());
+            return Err(
+                "static CPU calibration differs from the actually printed scene labels".into(),
+            );
         }
     }
     let fiducial_model = mobile_scan
@@ -2230,9 +2394,11 @@ fn run_capture_owner(
         outcome.0.lock().unwrap().scope = "native_local_qwen_interactive_lab_no_qualified_executor";
     }
     if static_observed_place {
-        outcome.0.lock().unwrap().scope="native_actual_rgb_observed_grasp_fixed_pair_classical_place_diagnostic_not_qualified";
+        outcome.0.lock().unwrap().scope =
+            "native_actual_rgb_observed_grasp_fixed_pair_classical_place_diagnostic_not_qualified";
     } else if static_observed_grasp {
-        outcome.0.lock().unwrap().scope="native_actual_preclosure_rgb_and_disclosed_classical_template_grasp_diagnostic";
+        outcome.0.lock().unwrap().scope =
+            "native_actual_preclosure_rgb_and_disclosed_classical_template_grasp_diagnostic";
     }
     if waited_grasp {
         outcome.0.lock().unwrap().scope = "native_four_fresh_original_grasp_chunks_with_explicit_physical_standing_waits_not_qualified";
@@ -2257,22 +2423,60 @@ fn run_capture_owner(
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
     let static_transfer_route = if static_visual_transfer {
-        let CaptureRunnerConfig::Task(c) = &config else {return Err("static transfer task owner absent".into());};
-        let ArenaTaskBodyConfig::StaticAgile(b) = &c.body else {return Err("static transfer AGILE body absent".into());};
-        Some(static_visual_transfer::StaticTransferRoute::new(&b.definition,&b.definition_sha256,if static_memory_place { b.task_objects.as_ref() } else { None })?)
-    } else {None};
+        let CaptureRunnerConfig::Task(c) = &config else {
+            return Err("static transfer task owner absent".into());
+        };
+        let ArenaTaskBodyConfig::StaticAgile(b) = &c.body else {
+            return Err("static transfer AGILE body absent".into());
+        };
+        Some(static_visual_transfer::StaticTransferRoute::new(
+            &b.definition,
+            &b.definition_sha256,
+            if static_memory_place {
+                b.task_objects.as_ref()
+            } else {
+                None
+            },
+        )?)
+    } else {
+        None
+    };
     #[cfg(feature = "g1_constraint_diagnostic")]
-    let static_observed_grasp_route=if let Some(template)=static_grasp_template.as_ref() {
-        let CaptureRunnerConfig::Task(c)=&config else {return Err("observed grasp task absent".into());};
-        let ArenaTaskBodyConfig::StaticAgile(b)=&c.body else {return Err("observed grasp AGILE absent".into());};
-        Some(static_observed_grasp::StaticObservedGraspRoute::new(&b.definition,&b.definition_sha256,template)?)
-    } else {None};
+    let static_observed_grasp_route = if let Some(template) = static_grasp_template.as_ref() {
+        let CaptureRunnerConfig::Task(c) = &config else {
+            return Err("observed grasp task absent".into());
+        };
+        let ArenaTaskBodyConfig::StaticAgile(b) = &c.body else {
+            return Err("observed grasp AGILE absent".into());
+        };
+        Some(static_observed_grasp::StaticObservedGraspRoute::new(
+            &b.definition,
+            &b.definition_sha256,
+            template,
+        )?)
+    } else {
+        None
+    };
     #[cfg(feature = "g1_constraint_diagnostic")]
-    let static_observed_place_route=if let Some(program)=static_pair_program {
-        let CaptureRunnerConfig::Task(c)=&config else {return Err("observed placement task absent".into());};
-        let ArenaTaskBodyConfig::StaticAgile(b)=&c.body else {return Err("observed placement AGILE absent".into());};
-        Some(static_observed_place::StaticObservedPlaceRoute::new(static_marker_vision.as_ref().ok_or("observed placement CPU configuration absent")?,program,b.task_objects.as_ref().ok_or("observed placement public geometry absent")?)?)
-    } else {None};
+    let static_observed_place_route = if let Some(program) = static_pair_program {
+        let CaptureRunnerConfig::Task(c) = &config else {
+            return Err("observed placement task absent".into());
+        };
+        let ArenaTaskBodyConfig::StaticAgile(b) = &c.body else {
+            return Err("observed placement AGILE absent".into());
+        };
+        Some(static_observed_place::StaticObservedPlaceRoute::new(
+            static_marker_vision
+                .as_ref()
+                .ok_or("observed placement CPU configuration absent")?,
+            program,
+            b.task_objects
+                .as_ref()
+                .ok_or("observed placement public geometry absent")?,
+        )?)
+    } else {
+        None
+    };
     #[cfg(feature = "g1_constraint_diagnostic")]
     let qwen_dispatch = diagnostic_qwen_dispatch
         .map(|c| mobile_qwen_dispatch::Dispatch::new(c, episode_id).map(Mutex::new))
@@ -2594,15 +2798,30 @@ mod budget_tests {
 
     #[test]
     fn observed_place_budget_is_registered_in_the_actual_capture_guard_only() {
-        assert_eq!(CaptureMode::StaticObservedPlace.capture_tick_limit(true),1100);
-        for mode in [CaptureMode::StaticObservedGrasp,CaptureMode::StaticPregrasp,CaptureMode::StaticVisualGrasp,CaptureMode::Camera,CaptureMode::TaskLab] {
-            assert_eq!(mode.capture_tick_limit(true),400);
-            assert_eq!(mode.capture_tick_limit(false),150);
+        assert_eq!(
+            CaptureMode::StaticObservedPlace.capture_tick_limit(true),
+            1100
+        );
+        for mode in [
+            CaptureMode::StaticObservedGrasp,
+            CaptureMode::StaticPregrasp,
+            CaptureMode::StaticVisualGrasp,
+            CaptureMode::Camera,
+            CaptureMode::TaskLab,
+        ] {
+            assert_eq!(mode.capture_tick_limit(true), 400);
+            assert_eq!(mode.capture_tick_limit(false), 150);
         }
-        assert_eq!(CaptureMode::StaticMemoryPlace.capture_tick_limit(true),715);
-        assert_eq!(CaptureMode::StaticMemoryPlaceObserve.capture_tick_limit(true),840);
-        assert_eq!(CaptureMode::MobileCarry.capture_tick_limit(true),1500);
-        assert_eq!(CaptureMode::MobileContinuousRelease.capture_tick_limit(true),3150);
+        assert_eq!(CaptureMode::StaticMemoryPlace.capture_tick_limit(true), 715);
+        assert_eq!(
+            CaptureMode::StaticMemoryPlaceObserve.capture_tick_limit(true),
+            840
+        );
+        assert_eq!(CaptureMode::MobileCarry.capture_tick_limit(true), 1500);
+        assert_eq!(
+            CaptureMode::MobileContinuousRelease.capture_tick_limit(true),
+            3150
+        );
     }
     #[test]
     fn prefetch_windows_do_not_mix_profiles_or_change_original_horizons() {
@@ -2880,14 +3099,24 @@ fn drive_bounded_task(
     outcome: &CaptureOutcome,
     port: &G1CameraPort,
 ) -> Result<bool, String> {
-    if let Some(target)=runtime.static_observed_place_target_tick {
-        let latest=runtime.latest.as_ref().ok_or("observed placement owner snapshot absent")?;
-        if latest.phase==G1WorkerPhase::Failed {return Err(latest.reason.clone().unwrap_or("observed placement owner failed".into()));}
-        return Ok(latest.phase==G1WorkerPhase::Paused && latest.timing.episode_integrations==target);
+    if let Some(target) = runtime.static_observed_place_target_tick {
+        let latest = runtime
+            .latest
+            .as_ref()
+            .ok_or("observed placement owner snapshot absent")?;
+        if latest.phase == G1WorkerPhase::Failed {
+            return Err(latest
+                .reason
+                .clone()
+                .unwrap_or("observed placement owner failed".into()));
+        }
+        return Ok(
+            latest.phase == G1WorkerPhase::Paused && latest.timing.episode_integrations == target
+        );
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
     if runtime.static_observed_grasp_route.is_some() {
-        return static_observed_grasp::drive(runtime,outcome,port);
+        return static_observed_grasp::drive(runtime, outcome, port);
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
     if runtime.static_transfer_route.is_some() {
@@ -4255,22 +4484,22 @@ fn drive_live_policy(
         )
         .map_err(|e| e.to_string())?;
         let timed = TimedArenaTaskCommand {
-                episode_id: runtime.episode_id,
-                valid_until_sim_ns: end_tick
-                    .checked_mul(ARENA_ACTION_PERIOD_NS)
-                    .ok_or("live time overflow")?,
-                valid_until_wall: Instant::now()
-                    + Duration::from_nanos(horizon * ARENA_ACTION_PERIOD_NS)
-                    + Duration::from_secs(1),
-                command: ArenaTaskCommand {
-                    scheduled_start_sim_ns: None,
-                    chunk: Arc::new(chunk),
-                },
-            };
+            episode_id: runtime.episode_id,
+            valid_until_sim_ns: end_tick
+                .checked_mul(ARENA_ACTION_PERIOD_NS)
+                .ok_or("live time overflow")?,
+            valid_until_wall: Instant::now()
+                + Duration::from_nanos(horizon * ARENA_ACTION_PERIOD_NS)
+                + Duration::from_secs(1),
+            command: ArenaTaskCommand {
+                scheduled_start_sim_ns: None,
+                chunk: Arc::new(chunk),
+            },
+        };
         if runtime.static_regrasp_started {
             #[cfg(feature = "g1_constraint_diagnostic")]
             {
-                let CaptureWorker::StaticStartup(owner)=&runtime.worker else {
+                let CaptureWorker::StaticStartup(owner) = &runtime.worker else {
                     return Err("finite regrasp selected a foreign physical owner".into());
                 };
                 owner.submit(simulation_minigame::g1::worker::TimedCommand {
@@ -4283,7 +4512,10 @@ fn drive_live_policy(
             #[cfg(not(feature = "g1_constraint_diagnostic"))]
             return Err("finite regrasp requires the separate diagnostic feature".into());
         } else {
-            runtime.worker.submit_live_chunk(timed).map_err(|e|e.to_string())?;
+            runtime
+                .worker
+                .submit_live_chunk(timed)
+                .map_err(|e| e.to_string())?;
         }
         let mut receipt = outcome.0.lock().unwrap();
         receipt.live_policy_successes += 1;
@@ -4773,8 +5005,12 @@ fn drive_capture(
             if let Some(localization) = worker.poll()? {
                 let tick = localization["localization"]["observation"]["sim_time_ns"]
                     .as_u64()
-                    .ok_or("static localization time absent")? / 20_000_000;
-                if (runtime.static_observed_grasp && tick!=100) || ((runtime.static_memory_observe || runtime.static_unheld_regrasp) && tick == 190) {
+                    .ok_or("static localization time absent")?
+                    / 20_000_000;
+                if (runtime.static_observed_grasp && tick != 100)
+                    || ((runtime.static_memory_observe || runtime.static_unheld_regrasp)
+                        && tick == 190)
+                {
                     outcome.0.lock().unwrap().static_grip_localization = Some(localization);
                 } else {
                     outcome.0.lock().unwrap().static_marker_localization = Some(localization);
@@ -4966,53 +5202,76 @@ fn drive_capture(
             camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
             return Ok(());
         }
-        if runtime.static_observed_grasp && latest.timing.episode_integrations == 100
-            && latest.phase == G1WorkerPhase::Paused && runtime.static_marker_activation_render_frame.is_none() {
-            marker_gate.as_mut().ok_or("observed grasp marker gate absent")?.enabled=true;
-            runtime.static_marker_activation_render_frame=Some(runtime.render_frames);
-            return Ok(());
-        }
-        if runtime.static_visual_transfer && latest.timing.episode_integrations == 140
+        if runtime.static_observed_grasp
+            && latest.timing.episode_integrations == 100
             && latest.phase == G1WorkerPhase::Paused
-            && runtime.static_marker_activation_render_frame.is_none() {
-            marker_gate.as_mut().ok_or("static transfer marker gate absent")?.enabled = true;
+            && runtime.static_marker_activation_render_frame.is_none()
+        {
+            marker_gate
+                .as_mut()
+                .ok_or("observed grasp marker gate absent")?
+                .enabled = true;
             runtime.static_marker_activation_render_frame = Some(runtime.render_frames);
             return Ok(());
         }
-        if runtime.static_transfer_auxiliary && latest.timing.episode_integrations == 390
+        if runtime.static_visual_transfer
+            && latest.timing.episode_integrations == 140
             && latest.phase == G1WorkerPhase::Paused
-            && camera_mount.0 == G1CameraMountProfile::ArenaEgo {
+            && runtime.static_marker_activation_render_frame.is_none()
+        {
+            marker_gate
+                .as_mut()
+                .ok_or("static transfer marker gate absent")?
+                .enabled = true;
+            runtime.static_marker_activation_render_frame = Some(runtime.render_frames);
+            return Ok(());
+        }
+        if runtime.static_transfer_auxiliary
+            && latest.timing.episode_integrations == 390
+            && latest.phase == G1WorkerPhase::Paused
+            && camera_mount.0 == G1CameraMountProfile::ArenaEgo
+        {
             camera_mount.0 = if runtime.static_transfer_placement {
                 G1CameraMountProfile::StaticPlacementOverview
-            } else {G1CameraMountProfile::AuxiliaryGripOverview};
+            } else {
+                G1CameraMountProfile::AuxiliaryGripOverview
+            };
             runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
             return Ok(());
         }
-        if (runtime.static_memory_observe || runtime.static_unheld_regrasp) && !runtime.static_regrasp_started && latest.timing.episode_integrations == 190
+        if (runtime.static_memory_observe || runtime.static_unheld_regrasp)
+            && !runtime.static_regrasp_started
+            && latest.timing.episode_integrations == 190
             && latest.phase == G1WorkerPhase::Paused
-            && camera_mount.0 == G1CameraMountProfile::ArenaEgo {
+            && camera_mount.0 == G1CameraMountProfile::ArenaEgo
+        {
             camera_mount.0 = G1CameraMountProfile::StaticPlacementOverview;
             runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
             return Ok(());
         }
-        if runtime.static_unheld_regrasp && runtime.static_regrasp_started
-            && latest.phase == G1WorkerPhase::Paused {
-            let gate=marker_gate.as_mut().ok_or("regrasp marker gate absent")?;
+        if runtime.static_unheld_regrasp
+            && runtime.static_regrasp_started
+            && latest.phase == G1WorkerPhase::Paused
+        {
+            let gate = marker_gate.as_mut().ok_or("regrasp marker gate absent")?;
             if latest.timing.episode_integrations == 190 && gate.enabled {
-                gate.enabled=false;
-                camera_mount.0=G1CameraMountProfile::ArenaEgo;
-                runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
+                gate.enabled = false;
+                camera_mount.0 = G1CameraMountProfile::ArenaEgo;
+                runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
                 return Ok(());
             }
             if latest.timing.episode_integrations == 230 && !gate.enabled {
-                gate.enabled=true;
-                camera_mount.0=G1CameraMountProfile::StaticPlacementOverview;
-                runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
+                gate.enabled = true;
+                camera_mount.0 = G1CameraMountProfile::StaticPlacementOverview;
+                runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
                 return Ok(());
             }
         }
         if (runtime.static_transfer_auxiliary || runtime.static_observed_grasp)
-            && runtime.static_auxiliary_activation_frame.is_some_and(|n| runtime.render_frames < n + 2) {
+            && runtime
+                .static_auxiliary_activation_frame
+                .is_some_and(|n| runtime.render_frames < n + 2)
+        {
             return Ok(());
         }
         let render_ready = runtime.render_frames > 30
@@ -5042,9 +5301,13 @@ fn drive_capture(
         if runtime.live_policy.is_some() && !drive_bounded_task(&mut runtime, &outcome, &port)? {
             return Ok(());
         }
-        if runtime.static_observed_grasp && !runtime.static_grasp_pair_secondary && latest.phase==G1WorkerPhase::Paused && camera_mount.0==G1CameraMountProfile::ArenaEgo {
-            camera_mount.0=G1CameraMountProfile::StaticPlacementOverview;
-            runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
+        if runtime.static_observed_grasp
+            && !runtime.static_grasp_pair_secondary
+            && latest.phase == G1WorkerPhase::Paused
+            && camera_mount.0 == G1CameraMountProfile::ArenaEgo
+        {
+            camera_mount.0 = G1CameraMountProfile::StaticPlacementOverview;
+            runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
             return Ok(());
         }
         if runtime.live_policy.is_none() && !runtime.command_submitted && runtime.options.ticks > 0
@@ -5069,12 +5332,23 @@ fn drive_capture(
         #[cfg(not(feature = "g1_constraint_diagnostic"))]
         let continuous_complete = false;
         #[cfg(feature = "g1_constraint_diagnostic")]
-        let observed_grasp_complete=runtime.static_observed_grasp_route.as_ref().is_some_and(|r|r.completed());
+        let observed_grasp_complete = runtime
+            .static_observed_grasp_route
+            .as_ref()
+            .is_some_and(|r| r.completed());
         #[cfg(not(feature = "g1_constraint_diagnostic"))]
-        let observed_grasp_complete=false;
-        let observed_place_complete=runtime.static_observed_place_target_tick.is_some_and(|target| latest.phase==G1WorkerPhase::Paused && latest.timing.episode_integrations==target);
-        let capture_boundary = if observed_place_complete {true} else if observed_grasp_complete {
-            latest.phase==G1WorkerPhase::Paused
+        let observed_grasp_complete = false;
+        let observed_place_complete =
+            runtime
+                .static_observed_place_target_tick
+                .is_some_and(|target| {
+                    latest.phase == G1WorkerPhase::Paused
+                        && latest.timing.episode_integrations == target
+                });
+        let capture_boundary = if observed_place_complete {
+            true
+        } else if observed_grasp_complete {
+            latest.phase == G1WorkerPhase::Paused
         } else if continuous_complete {
             latest.phase == G1WorkerPhase::Paused
         } else if runtime
@@ -5097,9 +5371,17 @@ fn drive_capture(
                     && latest.timing.total_integrations == u64::from(runtime.options.ticks))
         };
         if capture_boundary && !runtime.requested {
-            if runtime.static_visual_grasp && !runtime.static_visual_transfer && !runtime.static_observed_grasp {
-                if latest.phase != G1WorkerPhase::Paused || latest.timing.total_integrations != if runtime.static_pregrasp {100} else {140} {
-                    return Err("static visual handoff did not reach its fixed completed boundary".into());
+            if runtime.static_visual_grasp
+                && !runtime.static_visual_transfer
+                && !runtime.static_observed_grasp
+            {
+                if latest.phase != G1WorkerPhase::Paused
+                    || latest.timing.total_integrations
+                        != if runtime.static_pregrasp { 100 } else { 140 }
+                {
+                    return Err(
+                        "static visual handoff did not reach its fixed completed boundary".into(),
+                    );
                 }
                 if runtime.static_marker_activation_render_frame.is_none() {
                     marker_gate
@@ -5107,12 +5389,14 @@ fn drive_capture(
                         .ok_or("static visual marker gate absent")?
                         .enabled = true;
                     runtime.static_marker_activation_render_frame = Some(runtime.render_frames);
-                    outcome.0.lock().unwrap().static_visual_grasp_handoff = Some(serde_json::json!({
-                        "phase":if runtime.static_pregrasp {"one_original_chunk_then_preclosure_marker_rgb"} else {"two_original_unmarked_chunks_then_current_marker_rgb"},
-                        "markers_activated_at_completed_tick":if runtime.static_pregrasp {100} else {140},"unmarked_original_vla_calls":if runtime.static_pregrasp {1} else {2},
-                        "first_original_action_tick":60,"current_observation_required_tick":if runtime.static_pregrasp {100} else {140},
-                        "geometric_correction_executed":false,"task_qualified":false,
-                    }));
+                    outcome.0.lock().unwrap().static_visual_grasp_handoff = Some(
+                        serde_json::json!({
+                            "phase":if runtime.static_pregrasp {"one_original_chunk_then_preclosure_marker_rgb"} else {"two_original_unmarked_chunks_then_current_marker_rgb"},
+                            "markers_activated_at_completed_tick":if runtime.static_pregrasp {100} else {140},"unmarked_original_vla_calls":if runtime.static_pregrasp {1} else {2},
+                            "first_original_action_tick":60,"current_observation_required_tick":if runtime.static_pregrasp {100} else {140},
+                            "geometric_correction_executed":false,"task_qualified":false,
+                        }),
+                    );
                     return Ok(());
                 }
                 if runtime.render_frames
@@ -5121,7 +5405,11 @@ fn drive_capture(
                     return Ok(());
                 }
             }
-            if runtime.static_marker_worker.as_ref().is_some_and(|w| !w.ready()) {
+            if runtime
+                .static_marker_worker
+                .as_ref()
+                .is_some_and(|w| !w.ready())
+            {
                 return Ok(());
             }
             if latest.timing.total_integrations > u64::from(runtime.options.ticks) {
@@ -5205,10 +5493,11 @@ fn drive_capture(
                 runtime.requested = false;
                 return Ok(());
             }
-            let use_auxiliary = runtime.static_transfer_auxiliary || runtime
-                .mobile_assist
-                .as_ref()
-                .is_some_and(|a| a.auxiliary_view);
+            let use_auxiliary = runtime.static_transfer_auxiliary
+                || runtime
+                    .mobile_assist
+                    .as_ref()
+                    .is_some_and(|a| a.auxiliary_view);
             #[cfg(feature = "g1_constraint_diagnostic")]
             let use_auxiliary = use_auxiliary
                 || runtime
@@ -5237,10 +5526,10 @@ fn drive_capture(
             }
             frame.stamp.native_state.as_ref().unwrap().validate()?;
             if !runtime.static_visual_transfer {
-                let observed_grasp=runtime.static_observed_grasp;
-                let pair_secondary=runtime.static_grasp_pair_secondary;
-                let placement_started=runtime.static_observed_place_target_tick.is_some();
-                let passive_pair=runtime.static_grasp_fixed_camera_pair;
+                let observed_grasp = runtime.static_observed_grasp;
+                let pair_secondary = runtime.static_grasp_pair_secondary;
+                let placement_started = runtime.static_observed_place_target_tick.is_some();
+                let passive_pair = runtime.static_grasp_fixed_camera_pair;
                 if let Some(worker) = &mut runtime.static_marker_worker {
                     if observed_grasp {
                         if !pair_secondary && !placement_started {
@@ -5248,10 +5537,15 @@ fn drive_capture(
                             // when the first view misses the apple. This receipt
                             // cannot actuate; placement still requires both roles
                             // from the separate strict current paired-RGB result.
-                            if passive_pair {worker.submit_unverified_grip_capture(&frame)?;}
-                            else {worker.submit_grip_capture(&frame)?;}
+                            if passive_pair {
+                                worker.submit_unverified_grip_capture(&frame)?;
+                            } else {
+                                worker.submit_grip_capture(&frame)?;
+                            }
                         }
-                    } else {worker.submit_capture(&frame)?;}
+                    } else {
+                        worker.submit_capture(&frame)?;
+                    }
                 }
             }
             if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
@@ -5265,14 +5559,32 @@ fn drive_capture(
                 .map_err(|e| e.to_string())?;
             }
             let image_directory = if runtime.static_grasp_pair_secondary {
-                let directory = runtime.options.output.join("static_grip_secondary_vision_input");
-                fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+                let directory = runtime
+                    .options
+                    .output
+                    .join("static_grip_secondary_vision_input");
+                fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
                 let observation = super::g1_marker_vision::static_observation(&frame.stamp)?;
-                let first: serde_json::Value = serde_json::from_slice(&fs::read(runtime.options.output.join("static_grip_vision_input/observation.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-                super::g1_marker_vision::validate_fixed_pair(&first,&observation)?;
-                fs::write(directory.join("observation.json"),serde_json::to_vec_pretty(&observation).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                let first: serde_json::Value = serde_json::from_slice(
+                    &fs::read(
+                        runtime
+                            .options
+                            .output
+                            .join("static_grip_vision_input/observation.json"),
+                    )
+                    .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                super::g1_marker_vision::validate_fixed_pair(&first, &observation)?;
+                fs::write(
+                    directory.join("observation.json"),
+                    serde_json::to_vec_pretty(&observation).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
                 Some(directory)
-            } else {None};
+            } else {
+                None
+            };
             let rgba = frame
                 .rgb
                 .chunks_exact(3)
@@ -5291,14 +5603,22 @@ fn drive_capture(
             )
             .try_into_dynamic()
             .map_err(|error| error.to_string())?
-            .save(image_directory.as_ref().map_or_else(||runtime.options.output.join("ego_640x480.png"),|p|p.join("ego.png")))
+            .save(image_directory.as_ref().map_or_else(
+                || runtime.options.output.join("ego_640x480.png"),
+                |p| p.join("ego.png"),
+            ))
             .map_err(|error| error.to_string())?;
             fs::write(
-                image_directory.as_ref().map_or_else(||runtime.options.output.join("ego_stamp.json"),|p|p.join("stamp.json")),
+                image_directory.as_ref().map_or_else(
+                    || runtime.options.output.join("ego_stamp.json"),
+                    |p| p.join("stamp.json"),
+                ),
                 serde_json::to_vec_pretty(&frame.stamp).map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())?;
-            if !runtime.static_grasp_pair_secondary {outcome.0.lock().unwrap().ego_stamp = Some(frame.stamp);}
+            if !runtime.static_grasp_pair_secondary {
+                outcome.0.lock().unwrap().ego_stamp = Some(frame.stamp);
+            }
             runtime.ego_saved = true;
         }
         if runtime.ego_saved
@@ -5309,37 +5629,60 @@ fn drive_capture(
                 .as_ref()
                 .map_err(Clone::clone)?
         {
-            if runtime.static_observed_grasp && outcome.0.lock().unwrap().static_grip_localization.is_none() {return Ok(());}
-            if runtime.static_marker_worker.is_some()
-                && outcome.0.lock().unwrap().static_marker_localization.is_none()
+            if runtime.static_observed_grasp
+                && outcome.0.lock().unwrap().static_grip_localization.is_none()
             {
                 return Ok(());
             }
-            if runtime.static_grasp_fixed_camera_pair && runtime.static_observed_place_target_tick.is_none() && !runtime.static_grasp_pair_secondary {
+            if runtime.static_marker_worker.is_some()
+                && outcome
+                    .0
+                    .lock()
+                    .unwrap()
+                    .static_marker_localization
+                    .is_none()
+            {
+                return Ok(());
+            }
+            if runtime.static_grasp_fixed_camera_pair
+                && runtime.static_observed_place_target_tick.is_none()
+                && !runtime.static_grasp_pair_secondary
+            {
                 if runtime.static_observed_place {
-                    for (original,preserved) in [("ego_640x480.png","static_grip_primary_640x480.png"),("ego_stamp.json","static_grip_primary_stamp.json"),("main_1920x1080.png","static_grip_main_1920x1080.png")] {
-                        fs::copy(runtime.options.output.join(original),runtime.options.output.join(preserved)).map_err(|e|e.to_string())?;
+                    for (original, preserved) in [
+                        ("ego_640x480.png", "static_grip_primary_640x480.png"),
+                        ("ego_stamp.json", "static_grip_primary_stamp.json"),
+                        ("main_1920x1080.png", "static_grip_main_1920x1080.png"),
+                    ] {
+                        fs::copy(
+                            runtime.options.output.join(original),
+                            runtime.options.output.join(preserved),
+                        )
+                        .map_err(|e| e.to_string())?;
                     }
                 }
-                runtime.static_grasp_pair_secondary=true;
-                runtime.requested=false;
-                runtime.ego_saved=false;
-                camera_mount.0=G1CameraMountProfile::ArenaEgo;
-                runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
-                if let Some(handoff)=&mut outcome.0.lock().unwrap().static_visual_grasp_handoff {
-                    handoff["fixed_camera_pair_same_native_tick"]=true.into();
-                    handoff["secondary_camera_profile"]="arena_ego".into();
-                    handoff["secondary_capture_proposes_actuation"]=false.into();
+                runtime.static_grasp_pair_secondary = true;
+                runtime.requested = false;
+                runtime.ego_saved = false;
+                camera_mount.0 = G1CameraMountProfile::ArenaEgo;
+                runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
+                if let Some(handoff) = &mut outcome.0.lock().unwrap().static_visual_grasp_handoff {
+                    handoff["fixed_camera_pair_same_native_tick"] = true.into();
+                    handoff["secondary_camera_profile"] = "arena_ego".into();
+                    handoff["secondary_capture_proposes_actuation"] = false.into();
                 }
                 return Ok(());
             }
             #[cfg(feature = "g1_constraint_diagnostic")]
-            if runtime.static_observed_place && runtime.static_observed_place_target_tick.is_none() {
-                if static_observed_place::prepare(&mut runtime,&outcome)? {
-                    runtime.requested=false;runtime.ego_saved=false;runtime.static_grasp_pair_secondary=false;
-                    *runtime.main_saved.lock().unwrap()=Ok(false);
-                    camera_mount.0=G1CameraMountProfile::StaticPlacementOverview;
-                    runtime.static_auxiliary_activation_frame=Some(runtime.render_frames);
+            if runtime.static_observed_place && runtime.static_observed_place_target_tick.is_none()
+            {
+                if static_observed_place::prepare(&mut runtime, &outcome)? {
+                    runtime.requested = false;
+                    runtime.ego_saved = false;
+                    runtime.static_grasp_pair_secondary = false;
+                    *runtime.main_saved.lock().unwrap() = Ok(false);
+                    camera_mount.0 = G1CameraMountProfile::StaticPlacementOverview;
+                    runtime.static_auxiliary_activation_frame = Some(runtime.render_frames);
                 }
                 return Ok(());
             }

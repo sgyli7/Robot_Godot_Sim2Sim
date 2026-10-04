@@ -426,8 +426,19 @@ impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl StaticStartupWorker {
     /// Timers only; the same controller, world, clock and failure guards.
-    pub fn spawn_static_startup_profiled(config:ArenaTaskRunnerConfig)->Result<Self,RobotError> {
-        Self::spawn_owner(config.body.episode_id(),move |episode_id|super::static_startup::StaticStartupRunner::load_profiled(&ArenaTaskRunnerConfig {body:config.body.with_episode(episode_id),..config.clone()}),SystemClock)
+    pub fn spawn_static_startup_profiled(
+        config: ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        Self::spawn_owner(
+            config.body.episode_id(),
+            move |episode_id| {
+                super::static_startup::StaticStartupRunner::load_profiled(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
     }
     /// Existing native4PGS and the same predictive bounds, selected before the
     /// clock starts. Dedicated comparator; resets preserve the selection.
