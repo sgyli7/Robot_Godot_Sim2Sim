@@ -15,11 +15,12 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 
 from .artifacts import JOINT_ORDER, sha256
 from .batch_drive import _quat_matrix
-from .foot_curriculum import add_foot_sensors
+from .foot_curriculum import add_foot_sensors, make_foot_course_cfg
 from .mjlab_env import GooseDevelopmentEnv
 from .source_training import completed_root_state, make_standing_cfg, sole_travel_exceeded
 
 REVISION = "goose_bent_snapshot_standing_v1"
+FORWARD_REVISION = "goose_bent_snapshot_native_forward_v1"
 
 
 def read_stance(path: Path, digest: str, model_path: Path, contract_path: Path):
@@ -59,12 +60,8 @@ def stance_height_reward(env, target_z):
     return torch.exp(-(completed_root_state(env)[0][:, 2]-target_z).square()/.0025)
 
 
-def make_bent_standing_cfg(model_path: Path, contract_path: Path, stance_path: Path,
-                           stance_sha256: str, *, num_envs=16, seed=47,
-                           episode_length_s=12.):
-    state, model = read_stance(stance_path, stance_sha256, model_path, contract_path)
-    cfg = make_standing_cfg(model_path, contract_path, num_envs=num_envs,
-                           seed=seed, episode_length_s=episode_length_s)
+def _apply_stance_initial_state(cfg, state, model):
+    """Share one declared reset pose and standing-height target across tasks."""
     pose, velocity = np.asarray(state["qpos"]), np.asarray(state["qvel"])
     initial = cfg.scene.entities["robot"].init_state
     initial.pos, initial.rot = tuple(pose[:3]), tuple(pose[3:7])
@@ -79,7 +76,31 @@ def make_bent_standing_cfg(model_path: Path, contract_path: Path, stance_path: P
         params={"target_z": float(pose[2])})
     cfg.terminations["sole_travel"] = TerminationTermCfg(func=sole_travel_exceeded,
         params={"max_depth_m": .0015})
-    return add_foot_sensors(cfg, contract_path)
+    return cfg
+
+
+def make_bent_standing_cfg(model_path: Path, contract_path: Path, stance_path: Path,
+                           stance_sha256: str, *, num_envs=16, seed=47,
+                           episode_length_s=12.):
+    state, model = read_stance(stance_path, stance_sha256, model_path, contract_path)
+    cfg = make_standing_cfg(model_path, contract_path, num_envs=num_envs,
+                           seed=seed, episode_length_s=episode_length_s)
+    return add_foot_sensors(_apply_stance_initial_state(cfg, state, model), contract_path)
+
+
+def make_bent_foot_course_cfg(model_path: Path, contract_path: Path, stance_path: Path,
+                             stance_sha256: str, *, num_envs=16, seed=49,
+                             episode_length_s=12.):
+    """Reuse native forward commands and swing rewards from the held stance.
+
+    The actual controller and 65/18 interface remain identical to standing.
+    Only the task, declared initial conditions and height target are combined;
+    the upstream command manager owns goals and the policy must create steps.
+    """
+    state, model = read_stance(stance_path, stance_sha256, model_path, contract_path)
+    cfg = make_foot_course_cfg(model_path, contract_path, num_envs=num_envs,
+                              seed=seed, episode_length_s=episode_length_s)
+    return _apply_stance_initial_state(cfg, state, model)
 
 
 class GooseBentStanceEnv(GooseDevelopmentEnv):
