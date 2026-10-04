@@ -107,19 +107,31 @@ def close_owned(child, recording=False):
 def record_owned_window(child, directory, ffmpeg):
     deadline = time.monotonic() + 20
     window = None
+    tree_retries = 0
     while window is None:
         if child.poll() is not None:
             return None, {"reason": "owned app exited before its window mapped"}
-        tree = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True)
+        if time.monotonic() > deadline:
+            raise TimeoutError("Owned app window mapping20s")
+        # The root tree includes foreign windows. A window closing during the
+        # recursive query produces BadWindow even when our app is healthy.
+        # Retry this read only, within the original bound, without restarting
+        # the app, its episode, inference or any physical step.
+        try:
+            tree = subprocess.check_output(["xwininfo", "-root", "-tree"], text=True, timeout=2)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            tree_retries += 1
+            time.sleep(.05)
+            continue
         for wid in re.findall(r'(0x[0-9a-f]+) "G1 科学站任务验证"', tree):
-            prop = subprocess.run(["xprop", "-id", wid, "_NET_WM_PID"], capture_output=True, text=True).stdout
+            prop = subprocess.run(["xprop", "-id", wid, "_NET_WM_PID"], capture_output=True, text=True, timeout=2).stdout
             if re.search(r'=\s*' + str(child.pid) + r'\s*$', prop):
                 window = wid
                 break
         if time.monotonic() > deadline:
             raise TimeoutError("Owned app window mapping20s")
         time.sleep(.05)
-    info = subprocess.check_output(["xwininfo", "-id", window], text=True)
+    info = subprocess.check_output(["xwininfo", "-id", window], text=True, timeout=2)
     if ("IsViewable" not in info or int(re.search(r"Width:\s+(\d+)", info).group(1)) != 1920
             or int(re.search(r"Height:\s+(\d+)", info).group(1)) != 1080):
         raise ValueError("Owned app window changed baseline resolution")
@@ -130,7 +142,7 @@ def record_owned_window(child, directory, ffmpeg):
     with (directory / "ffmpeg.log").open("x") as log:
         recorder = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     return recorder, {"command": command, "window_id": window, "window_pid_matches_owned_app": True,
-                      "owned_recorder_pid": recorder.pid}
+                      "owned_recorder_pid": recorder.pid, "read_only_window_tree_retries": tree_retries}
 
 
 def run(args):
@@ -297,6 +309,11 @@ def run(args):
                         print(f"EVENT case ended strict_pass={result['strict_task_passed']} ticks={result['actual_integrations']} N16={calls} score={summary['successes']}/{len(summary['cases'])}", flush=True)
                     lifecycle["final_health"] = health()
                 finally:
+                    if server is not None and server.poll() is None:
+                        try:
+                            lifecycle["final_health"] = health()
+                        except Exception as error:
+                            lifecycle["final_health_error"] = repr(error)
                     lifecycle["exit_code"] = close_owned(server)
                     lifecycle["owned_model_closed"] = True
                     server = None

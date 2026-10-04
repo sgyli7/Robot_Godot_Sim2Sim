@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import unitree_g1_mobile_suite as suite
@@ -54,6 +56,26 @@ def route_fixture():
 
 
 class MobileSuiteTests(unittest.TestCase):
+    def test_foreign_window_closing_retries_only_the_read_without_restarting_app(self):
+        child = Mock(pid=123)
+        child.poll.return_value = None
+        recorder = Mock(pid=456)
+        tree = '0x123456 "G1 科学站任务验证"'
+        info = 'IsViewable\nWidth: 1920\nHeight: 1080\n'
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(suite.subprocess, "check_output", side_effect=[
+                    subprocess.CalledProcessError(1, ["xwininfo", "-root", "-tree"]), tree, info]) as query, \
+                patch.object(suite.subprocess, "run", return_value=Mock(stdout='_NET_WM_PID = 123\n')), \
+                patch.object(suite.subprocess, "Popen", return_value=recorder) as spawn, \
+                patch.object(suite.time, "sleep"), patch.dict(suite.os.environ, {"DISPLAY": ":fixture"}):
+            actual, receipt = suite.record_owned_window(child, Path(temporary), "fixture_ffmpeg")
+            self.assertIs(actual, recorder)
+            self.assertEqual(receipt["read_only_window_tree_retries"], 1)
+            self.assertEqual(query.call_count, 3)
+            self.assertEqual(spawn.call_count, 1)
+            self.assertEqual(spawn.call_args.args[0][0], "fixture_ffmpeg")
+            self.assertTrue(receipt["window_pid_matches_owned_app"])
+
     def test_threshold_seed_order_duplicate_and_tool_changes_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
