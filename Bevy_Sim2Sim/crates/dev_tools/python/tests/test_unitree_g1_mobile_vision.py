@@ -1,5 +1,6 @@
 """Finite visual planning regressions; fixtures do not prove physical success."""
 import itertools
+import importlib.util
 from pathlib import Path
 import sys
 import unittest
@@ -8,7 +9,10 @@ from unittest.mock import patch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import unitree_g1_mobile_vision as vision
+if importlib.util.find_spec("cv2") is not None:
+    import unitree_g1_mobile_vision as vision
+else:
+    vision = None
 
 
 def fine_proposal(box_x, box_y=0., half_width=.12):
@@ -33,6 +37,7 @@ def fine_proposal(box_x, box_y=0., half_width=.12):
             {21: np.eye(4), 22: np.eye(4)}, 0.)
 
 
+@unittest.skipUnless(vision is not None, "visual tests require the pinned G1 OpenCV runtime")
 class FinePlanningTests(unittest.TestCase):
     def test_far_containment_is_not_erased_by_a_single_step_horizon(self):
         proposal = fine_proposal(-.79)
