@@ -43,6 +43,30 @@ class SourceWarehouseMaterial(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite mapping"):
             surface(self.mesh, self.usd)
 
+    def test_station_tabletop_has_source_constant_albedo_and_real_normals(self):
+        top = self.stage.GetPrimAtPath(
+            "/Lab/TaskAssets/table/Geometry/sm_tabletop_a01_01/sm_tabletop_a01_top_01")
+        mapped = surface(top, self.usd, restore_station_tabletop=True)
+        self.assertEqual(mapped["base_color"], [0.10999999940395355] * 3)
+        self.assertIsNone(mapped["albedo"])
+        self.assertIsNone(mapped["orm"])
+        self.assertEqual(mapped["albedo_add"], 0.)
+        self.assertEqual(mapped["roughness"], 0.)
+        self.assertTrue(mapped["normal_flip_tangent_v"])
+        self.assertEqual(Path(mapped["normal"]["path"]).name, "T_Chrome_Scratched_A1_Normal.png")
+        self.assertEqual(mapped["station_tabletop"]["source_mdl_sha256"],
+                         "6bd81a5e59d972568c1330d0a9b0b26e490709414d4ecf9d266465ebf568ca9a")
+        self.assertEqual(mapped["station_tabletop"]["albedo_brightness"], 0.)
+
+    def test_station_tabletop_rejects_changed_source_parameters(self):
+        top = self.stage.GetPrimAtPath(
+            "/Lab/TaskAssets/table/Geometry/sm_tabletop_a01_01/sm_tabletop_a01_top_01")
+        material = UsdShade.MaterialBindingAPI(top).ComputeBoundMaterial()[0]
+        shader = next(UsdShade.Shader(p) for p in Usd.PrimRange(material.GetPrim()) if p.IsA(UsdShade.Shader))
+        shader.GetInput("albedo_brightness").Set(0.25)
+        with self.assertRaisesRegex(ValueError, "station tabletop"):
+            surface(top, self.usd, restore_station_tabletop=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -401,7 +401,22 @@ pub struct TaskObjectFrame {
 
 impl TaskObjectScene {
     pub(super) fn has_source_t2_background(&self) -> bool {
-        self.source_t2_background.is_some()
+        self.source_t2_background
+            .as_ref()
+            .is_some_and(|background| {
+                background.selection()
+                    == robot_minigame::g1::task_fixtures::T2BackgroundSelection::OriginalScene
+            })
+    }
+
+    #[cfg(any(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn has_station_t2_fixtures(&self) -> bool {
+        self.source_t2_background
+            .as_ref()
+            .is_some_and(|background| {
+                background.selection()
+                    == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures
+            })
     }
 
     /// The ignored diagnostic may isolate this one contact pair class at startup.

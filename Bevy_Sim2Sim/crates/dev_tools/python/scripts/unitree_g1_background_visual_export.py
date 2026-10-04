@@ -20,6 +20,7 @@ from unitree_g1_task_visual_export import geometry
 
 USD_SHA = "7e14dcfd948591b8fdae61d41b412097b39490022dfc25aab9b90b6884509051"
 WAREHOUSE_MDL_SHA = "2e2aef644544b619f5df253eacbaed941be89bc1018fb58cbb47d0e8ac1d4192"
+TABLETOP_MDL_SHA = "6bd81a5e59d972568c1330d0a9b0b26e490709414d4ecf9d266465ebf568ca9a"
 DEACTIVATE = ("BackgroundAssets/boxes/jetson_orin_06", "BackgroundAssets/boxes/jetson_orin_03",
               "BackgroundAssets/boxes/hesai_box_06")
 
@@ -63,7 +64,7 @@ def display_color_surface(prim):
                 'roughness_metallic_scope': 'renderer approximation; original unbound shading parity unproven'}}
 
 
-def surface(prim, usd, geometry_prim=None):
+def surface(prim, usd, geometry_prim=None, *, restore_station_tabletop=False):
     bound = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]
     if not bound:
         return display_color_surface(geometry_prim if geometry_prim is not None else prim)
@@ -123,6 +124,43 @@ def surface(prim, usd, geometry_prim=None):
                                   "albedo_desaturation": desaturation, "roughness_min_max": roughness},
                 "authored_shader_inputs": {i.GetBaseName(): str(i.Get()) for i in shader.GetInputs()}}
 
+    # The original tabletop explicitly sets brightness=0 and add=0.11.
+    # Its byte-bound OmniPBR wrapper therefore has constant diffuse lookup,
+    # while retaining the actual normal texture. Only this inspected source
+    # material is restored; existing source-only exports keep their old bytes.
+    if restore_station_tabletop and str(prim.GetPath()) == "/Lab/TaskAssets/table/Geometry/sm_tabletop_a01_01/sm_tabletop_a01_top_01":
+        mdl = Path(source.resolvedPath or (usd.parent / source.path)).resolve() if source else None
+        add = float(value("albedo_add", -1.))
+        if (mdl is None or not mdl.is_file() or digest(mdl) != TABLETOP_MDL_SHA
+                or float(value("albedo_brightness", -1.)) != 0.
+                or abs(add - 0.10999999940395355) > 1e-12
+                or float(value("albedo_desaturation", 0.)) != 0.
+                or tuple(map(float, value("diffuse_tint", ()))) != (1., 1., 1.)
+                or float(value("metallic_constant", -1.)) != 0.
+                or float(value("reflection_roughness_constant", -1.)) != 0.
+                or float(value("reflection_roughness_texture_influence", -1.)) != 0.
+                or float(value("specular_level", -1.)) != 0.
+                or float(value("metallic_texture_influence", 0.)) != 0.
+                or float(value("ao_to_diffuse", 0.)) != 0.
+                or tuple(map(float, value("texture_scale", (1., 1.)))) != (1., 1.)
+                or not value("flip_tangent_v", True) or value("flip_tangent_u", False)
+                or value("enable_opacity", False) or value("enable_emission", False)):
+            raise ValueError("Original station tabletop shader/constant lookup contract changed")
+        albedo = texture("diffuse_texture")
+        normal = texture("normalmap_texture")
+        if albedo is None or normal is None:
+            raise ValueError("Original station tabletop textures are missing")
+        return {"source_material": str(bound.GetPath()), "base_color": [add] * 3,
+                "base_color_space": "linear_rec709", "albedo_add": 0.,
+                "roughness": 0., "metallic": 0., "albedo": None, "normal": normal, "orm": None,
+                "uv_scale": [1., 1.], "normal_flip_tangent_v": True,
+                "station_tabletop": {"source_mdl_sha256": TABLETOP_MDL_SHA,
+                    "source_omnipbr_sha256": "d384fc800f120e3cad1b7ca8837f9c554f9c34343d194813fca27caa493001f2",
+                    "source_clearcoat_sha256": "687fce3f0693146b91495f04407a7c38c78f6b9262b63621f44b4b1f09110469",
+                    "original_albedo": albedo, "albedo_brightness": 0., "albedo_offset": add,
+                    "specular_level": 0.},
+                "authored_shader_inputs": {i.GetBaseName(): str(i.Get()) for i in shader.GetInputs()}}
+
     if value("enable_opacity", False) or value("enable_emission", False):
         raise ValueError("Active background opacity/emission needs a separate mapping")
     albedo = texture("diffuse_texture")
@@ -156,8 +194,13 @@ def main():
     parser.add_argument("--usd", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mobile-background", type=Path, help="byte-bound native T2 physics definition; enables mobile visuals")
+    parser.add_argument("--restore-station-tabletop", action="store_true",
+                        help="restore only the byte-bound original tabletop constant albedo; separate station transfer asset")
     args = parser.parse_args()
+    exporter_sha = digest(Path(__file__))
     mobile = args.mobile_background is not None
+    if args.restore_station_tabletop and not mobile:
+        raise ValueError("Station tabletop mapping requires the matched T2 background")
     physics_sha = digest(args.mobile_background) if mobile else None
     if mobile:
         physical = json.loads(args.mobile_background.read_text())
@@ -185,7 +228,8 @@ def main():
 
     def append_mesh(prim, material_prim, transform, selected=None, owner_path=None):
         try:
-            material = surface(material_prim, args.usd, prim)
+            material = surface(material_prim, args.usd, prim,
+                               restore_station_tabletop=args.restore_station_tabletop)
         except ValueError as error:
             omitted.append({"path": str(material_prim.GetPath()), "reason": str(error),
                             "face_indices": selected})
@@ -253,7 +297,7 @@ def main():
         raise ValueError("All three original task shelf surfaces are required")
     document = {
         "schema": "native_g1_mobile_background_visual_v1" if mobile else "native_g1_static_background_visual_v1", "units": "metres_z_up",
-        "source_usd_sha256": USD_SHA, "exporter_sha256": digest(Path(__file__)),
+        "source_usd_sha256": USD_SHA, "exporter_sha256": exporter_sha,
         "source_arena_commit": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
         "source_deactivated_prims": disabled,
         "source_background_translation": [4.420, 1.408, -.795],
