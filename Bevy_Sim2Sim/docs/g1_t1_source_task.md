@@ -565,7 +565,7 @@ post-startup geometry prevents attributing the outcome to one contact setting.
 A separate `static_marker_assets` camera configuration now admits only the
 explicit original AGILE station0/60Tick no-policy diagnostic with16nonintegrating
 solver iterations and predictive limits. It loads the published
-`assets/g1_fiducials/static_apple_plate.json` labels: IDs31/32, black square
+`assets/game/scenes/dev/g1_fiducials/static_apple_plate.json` labels: IDs31/32, black square
 sizes20/60mm, overall white-margin sizes25/75mm, fixed object-local centers
 [.002,0,.046] and[0,0,.0045] metres, both facing source+Z. They are declared
 render-only planar labels; physics geometry/materials/mass do not change.

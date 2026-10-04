@@ -572,7 +572,7 @@ mod static_profile_tests {
     #[test]
     fn repository_static_labels_bind_relative_pixels_and_publish_exact_mounts() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../assets/g1_fiducials/static_apple_plate.json");
+            .join("../../../assets/game/scenes/dev/g1_fiducials/static_apple_plate.json");
         let hash = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
         let model = G1TaskFiducialModel::load(&path, &hash).unwrap();
         assert_eq!(model.receipt.marker_ids, [31, 32]);
