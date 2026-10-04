@@ -174,6 +174,7 @@ pub struct MobileAssistStep {
 /// No second world, physical pose setter, task-object sensor or model client.
 pub struct MobileAssistRunner {
     owner: ArenaTaskRunner,
+    station_fixture: bool,
     calibration: MobileGripCalibration,
     maximum_observation_wall_age_ms: u64,
     maximum_observation_age_ns: u64,
@@ -219,12 +220,38 @@ impl MobileAssistRunner {
     /// Opt-in factory only: original complete T2 scene/50Hz/native motors with
     /// the already measured4PGS candidate. Normal task loading is unchanged.
     pub fn load(config: &ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        Self::from_owner(
+            config,
+            ArenaTaskRunner::load_mobile_constraint_diagnostic(config)?,
+            false,
+        )
+    }
+
+    /// Distinct native-station transfer factory. Its completed original grasp
+    /// uses the independently measured100Tick self-state hold before locomotion;
+    /// the original complete-source factory retains its50Tick settling phase.
+    pub fn load_mobile_station_fixture_diagnostic(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        Self::from_owner(
+            config,
+            ArenaTaskRunner::load_mobile_station_fixture_diagnostic(config)?,
+            true,
+        )
+    }
+
+    fn from_owner(
+        config: &ArenaTaskRunnerConfig,
+        owner: ArenaTaskRunner,
+        station_fixture: bool,
+    ) -> Result<Self, RobotError> {
         let ArenaTaskBodyConfig::MobileHomieV2(body) = &config.body else {
             return Err(invalid("mobile assist requires Homie_v2/N1.6"));
         };
         let definition = G1Definition::load(&body.definition, &body.definition_sha256)?;
         Ok(Self {
-            owner: ArenaTaskRunner::load_mobile_constraint_diagnostic(config)?,
+            owner,
+            station_fixture,
             calibration: MobileGripCalibration::new(&definition)?,
             maximum_observation_wall_age_ms: config.max_observation_wall_age_ms,
             maximum_observation_age_ns: config.max_observation_age_ns,
@@ -967,15 +994,22 @@ impl MobileAssistRunner {
                     // Original VLA navigation is not a stationary-hold command.
                     command.navigation = [0.; 3];
                     let admission = self.classical_admission(goal.observation, &state)?;
-                    self.grip_settle = Some(GripSettleState {
-                        holding: MobileGripHolding::new_grip_settle_with_admission(
+                    let holding = if self.station_fixture {
+                        MobileGripHolding::new_with_admission(
                             goal.clone(),
                             &state,
                             command,
                             &admission,
-                        )?,
-                        grip,
-                    });
+                        )?
+                    } else {
+                        MobileGripHolding::new_grip_settle_with_admission(
+                            goal.clone(),
+                            &state,
+                            command,
+                            &admission,
+                        )?
+                    };
+                    self.grip_settle = Some(GripSettleState { holding, grip });
                 }
                 let settle = self.grip_settle.as_mut().unwrap();
                 if settle.holding.goal() != goal {

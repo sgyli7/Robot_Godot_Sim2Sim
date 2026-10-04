@@ -39,6 +39,8 @@ mod static_observed_grasp;
 mod static_observed_place;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_visual_transfer;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod station_carry;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
     g1_background_visual::{
@@ -212,6 +214,8 @@ struct MobileAssistCaptureRuntime {
     auxiliary_view: bool,
     auxiliary_approach: bool,
     auxiliary_release: bool,
+    station_carry: bool,
+    station_hold_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     fine_alignment_confirmed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -258,6 +262,7 @@ impl MobileAssistCaptureRuntime {
         auxiliary_view: bool,
         auxiliary_approach: bool,
         auxiliary_release: bool,
+        station_carry: bool,
     ) -> Self {
         let scan_only = matches!(&configuration, MobileAssistStage::Scan(_));
         let view_with_lowering =
@@ -276,6 +281,8 @@ impl MobileAssistCaptureRuntime {
             auxiliary_view,
             auxiliary_approach,
             auxiliary_release,
+            station_carry,
+            station_hold_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             fine_alignment_confirmed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -423,11 +430,17 @@ impl CaptureRunnerConfig {
             };
             #[cfg(feature = "g1_constraint_diagnostic")]
             {
-                return simulation_minigame::g1::worker::MobileAssistWorker::spawn_mobile_assist(
-                    config,
-                )
-                .map(CaptureWorker::AssistedMobile)
-                .map_err(|e| e.to_string());
+                let station_fixture = matches!(&config.body, ArenaTaskBodyConfig::MobileHomieV2(body) if body.task_objects.as_ref().and_then(|scene| scene.source_t2_background.as_ref()).is_some_and(|background| background.selection == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures));
+                let worker = if station_fixture {
+                    simulation_minigame::g1::worker::MobileAssistWorker::spawn_station_mobile_assist(
+                        config,
+                    )
+                } else {
+                    simulation_minigame::g1::worker::MobileAssistWorker::spawn_mobile_assist(config)
+                };
+                return worker
+                    .map(CaptureWorker::AssistedMobile)
+                    .map_err(|e| e.to_string());
             }
             #[cfg(not(feature = "g1_constraint_diagnostic"))]
             {
@@ -789,6 +802,15 @@ pub fn run_mobile_carry_from_file(
     run_from_file(path, options, CaptureMode::MobileCarry)
 }
 
+/// Fresh station RGB/VLA, disclosed self-state hold, then fixed public-aisle2m
+/// locomotion/stop. This development entry cannot grant a target-bin task.
+pub fn run_station_mobile_carry_from_file(
+    path: &Path,
+    options: G1CaptureOptions,
+) -> Result<G1CaptureReceipt, String> {
+    run_from_file(path, options, CaptureMode::StationMobileCarry)
+}
+
 /// Four fresh native RGB/VLA grasp chunks, then one explicitly traditional
 /// clear-aisle carry goal. No replay input or qualified task claim is admitted.
 pub fn run_mobile_assist_from_file(
@@ -895,6 +917,7 @@ enum CaptureMode {
     TaskLab,
     MobileCarry,
     MobileAssist,
+    StationMobileCarry,
     MobileScan,
     MobileTargetView,
     MobileTargetApproach,
@@ -921,6 +944,7 @@ impl CaptureMode {
         match self {
             Self::MobileWaitGrasp => Some(1000),
             Self::MobileAssist => Some(2050),
+            Self::StationMobileCarry => Some(2300),
             Self::MobileScan | Self::MobileAuxiliaryView => Some(1050),
             Self::MobileTargetView => Some(1300),
             Self::MobileTargetApproach
@@ -1761,6 +1785,7 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
+    let station_carry = mode == CaptureMode::StationMobileCarry;
     let station_t2_fixtures = config
         .task_objects()
         .and_then(|scene| scene.source_t2_background.as_ref())
@@ -1768,12 +1793,21 @@ fn run_capture_owner(
             background.selection
                 == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures
         });
+    if station_carry && !station_t2_fixtures {
+        return Err(
+            "station mobile carry requires explicit frozen station fixture coverage".into(),
+        );
+    }
     if station_t2_fixtures
         && (!cfg!(feature = "g1_constraint_diagnostic")
-            || mode != CaptureMode::Camera
+            || !matches!(mode, CaptureMode::Camera | CaptureMode::StationMobileCarry)
             || station.is_none()
             || !matches!(&config, CaptureRunnerConfig::Task(task) if task.body.profile() == TaskProfile::MobileBox)
-            || !matches!(options.ticks, 0 | 200)
+            || if station_carry {
+                options.ticks != 2300
+            } else {
+                !matches!(options.ticks, 0 | 200)
+            }
             || if options.ticks == 0 {
                 policy.is_some()
             } else {
@@ -1790,11 +1824,18 @@ fn run_capture_owner(
             || render_only_environment_translation.is_some()
             || diagnostic_source_rect_lighting.is_some()
             || task_lab.is_some()
-            || mobile_assist.is_some()
+            || if station_carry {
+                mobile_assist.as_ref().is_none_or(|c| {
+                    c.relative_distance_m != 2.
+                        || c.heading_yaw_source_rad != std::f32::consts::FRAC_PI_2
+                })
+            } else {
+                mobile_assist.is_some()
+            }
             || mobile_scan.is_some()
             || diagnostic_qwen_dispatch.is_some())
     {
-        return Err("station T2 fixture entry permits only zero-Tick actual-camera initialization or one200Tick/four-fresh-chunk grasp diagnostic; source warehouse, carry, prefetch and Qwen dispatch require separate validation".into());
+        return Err("station T2 fixture entry permits zero-Tick camera initialization,200Tick/four-fresh-chunk grasp, or the separately bounded2300Tick public-aisle2m carry/stop with100Tick self-state hold; source warehouse, prefetch and Qwen dispatch remain inadmissible".into());
     }
     if let Some(qwen) = &diagnostic_qwen_dispatch {
         if !cfg!(feature = "g1_constraint_diagnostic") {
@@ -1900,7 +1941,8 @@ fn run_capture_owner(
     let target_view = mode == CaptureMode::MobileTargetView || (visual_approach && !auxiliary_view);
     let scan_only = mode == CaptureMode::MobileScan || target_view || auxiliary_view;
     let waited_grasp = mode == CaptureMode::MobileWaitGrasp || continuous;
-    let assisted_carry = mode == CaptureMode::MobileAssist || scan_only || waited_grasp;
+    let assisted_carry =
+        mode == CaptureMode::MobileAssist || station_carry || scan_only || waited_grasp;
     if static_startup
         && (!matches!(
             mode,
@@ -1969,7 +2011,10 @@ fn run_capture_owner(
     {
         return Err("mobile prefetch is only the explicit200Tick/four-original-chunk matched source-camera/light/4PGS grasp diagnostic".into());
     }
-    if (mode == CaptureMode::MobileAssist) != mobile_assist.is_some()
+    if matches!(
+        mode,
+        CaptureMode::MobileAssist | CaptureMode::StationMobileCarry
+    ) != mobile_assist.is_some()
         || scan_only != mobile_scan.is_some()
     {
         return Err("mobile_assist configuration requires its explicit development scene".into());
@@ -1986,7 +2031,11 @@ fn run_capture_owner(
                 .is_none_or(|p| p.max_calls != 4 || p.prefetch_after_ticks.is_some())
             || diagnostic_constraint_sweeps != Some(4)
             || predictive_limit_diagnostic
-            || diagnostic_source_rect_lighting.is_none()
+            || if station_carry {
+                diagnostic_source_rect_lighting.is_some()
+            } else {
+                diagnostic_source_rect_lighting.is_none()
+            }
             || !diagnostic_aces_fitted
             || task_lab.is_some()
             || ((scan_only || waited_grasp) && task_visual.is_none())
@@ -2343,7 +2392,7 @@ fn run_capture_owner(
     if let Some(station) = &station {
         if (background_model.is_some() && !station_t2_fixtures)
             || render_only_environment_translation.is_some()
-            || assisted_carry
+            || (assisted_carry && !station_carry)
             || source_rect_lighting.is_some()
         {
             return Err("station preparation rejects source background overlays, render-only poses or unvalidated assisted task factories".into());
@@ -2462,7 +2511,11 @@ fn run_capture_owner(
     if let Some(preparation) = station_preparation {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.environment = if station_t2_fixtures {
-            receipt.scope = "native_scientific_station_t2_frozen_support_fixtures_initialization_or_fresh_grasp_diagnostic_not_qualified";
+            receipt.scope = if station_carry {
+                "native_scientific_station_t2_fresh_grasp_self_state_hold_public_aisle2m_carry_stop_not_target_bin_task_qualified"
+            } else {
+                "native_scientific_station_t2_frozen_support_fixtures_initialization_or_fresh_grasp_diagnostic_not_qualified"
+            };
             "scientific_station_native_static_world_t2_support_fixture_development"
         } else if matches!(&config, CaptureRunnerConfig::Mobile(_)) {
             receipt.scope = "native_scientific_station_mobile_standing_camera_diagnostic";
@@ -2685,6 +2738,7 @@ fn run_capture_owner(
                         auxiliary_view,
                         auxiliary_approach,
                         auxiliary_release,
+                        station_carry,
                     )
                 })
             },
@@ -3237,6 +3291,9 @@ fn drive_mobile_assist(
     if assist.completed {
         return Ok(true);
     }
+    if assist.station_carry && assist.station_hold_submitted && !assist.submitted {
+        return station_carry::continue_after_hold(runtime, outcome, port);
+    }
     if assist.submitted {
         let scan_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalScan { navigation, .. } if navigation.completed));
@@ -3398,6 +3455,16 @@ fn drive_mobile_assist(
         captured_at_unix_ms: frame.stamp.captured_at_unix_ms,
     };
     let (command, goal, origin, limit_ns, wall_seconds) = match &assist.configuration {
+        MobileAssistStage::Carry(_) if assist.station_carry => {
+            let goal = simulation_minigame::g1::mobile_hold::MobileHoldGoal { observation };
+            (
+                MobileAssistCommand::ClassicalGripSettle(goal.clone()),
+                serde_json::to_value(goal).map_err(|e| e.to_string())?,
+                "native_station_original_self_state_grip_calibration_and_minimum100Tick_hold",
+                9_000_000_000,
+                8,
+            )
+        }
         MobileAssistStage::Carry(config) => {
             let goal = MobileCarryGoal {
                 observation,
@@ -3442,7 +3509,12 @@ fn drive_mobile_assist(
         "original_vla_grasp_chunks":4,"actual_rgb_handoff":true,"traditional_grip_navigation":true,
         "object_truth_in_command":false,"task_qualified":false,"autonomous_goal_selection":false,
     }));
-    runtime.mobile_assist.as_mut().unwrap().submitted = true;
+    let assist = runtime.mobile_assist.as_mut().unwrap();
+    if assist.station_carry {
+        assist.station_hold_submitted = true;
+    } else {
+        assist.submitted = true;
+    }
     runtime.requested = false;
     Ok(false)
 }
@@ -5505,7 +5577,9 @@ fn drive_capture(
                     .as_ref()
                     .is_some_and(|assist| assist.completed)
                 {
-                    if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
+                    if runtime.mobile_assist.as_ref().is_some_and(|a| a.station_carry) {
+                        "bounded_native_station_public_aisle_2m_carry_stop_complete_not_target_bin_task_qualified"
+                    } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.scan_only) {
                         if runtime.mobile_assist.as_ref().is_some_and(|a| a.auxiliary_release) { "bounded_actual_auxiliary_rgb_fine_approach_open_settle_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.auxiliary_approach) { "bounded_actual_auxiliary_rgb_coarse_approach_and_new_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.auxiliary_view) { "bounded_actual_auxiliary_rgb_two_marker_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.restored_view) { "bounded_actual_restored_grip_standing_turn_rgb_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.memory_view) { "bounded_actual_raised_rgb_static_target_memory_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.raising_view) { "bounded_actual_near_rgb_public_geometry_raise_view_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.visual_approach) { "bounded_actual_rgb_visual_coarse_approach_complete_not_task_qualified" } else if runtime.mobile_assist.as_ref().is_some_and(|a| a.view_with_lowering) { "bounded_classical_scan_and_lower_visibility_pose_complete_not_task_qualified" } else { "bounded_classical_scan_complete_not_task_qualified" }
                     } else {
                         "bounded_classical_carry_skill_complete_not_task_qualified"

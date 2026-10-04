@@ -612,6 +612,20 @@ trait BoundaryRunner: Send {
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl PhysicsWorker<MobileAssistCommand, MobileAssistStep> {
+    /// Each reset reconstructs the same frozen scientific-station fixture world.
+    pub fn spawn_station_mobile_assist(config: ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
+        Self::spawn_owner(
+            config.body.episode_id(),
+            move |episode_id| {
+                MobileAssistRunner::load_mobile_station_fixture_diagnostic(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+
     pub fn spawn_mobile_assist(config: ArenaTaskRunnerConfig) -> Result<Self, RobotError> {
         Self::spawn_owner(
             config.body.episode_id(),

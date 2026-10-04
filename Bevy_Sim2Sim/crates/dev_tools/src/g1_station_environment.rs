@@ -17,6 +17,9 @@ mod mobile_stand;
 mod mobile_fixtures;
 
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod mobile_hold;
+
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod static_contact_revalidation;
 
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
