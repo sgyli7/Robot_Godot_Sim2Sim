@@ -3480,10 +3480,11 @@ fn drive_mobile_assist(
                 )
             });
         let recovered_boundary = latest.phase == G1WorkerPhase::Paused
-            && latest
-                .assist_step
-                .as_ref()
-                .is_some_and(|step| assist.height_recovery.completed_for(&step.execution));
+            && latest.assist_step.as_ref().is_some_and(|step| {
+                assist
+                    .height_recovery
+                    .completed_for(&step.execution, assist.submitted_carry_observation)
+            });
         if assist.auxiliary_release
             && (carry_complete || recovered_boundary)
             && !assist.fine_alignment_confirmed

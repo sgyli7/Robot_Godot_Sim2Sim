@@ -28,11 +28,21 @@ impl Recovery {
     pub fn used(&self) -> bool {
         self.goal.is_some()
     }
-    pub fn completed_for(&self, execution: &MobileAssistExecution) -> bool {
+    pub fn completed_for(
+        &self,
+        execution: &MobileAssistExecution,
+        submitted_carry: Option<ObservationStamp>,
+    ) -> bool {
         self.completed
             && self.goal.as_ref().is_some_and(|submitted| {
                 matches!(execution, MobileAssistExecution::ClassicalRaise { goal, raising }
                 if submitted == goal && raising.completed)
+                    && submitted_carry.is_none_or(|carry| {
+                        carry.episode_id == submitted.observation.episode_id
+                            && carry.sim_time_ns
+                                < submitted.observation.sim_time_ns
+                                    + (u64::from(submitted.duration_ticks) + 100) * 20_000_000
+                    })
             })
     }
 }
@@ -297,18 +307,39 @@ mod tests {
                 command: G1Command::default(),
             },
         };
-        assert!(recovery.completed_for(&execution));
+        assert!(recovery.completed_for(&execution, None));
+        let previous_carry = ObservationStamp {
+            sim_time_ns: 16_580_000_000,
+            ..stamp
+        };
+        assert!(recovery.completed_for(&execution, Some(previous_carry)));
+        let next_carry = ObservationStamp {
+            frame_id: stamp.frame_id + 2,
+            sim_time_ns: stamp.sim_time_ns + 150 * 20_000_000,
+            ..stamp
+        };
+        // Case20706 queued the next fine carry at Tick1439. The old completed
+        // raise remained visible until the owner consumed it, and must no
+        // longer admit a camera request from that predecessor boundary.
+        assert!(!recovery.completed_for(&execution, Some(next_carry)));
+        assert!(!recovery.completed_for(
+            &execution,
+            Some(ObservationStamp {
+                episode_id: 2,
+                ..previous_carry
+            })
+        ));
         let MobileAssistExecution::ClassicalRaise { goal, .. } = &mut execution else {
             unreachable!()
         };
         goal.observation.frame_id += 1;
-        assert!(!recovery.completed_for(&execution));
+        assert!(!recovery.completed_for(&execution, None));
         assert!(recovery.used() && !recovery.pending());
         let pending = Recovery {
             goal: recovery.goal.clone(),
             completed: false,
         };
-        assert!(pending.pending() && !pending.completed_for(&execution));
+        assert!(pending.pending() && !pending.completed_for(&execution, None));
         assert!(!Recovery::default().used());
     }
 }
