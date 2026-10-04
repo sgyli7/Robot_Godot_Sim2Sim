@@ -77,7 +77,7 @@ class GooseAction(ActionTerm):
             raise ValueError("The sixth Goose motor must drive beak_input_rotor")
         self.motor_ids = torch.tensor(targets, device=self.device)
         self.commands = torch.zeros((self.num_envs, 3), device=self.device)
-        self._raw = torch.zeros((self.num_envs, 18), device=self.device)
+        self._raw = torch.zeros((self.num_envs, 18), dtype=torch.float64, device=self.device)
         self._effort = torch.zeros_like(self._raw)
         self._before_time = None
         self._applied = False
@@ -90,12 +90,15 @@ class GooseAction(ActionTerm):
     def raw_action(self):
         return self._raw
 
+    @torch.no_grad()
     def process_actions(self, actions):
         _require_development_timing(self._env.cfg)
         d = self._env.sim.data
-        self._effort = self.drive.prepare(actions, d.qpos[:, self.qids], d.qvel[:, self.vids],
-                                         d.qpos[:, self.root_q+3:self.root_q+7])
-        self._raw = actions.clone()
+        self._effort.copy_(self.drive.prepare(actions, d.qpos[:, self.qids], d.qvel[:, self.vids],
+                                             d.qpos[:, self.root_q+3:self.root_q+7]))
+        # Keep constructor-owned buffers mutable across inference-mode changes.
+        # Replacing them with clones created in inference mode breaks reset.
+        self._raw.copy_(actions)
         self._before_time = d.time.clone()
         self._applied = False
 
