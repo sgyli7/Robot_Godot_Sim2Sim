@@ -325,7 +325,8 @@ impl MobileAssistRunner {
                 .as_ref()
                 .is_some_and(|s| s.holding.completed())
         } else {
-            self.completed_carry() || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
+            self.carry.as_ref().is_some_and(|c| c.navigator.stopped())
+                || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
         }
     }
 
@@ -415,7 +416,7 @@ impl MobileAssistRunner {
             ));
         }
         if let Some(carry) = &self.carry {
-            if !carry.navigator.completed() {
+            if !carry.navigator.stopped() {
                 return Err(invalid("cannot replace an active carry"));
             }
             if let Some(hold) = &self.hold {
@@ -822,7 +823,17 @@ impl MobileAssistRunner {
                         "carry goal changed while executing; stop/reset required",
                     ));
                 }
-                let navigation = carry.navigator.update(&state)?;
+                let navigation = match carry.navigator.update(&state) {
+                    Err(RobotError::Contract(reason))
+                        if self.station_fixture
+                            && reason
+                                == "carry blocked: less than3cm forward progress in1second; pause/reset required" =>
+                    {
+                        carry.navigator.begin_station_progress_stop()?;
+                        carry.navigator.update(&state)?
+                    }
+                    result => result?,
+                };
                 carry.command.navigation = navigation.navigation;
                 let body = self
                     .owner
@@ -1036,7 +1047,7 @@ impl MobileAssistRunner {
                 }
                 let state = self.owner.measurement()?;
                 if self.hold.is_none() {
-                    if self.carry.as_ref().is_none_or(|c| !c.navigator.completed()) {
+                    if self.carry.as_ref().is_none_or(|c| !c.navigator.stopped()) {
                         return Err(invalid("hold requires completed carry"));
                     }
                     let (command, _) = self.prepare_classical(&goal.observation, &state)?;
@@ -1068,7 +1079,7 @@ impl MobileAssistRunner {
             MobileAssistCommand::ClassicalRelease(goal) => {
                 let state = self.owner.measurement()?;
                 if self.release.is_none() {
-                    if self.carry.as_ref().is_none_or(|c| !c.navigator.completed())
+                    if self.carry.as_ref().is_none_or(|c| !c.navigator.stopped())
                         || self.raise.as_ref().is_some_and(|r| !r.completed())
                         || self.hold.as_ref().is_some_and(|h| {
                             !h.completed()

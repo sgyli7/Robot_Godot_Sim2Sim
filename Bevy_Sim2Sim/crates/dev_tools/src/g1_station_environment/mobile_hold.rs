@@ -81,22 +81,32 @@ fn check_clock(step: &G1Step, tick: u64) -> Result<(), String> {
 #[test]
 #[ignore = "saved actual station four50frame chunks, then one original grip calibration and finite hold; maximum450 single50Hz steps,0newRGB/VLA/Qwen"]
 fn saved_station_grasp_self_state_hold() -> Result<(), String> {
-    saved_station_hold_and_carry(false, false)
+    saved_station_hold_and_carry(false, false, false)
 }
 
 #[test]
 #[ignore = "saved station grasp/hold then unchanged traditional2m public-clear-aisle carry and stop; maximum2300 actual50Hz steps,0freshRGB/VLA/Qwen; not target-bin qualification"]
 fn saved_station_grasp_two_metre_carry_stop() -> Result<(), String> {
-    saved_station_hold_and_carry(true, false)
+    saved_station_hold_and_carry(true, false, false)
 }
 
 #[test]
 #[ignore = "saved actual station grasp/100Tick hold then source-positive RGB-derived scan/carry/hold/release goals;3300 single50Hz steps maximum,0freshRGB/VLA/Qwen;mechanics only"]
 fn saved_station_grasp_source_positive_bin_route() -> Result<(), String> {
-    saved_station_hold_and_carry(false, true)
+    saved_station_hold_and_carry(false, true, false)
 }
 
-fn saved_station_hold_and_carry(run_carry: bool, run_placement: bool) -> Result<(), String> {
+#[test]
+#[ignore = "saved actual1982Tick station blocked prefix then finite zero-navigation hold and disclosed manual release;maximum2457steps,0freshRGB/VLA/Qwen;mechanical diagnosis only"]
+fn saved_station_blocked_bin_hold_release() -> Result<(), String> {
+    saved_station_hold_and_carry(false, false, true)
+}
+
+fn saved_station_hold_and_carry(
+    run_carry: bool,
+    run_placement: bool,
+    run_blocked: bool,
+) -> Result<(), String> {
     let value: serde_json::Value =
         serde_json::from_slice(&read("G1_STATION_HOLD_CONFIG")?).map_err(|e| e.to_string())?;
     let config: ArenaTaskRunnerConfig =
@@ -226,7 +236,7 @@ fn saved_station_hold_and_carry(run_carry: bool, run_placement: bool) -> Result<
             ));
         }
         if holding.completed {
-            if !run_carry && !run_placement {
+            if !run_carry && !run_placement && !run_blocked {
                 return Ok(());
             }
             break;
@@ -234,6 +244,9 @@ fn saved_station_hold_and_carry(run_carry: bool, run_placement: bool) -> Result<
     }
     if !hold.completed() {
         return Err("station calibrated hold exceeded250Tick bound".into());
+    }
+    if run_blocked {
+        return saved_blocked_bin_stop(&mut owner, &calibration, &hands, &mut trace);
     }
     if run_placement {
         return saved_bin_route(
@@ -288,6 +301,103 @@ fn saved_station_hold_and_carry(run_carry: bool, run_placement: bool) -> Result<
         }
     }
     Err("station public-aisle carry exceeded1850Tick bound".into())
+}
+
+fn saved_blocked_bin_stop(
+    owner: &mut G1Runner,
+    calibration: &MobileGripCalibration,
+    hands: &HashSet<usize>,
+    trace: &mut fs::File,
+) -> Result<(), String> {
+    use robot_minigame::g1::contract::G1Command;
+    let commands: Vec<G1Command> =
+        serde_json::from_slice(&read("G1_STATION_BLOCKED_COMMANDS")?).map_err(|e| e.to_string())?;
+    if commands.len() != 1682 || owner.measurement().map_err(|e| e.to_string())?.source_tick != 300
+    {
+        return Err("blocked station diagnostic requires exact saved301..1982Tick prefix".into());
+    }
+    let mut command = commands.last().unwrap().clone();
+    for saved in commands {
+        let step = owner.step(&saved).map_err(|e| e.to_string())?;
+        write_route_step(
+            trace,
+            &step,
+            "saved_actual_blocked_station_prefix",
+            &saved,
+            true,
+            hands,
+        )?;
+    }
+    command.navigation = [0.; 3];
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    let mut hold = MobileGripHolding::new(
+        MobileHoldGoal {
+            observation: ObservationStamp {
+                episode_id: state.episode_id,
+                frame_id: 90,
+                sim_time_ns: state.sim_time_ns,
+                captured_at_unix_ms: 1,
+            },
+        },
+        &state,
+        command,
+    )
+    .map_err(|e| e.to_string())?;
+    for _ in 0..250 {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let holding = hold.update(&state).map_err(|e| e.to_string())?;
+        let step = owner.step(&holding.command).map_err(|e| e.to_string())?;
+        write_route_step(
+            trace,
+            &step,
+            "offline_blocked_zero_navigation_hold",
+            &holding,
+            true,
+            hands,
+        )?;
+        if holding.completed {
+            break;
+        }
+    }
+    if !hold.completed() {
+        return Err("blocked zero-navigation hold exceeded250Ticks".into());
+    }
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    let mut release = MobileGripRelease::new(
+        MobileReleaseGoal {
+            observation: ObservationStamp {
+                episode_id: state.episode_id,
+                frame_id: 91,
+                sim_time_ns: state.sim_time_ns,
+                captured_at_unix_ms: 1,
+            },
+            target_palm_gap_m: 0.35,
+            duration_ticks: 100,
+        },
+        &state,
+        hold.command().clone(),
+        calibration,
+    )
+    .map_err(|e| e.to_string())?;
+    for _ in 0..225 {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let opening = release
+            .update(&state, calibration)
+            .map_err(|e| e.to_string())?;
+        let step = owner.step(&opening.command).map_err(|e| e.to_string())?;
+        write_route_step(
+            trace,
+            &step,
+            "offline_disclosed_manual_release_after_blocked_hold",
+            &opening,
+            false,
+            hands,
+        )?;
+        if opening.completed {
+            return Ok(());
+        }
+    }
+    Err("blocked diagnostic manual release exceeded225Ticks".into())
 }
 
 #[derive(serde::Deserialize)]
@@ -464,7 +574,7 @@ fn write_route_step<T: serde::Serialize>(
     writeln!(trace, "{}", serde_json::json!({"phase":phase,
         "body":{"mobile_homie_v2":step},"execution":receipt,
         "independent_active_hand_only_support":supported,"synthetic_offline_skill_identity":true,
-        "source_RGB_route_not_station_live":true,"fresh_RGB_VLA_Qwen":0,"task_qualified":false
+        "saved_commands_or_source_goals_not_fresh_station_RGB":true,"fresh_RGB_VLA_Qwen":0,"task_qualified":false
     })).map_err(|e| e.to_string())?;
     trace.flush().map_err(|e| e.to_string())?;
     check_clock(step, step.integration_count)?;

@@ -14,7 +14,8 @@ pub(super) fn carry_boundary_completed(
     // A queued fine carry may leave its completed predecessor visible until
     // the unique owner consumes the command. Await this goal's own receipt.
     matches!(execution, MobileAssistExecution::ClassicalCarry { goal, navigation, .. }
-        if navigation.completed && submitted.is_none_or(|stamp| goal.observation == stamp))
+        if (navigation.completed || navigation.blocked_stop_completed)
+            && submitted.is_none_or(|stamp| goal.observation == stamp))
 }
 
 fn completed_hold_ticks(
@@ -195,6 +196,7 @@ mod tests {
                 navigation: [0.; 3],
                 own_velocity_odometry_xy_m: [0.; 2],
                 completed: true,
+                blocked_stop_completed: false,
                 execution_heading_yaw_source_rad: 0.,
                 execution_relative_distance_m: 0.1,
             },

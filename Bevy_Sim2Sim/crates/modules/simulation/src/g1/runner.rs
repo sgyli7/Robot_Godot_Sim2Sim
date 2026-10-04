@@ -103,6 +103,8 @@ pub struct G1Measurement {
 #[derive(Clone, Debug, Serialize)]
 pub struct G1StationContact {
     pub robot_body_index: usize,
+    /// Last-solve other-body identity for independent obstacle diagnosis.
+    pub other_body_handle: Option<[u32; 2]>,
     pub other_body_fixed: bool,
     /// Legacy all-point cache sum; inactive entries may retain old impulses.
     pub normal_impulse_n_s: f32,
@@ -392,6 +394,10 @@ impl G1Runner {
                     .filter(|d| d.is_finite() && *d >= 0.);
                     Some(G1StationContact {
                         robot_body_index,
+                        other_body_handle: world.colliders[other].parent().map(|h| {
+                            let (index, generation) = h.into_raw_parts();
+                            [index, generation]
+                        }),
                         other_body_fixed,
                         normal_impulse_n_s: pair.total_impulse_magnitude(),
                         active_solver_normal_impulse_n_s:

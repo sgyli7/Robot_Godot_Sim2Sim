@@ -3334,6 +3334,11 @@ fn drive_mobile_assist(
         return station_carry::continue_after_hold(runtime, outcome, port);
     }
     if assist.submitted {
+        let blocked_stop = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
+            .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalCarry { navigation, .. } if navigation.blocked_stop_completed));
+        if blocked_stop && assist.station_motion && !assist.auxiliary_release {
+            return Err("station carry safely stopped after blocked progress; requested endpoint was not reached".into());
+        }
         let scan_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalScan { navigation, .. } if navigation.completed));
         if assist.auxiliary_approach && scan_complete && !assist.visual_goal_submitted {
@@ -3607,6 +3612,12 @@ fn drive_auxiliary_fine_approach(
             .as_str()
             .ok_or("current fine containment state unavailable")?;
         let aligned = state == "aligned";
+        let blocked_stop = latest.assist_step.as_ref().is_some_and(|step|
+            matches!(&step.execution, simulation_minigame::g1::mobile_assist::MobileAssistExecution::ClassicalCarry { navigation, .. }
+                if navigation.blocked_stop_completed));
+        if blocked_stop && !aligned {
+            return Err("fresh RGB after protected blocked stop requires replan; further forward motion is not admitted".into());
+        }
         let mut goal = None;
         if !aligned {
             if state != "advance" || assist.fine_goals_submitted >= 5 {
@@ -3632,6 +3643,7 @@ fn drive_auxiliary_fine_approach(
         let record = serde_json::json!({
                 "actual_localization":reply,"executed_goal":goal,"whole_object_containment_interval":true,
                 "alignment_confirmed":aligned,"new_image_before_each_segment":true,
+                "protected_blocked_stop_reobserved":blocked_stop,
             "same_owner_boundary_tick":latest.timing.episode_integrations,
             "localization_wall_ms":job.started.elapsed().as_secs_f64()*1000.,
             "object_truth_in_command":false,"task_qualified":false,

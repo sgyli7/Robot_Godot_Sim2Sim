@@ -109,6 +109,8 @@ pub struct MobileNavigationStep {
     pub navigation: [f32; 3],
     pub own_velocity_odometry_xy_m: [f32; 2],
     pub completed: bool,
+    /// A protected station stop ends motion without reaching the requested goal.
+    pub blocked_stop_completed: bool,
     pub execution_heading_yaw_source_rad: f32,
     pub execution_relative_distance_m: f32,
 }
@@ -123,6 +125,7 @@ pub struct MobileCarryNavigator {
     settling: bool,
     odometry: [f32; 2],
     completed: bool,
+    station_progress_stop: bool,
     scan_only: bool,
     forward_window_m: f32,
     forward_window_ticks: u32,
@@ -159,6 +162,7 @@ impl MobileCarryNavigator {
             settling: false,
             odometry: [0.; 2],
             completed: false,
+            station_progress_stop: false,
             scan_only: false,
             forward_window_m: 0.,
             forward_window_ticks: 0,
@@ -173,7 +177,26 @@ impl MobileCarryNavigator {
         &self.goal
     }
     pub fn completed(&self) -> bool {
+        self.completed && !self.station_progress_stop
+    }
+
+    pub(super) fn stopped(&self) -> bool {
         self.completed
+    }
+
+    /// Only the station owner may enter this independently checked zero-nav
+    /// stop after the unchanged forward-progress guard fires. No goal success.
+    pub(super) fn begin_station_progress_stop(&mut self) -> Result<(), RobotError> {
+        if self.phase != MobileNavigationPhase::Walk || self.completed || self.station_progress_stop
+        {
+            return Err(invalid(
+                "station progress stop requires its active walking predecessor",
+            ));
+        }
+        self.station_progress_stop = true;
+        self.phase = MobileNavigationPhase::Stop;
+        self.phase_ticks = 0;
+        Ok(())
     }
 
     /// Mechanical causal test only. The normal runtime and source model
@@ -295,7 +318,8 @@ impl MobileCarryNavigator {
             phase,
             navigation,
             own_velocity_odometry_xy_m: self.odometry,
-            completed: self.completed,
+            completed: self.completed(),
+            blocked_stop_completed: self.completed && self.station_progress_stop,
             execution_heading_yaw_source_rad: self.execution_heading_yaw_source_rad,
             execution_relative_distance_m: self.execution_relative_distance_m,
         })
@@ -409,6 +433,32 @@ mod tests {
                 .contains("carry blocked")
         );
     }
+    #[test]
+    fn station_progress_stop_keeps_goal_unreached_and_requires100_zero_navigation_updates() {
+        let mut g = goal();
+        g.heading_yaw_source_rad = 0.;
+        let mut nav = MobileCarryNavigator::new(g, &state(200)).unwrap();
+        assert!(nav.begin_station_progress_stop().is_err());
+        for tick in 200..319 {
+            nav.update(&state(tick)).unwrap();
+        }
+        let blocked = nav.update(&state(319)).unwrap_err();
+        assert!(blocked.to_string().contains("carry blocked"));
+        // The ordinary source controller still fails closed. Its distinct
+        // station owner may stop this command; it does not grant goal success.
+        nav.begin_station_progress_stop().unwrap();
+        assert!(nav.begin_station_progress_stop().is_err());
+        for tick in 319..419 {
+            let stop = nav.update(&state(tick)).unwrap();
+            assert_eq!(stop.navigation, [0.; 3]);
+            assert!(!stop.completed);
+            assert_eq!(stop.blocked_stop_completed, tick == 418);
+        }
+        assert!(!nav.completed());
+        assert!(nav.stopped());
+        assert!(nav.update(&state(419)).is_err());
+    }
+
     #[test]
     fn progress_guard_accepts_a_gait_with_alternating_zero_speed() {
         let mut g = goal();
