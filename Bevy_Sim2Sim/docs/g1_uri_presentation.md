@@ -9,11 +9,15 @@ only for station surfaces. The source's default normal calculation drops tiny
 faces in meter-scale unbound meshes. The presentation uses private mesh copies
 with double-precision angle-weighted smooth normals and a shader fallback for
 zero/invalid normals; all positions and indices are unchanged. Source normals
-and materials stay untouched. Robot ink shells are omitted. The existing station gets clearer
-blue/white/orange color groups and a light flush floor grid. Geometry, body
+and materials stay untouched. The shell pigment is RGB 176/181/186, visibly
+darker than the station's warm white. Robot ink shells are omitted. The existing
+station gets clearer blue/white/orange color groups and a light flush floor grid. Geometry, body
 proportions, task placements and the thin original support slab are retained.
 
 The spectator camera is explicitly tagged `G1PresentationCamera`. Its layer 1
+uses no additional tone mapping, so source sensor ACES calibration cannot
+wash the neutral spectator gray back toward white. Sensor tone mapping is
+unchanged. The layer's
 copies share station mesh handles and use private robot meshes with repaired
 shading normals. They copy the source global transforms and
 inherited visibility after propagation, before visibility checks in the same
@@ -40,6 +44,10 @@ task-lab development entries. It changes the appearance of the main-window
 screenshots only; head and fixed auxiliary sensor captures retain the source
 renderer. No model request, timestamp, observation/action schema, physical
 parameter, initialization, control frequency or controller is modified.
+
+The source warehouse's dedicated `BackgroundMaterial` is also copied into
+the spectator layer. Its existing floor, shelf, cart and clutter remain
+visible; missing material-type coverage must not leave a blank backdrop.
 
 The rendering remains an interpretation of the [URI art direction](g1_uri_art_direction.md),
 constrained to existing meshes. It cannot add the concept illustration's
@@ -72,3 +80,34 @@ The focused rendering test checks same-frame global transforms, source material
 preservation, disjoint sensor/spectator layers, shadow exclusion, hidden-source
 behavior and removal. Existing camera contract tests continue to cover sensor
 mounts, source frame stamps and reset handling.
+
+On 2026-10-04, the final zero-Tick pair had identical decoded 640 × 480
+head-camera RGB, camera pose, body/joints, sequence and simulation stamps.
+Both captures had zero integrations and model calls. Decoded RGB SHA256:
+`f340fba1c9436c53374f09e4a3c1316ab0fb3f68eae98ae047c700f48a383f5c`.
+The fixed chest ROI's near-black coverage fell from 67.35% to 0%; the
+regression test demonstrates Bevy's zero normals on a real 1 mm triangle,
+then verifies finite presentation normals without changing source geometry.
+
+Fresh recording episodes 20719/20720 used the same frozen task/body models,
+camera calibration, preprocessing and controllers as episodes 20619/20620.
+All 1,046/2,134 physical steps, model observation arrays and action arrays
+matched. The six saved station sensor frames were byte-identical. All four
+fresh mobile VLA frames were also byte-identical; some later mobile diagnostic
+PNGs differed at 1–3 of 307,200 pixels by one 8-bit channel level. The strict
+all-PNG byte-equality assertion therefore failed and is preserved alongside
+the difference metrics. These measurements do not establish universal
+bitwise GPU equality. Independent placement checks still passed at 6.02/2.52 s.
+
+The recording process used display-only `diagnostic_render_hz=60` and CPU
+affinity `5-9,15-19` to avoid concurrent host load. Physics remained 50 Hz,
+one integration per Tick, with the original timeout and controller settings.
+The final CPU workspace suite, structure checker and actual GPU shader
+startup were exercised; receipts and full raw recordings are archived at
+`/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_uri_presentation_delivery_001/`.
+See [recording identities and limitations](g1_milestone.md).
+
+The station box-grasp replay (episode 20724) also matched all 200 physical
+steps, five saved sensor PNGs and four fresh VLA observation/action pairs
+from episode 20622. Its 7.04 s homepage GIF is a fresh continuous window
+capture with the same medium-gray finish; it is not an extended carry result.

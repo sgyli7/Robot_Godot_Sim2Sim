@@ -337,7 +337,9 @@ fn sync_copies(world: &mut World) {
     let cameras: Vec<_> = cameras.iter(world).collect();
     for camera in cameras {
         if world.get::<RenderLayers>(camera) != Some(&RenderLayers::layer(1)) {
-            world.entity_mut(camera).insert(RenderLayers::layer(1));
+            world
+                .entity_mut(camera)
+                .insert((RenderLayers::layer(1), Tonemapping::None));
             if let Some(mut view) = world.get_mut::<Camera>(camera) {
                 view.clear_color = ClearColorConfig::Custom(Color::srgb_u8(163, 187, 204));
             }
@@ -565,8 +567,12 @@ mod tests {
                 InheritedVisibility::VISIBLE,
             ))
             .id();
-        let observer = world.spawn(G1PresentationCamera).id();
-        let sensor = world.spawn(Camera3d::default()).id();
+        let observer = world
+            .spawn((G1PresentationCamera, Tonemapping::AcesFitted))
+            .id();
+        let sensor = world
+            .spawn((Camera3d::default(), Tonemapping::AcesFitted))
+            .id();
         sync_copies(&mut world);
         let copy = world.resource::<PresentationState>().copies[&source].surface;
         let torso_copy = world.resource::<PresentationState>().copies[&torso].surface;
@@ -598,6 +604,11 @@ mod tests {
         assert!(layer.intersects(world.get::<RenderLayers>(observer).unwrap()));
         assert!(!layer.intersects(&RenderLayers::default()));
         assert!(world.get::<RenderLayers>(sensor).is_none());
+        assert_eq!(world.get::<Tonemapping>(observer), Some(&Tonemapping::None));
+        assert_eq!(
+            world.get::<Tonemapping>(sensor),
+            Some(&Tonemapping::AcesFitted)
+        );
         assert!(world.get::<RenderLayers>(source).is_none());
         assert_eq!(
             world
