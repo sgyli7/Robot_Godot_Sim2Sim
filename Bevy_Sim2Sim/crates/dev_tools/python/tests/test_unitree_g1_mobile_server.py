@@ -44,6 +44,8 @@ class FixturePolicy:
                          "inference_backend": "protocol_fixture", "model_loaded": False,
                          "instruction_scope": protocol.INSTRUCTION_SCOPE,
                          "fixed_instruction": protocol.PROFILE["reference_instruction"]}
+        self.metadata.update(initial_seed=42, post_load_rng_sha256="fixture_not_model_rng")
+        self.rewinds = 0
         self.block = block
         self.entered = threading.Event()
         self.release = threading.Event()
@@ -57,6 +59,9 @@ class FixturePolicy:
         if self.block and not self.release.wait(2):
             raise RuntimeError("protocol fixture gate timeout")
         return outputs()
+
+    def rewind_initial_rng(self):
+        self.rewinds += 1
 
 
 class DecoderTests(unittest.TestCase):
@@ -210,6 +215,59 @@ class HttpFixtureTests(unittest.TestCase):
             connection.request("POST", "/infer", json.dumps(body), {"Content-Type": "application/json"})
             reply = connection.getresponse()
             return reply.status, json.loads(reply.read())
+
+    def reset_episode(self, episode_id=2, seed=42, **extra):
+        body = {"schema": "mobile_episode_seed_reset_v1", "episode_id": episode_id,
+                "initial_seed": seed, **extra}
+        with closing(self.connection()) as connection:
+            connection.request("POST", "/begin_episode", json.dumps(body), {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+
+    def enable_seed_gate(self):
+        self.server.RequestHandlerClass = protocol.handler(self.policy, None, True)
+
+    def test_episode_reset_is_opt_in_and_cannot_change_seed_or_reuse_identity(self):
+        self.assertEqual(self.reset_episode()[0], 404)
+        self.enable_seed_gate()
+        for seed in [0, True, "42"]:
+            self.assertEqual(self.reset_episode(seed=seed)[0], 422)
+            self.wait_idle_handlers()
+        self.assertEqual(self.reset_episode(invisible_object_position=[0, 0, 0])[0], 422)
+        self.wait_idle_handlers()
+        self.assertEqual(self.policy.rewinds, 0)
+        status, result = self.reset_episode()
+        self.assertEqual(status, 200)
+        self.assertEqual(result["successful_inferences"], 0)
+        self.assertEqual(result["episode_seed_resets"], 1)
+        self.wait_idle_handlers()
+        self.assertEqual(self.reset_episode()[0], 409)
+        self.assertEqual(self.policy.rewinds, 1)
+
+    def test_old_episode_and_inflight_reset_are_rejected_without_changing_rng(self):
+        self.enable_seed_gate()
+        self.assertEqual(self.call(request())[0], 422)
+        self.wait_idle_handlers()
+        self.assertEqual(self.reset_episode()[0], 200)
+        self.wait_idle_handlers()
+        completed = []
+        runner = threading.Thread(target=lambda: completed.append(self.call(request())))
+        runner.start()
+        try:
+            self.assertTrue(self.policy.entered.wait(2))
+            self.assertEqual(self.reset_episode(3)[0], 409)
+            self.assertEqual(self.policy.rewinds, 1)
+        finally:
+            self.policy.release.set()
+            runner.join(2)
+        self.wait_idle_handlers()
+        self.assertEqual(completed[0][0], 200)
+        status, result = self.reset_episode(3)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["successful_inferences"], 1)
+        self.wait_idle_handlers()
+        self.assertEqual(self.call(request())[0], 422)
+        self.assertEqual(self.policy.calls, 1)
 
     def test_single_inference_fixed_health_and_actual_counter(self):
         completed = []

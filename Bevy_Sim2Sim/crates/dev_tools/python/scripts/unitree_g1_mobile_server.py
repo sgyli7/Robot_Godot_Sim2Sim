@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import gc
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -131,6 +132,23 @@ class MobileBoxPolicy:
                          "inference_backend": "official_gr00t_n1d6_pytorch", "model_loaded": True,
                          "initial_seed": seed, "instruction_scope": INSTRUCTION_SCOPE,
                          "fixed_instruction": PROFILE["reference_instruction"]}
+        # Save the exact post-construction RNG state. Restoring this between
+        # benchmark episodes is equivalent to a fresh owner with this seed,
+        # without loading a second copy of the model or changing its contract.
+        self._initial_cpu_rng = torch.get_rng_state().clone()
+        self._initial_cuda_rng = [state.clone() for state in torch.cuda.get_rng_state_all()]
+        self.metadata["post_load_rng_sha256"] = hashlib.sha256(
+            self._initial_cpu_rng.numpy().tobytes()
+            + b"".join(state.cpu().numpy().tobytes() for state in self._initial_cuda_rng)
+        ).hexdigest()
+
+    def rewind_initial_rng(self):
+        """Between episodes only; handler lock excludes active inference."""
+        with self._lock:
+            if self._policy is None:
+                raise RuntimeError("Mobile policy owner has been closed")
+            self._torch.set_rng_state(self._initial_cpu_rng.clone())
+            self._torch.cuda.set_rng_state_all([state.clone() for state in self._initial_cuda_rng])
 
     def infer(self, observation):
         with self._lock:
@@ -171,10 +189,12 @@ def write_capture(directory, body, observation, outputs, result, elapsed, metada
         stream.write("\n")
 
 
-def handler(policy, capture_dir):
+def handler(policy, capture_dir, allow_episode_seed_reset=False):
     lock = threading.Lock()
     status_lock = threading.Lock()
     status = {"successful_inferences": 0, "failed_inferences": 0, "last_inference_seconds": None}
+    episode = {"current_episode_id": None, "episode_seed_resets": 0}
+    admitted_episodes = set()
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -196,12 +216,13 @@ def handler(policy, capture_dir):
                 self.reply(404, {"error": "unknown path"})
                 return
             with status_lock:
-                snapshot = dict(status)
+                snapshot = {**status, **episode,
+                            "episode_seed_reset_enabled": allow_episode_seed_reset}
             self.reply(200, {**policy.metadata, **snapshot, "source_rollout_verified": False,
                              "bevy_rollout_verified": False, "task_qualified": False})
 
         def do_POST(self):
-            if self.path != "/infer":
+            if self.path != "/infer" and not (allow_episode_seed_reset and self.path == "/begin_episode"):
                 self.reply(404, {"error": "unknown path"})
                 return
             if not lock.acquire(blocking=False):
@@ -223,7 +244,29 @@ def handler(policy, capture_dir):
                 if len(payload) != size:
                     raise ValueError("Incomplete request body")
                 body = parse_json(payload)
+                if self.path == "/begin_episode":
+                    exact_keys(body, {"schema", "episode_id", "initial_seed"}, "Episode seed reset")
+                    if (body["schema"] != "mobile_episode_seed_reset_v1"
+                            or type(body["episode_id"]) is not int
+                            or not 0 <= body["episode_id"] < 2**64
+                            or type(body["initial_seed"]) is not int
+                            or body["initial_seed"] != policy.metadata["initial_seed"]):
+                        raise ValueError("Episode reset must retain the owner's original seed")
+                    if body["episode_id"] in admitted_episodes or len(admitted_episodes) >= 10000:
+                        self.reply(409, {"error": "episode identity repeated or owner episode bound reached"})
+                        return
+                    policy.rewind_initial_rng()
+                    admitted_episodes.add(body["episode_id"])
+                    with status_lock:
+                        episode["current_episode_id"] = body["episode_id"]
+                        episode["episode_seed_resets"] += 1
+                        snapshot = {**status, **episode}
+                    self.reply(200, {**snapshot, "initial_seed": policy.metadata["initial_seed"],
+                                     "post_load_rng_sha256": policy.metadata["post_load_rng_sha256"]})
+                    return
                 observation = decode_request(body)
+                if allow_episode_seed_reset and body["observation"]["episode_id"] != episode["current_episode_id"]:
+                    raise ValueError("Inference is not bound to the currently admitted benchmark episode")
                 started = time.perf_counter()
                 outputs = policy.infer(observation)
                 elapsed = time.perf_counter() - started
@@ -262,6 +305,8 @@ def main():
     parser.add_argument("--port", type=int, default=5558)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--capture-dir", type=Path)
+    parser.add_argument("--episode-seed-reset", action="store_true",
+                        help="Opt-in benchmark gate: restore post-load RNG once per unique episode")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535 or not 0 <= args.seed < 2**64:
         parser.error("port or seed outside valid range")
@@ -270,7 +315,7 @@ def main():
     try:
         if args.capture_dir:
             args.capture_dir.mkdir(parents=True, exist_ok=True)
-        server = BoundedPolicyServer(("127.0.0.1", args.port), handler(policy, args.capture_dir))
+        server = BoundedPolicyServer(("127.0.0.1", args.port), handler(policy, args.capture_dir, args.episode_seed_reset))
         print(json.dumps({"event": "ready", "address": f"127.0.0.1:{args.port}",
                           **policy.metadata, "task_qualified": False}), flush=True)
         server.serve_forever()
