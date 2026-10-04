@@ -75,6 +75,9 @@ pub enum G1CameraMountProfile {
     #[default]
     ArenaEgo,
     AuxiliaryGripOverview,
+    /// Declared T2 placement sensor;230mm above original,+7degree optical pitch.
+    /// It clears a held box while retaining both printed placement targets.
+    AuxiliaryBinPlacement,
     /// Declared near-table T1 sensor;150mm above original,+25degree downward view.
     StaticPlacementOverview,
 }
@@ -250,6 +253,9 @@ pub fn native_head_camera(
         G1CameraMountProfile::ArenaEgo => (0., Quat::IDENTITY),
         G1CameraMountProfile::AuxiliaryGripOverview => {
             (0.15, Quat::from_rotation_x(std::f32::consts::PI / 12.))
+        }
+        G1CameraMountProfile::AuxiliaryBinPlacement => {
+            (0.23, Quat::from_rotation_x(7_f32.to_radians()))
         }
         G1CameraMountProfile::StaticPlacementOverview => {
             (0.15, Quat::from_rotation_x(-25_f32.to_radians()))
@@ -1100,6 +1106,75 @@ mod tests {
                 .resource::<crate::g1_visual::G1VisualInput>()
                 .0
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn bin_placement_mount_requires_its_declared_profile_at_the_same_native_tick() {
+        let state = native(41, 17);
+        let mut placement = native_head_camera(
+            &state.body_frame,
+            G1CameraMountProfile::AuxiliaryBinPlacement,
+        )
+        .unwrap();
+        placement.native_state = Some(state.clone());
+        placement.validate().unwrap();
+        assert_eq!(placement.source_ticks, [17, 17]);
+        assert_eq!(placement.episode_id, 41);
+        let original = arena_head_camera(&state.body_frame).unwrap();
+        assert!(
+            ((placement.world_from_camera.translation - original.world_from_camera.translation)
+                .length()
+                - 0.23)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (placement
+                .world_from_camera
+                .rotation
+                .angle_between(original.world_from_camera.rotation)
+                - 7_f32.to_radians())
+            .abs()
+                < 1e-5
+        );
+        for wrong_mount in [
+            G1CameraMountProfile::ArenaEgo,
+            G1CameraMountProfile::AuxiliaryGripOverview,
+            G1CameraMountProfile::StaticPlacementOverview,
+        ] {
+            let mut mislabeled = placement.clone();
+            mislabeled.mount_profile = wrong_mount;
+            assert!(mislabeled.validate().is_err());
+        }
+        let serialized = serde_json::to_value(G1CameraMountProfile::AuxiliaryBinPlacement).unwrap();
+        assert_eq!(serialized, "auxiliary_bin_placement");
+        let mut app = App::new();
+        app.init_resource::<G1CameraInput>()
+            .init_resource::<crate::g1_visual::G1VisualInput>()
+            .init_resource::<crate::g1_visual::G1VisualStatus>()
+            .add_plugins(G1ObservationPlugin);
+        app.world_mut().resource_mut::<G1BodyObservationInput>().0 = Some(state.clone());
+        app.world_mut().resource_mut::<G1ActiveCameraMount>().0 =
+            G1CameraMountProfile::AuxiliaryBinPlacement;
+        app.update();
+        let camera = app.world().resource::<G1CameraInput>().0.as_ref().unwrap();
+        assert_eq!(
+            camera.mount_profile,
+            G1CameraMountProfile::AuxiliaryBinPlacement
+        );
+        assert_eq!(
+            camera.native_state.as_ref().unwrap().body_frame.source_tick,
+            17
+        );
+        app.world_mut().resource_mut::<G1ActiveCameraMount>().0 = G1CameraMountProfile::ArenaEgo;
+        app.update();
+        let camera = app.world().resource::<G1CameraInput>().0.as_ref().unwrap();
+        assert_eq!(camera.mount_profile, G1CameraMountProfile::ArenaEgo);
+        assert_eq!(camera.source_ticks, [17, 17]);
+        assert_eq!(
+            camera.world_from_camera.translation,
+            original.world_from_camera.translation
         );
     }
 

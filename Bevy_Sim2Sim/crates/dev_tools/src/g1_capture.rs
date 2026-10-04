@@ -216,6 +216,7 @@ struct MobileAssistCaptureRuntime {
     auxiliary_release: bool,
     station_motion: bool,
     station_hold_submitted: bool,
+    station_placement_view_active: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     submitted_carry_observation: Option<ObservationStamp>,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -256,6 +257,25 @@ struct MobileAssistCaptureRuntime {
 }
 
 impl MobileAssistCaptureRuntime {
+    fn camera_mount(&self) -> G1CameraMountProfile {
+        if self.station_placement_view_active {
+            G1CameraMountProfile::AuxiliaryBinPlacement
+        } else if self.auxiliary_view {
+            G1CameraMountProfile::AuxiliaryGripOverview
+        } else {
+            G1CameraMountProfile::ArenaEgo
+        }
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn auxiliary_camera_name(&self) -> &'static str {
+        if self.station_placement_view_active {
+            "auxiliary_bin_placement"
+        } else {
+            "auxiliary_grip_overview"
+        }
+    }
+
     fn new(
         configuration: MobileAssistStage,
         raising_view: bool,
@@ -285,6 +305,7 @@ impl MobileAssistCaptureRuntime {
             auxiliary_release,
             station_motion,
             station_hold_submitted: false,
+            station_placement_view_active: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             submitted_carry_observation: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -3458,16 +3479,7 @@ fn drive_mobile_assist(
     };
     let frame = frame?;
     if frame.stamp.source != CameraPoseSource::PhysicsBody
-        || frame.stamp.mount_profile
-            != if runtime
-                .mobile_assist
-                .as_ref()
-                .is_some_and(|a| a.auxiliary_view)
-            {
-                G1CameraMountProfile::AuxiliaryGripOverview
-            } else {
-                G1CameraMountProfile::ArenaEgo
-            }
+        || frame.stamp.mount_profile != assist.camera_mount()
         || frame.stamp.episode_id != runtime.episode_id
         || frame.stamp.source_ticks != [200; 2]
         || frame.stamp.sim_time_ns != 4_000_000_000
@@ -3598,7 +3610,7 @@ fn drive_auxiliary_fine_approach(
         let observation = job.observation;
         if observation.episode_id != runtime.episode_id
             || observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
-            || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+            || reply["camera_mount_profile"] != assist.auxiliary_camera_name()
             || reply["clearance_proposal"]["required_raise_m"]
                 .as_f64()
                 .is_none_or(|r| r > 0.)
@@ -3775,6 +3787,7 @@ fn drive_auxiliary_release(
         });
         if observation.episode_id != runtime.episode_id
             || observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
+            || reply["camera_mount_profile"] != assist.auxiliary_camera_name()
             || reply["release_proposal"]["release_admitted"] != true
         {
             return Err(
@@ -4380,15 +4393,11 @@ fn capture_current_marker_frame(
     let tick = latest.timing.episode_integrations;
     if frame.stamp.source != CameraPoseSource::PhysicsBody
         || frame.stamp.mount_profile
-            != if runtime
+            != runtime
                 .mobile_assist
                 .as_ref()
-                .is_some_and(|a| a.auxiliary_view)
-            {
-                G1CameraMountProfile::AuxiliaryGripOverview
-            } else {
-                G1CameraMountProfile::ArenaEgo
-            }
+                .ok_or("mobile camera stage absent")?
+                .camera_mount()
         || frame.stamp.episode_id != runtime.episode_id
         || frame.stamp.source_ticks != [tick; 2]
         || frame.stamp.sim_time_ns != tick * 20_000_000
@@ -4525,8 +4534,14 @@ fn marker_observation(stamp: &G1CaptureStamp) -> Result<serde_json::Value, Strin
         "camera":rendering_minigame::g1_camera::G1CameraCalibration::default(),
         "measured_joints":state.measured_joints,
     });
-    if stamp.mount_profile == G1CameraMountProfile::AuxiliaryGripOverview {
-        observation["camera_mount_profile"] = "auxiliary_grip_overview".into();
+    match stamp.mount_profile {
+        G1CameraMountProfile::AuxiliaryGripOverview => {
+            observation["camera_mount_profile"] = "auxiliary_grip_overview".into();
+        }
+        G1CameraMountProfile::AuxiliaryBinPlacement => {
+            observation["camera_mount_profile"] = "auxiliary_bin_placement".into();
+        }
+        G1CameraMountProfile::ArenaEgo | G1CameraMountProfile::StaticPlacementOverview => {}
     }
     Ok(observation)
 }
@@ -5385,6 +5400,28 @@ fn drive_capture(
             camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
             return Ok(());
         }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if runtime.mobile_assist.as_ref().is_some_and(|assist|
+            assist.station_motion && assist.auxiliary_release && !assist.station_placement_view_active)
+            && latest.phase == G1WorkerPhase::Paused
+            && latest.assist_step.as_ref().is_some_and(|step|
+                matches!(&step.execution, simulation_minigame::g1::mobile_assist::MobileAssistExecution::ClassicalCarry { navigation, .. }
+                    if navigation.blocked_stop_completed))
+        {
+            if runtime.requested || runtime.mobile_assist.as_ref().is_some_and(|a| a.vision_job.is_some()) {
+                return Err("placement camera switch requires an idle completed RGB boundary".into());
+            }
+            camera_mount.0 = G1CameraMountProfile::AuxiliaryBinPlacement;
+            runtime.mobile_assist.as_mut().unwrap().station_placement_view_active = true;
+            outcome.0.lock().unwrap().mobile_assist_handoff.as_mut()
+                .ok_or("station placement camera provenance absent")?["placement_camera_activation"] = serde_json::json!({
+                    "source_tick":latest.timing.episode_integrations,"camera_mount_profile":"auxiliary_bin_placement",
+                    "head_height_from_arena_m":0.23,"upward_optical_pitch_from_arena_degrees":7,
+                    "original_learned_camera_unchanged":true,"world_or_contact_truth_input":false,
+                    "physics_paused":true,"task_qualified":false,
+                });
+            return Ok(());
+        }
         if runtime.static_observed_grasp
             && latest.timing.episode_integrations == 100
             && latest.phase == G1WorkerPhase::Paused
@@ -5698,7 +5735,14 @@ fn drive_capture(
                     } else if runtime.static_transfer_placement || runtime.static_observed_grasp {
                         G1CameraMountProfile::StaticPlacementOverview
                     } else if use_auxiliary {
-                        G1CameraMountProfile::AuxiliaryGripOverview
+                        runtime
+                            .mobile_assist
+                            .as_ref()
+                            .filter(|assist| assist.auxiliary_view)
+                            .map_or(
+                                G1CameraMountProfile::AuxiliaryGripOverview,
+                                MobileAssistCaptureRuntime::camera_mount,
+                            )
                     } else {
                         G1CameraMountProfile::ArenaEgo
                     }

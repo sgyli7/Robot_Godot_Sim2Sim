@@ -119,6 +119,9 @@ def root_from_camera(definition, positions, camera_profile="arena_ego"):
     if camera_profile == "auxiliary_grip_overview":
         mount[:3, 3] += np.array([0., 0., .15])
         mount[:3, :3] = mount[:3, :3] @ cv2.Rodrigues(np.array([np.pi/12, 0., 0.]))[0]
+    elif camera_profile == "auxiliary_bin_placement":
+        mount[:3, 3] += np.array([0., 0., .23])
+        mount[:3, :3] = mount[:3, :3] @ cv2.Rodrigues(np.array([math.radians(7), 0., 0.]))[0]
     elif camera_profile != "arena_ego":
         raise ValueError("unknown fixed head camera mount")
     return frames[19] @ mount
@@ -180,7 +183,7 @@ def fixed_marker_layout(path, camera_profile, public_assets=None):
         layout = doc.get("layout_profile", "original_arena")
         digest = public_sha(path, public_assets)
     if layout == "auxiliary_grip_targets":
-        if camera_profile != "auxiliary_grip_overview":
+        if camera_profile not in ("auxiliary_grip_overview", "auxiliary_bin_placement"):
             raise ValueError("auxiliary labels require their explicitly declared sensor")
         sizes[22] = .06
         mounts[21] = transform({"position": [0., .18, .60], "rotation_wxyz": [2**-.5, 2**-.5, 0., 0.]})
@@ -469,7 +472,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         box_world = root_rotation @ box_p
         heading = float(np.arctan2(bin_world[1], bin_world[0]))
         distance = float(np.linalg.norm(bin_world[:2])-np.linalg.norm(box_world[:2]))
-        if camera_profile == "auxiliary_grip_overview" and geometry_path is not None and memory_path is None:
+        if camera_profile in ("auxiliary_grip_overview", "auxiliary_bin_placement") and geometry_path is not None and memory_path is None:
             fine_proposal = fine_from_visible_markers(detections, observation, geometry_path, marker_mounts, heading, public_assets)
         if not (0.1 <= distance <= 2.5):
             # Whole-box current containment admits no walking command. The
@@ -489,7 +492,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
             "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
             "target_bin_detected":any(d["marker_id"] == 21 for d in detections), "carried_box_detected":22 in by_id,
             "task_qualified":False}
-    if box_view_only or camera_profile == "auxiliary_grip_overview":
+    if box_view_only or camera_profile in ("auxiliary_grip_overview", "auxiliary_bin_placement"):
         if box_view_only:
             result["box_view_only"] = True
         if 22 in by_id:
@@ -506,7 +509,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["target_memory_used"] = used_memory
     if geometry_path is not None and not used_memory:
         result["clearance_proposal"] = clearance_from_visible_markers(detections, observation, geometry_path, marker_mounts, public_assets)
-        if camera_profile == "auxiliary_grip_overview" and not placement_view_only:
+        if camera_profile in ("auxiliary_grip_overview", "auxiliary_bin_placement") and not placement_view_only:
             result["fine_approach_proposal"] = fine_proposal
     if placement_view_only:
         result["placement_view_only"] = True
