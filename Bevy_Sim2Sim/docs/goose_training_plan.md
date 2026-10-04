@@ -4,7 +4,7 @@
 
 **当前执行状态：大探索前进批次未过，接续上游动作平滑奖励与较小腿部探索的具名批次。** 本批已完成真实训练和独立 ONNX 回放，继续以训练反馈推进。用户最新要求不再主动联系硬件聊天：该聊天已归档，后续硬件更新由供方通知；虚拟问题由 Lab 自行解决，不主动监控或追加派工。沿用已冻结 004 的具名 GPU 兼容候选，50 Hz／decimation=1／原 65→18 和驱动限制保持；平地开发训练可推进，完整恢复、地形、拾物和目标端资格分别验收，不以其他聊天或实体工程收尾为等待条件。
 
-**当前下一批已冻结：** `goose_flat_smooth_forward_course_v1` 保留同一前进课程和最佳站立 Actor／原 Critic／Adam；上游 `action_rate_l2` 使用 -.1×sum，腿部高斯 std=.06、上部六轴与确定性初始 Actor 保持。比原 -.03×mean 加强动作变化约束60倍，避免高频抖动。**11 项实际 CPU 回归通过**，包含原检查点/Adam复载和上游奖励下一次真正PPO更新。计划512世界、最多600秒，按32更新实测吞吐定余量；物理和驱动不变，50Hz/decimation=1。输入 [冻结协议](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_smooth_forward_course_001/pilot_protocol.json)。
+**当前下一批已冻结并排队：** `goose_flat_smooth_forward_course_v1` 保留同一前进课程和最佳站立 Actor／原 Critic／Adam；上游 `action_rate_l2` 使用 -.1×sum，腿部高斯 std=.06、上部六轴与确定性初始 Actor 保持。比原 -.03×mean 加强动作变化约束60倍，检验能否抑制高频抖动。**11 项实际 CPU 回归通过**，包含原检查点/Adam复载和上游奖励下一次真正PPO更新。首次512世界尝试已主动中止并释放GPU，让G1先用：完成62次PPO／992次新Adam，已核验积分下界762,368；中止时尚有一个未完整记账的512世界步，不能把下界当作精确总数，部分策略不晋升。32更新pilot实测7,127.93样本/秒，未显示比此前128世界更高的吞吐；下一次从原最佳站立检查点重新开始，128世界、最多600秒，按32更新实测定余量。物理和驱动不变，50Hz/decimation=1；新增中断收据处理，仅用于完整保存退出状态。输入 [第二次冻结协议](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_smooth_forward_course_001/gpu_attempt02_prepared/pilot_protocol.json)、[首次中止记录](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_smooth_forward_course_001/interrupted_attempt_disposition.json)。
 
 **2026-10-05 最近批次实绩：** 前进大探索完成1,086次PPO／17,376个新Adam／333.6万GPU积分，461.17秒，GPU已释放。最终独立CPU前进第35Tick、后退第85Tick超原足底深度门槛，停止最高约.72m/s，均不晋升；中期虽有正方向位移，速度频谱主要25Hz，不能算移动能力。[完整失败与诊断](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_forward_course_001)。
 
