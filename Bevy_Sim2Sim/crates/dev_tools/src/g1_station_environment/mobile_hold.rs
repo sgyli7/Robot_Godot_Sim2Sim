@@ -7,7 +7,10 @@ use robot_minigame::g1::{definition::G1Definition, policy::bound_bytes};
 use simulation_minigame::g1::{
     mobile_grip::MobileGripCalibration,
     mobile_hold::{MobileGripHolding, MobileHoldGoal},
-    mobile_navigation::{MobileCarryGoal, MobileCarryNavigator},
+    mobile_navigation::{
+        MobileCarryGoal, MobileCarryNavigator, MobileScanGoal, MobileScanNavigator,
+    },
+    mobile_release::{MobileGripRelease, MobileReleaseGoal},
     runner::{G1Runner, G1Step},
     task_objects::TaskObjectKind,
     task_policy::{ArenaControllerCommand, controller_command},
@@ -78,16 +81,22 @@ fn check_clock(step: &G1Step, tick: u64) -> Result<(), String> {
 #[test]
 #[ignore = "saved actual station four50frame chunks, then one original grip calibration and finite hold; maximum450 single50Hz steps,0newRGB/VLA/Qwen"]
 fn saved_station_grasp_self_state_hold() -> Result<(), String> {
-    saved_station_hold_and_carry(false)
+    saved_station_hold_and_carry(false, false)
 }
 
 #[test]
 #[ignore = "saved station grasp/hold then unchanged traditional2m public-clear-aisle carry and stop; maximum2300 actual50Hz steps,0freshRGB/VLA/Qwen; not target-bin qualification"]
 fn saved_station_grasp_two_metre_carry_stop() -> Result<(), String> {
-    saved_station_hold_and_carry(true)
+    saved_station_hold_and_carry(true, false)
 }
 
-fn saved_station_hold_and_carry(run_carry: bool) -> Result<(), String> {
+#[test]
+#[ignore = "saved actual station grasp/100Tick hold then source-positive RGB-derived scan/carry/hold/release goals;3300 single50Hz steps maximum,0freshRGB/VLA/Qwen;mechanics only"]
+fn saved_station_grasp_source_positive_bin_route() -> Result<(), String> {
+    saved_station_hold_and_carry(false, true)
+}
+
+fn saved_station_hold_and_carry(run_carry: bool, run_placement: bool) -> Result<(), String> {
     let value: serde_json::Value =
         serde_json::from_slice(&read("G1_STATION_HOLD_CONFIG")?).map_err(|e| e.to_string())?;
     let config: ArenaTaskRunnerConfig =
@@ -217,7 +226,7 @@ fn saved_station_hold_and_carry(run_carry: bool) -> Result<(), String> {
             ));
         }
         if holding.completed {
-            if !run_carry {
+            if !run_carry && !run_placement {
                 return Ok(());
             }
             break;
@@ -225,6 +234,15 @@ fn saved_station_hold_and_carry(run_carry: bool) -> Result<(), String> {
     }
     if !hold.completed() {
         return Err("station calibrated hold exceeded250Tick bound".into());
+    }
+    if run_placement {
+        return saved_bin_route(
+            &mut owner,
+            hold.command().clone(),
+            &calibration,
+            &hands,
+            &mut trace,
+        );
     }
     let state = owner.measurement().map_err(|e| e.to_string())?;
     let mut transport = hold.command().clone();
@@ -270,4 +288,194 @@ fn saved_station_hold_and_carry(run_carry: bool) -> Result<(), String> {
         }
     }
     Err("station public-aisle carry exceeded1850Tick bound".into())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedBinRoute {
+    source_receipt_sha256: String,
+    source_profile: String,
+    scan_heading: f32,
+    carries: Vec<[f32; 2]>,
+    release_gap: f64,
+    release_ticks: u32,
+}
+
+fn saved_bin_route(
+    owner: &mut G1Runner,
+    mut command: robot_minigame::g1::contract::G1Command,
+    calibration: &MobileGripCalibration,
+    hands: &HashSet<usize>,
+    trace: &mut fs::File,
+) -> Result<(), String> {
+    let program: SavedBinRoute =
+        serde_json::from_slice(&read("G1_STATION_BIN_PROGRAM")?).map_err(|e| e.to_string())?;
+    if program.source_profile != "original_source_positive20620_RGB_goals_not_station_live"
+        || program.source_receipt_sha256.len() != 64
+        || program.scan_heading != -std::f32::consts::FRAC_PI_2
+        || program.carries.len() != 5
+        || program.release_gap != 0.35
+        || program.release_ticks != 100
+    {
+        return Err("saved bin program must preserve the frozen source-positive route".into());
+    }
+    let stamp =
+        |state: &simulation_minigame::g1::runner::G1Measurement, frame_id| ObservationStamp {
+            episode_id: state.episode_id,
+            frame_id,
+            sim_time_ns: state.sim_time_ns,
+            captured_at_unix_ms: 1,
+        };
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    let mut scan = MobileScanNavigator::new(
+        MobileScanGoal {
+            observation: stamp(&state, 6),
+            heading_yaw_source_rad: program.scan_heading,
+        },
+        &state,
+    )
+    .map_err(|e| e.to_string())?;
+    for _ in 0..800 {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let navigation = scan.update(&state).map_err(|e| e.to_string())?;
+        command.navigation = navigation.navigation;
+        let step = owner.step(&command).map_err(|e| e.to_string())?;
+        write_route_step(
+            trace,
+            &step,
+            "source_positive_scan",
+            &navigation,
+            true,
+            hands,
+        )?;
+        if navigation.completed {
+            break;
+        }
+    }
+    if !scan.completed() {
+        return Err("bounded saved station scan did not complete".into());
+    }
+    for (i, [heading, distance]) in program.carries.into_iter().enumerate() {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let mut carry = MobileCarryNavigator::new(
+            MobileCarryGoal {
+                observation: stamp(&state, 7 + i as u64),
+                heading_yaw_source_rad: heading,
+                relative_distance_m: distance,
+            },
+            &state,
+        )
+        .map_err(|e| e.to_string())?;
+        for _ in 0..900 {
+            let state = owner.measurement().map_err(|e| e.to_string())?;
+            if state.source_tick >= 2850 {
+                return Err("saved station bin route exhausted finite bound".into());
+            }
+            let navigation = carry.update(&state).map_err(|e| e.to_string())?;
+            command.navigation = navigation.navigation;
+            let step = owner.step(&command).map_err(|e| e.to_string())?;
+            write_route_step(
+                trace,
+                &step,
+                "source_positive_bin_carry",
+                &navigation,
+                true,
+                hands,
+            )?;
+            if navigation.completed {
+                break;
+            }
+        }
+        if !carry.completed() {
+            return Err("saved bounded bin carry did not complete".into());
+        }
+    }
+    command.navigation = [0.; 3];
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    let mut hold = MobileGripHolding::new(
+        MobileHoldGoal {
+            observation: stamp(&state, 12),
+        },
+        &state,
+        command,
+    )
+    .map_err(|e| e.to_string())?;
+    for _ in 0..250 {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let holding = hold.update(&state).map_err(|e| e.to_string())?;
+        let step = owner.step(&holding.command).map_err(|e| e.to_string())?;
+        write_route_step(
+            trace,
+            &step,
+            "source_positive_prerelease_hold",
+            &holding,
+            true,
+            hands,
+        )?;
+        if holding.completed {
+            break;
+        }
+    }
+    if !hold.completed() {
+        return Err("saved station prerelease hold did not complete".into());
+    }
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    let mut release = MobileGripRelease::new(
+        MobileReleaseGoal {
+            observation: stamp(&state, 13),
+            target_palm_gap_m: program.release_gap,
+            duration_ticks: program.release_ticks,
+        },
+        &state,
+        hold.command().clone(),
+        calibration,
+    )
+    .map_err(|e| e.to_string())?;
+    for _ in 0..225 {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let opening = release
+            .update(&state, calibration)
+            .map_err(|e| e.to_string())?;
+        let step = owner.step(&opening.command).map_err(|e| e.to_string())?;
+        write_route_step(
+            trace,
+            &step,
+            "source_positive_open_and_settle",
+            &opening,
+            false,
+            hands,
+        )?;
+        if opening.completed {
+            return Ok(());
+        }
+    }
+    Err("saved station finite release did not complete".into())
+}
+
+fn write_route_step<T: serde::Serialize>(
+    trace: &mut fs::File,
+    step: &G1Step,
+    phase: &str,
+    receipt: &T,
+    require_hand_support: bool,
+    hands: &HashSet<usize>,
+) -> Result<(), String> {
+    let supported = hand_support(step, hands)?;
+    writeln!(trace, "{}", serde_json::json!({"phase":phase,
+        "body":{"mobile_homie_v2":step},"execution":receipt,
+        "independent_active_hand_only_support":supported,"synthetic_offline_skill_identity":true,
+        "source_RGB_route_not_station_live":true,"fresh_RGB_VLA_Qwen":0,"task_qualified":false
+    })).map_err(|e| e.to_string())?;
+    trace.flush().map_err(|e| e.to_string())?;
+    check_clock(step, step.integration_count)?;
+    if require_hand_support && !supported {
+        return Err(format!(
+            "saved station bin route lost hand-only support atTick{}",
+            step.integration_count
+        ));
+    }
+    if step.integration_count > 3300 {
+        return Err("saved station bin route exceeded3300Ticks".into());
+    }
+    Ok(())
 }

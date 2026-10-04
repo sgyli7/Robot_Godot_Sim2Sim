@@ -3,7 +3,7 @@
 use super::*;
 use simulation_minigame::g1::{
     mobile_assist::{MobileAssistCommand, MobileAssistExecution},
-    mobile_navigation::MobileCarryGoal,
+    mobile_navigation::{MobileCarryGoal, MobileScanGoal},
     worker::TimedCommand,
 };
 
@@ -58,35 +58,65 @@ pub(super) fn continue_after_hold(
     else {
         return Ok(false);
     };
-    let config = match &runtime
+    let config = &runtime
         .mobile_assist
         .as_ref()
         .ok_or("station carry configuration absent")?
-        .configuration
-    {
-        MobileAssistStage::Carry(config) => config.clone(),
-        _ => return Err("station public-aisle carry cannot select a source scan".into()),
+        .configuration;
+    let (heading, distance) = match config {
+        MobileAssistStage::Carry(config) => (
+            config.heading_yaw_source_rad,
+            Some(config.relative_distance_m),
+        ),
+        MobileAssistStage::Scan(config) => (config.heading_yaw_source_rad, None),
     };
     let Some((observation, _)) =
         capture_current_marker_frame(runtime, port, "station_held_transport")?
     else {
         return Ok(false);
     };
-    let goal = MobileCarryGoal {
-        observation,
-        heading_yaw_source_rad: config.heading_yaw_source_rad,
-        relative_distance_m: config.relative_distance_m,
+    let (command, goal, receipt_key, origin, limit_ns, wall_seconds) = match distance {
+        Some(relative_distance_m) => {
+            let goal = MobileCarryGoal {
+                observation,
+                heading_yaw_source_rad: heading,
+                relative_distance_m,
+            };
+            goal.validate().map_err(|e| e.to_string())?;
+            (
+                MobileAssistCommand::ClassicalCarry(goal.clone()),
+                serde_json::to_value(goal).map_err(|e| e.to_string())?,
+                "station_public_aisle_carry_after_hold",
+                "explicit_public_court_clear_aisle_not_target_bin_localization",
+                46_000_000_000,
+                40,
+            )
+        }
+        None => {
+            let goal = MobileScanGoal {
+                observation,
+                heading_yaw_source_rad: heading,
+            };
+            goal.validate().map_err(|e| e.to_string())?;
+            (
+                MobileAssistCommand::ClassicalScan(goal.clone()),
+                serde_json::to_value(goal).map_err(|e| e.to_string())?,
+                "station_public_bin_scan_after_hold",
+                "explicit_public_map_search_heading_target_pose_requires_new_actual_rgb",
+                21_000_000_000,
+                20,
+            )
+        }
     };
-    goal.validate().map_err(|e| e.to_string())?;
     let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
         return Err("station carry lost the unique assisted physics owner".into());
     };
     owner
         .submit(TimedCommand {
             episode_id: runtime.episode_id,
-            valid_until_sim_ns: 46_000_000_000,
-            valid_until_wall: Instant::now() + Duration::from_secs(40),
-            command: MobileAssistCommand::ClassicalCarry(goal.clone()),
+            valid_until_sim_ns: limit_ns,
+            valid_until_wall: Instant::now() + Duration::from_secs(wall_seconds),
+            command,
         })
         .map_err(|e| e.to_string())?;
     let mut receipt = outcome.0.lock().unwrap();
@@ -94,10 +124,10 @@ pub(super) fn continue_after_hold(
         .mobile_assist_handoff
         .as_mut()
         .ok_or("station grip provenance absent")?;
-    handoff["station_public_aisle_carry_after_hold"] = serde_json::json!({
+    handoff[receipt_key] = serde_json::json!({
         "goal":goal,"minimum_holding_ticks":100,"actual_holding_ticks":holding_ticks,
         "actual_current_rgb":true,"source_tick":latest.timing.episode_integrations,
-        "goal_origin":"explicit_public_court_clear_aisle_not_target_bin_localization",
+        "goal_origin":origin,
         "original_task_profile":"mobile_box_homie_v2_n1_6",
         "world_or_contact_truth_input":false,"Qwen_calls":0,"task_qualified":false,
     });

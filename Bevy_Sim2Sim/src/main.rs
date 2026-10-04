@@ -59,6 +59,7 @@ fn run() -> Result<(), String> {
                 | "g1_task_lab"
                 | "g1_mobile_carry_diagnostic"
                 | "g1_station_mobile_carry_diagnostic"
+                | "g1_station_mobile_release_diagnostic"
                 | "g1_mobile_assist_diagnostic"
                 | "g1_mobile_scan_diagnostic"
                 | "g1_mobile_target_view_diagnostic"
@@ -187,6 +188,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
     let mobile_carry = arguments.scene.as_deref() == Some("g1_mobile_carry_diagnostic");
     let station_mobile_carry =
         arguments.scene.as_deref() == Some("g1_station_mobile_carry_diagnostic");
+    let station_mobile_release =
+        arguments.scene.as_deref() == Some("g1_station_mobile_release_diagnostic");
     let mobile_assist = arguments.scene.as_deref() == Some("g1_mobile_assist_diagnostic");
     let mobile_scan = arguments.scene.as_deref() == Some("g1_mobile_scan_diagnostic");
     let mobile_target_view = arguments.scene.as_deref() == Some("g1_mobile_target_view_diagnostic");
@@ -219,6 +222,7 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
         timeout: Duration::from_secs(
             if mobile_carry
                 || station_mobile_carry
+                || station_mobile_release
                 || mobile_assist
                 || mobile_scan
                 || mobile_target_view
@@ -269,6 +273,8 @@ fn capture_g1_diagnostic(arguments: Arguments) -> Result<(), String> {
         dev_tools_minigame::g1_capture::run_mobile_continuous_release_from_file(&path, options)
     } else if station_mobile_carry {
         dev_tools_minigame::g1_capture::run_station_mobile_carry_from_file(&path, options)
+    } else if station_mobile_release {
+        dev_tools_minigame::g1_capture::run_station_mobile_release_from_file(&path, options)
     } else if mobile_carry {
         dev_tools_minigame::g1_capture::run_mobile_carry_from_file(&path, options)
     } else if mobile_auxiliary_release {
@@ -397,13 +403,13 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
             "--help" | "-h" => {
                 println!(
                     "Bevy_Sim2Sim foundation and station preview\n\
-                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_static_visual_grasp_diagnostic, g1_static_visual_transfer_diagnostic, g1_static_visual_transfer_auxiliary_diagnostic, g1_static_visual_transfer_placement_diagnostic, g1_static_memory_place_diagnostic, g1_static_memory_place_observe_diagnostic, g1_static_unheld_regrasp_diagnostic, g1_static_pregrasp_diagnostic, g1_static_observed_grasp_diagnostic, g1_static_observed_place_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic, g1_station_mobile_carry_diagnostic, g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
+                     --scene NAME    foundation, science_station_preview, g1_camera_diagnostic, g1_static_visual_grasp_diagnostic, g1_static_visual_transfer_diagnostic, g1_static_visual_transfer_auxiliary_diagnostic, g1_static_visual_transfer_placement_diagnostic, g1_static_memory_place_diagnostic, g1_static_memory_place_observe_diagnostic, g1_static_unheld_regrasp_diagnostic, g1_static_pregrasp_diagnostic, g1_static_observed_grasp_diagnostic, g1_static_observed_place_diagnostic, g1_task_lab, g1_mobile_wait_grasp_diagnostic, g1_mobile_continuous_release_diagnostic, g1_mobile_carry_diagnostic, g1_station_mobile_carry_diagnostic, g1_station_mobile_release_diagnostic, g1_mobile_assist_diagnostic g1_mobile_scan_diagnostic g1_mobile_target_view_diagnostic, g1_mobile_target_approach_diagnostic or g1_mobile_target_raise_view_diagnostic or g1_mobile_target_memory_view_diagnostic or g1_mobile_target_restored_view_diagnostic or g1_mobile_auxiliary_view_diagnostic or g1_mobile_auxiliary_approach_diagnostic or g1_mobile_auxiliary_release_diagnostic\n\
                      --robot NAME    none, or g1 for the explicit unqualified camera diagnostic\n\
                      --headless      run without a window\n\
                      --verify        scoped foundation check (requires dev_tools feature)\n\
                      --output PATH   verification or G1 diagnostic directory\n\
                      --g1-config PATH  frozen G1 camera diagnostic JSON (requires dev_tools)\n\
-                     --g1-ticks N    camera 0..400 (standing max150); mobile waited grasp1000; mobile carry1000/1500; assisted carry maximum2050; station carry2300\n\
+                     --g1-ticks N    camera 0..400 (standing max150); mobile waited grasp1000; mobile carry1000/1500; assisted carry maximum2050; station carry2300; station RGB bin release3300\n\
                      --capture PATH  preview screenshot file (requires dev_tools)\n\
                      --frames N      exit preview after N displayed frames (requires dev_tools)\n\
                      --view NAME     arrival, overview, towers, samples, berth, hills, follow"
@@ -430,8 +436,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                 let ticks = value()?
                     .parse::<u32>()
                     .map_err(|_| "--g1-ticks requires a nonnegative integer")?;
-                if ticks > 3150 {
-                    return Err("--g1-ticks must be at most3150 before scene validation".into());
+                if ticks > 3300 {
+                    return Err("--g1-ticks must be at most3300 before scene validation".into());
                 }
                 options.g1_ticks = Some(ticks);
             }
@@ -507,6 +513,12 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
                 "station mobile carry requires --g1-ticks2300 as its finite maximum".into(),
             );
         }
+    } else if options.scene.as_deref() == Some("g1_station_mobile_release_diagnostic") {
+        if options.g1_ticks != Some(3300) {
+            return Err(
+                "station mobile release requires --g1-ticks3300 as its finite maximum".into(),
+            );
+        }
     } else if options.scene.as_deref() == Some("g1_mobile_wait_grasp_diagnostic") {
         if options.g1_ticks != Some(1000) {
             return Err("mobile waited grasp requires --g1-ticks1000 as its finite maximum".into());
@@ -563,6 +575,55 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Option<Argument
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn station_release_requires_its_own_exact_budget_and_does_not_widen_other_entries() {
+        for args in [
+            [
+                "--scene",
+                "g1_station_mobile_release_diagnostic",
+                "--g1-ticks",
+                "3300",
+            ],
+            [
+                "--g1-ticks",
+                "3300",
+                "--scene",
+                "g1_station_mobile_release_diagnostic",
+            ],
+        ] {
+            assert!(super::parse_arguments(args.into_iter().map(String::from)).is_ok());
+        }
+        for scene in [
+            "g1_station_mobile_carry_diagnostic",
+            "g1_camera_diagnostic",
+            "g1_mobile_auxiliary_release_diagnostic",
+        ] {
+            assert!(
+                super::parse_arguments(
+                    ["--scene", scene, "--g1-ticks", "3300"]
+                        .into_iter()
+                        .map(String::from)
+                )
+                .is_err()
+            );
+        }
+        for ticks in ["0", "200", "2300", "3150", "3299", "3301"] {
+            assert!(
+                super::parse_arguments(
+                    [
+                        "--scene",
+                        "g1_station_mobile_release_diagnostic",
+                        "--g1-ticks",
+                        ticks
+                    ]
+                    .into_iter()
+                    .map(String::from)
+                )
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn station_carry_has_a_separate_exact_maximum_in_both_argument_orders() {
         for args in [
