@@ -89,6 +89,26 @@ cargo build --locked --bin bevy_sim2sim --features \
   --trace .scratch/g1_mobile_new_run/owner_steps.jsonl --output .scratch/g1_mobile_audit.json
 ```
 
+## 科学站 T2 抓箱迁移
+
+同日 episode 20622 在原生科学站完成了单次抓箱诊断：四次真实本体相机图片和原配 N1.6 新推理、200 次单独 20 ms 积分及身体控制更新，末帧箱子中心抬高 0.143950 m。独立日志确认正接触来自左右手、箱子已脱离货架，最低站立余弦为 0.993949。末段有 42 Tick 的抬高／手接触样本；这不等于已验证长期持物或搬运。活跃仿真／墙钟比为 0.995166，控制误期与积压均为零，模型边界暂停继续存在。本轮 Qwen 调用为零，不能当作科学站自然语言闭环或正式 T2 成功。
+
+前置预检执行 100 次单独 50 Hz 积分，机器人站立，箱子／容器位移分别约 0.09／0.47 毫米，并有货架／台车的正支撑冲量。新场景只保留原任务货架和台车的六个碰撞体及对应六个网格，源几何、质量和材质保留；省略原仓库其余几何和电钻。旧视觉导出遗漏的台车桌面已从同一冻结 USD 补回，其源材质明确设置纹理亮度为零和颜色偏移 0.11。其余 122 个原视觉网格、材质和 UV 经逐项比较一致。原版完整仓库入口仍拒绝该科学站场景。
+
+本轮总世界为 58 bodies／2,613 colliders／52 multibody joint handles，含 2,553 个同源科学站碰撞体；原宽平面在零 Tick 时移除。原 Homie v2／N1.6、动作映射、增益、质量、步长和图像有效期均保持，4 PGS 是独立的开发诊断，未增加时间子步或正式执行能力。
+
+源码：`76707ce5266e147e83f4698126193ef2b01c53cf`；应用 SHA256：`c90662a0aba6c8eb489ac53c14d05e93773e3ea5029b5675a446f1a9ff42130e`。原片 SHA256：`bb0329881b3d3005aceb5d7de96a840eed2b84265c95e63ee550cc0eb8dee8f8`，327 帧／13.08 秒，恒定帧率采样重复一帧。首次绘制前显示了窗口占位时钟；公开片段仅使用原片 5.88–13.08 秒的实际应用画面。新增 GIF 为 960×540、90 帧、7.20 秒原速节选，完整窗口只做尺寸缩小和采样，没有补造或延长动作；两段 12 秒主页 GIF 保持。
+
+新视觉导出 SHA256：`69129a51ae7fd53ddf9a00cce7170bc780e4d0f4fceff5c720cbe359db7eee9e`，仍绑定原背景物理 `0ecc6d502967d7cca82bd208b2338dedf86505c781bf5d47551b186fa73b86e6`。外部证据位于 `/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_fixture_milestone_001/`，包含冻结配置、独立审计、原速录像与源资产。复用上述 N1.6 服务启动命令后运行：
+
+```bash
+./target/debug/bevy_sim2sim --scene g1_camera_diagnostic --robot g1 \
+  --g1-config /home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_fixture_milestone_001/evidence/g1_station_t2_grasp_live_20261004_0422/config.json \
+  --g1-ticks 200 --output .scratch/g1_station_t2_new_grasp
+```
+
+该独立入口仅接受零 Tick 相机初始化或 200 Tick／四块新动作的抓取诊断；不开放科学站搬运、预取或 Qwen 调度。模型／本体的准备和停止沿用上述不同 profile 的命令；新视觉资产的源导出工具是 `crates/dev_tools/python/scripts/unitree_g1_background_visual_export.py` 的 `--restore-station-tabletop` 选项，不能覆盖原仓库视觉制品。
+
 ## 仍需完成
 
 T1/T2 正式合同与控制配置、各 5 组初始位置 × 2 个种子的至少 8/10、科学站搬箱、从初始指令开始的 Qwen 调度、全程连续 1×、故障恢复、重置与过期隔离、低坡／门槛、共存性能及完整回归仍需验收。中文 UI 目前只开放已验证观察和停止，正式执行／导航按钮不随阶段合入而解锁。主干中的成功样例也不能替代这些要求。
