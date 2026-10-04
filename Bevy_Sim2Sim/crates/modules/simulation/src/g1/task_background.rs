@@ -11,7 +11,11 @@ use rapier3d::{
 use robot_minigame::{
     RobotError,
     basis::{source_to_engine_rotation, source_to_engine_vector},
-    g1::{definition::SourcePose, policy::bound_bytes},
+    g1::{
+        definition::SourcePose,
+        policy::bound_bytes,
+        task_fixtures::{STATION_PHYSICAL_FIXTURES, T2BackgroundSelection},
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::PathBuf};
@@ -28,6 +32,10 @@ pub struct T2SourceBackgroundConfig {
     pub definition_sha256: String,
     /// A single scene-wide offset, also used for the robot, box, bin and floor.
     pub environment_translation_source: [f64; 3],
+    /// Default preserves the complete original scene. Station fixtures require
+    /// a separately prepared physical environment in the owner factory.
+    #[serde(default)]
+    pub selection: T2BackgroundSelection,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +103,8 @@ struct Document {
 
 /// All fallible file, geometry, material and floor checks precede world mutation.
 pub(super) struct PreparedBackground {
+    selection: T2BackgroundSelection,
+    original_owner_floor: ColliderHandle,
     sha256: String,
     query_sha256: String,
     audit: serde_json::Value,
@@ -107,6 +117,8 @@ struct Instance {
     dynamic: bool,
 }
 pub(super) struct T2SourceBackground {
+    selection: T2BackgroundSelection,
+    original_owner_floor: ColliderHandle,
     sha256: String,
     query_sha256: String,
     audit: serde_json::Value,
@@ -130,6 +142,8 @@ pub struct T2SourceBackgroundSample {
     pub source_query_sha256: String,
     pub physics_parity_qualified: bool,
     pub existing_floor_reused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub station_task_fixture_selection: Option<serde_json::Value>,
     pub audit: serde_json::Value,
     pub bodies: Vec<T2BackgroundBodySample>,
 }
@@ -349,7 +363,24 @@ impl T2SourceBackgroundConfig {
             }
             prepared.push((body.path, builder, colliders));
         }
+        if self.selection == T2BackgroundSelection::StationTaskFixtures {
+            for (body, _, colliders) in &mut prepared {
+                colliders.retain(|(path, _)| self.selection.physical_fixture(body, path));
+            }
+            prepared.retain(|(_, _, colliders)| !colliders.is_empty());
+            let retained: HashSet<_> = prepared
+                .iter()
+                .flat_map(|(_, _, shapes)| shapes.iter().map(|(path, _)| path.as_str()))
+                .collect();
+            if prepared.len() != 2 || retained != HashSet::from(STATION_PHYSICAL_FIXTURES) {
+                return Err(invalid(
+                    "station task support coverage differs from frozen shelf/table fixtures",
+                ));
+            }
+        }
         Ok(PreparedBackground {
+            selection: self.selection,
+            original_owner_floor: floors[0].0,
             sha256: self.definition_sha256.clone(),
             query_sha256: doc.source_query_sha256,
             audit: doc.audit,
@@ -385,6 +416,8 @@ impl PreparedBackground {
             });
         }
         T2SourceBackground {
+            selection: self.selection,
+            original_owner_floor: self.original_owner_floor,
             sha256: self.sha256,
             query_sha256: self.query_sha256,
             audit: self.audit,
@@ -393,6 +426,9 @@ impl PreparedBackground {
     }
 }
 impl T2SourceBackground {
+    pub(super) fn selection(&self) -> T2BackgroundSelection {
+        self.selection
+    }
     pub(super) fn collider_path(&self, handle: ColliderHandle) -> Option<&str> {
         self.instances
             .iter()
@@ -442,7 +478,19 @@ impl T2SourceBackground {
             definition_sha256: self.sha256.clone(),
             source_query_sha256: self.query_sha256.clone(),
             physics_parity_qualified: false,
-            existing_floor_reused: true,
+            existing_floor_reused: world.world.colliders.contains(self.original_owner_floor),
+            station_task_fixture_selection: (self.selection
+                == T2BackgroundSelection::StationTaskFixtures)
+                .then(|| {
+                    serde_json::json!({
+                        "selection": self.selection,
+                        "retained_collider_paths": STATION_PHYSICAL_FIXTURES,
+                        "retained_bodies": 2, "retained_colliders": 6,
+                        "omitted_source_bodies": 1, "omitted_source_colliders": 244,
+                        "source_material_mass_pose_and_cooking_unchanged": true,
+                        "source_task_appearance_parity_qualified": false,
+                    })
+                }),
             audit: self.audit.clone(),
             bodies,
         })

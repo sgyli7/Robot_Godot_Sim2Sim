@@ -135,8 +135,33 @@ pub struct G1Runner {
 }
 
 impl G1Runner {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn load_mobile_station_fixture_diagnostic(
+        config: &G1RunnerConfig,
+    ) -> Result<Self, RobotError> {
+        let mut owner = Self::load(config)?;
+        owner.enable_mobile_station_fixture_diagnostic()?;
+        Ok(owner)
+    }
+
     pub fn load(config: &G1RunnerConfig) -> Result<Self, RobotError> {
-        if config.startup_environment.is_some() && config.task_objects.is_some() {
+        let station_fixtures = config
+            .task_objects
+            .as_ref()
+            .and_then(|scene| scene.source_t2_background.as_ref())
+            .is_some_and(|background| {
+                background.selection
+                    == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures
+            });
+        if station_fixtures && config.startup_environment.is_none() {
+            return Err(error(
+                "station T2 fixtures require a prepared physical environment before loading models",
+            ));
+        }
+        if config.startup_environment.is_some()
+            && config.task_objects.is_some()
+            && !station_fixtures
+        {
             return Err(error(
                 "mobile station stand entry cannot overlay an unvalidated task scene",
             ));
@@ -229,6 +254,42 @@ impl G1Runner {
         {
             return Err(error(
                 "mobile convergence candidate requires a fresh released T2 scene and native force motors",
+            ));
+        }
+        self.simulation
+            .world
+            .integration_parameters
+            .num_internal_pgs_iterations = 4;
+        Ok(())
+    }
+
+    /// Separate station transfer candidate. The original-scene factory still
+    /// requires complete source coverage; neither factory adds time substeps.
+    #[cfg(any(test, feature = "g1_constraint_diagnostic"))]
+    pub(super) fn enable_mobile_station_fixture_diagnostic(&mut self) -> Result<(), RobotError> {
+        if self.simulation.integration_count != 0
+            || self.progress_counts().inference_attempt_count != 0
+            || self.actuator_backend != G1ActuatorBackend::NativeForceBased
+            || self
+                .task_objects
+                .as_ref()
+                .is_none_or(|scene| !scene.has_station_t2_fixtures())
+            || self
+                .native_static_environment
+                .as_ref()
+                .is_none_or(|environment| {
+                    !environment.original_broad_floor_removed
+                        || environment.owner_integrations_at_installation != 0
+                })
+            || self
+                .simulation
+                .world
+                .integration_parameters
+                .num_internal_pgs_iterations
+                != 1
+        {
+            return Err(error(
+                "station fixture candidate requires a fresh same-world environment, frozen T2 support fixtures and native force motors",
             ));
         }
         self.simulation
@@ -571,6 +632,29 @@ mod tests {
         assert!(
             matches!(G1Runner::load(&config),Err(RobotError::Contract(message))
             if message.contains("unvalidated task scene"))
+        );
+        use robot_minigame::g1::task_fixtures::T2BackgroundSelection;
+        config.task_objects.as_mut().unwrap().source_t2_background =
+            Some(super::super::task_background::T2SourceBackgroundConfig {
+                definition: "not-loaded-background.json".into(),
+                definition_sha256: "5".repeat(64),
+                environment_translation_source: [0., 0., 0.795],
+                selection: T2BackgroundSelection::OriginalScene,
+            });
+        assert!(
+            matches!(G1Runner::load(&config), Err(RobotError::Contract(message)) if message.contains("unvalidated task scene"))
+        );
+        config
+            .task_objects
+            .as_mut()
+            .unwrap()
+            .source_t2_background
+            .as_mut()
+            .unwrap()
+            .selection = T2BackgroundSelection::StationTaskFixtures;
+        config.startup_environment = None;
+        assert!(
+            matches!(G1Runner::load(&config), Err(RobotError::Contract(message)) if message.contains("prepared physical environment"))
         );
     }
 

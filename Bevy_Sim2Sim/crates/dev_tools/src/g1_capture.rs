@@ -446,9 +446,13 @@ impl CaptureRunnerConfig {
             };
             #[cfg(feature = "g1_constraint_diagnostic")]
             {
-                return ArenaTaskWorker::spawn_mobile_constraint_diagnostic(config)
-                    .map(CaptureWorker::Task)
-                    .map_err(|e| e.to_string());
+                let station_fixtures = matches!(&config.body, ArenaTaskBodyConfig::MobileHomieV2(body) if body.task_objects.as_ref().and_then(|scene| scene.source_t2_background.as_ref()).is_some_and(|background| background.selection == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures));
+                let worker = if station_fixtures {
+                    ArenaTaskWorker::spawn_mobile_station_fixture_diagnostic(config)
+                } else {
+                    ArenaTaskWorker::spawn_mobile_constraint_diagnostic(config)
+                };
+                return worker.map(CaptureWorker::Task).map_err(|e| e.to_string());
             }
             #[cfg(not(feature = "g1_constraint_diagnostic"))]
             {
@@ -964,8 +968,13 @@ fn run_from_file(
     if config.task_visual_path.is_some() != config.task_visual_sha256.is_some() {
         return Err("task visual path/hash must both be supplied".into());
     }
+    let station_fixture_initialization = mode == CaptureMode::Camera
+        && options.ticks == 0
+        && config.station.is_some()
+        && matches!(&config.runner, CaptureRunnerConfig::Task(task) if matches!(&task.body, ArenaTaskBodyConfig::MobileHomieV2(body) if body.task_objects.as_ref().and_then(|scene| scene.source_t2_background.as_ref()).is_some_and(|background| background.selection == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures)));
     if matches!(config.runner, CaptureRunnerConfig::Task(_)) != config.policy.is_some()
         && !(config.static_marker_assets.is_some() && config.policy.is_none())
+        && !station_fixture_initialization
     {
         return Err("task owner and live policy configuration must be supplied together".into());
     }
@@ -1752,6 +1761,41 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
+    let station_t2_fixtures = config
+        .task_objects()
+        .and_then(|scene| scene.source_t2_background.as_ref())
+        .is_some_and(|background| {
+            background.selection
+                == robot_minigame::g1::task_fixtures::T2BackgroundSelection::StationTaskFixtures
+        });
+    if station_t2_fixtures
+        && (!cfg!(feature = "g1_constraint_diagnostic")
+            || mode != CaptureMode::Camera
+            || station.is_none()
+            || !matches!(&config, CaptureRunnerConfig::Task(task) if task.body.profile() == TaskProfile::MobileBox)
+            || !matches!(options.ticks, 0 | 200)
+            || if options.ticks == 0 {
+                policy.is_some()
+            } else {
+                policy.as_ref().is_none_or(|policy| {
+                    policy.max_calls != 4
+                        || policy.prefetch_after_ticks.is_some()
+                        || policy.boundary_images_with_wait
+                })
+            }
+            || diagnostic_constraint_sweeps != Some(4)
+            || predictive_limit_diagnostic
+            || background_visual.is_none()
+            || task_visual.is_none()
+            || render_only_environment_translation.is_some()
+            || diagnostic_source_rect_lighting.is_some()
+            || task_lab.is_some()
+            || mobile_assist.is_some()
+            || mobile_scan.is_some()
+            || diagnostic_qwen_dispatch.is_some())
+    {
+        return Err("station T2 fixture entry permits only zero-Tick actual-camera initialization or one200Tick/four-fresh-chunk grasp diagnostic; source warehouse, carry, prefetch and Qwen dispatch require separate validation".into());
+    }
     if let Some(qwen) = &diagnostic_qwen_dispatch {
         if !cfg!(feature = "g1_constraint_diagnostic") {
             return Err(
@@ -2203,7 +2247,12 @@ fn run_capture_owner(
                 if render_only_environment_translation.is_some() {
                     return Err("mobile background requires actual completed physical poses".into());
                 }
-                G1BackgroundVisualModel::load_mobile(
+                let load = if station_t2_fixtures {
+                    G1BackgroundVisualModel::load_mobile_station_fixtures
+                } else {
+                    G1BackgroundVisualModel::load_mobile
+                };
+                load(
                     &background.path,
                     &background.sha256,
                     t2.environment_translation_source,
@@ -2292,7 +2341,7 @@ fn run_capture_owner(
     let mut scene = StationScene::load(&assets)?;
     let mut station_preparation = None;
     if let Some(station) = &station {
-        if background_model.is_some()
+        if (background_model.is_some() && !station_t2_fixtures)
             || render_only_environment_translation.is_some()
             || assisted_carry
             || source_rect_lighting.is_some()
@@ -2305,10 +2354,11 @@ fn run_capture_owner(
             CaptureRunnerConfig::Mobile(body) if body.task_objects.is_none() =>
                 (body.floor_contact_friction, &mut body.startup_environment),
             CaptureRunnerConfig::Task(task) => {
-                let ArenaTaskBodyConfig::StaticAgile(body) = &mut task.body else {
-                    return Err("scientific-station mobile task scenes require separate physical qualification; only standalone mobile standing is admitted".into());
-                };
-                (body.floor_contact_friction, &mut body.startup_environment)
+                match &mut task.body {
+                    ArenaTaskBodyConfig::StaticAgile(body) => (body.floor_contact_friction, &mut body.startup_environment),
+                    ArenaTaskBodyConfig::MobileHomieV2(body) if station_t2_fixtures => (body.floor_contact_friction, &mut body.startup_environment),
+                    _ => return Err("scientific-station mobile task scenes require the separately bounded frozen support fixture diagnostic".into()),
+                }
             }
             _ => return Err(
                 "scientific-station preparation requires static AGILE or mobile standing without task objects"
@@ -2411,7 +2461,10 @@ fn run_capture_owner(
     }
     if let Some(preparation) = station_preparation {
         let mut receipt = outcome.0.lock().unwrap();
-        receipt.environment = if matches!(&config, CaptureRunnerConfig::Mobile(_)) {
+        receipt.environment = if station_t2_fixtures {
+            receipt.scope = "native_scientific_station_t2_frozen_support_fixtures_initialization_or_fresh_grasp_diagnostic_not_qualified";
+            "scientific_station_native_static_world_t2_support_fixture_development"
+        } else if matches!(&config, CaptureRunnerConfig::Mobile(_)) {
             receipt.scope = "native_scientific_station_mobile_standing_camera_diagnostic";
             "scientific_station_native_static_world_mobile_stand_development"
         } else {

@@ -589,11 +589,44 @@ impl ArenaTaskRunner {
         if config.body.profile() != TaskProfile::MobileBox {
             return Err(error("mobile convergence candidate requires Homie_v2/N1.6"));
         }
+        let ArenaTaskBodyConfig::MobileHomieV2(config_body) = &config.body else {
+            return Err(error("mobile candidate body mismatch"));
+        };
+        if config_body.startup_environment.is_some()
+            || config_body
+                .task_objects
+                .as_ref()
+                .and_then(|scene| scene.source_t2_background.as_ref())
+                .is_none_or(|background| {
+                    background.selection
+                        != robot_minigame::g1::task_fixtures::T2BackgroundSelection::OriginalScene
+                })
+        {
+            return Err(error(
+                "original mobile convergence factory requires complete source background coverage without a station overlay",
+            ));
+        }
         let mut owner = Self::load(config)?;
         let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
             return Err(error("mobile candidate body mismatch"));
         };
         body.enable_mobile_constraint_diagnostic()?;
+        Ok(owner)
+    }
+
+    /// Explicit scene-transfer diagnostic, distinct from original T2 admission.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn load_mobile_station_fixture_diagnostic(
+        config: &ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        if config.body.profile() != TaskProfile::MobileBox {
+            return Err(error("station fixture candidate requires Homie_v2/N1.6"));
+        }
+        let mut owner = Self::load(config)?;
+        let ArenaBodyRunner::MobileHomieV2(body) = &mut owner.body else {
+            return Err(error("station fixture candidate body mismatch"));
+        };
+        body.enable_mobile_station_fixture_diagnostic()?;
         Ok(owner)
     }
 

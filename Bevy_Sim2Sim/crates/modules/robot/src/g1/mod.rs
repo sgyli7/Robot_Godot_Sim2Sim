@@ -5,3 +5,4 @@ pub mod agile;
 pub mod contract;
 pub mod definition;
 pub mod policy;
+pub mod task_fixtures;

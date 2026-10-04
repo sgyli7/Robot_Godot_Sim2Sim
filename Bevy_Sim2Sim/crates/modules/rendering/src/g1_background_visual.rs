@@ -15,6 +15,7 @@ use bevy::{
     render::render_resource::AsBindGroup,
     shader::ShaderRef,
 };
+use robot_minigame::g1::task_fixtures::{STATION_VISUAL_FIXTURES, T2BackgroundSelection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -87,6 +88,22 @@ struct Material {
     authored_shader_inputs: HashMap<String, String>,
     #[serde(default)]
     warehouse_mdl: Option<WarehouseMdl>,
+    #[serde(default)]
+    station_tabletop: Option<StationTabletopMaterial>,
+}
+
+/// The inspected source sets diffuse texture brightness to zero. Its constant
+/// linear offset is represented directly, with source textures still byte-bound.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StationTabletopMaterial {
+    source_mdl_sha256: String,
+    source_omnipbr_sha256: String,
+    source_clearcoat_sha256: String,
+    original_albedo: Texture,
+    albedo_brightness: f32,
+    albedo_offset: f32,
+    specular_level: f32,
 }
 
 /// Only the inspected source graph's color and green-channel roughness map.
@@ -119,6 +136,7 @@ impl MaterialExtension for BackgroundAlbedo {
 #[derive(Resource)]
 pub struct G1BackgroundVisualModel {
     document: Document,
+    selection: T2BackgroundSelection,
     textures: HashMap<(String, bool), Vec<u8>>,
     pub file_sha256: String,
 }
@@ -141,6 +159,39 @@ impl G1BackgroundVisualModel {
             native_translation,
             Some(background_physics_sha256),
         )
+    }
+
+    /// Validate the complete byte-bound source document, then select the same
+    /// fixed support fixtures used by station physics. Loaded assets are immutable.
+    pub fn load_mobile_station_fixtures(
+        path: &Path,
+        sha256: &str,
+        native_translation: [f64; 3],
+        background_physics_sha256: &str,
+    ) -> Result<Self, String> {
+        let full = Self::load_mobile(path, sha256, native_translation, background_physics_sha256)?;
+        let selection = T2BackgroundSelection::StationTaskFixtures;
+        let retained: std::collections::HashSet<_> = full
+            .document
+            .meshes
+            .iter()
+            .filter(|mesh| selection.visual_fixture(&mesh.path, mesh.owner_path.as_deref()))
+            .map(|mesh| mesh.path.as_str())
+            .collect();
+        if retained != std::collections::HashSet::from(STATION_VISUAL_FIXTURES)
+            || full
+                .document
+                .meshes
+                .iter()
+                .filter(|mesh| mesh.path == STATION_VISUAL_FIXTURES[5])
+                .any(|mesh| mesh.material.station_tabletop.is_none())
+        {
+            return Err(
+                "station task visual support coverage differs from frozen shelf/table fixtures"
+                    .into(),
+            );
+        }
+        Ok(Self { selection, ..full })
     }
 
     fn load_profile(
@@ -278,6 +329,39 @@ impl G1BackgroundVisualModel {
                 return Err("invalid original background geometry/attributes".into());
             }
             let material = &mesh.material;
+            if let Some(tabletop) = &material.station_tabletop {
+                if mesh.path != STATION_VISUAL_FIXTURES[5]
+                    || material.source_material
+                        != "/Lab/TaskAssets/table/Materials/opaque__metal__chrome_scratched_a"
+                    || tabletop.source_mdl_sha256
+                        != "6bd81a5e59d972568c1330d0a9b0b26e490709414d4ecf9d266465ebf568ca9a"
+                    || tabletop.source_omnipbr_sha256
+                        != "d384fc800f120e3cad1b7ca8837f9c554f9c34343d194813fca27caa493001f2"
+                    || tabletop.source_clearcoat_sha256
+                        != "687fce3f0693146b91495f04407a7c38c78f6b9262b63621f44b4b1f09110469"
+                    || tabletop.albedo_brightness != 0.
+                    || tabletop.specular_level != 0.
+                    || tabletop.albedo_offset != 0.11
+                    || material.base_color != [0.11; 3]
+                    || material.albedo.is_some()
+                    || material.albedo_add != 0.
+                    || material.roughness != 0.
+                    || material.metallic != 0.
+                    || material.orm.is_some()
+                    || material.normal.is_none()
+                    || !material.normal_flip_tangent_v
+                    || material.warehouse_mdl.is_some()
+                {
+                    return Err(
+                        "station tabletop constant albedo/source shader contract changed".into(),
+                    );
+                }
+                bounded_bytes(
+                    Path::new(&tabletop.original_albedo.path),
+                    &tabletop.original_albedo.sha256,
+                    128 * 1024 * 1024,
+                )?;
+            }
             if let Some(warehouse) = &material.warehouse_mdl {
                 if warehouse.source_mdl_sha256
                     != "2e2aef644544b619f5df253eacbaed941be89bc1018fb58cbb47d0e8ac1d4192"
@@ -348,6 +432,7 @@ impl G1BackgroundVisualModel {
         }
         Ok(Self {
             document,
+            selection: T2BackgroundSelection::OriginalScene,
             textures,
             file_sha256: sha256.into(),
         })
@@ -362,6 +447,8 @@ pub struct G1BackgroundVisualStatus {
     pub omitted_unmapped_surfaces: usize,
     pub source_renderer_parity_proven: bool,
     pub background_physics_registered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub station_task_fixture_selection: Option<serde_json::Value>,
     pub error: Option<String>,
 }
 
@@ -404,6 +491,14 @@ fn spawn(
 ) {
     status.visual_sha256 = Some(model.file_sha256.clone());
     status.omitted_unmapped_surfaces = model.document.omitted_unmapped_geometry.len();
+    if model.selection == T2BackgroundSelection::StationTaskFixtures {
+        status.station_task_fixture_selection = Some(serde_json::json!({
+            "selection": model.selection, "retained_mesh_paths": STATION_VISUAL_FIXTURES,
+            "retained_meshes": STATION_VISUAL_FIXTURES.len(), "omitted_source_meshes": model.document.meshes.len() - STATION_VISUAL_FIXTURES.len(),
+            "original_tabletop_mesh_restored_with_byte_bound_constant_albedo": true,
+            "source_renderer_parity_proven": false,
+        }));
+    }
     let result = (|| -> Result<(), String> {
         let mut textures = HashMap::new();
         for ((path, srgb), bytes) in &model.textures {
@@ -429,7 +524,11 @@ fn spawn(
             }
             textures.insert((path.clone(), *srgb), images.add(image));
         }
-        for source in &model.document.meshes {
+        for source in model.document.meshes.iter().filter(|mesh| {
+            model
+                .selection
+                .visual_fixture(&mesh.path, mesh.owner_path.as_deref())
+        }) {
             let mut mesh = Mesh::new(
                 bevy::mesh::PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -483,7 +582,9 @@ fn spawn(
                     },
                     // An unbound Gprim authors diffuse displayColor only. Do
                     // not add a specular material to these restored surfaces.
-                    reflectance: if m.source_material.starts_with("usd_displayColor:") {
+                    reflectance: if m.source_material.starts_with("usd_displayColor:")
+                        || m.station_tabletop.is_some()
+                    {
                         0.
                     } else {
                         0.5

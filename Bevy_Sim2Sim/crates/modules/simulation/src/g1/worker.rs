@@ -332,6 +332,25 @@ impl PhysicsWorker<AgileCommand, AgileStep> {
 }
 
 impl PhysicsWorker<ArenaTaskCommand, ArenaTaskStep> {
+    /// Every reset preserves the explicit station fixture selection and creates
+    /// one fresh physical world. There is no runtime scene/solver setter.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pub fn spawn_mobile_station_fixture_diagnostic(
+        config: ArenaTaskRunnerConfig,
+    ) -> Result<Self, RobotError> {
+        let episode = config.body.episode_id();
+        Self::spawn_owner(
+            episode,
+            move |episode_id| {
+                ArenaTaskRunner::load_mobile_station_fixture_diagnostic(&ArenaTaskRunnerConfig {
+                    body: config.body.with_episode(episode_id),
+                    ..config.clone()
+                })
+            },
+            SystemClock,
+        )
+    }
+
     /// Reset recreates the same explicitly selected mobile diagnostic world.
     #[cfg(feature = "g1_constraint_diagnostic")]
     pub fn spawn_mobile_constraint_diagnostic(
