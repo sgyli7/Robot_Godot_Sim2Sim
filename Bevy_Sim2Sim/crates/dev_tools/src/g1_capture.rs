@@ -3401,12 +3401,12 @@ fn drive_mobile_assist(
         {
             return drive_auxiliary_hold(runtime, outcome, port);
         }
-        let hold_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
-            .is_some_and(|s| matches!(&s.execution, MobileAssistExecution::ClassicalHold { holding, .. } if holding.completed));
-        let thumb_complete = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
-            .is_some_and(|s| matches!(&s.execution, MobileAssistExecution::ClassicalThumbClearance { preparing, .. } if preparing.completed));
+        let release_boundary = latest.phase == G1WorkerPhase::Paused
+            && latest.assist_step.as_ref().is_some_and(|s| {
+                release_observation_boundary(assist.thumb_preparation_submitted, &s.execution)
+            });
         if assist.auxiliary_release
-            && (hold_complete || thumb_complete)
+            && release_boundary
             && assist.hold_submitted
             && !assist.release_submitted
         {
@@ -3747,6 +3747,70 @@ fn drive_auxiliary_hold(
     runtime.mobile_assist.as_mut().unwrap().hold_submitted = true;
     runtime.requested = false;
     Ok(false)
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn release_observation_boundary(
+    thumb_submitted: bool,
+    execution: &simulation_minigame::g1::mobile_assist::MobileAssistExecution,
+) -> bool {
+    use simulation_minigame::g1::mobile_assist::MobileAssistExecution;
+    if thumb_submitted {
+        matches!(execution, MobileAssistExecution::ClassicalThumbClearance { preparing, .. } if preparing.completed)
+    } else {
+        matches!(execution, MobileAssistExecution::ClassicalHold { holding, .. } if holding.completed)
+    }
+}
+
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod release_boundary_tests {
+    use super::release_observation_boundary;
+    use robot_minigame::g1::contract::G1Command;
+    use simulation_minigame::g1::{
+        mobile_assist::MobileAssistExecution,
+        mobile_hold::{MobileHoldGoal, MobileHoldStep},
+        mobile_thumb::{MobileThumbGoal, MobileThumbStep},
+    };
+    use task_minigame::types::ObservationStamp;
+    #[test]
+    fn pending_thumb_command_cannot_recapture_the_completed_old_hold() {
+        let observation = ObservationStamp {
+            episode_id: 20642,
+            frame_id: 14,
+            sim_time_ns: 2182 * 20_000_000,
+            captured_at_unix_ms: 1,
+        };
+        let old = MobileAssistExecution::ClassicalHold {
+            goal: MobileHoldGoal { observation },
+            holding: MobileHoldStep {
+                command: G1Command::default(),
+                holding_ticks: 100,
+                stable_velocity_ticks: 20,
+                self_speed_m_s: 0.,
+                completed: true,
+            },
+        };
+        assert!(release_observation_boundary(false, &old));
+        // Native0442 copied2182 immediately after submitting the next100Tick
+        // command; the owner mailbox had not published its new phase yet.
+        assert!(!release_observation_boundary(true, &old));
+        let mut next = MobileAssistExecution::ClassicalThumbClearance {
+            goal: MobileThumbGoal { observation },
+            preparing: MobileThumbStep {
+                command: G1Command::default(),
+                preparation_ticks: 100,
+                maximum_measured_tracking_error_rad: 0.,
+                completed: true,
+                fresh_release_observation_required: true,
+            },
+        };
+        assert!(release_observation_boundary(true, &next));
+        assert!(!release_observation_boundary(false, &next));
+        if let MobileAssistExecution::ClassicalThumbClearance { preparing, .. } = &mut next {
+            preparing.completed = false;
+        }
+        assert!(!release_observation_boundary(true, &next));
+    }
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -4435,7 +4499,7 @@ fn capture_current_marker_frame(
         return Err("current RGB requires a paused completed native boundary".into());
     }
     if !runtime.requested {
-        port.request()?;
+        port.request_physics_frame(runtime.episode_id, latest.timing.episode_integrations)?;
         runtime.requested = true;
         return Ok(None);
     }
