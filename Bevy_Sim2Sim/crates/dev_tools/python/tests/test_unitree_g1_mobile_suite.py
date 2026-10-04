@@ -23,6 +23,7 @@ def manifest(directory):
                                  "source_t2_background": {"selection": "station_task_fixtures"}}}}},
                 "policy": {"endpoint": "http://127.0.0.1:5558/infer", "max_calls": 4, "timeout_ms": 20000},
                 "station": {"fixture": "protocol_fixture"},
+                "background_visual": {"sha256": "69129a51ae7fd53ddf9a00cce7170bc780e4d0f4fceff5c720cbe359db7eee9e"},
                 "diagnostic_qwen_dispatch": {"scope": "scientific_station_mobile_from_instruction_v1",
                     "connection": {"endpoint": "http://127.0.0.1:8002/v1", "model": "qwen3.8-27b-fp8",
                                    "timeout_ms": 20000, "max_output_tokens": 128}}}

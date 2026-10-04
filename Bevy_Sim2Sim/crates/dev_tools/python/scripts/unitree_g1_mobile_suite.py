@@ -79,7 +79,8 @@ def validate(manifest, scripts=SCRIPTS):
                     "endpoint": "http://127.0.0.1:8002/v1", "model": "qwen3.8-27b-fp8",
                     "timeout_ms": 20000, "max_output_tokens": 128}
                 or body["task_objects"]["source_t2_background"]["selection"] != "station_task_fixtures"
-                or not config.get("station") or config.get("background_visual")):
+                or not config.get("station") or config.get("background_visual", {}).get("sha256")
+                != "69129a51ae7fd53ddf9a00cce7170bc780e4d0f4fceff5c720cbe359db7eee9e"):
             raise ValueError("Case changed its native station/local matched model owner")
         normalized.append(config)
     if len(set(episodes)) != 10 or any(c != normalized[0] for c in normalized):
