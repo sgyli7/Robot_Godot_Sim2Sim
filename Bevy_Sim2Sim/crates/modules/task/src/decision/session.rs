@@ -101,6 +101,17 @@ impl DecisionSession {
     pub fn targets(&self) -> impl Iterator<Item = &RegisteredTarget> {
         self.targets.values()
     }
+
+    /// Withdraw physical capabilities while retaining visual/task feedback.
+    /// The executor also stops or pauses its own active control. A pending
+    /// decision is cancelled so a previously prepared request cannot restore
+    /// withdrawn capabilities when its delayed HTTP response arrives.
+    pub fn revoke_physical_skills(&mut self) {
+        self.availability = SkillAvailability::default();
+        if self.pending.is_some() {
+            self.cancel_pending("executor withdrew physical capabilities");
+        }
+    }
     pub fn feedback(&self) -> &VecDeque<ExecutionFeedback> {
         &self.feedback
     }

@@ -1,0 +1,552 @@
+//! Explicit post-grasp source-task diagnostic. Local Qwen admits one transport
+//! request; current RGB geometry and the existing sole owner execute it. The
+//! original grasp/search preparation is disclosed and is not Qwen controlled.
+use super::*;
+#[cfg(feature = "g1_constraint_diagnostic")]
+use sha2::{Digest, Sha256};
+#[cfg(feature = "g1_constraint_diagnostic")]
+use simulation_minigame::g1::{
+    mobile_assist::MobileAssistCommand, mobile_navigation::MobileCarryGoal, worker::TimedCommand,
+};
+#[cfg(feature = "g1_constraint_diagnostic")]
+use task_minigame::{
+    decision::{
+        DecisionLimits, DecisionSession, DecisionWorker, ExecutionFeedback, FeedbackStatus,
+        ValidatedDecision,
+    },
+    types::{SkillAvailability, SkillRequest},
+};
+use task_minigame::{
+    decision::{LocalQwenClient, LocalQwenConfig, TaskGoal},
+    interactive::InteractiveDecisionConfig,
+};
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Scope {
+    PostgraspSourceMobileTransportV1,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Configuration {
+    scope: Scope,
+    connection: InteractiveDecisionConfig,
+    instruction: String,
+}
+
+impl Configuration {
+    pub(super) fn validate_entry(
+        &self,
+        mode: CaptureMode,
+        config: &CaptureRunnerConfig,
+    ) -> Result<(), String> {
+        match self.scope {
+            Scope::PostgraspSourceMobileTransportV1 => {}
+        }
+        let CaptureRunnerConfig::Task(task) = config else {
+            return Err("Qwen transport diagnostic requires the matched task owner".into());
+        };
+        if mode != CaptureMode::MobileAuxiliaryRelease
+            || task.body.profile() != TaskProfile::MobileBox
+            || task.max_observation_wall_age_ms != 20_000
+            || task.max_observation_age_ns != 1_000_000_000
+            || !(1..=20_000).contains(&self.connection.timeout_ms)
+            || !(64..=512).contains(&self.connection.max_output_tokens)
+        {
+            return Err("Qwen dispatch is only the explicit source mobile auxiliary release with unchanged20s/1s image limits and bounded20s/512token transport".into());
+        }
+        self.goal().validate().map_err(|e| e.to_string())?;
+        self.client().map(|_| ())
+    }
+
+    fn goal(&self) -> TaskGoal {
+        TaskGoal {
+            instruction: self.instruction.clone(),
+            profile: TaskProfile::MobileBox,
+            public_scene_description: "Finite post-grasp source-task development diagnostic, not task qualification. The four original grasp chunks and public-map search already completed. Only the original brown-box-to-blue-bin task is supported. The publicly printed carried-box marker22 names box_marker_22; the target-zone marker21 names bin_marker_21. Use these IDs for the visibly supported box and blue placement zone. No navigation adjustment is available.".into(),
+        }
+    }
+
+    fn client(&self) -> Result<LocalQwenClient, String> {
+        LocalQwenClient::new(LocalQwenConfig {
+            base_url: self.connection.endpoint.clone(),
+            model: self.connection.model.clone(),
+            timeout: Duration::from_millis(self.connection.timeout_ms),
+            max_output_tokens: self.connection.max_output_tokens,
+        })
+        .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+struct PendingTransport {
+    observation: ObservationStamp,
+    qwen_stamp: ObservationStamp,
+    localization: serde_json::Value,
+    directory: PathBuf,
+    image_sha256: String,
+    stamp_sha256: String,
+    input_sha256: String,
+    started: Instant,
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+pub(super) struct Dispatch {
+    configuration: Configuration,
+    worker: DecisionWorker,
+    session: Option<DecisionSession>,
+    pending: Option<PendingTransport>,
+    executed_decision: Option<ValidatedDecision>,
+    feedback_pending: bool,
+    completed: bool,
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn unix_ms() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "wall clock overflow".into())
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn input_hash(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn supported_request(decision: &ValidatedDecision) -> Result<(), String> {
+    match &decision.request {
+        SkillRequest::ExecuteTask { task_profile: TaskProfile::MobileBox, target_id, destination_id }
+            if target_id == "box_marker_22" && destination_id == "bin_marker_21" => Ok(()),
+        SkillRequest::Stop { reason } => Err(format!("Qwen requested an explicit stop: {reason}")),
+        SkillRequest::Observe => Err("Qwen requested observation; this finite diagnostic admits no automatic physical continuation".into()),
+        _ => Err("Qwen request does not bind the supported public source-task marker roles".into()),
+    }
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+fn require_marker_roles(reply: &serde_json::Value) -> Result<(), String> {
+    let detections = reply["detections"]
+        .as_array()
+        .ok_or("Qwen binding lacks current RGB detections")?;
+    for (kind, id) in [("carried_box", 22_u64), ("target_bin", 21)] {
+        if detections
+            .iter()
+            .filter(|d| d["kind"] == kind && d["marker_id"].as_u64() == Some(id))
+            .count()
+            != 1
+        {
+            return Err(
+                "Qwen dispatch requires both unique public source-task marker roles in current RGB"
+                    .into(),
+            );
+        }
+    }
+    if reply["world_or_contact_truth_input"] != false
+        || reply["task_qualified"] != false
+        || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+    {
+        return Err("Qwen source-task geometry has foreign provenance".into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
+impl Dispatch {
+    pub(super) fn new(configuration: Configuration, episode_id: u64) -> Result<Self, String> {
+        let worker = DecisionWorker::spawn(configuration.client()?, episode_id)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            configuration,
+            worker,
+            session: None,
+            pending: None,
+            executed_decision: None,
+            feedback_pending: false,
+            completed: false,
+        })
+    }
+
+    fn record(&self, outcome: &CaptureOutcome, event: serde_json::Value) -> Result<(), String> {
+        let mut receipt = outcome
+            .0
+            .lock()
+            .map_err(|_| "Qwen transport receipt poisoned")?;
+        let handoff = receipt
+            .mobile_assist_handoff
+            .as_mut()
+            .ok_or("Qwen transport handoff absent")?;
+        if handoff["qwen_postgrasp_transport"].is_null() {
+            handoff["qwen_postgrasp_transport"] = serde_json::json!({
+                "scope":"postgrasp_source_mobile_transport_v1","initial_grasp_and_search_qwen_controlled":false,
+                "physics_paused_during_qwen":true,"public_marker_roles":{"box_marker_22":22,"bin_marker_21":21},
+                "maximum_transport_admissions":1,"world_or_contact_truth_input":false,"task_qualified":false,"events":[],
+            });
+        }
+        let events = handoff["qwen_postgrasp_transport"]["events"]
+            .as_array_mut()
+            .ok_or("Qwen event array absent")?;
+        if events.len() >= 8 {
+            return Err("Qwen transport event budget exhausted".into());
+        }
+        events.push(event);
+        let (attempts, results, discarded) = self.worker.transport_counts();
+        handoff["qwen_postgrasp_transport"]["http_attempts"] = attempts.into();
+        handoff["qwen_postgrasp_transport"]["http_results"] = results.into();
+        handoff["qwen_postgrasp_transport"]["discarded_results"] = discarded.into();
+        Ok(())
+    }
+
+    fn start_transport(
+        &mut self,
+        runtime: &mut CaptureRuntime,
+        outcome: &CaptureOutcome,
+        observation: ObservationStamp,
+        localization: serde_json::Value,
+    ) -> Result<(), String> {
+        let latest = runtime.latest.as_ref().ok_or("Qwen RGB lost owner")?;
+        if latest.phase != G1WorkerPhase::Paused
+            || latest.episode_id != observation.episode_id
+            || latest.timing.episode_integrations * 20_000_000 != observation.sim_time_ns
+        {
+            return Err("Qwen RGB geometry is not the current paused native boundary".into());
+        }
+        require_marker_roles(&localization)?;
+        let directory = runtime.options.output.join("visual_approach");
+        let stamp: G1CaptureStamp = serde_json::from_slice(
+            &fs::read(directory.join("audit_stamp.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let snapshot = crate::g1_decision_diagnostic::snapshot_from_capture(
+            &stamp,
+            fs::read(directory.join("ego.png")).map_err(|e| e.to_string())?,
+        )?;
+        if snapshot.stamp.episode_id != observation.episode_id
+            || snapshot.stamp.sim_time_ns != observation.sim_time_ns
+            || snapshot.stamp.captured_at_unix_ms != observation.captured_at_unix_ms
+            || stamp.capture_sequence != observation.frame_id
+        {
+            return Err("Qwen render-frame identity and control capture identity differ".into());
+        }
+        let qwen_stamp = snapshot.stamp;
+        // These capabilities are confined to this explicitly unqualified test;
+        // the interactive lab continues to advertise Observe/Stop only.
+        let mut session = DecisionSession::new(
+            runtime.episode_id,
+            self.configuration.goal(),
+            SkillAvailability {
+                mobile_box: true,
+                ..Default::default()
+            },
+            DecisionLimits {
+                max_frame_age_ms: 20_000,
+                max_sim_age_ns: 1_000_000_000,
+                target_ttl_ms: 20_000,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let input = session
+            .prepare(snapshot, unix_ms()?, observation.sim_time_ns)
+            .map_err(|e| e.to_string())?;
+        self.worker.try_submit(input).map_err(|e| e.to_string())?;
+        self.pending = Some(PendingTransport {
+            observation,
+            qwen_stamp,
+            localization,
+            directory: directory.clone(),
+            image_sha256: input_hash(&directory.join("ego.png"))?,
+            stamp_sha256: input_hash(&directory.join("audit_stamp.json"))?,
+            input_sha256: input_hash(&directory.join("observation.json"))?,
+            started: Instant::now(),
+        });
+        self.session = Some(session);
+        let pending = self.pending.as_ref().unwrap();
+        self.record(outcome,serde_json::json!({"event":"transport_request_submitted","qwen_observation":qwen_stamp,"control_observation":observation,
+            "actual_rgb_only":true,"image_sha256":pending.image_sha256,"capture_stamp_sha256":pending.stamp_sha256,"geometry_input_sha256":pending.input_sha256}))
+    }
+
+    fn poll_transport(
+        &mut self,
+        runtime: &mut CaptureRuntime,
+        outcome: &CaptureOutcome,
+    ) -> Result<bool, String> {
+        let latest = runtime
+            .latest
+            .as_ref()
+            .ok_or("Qwen transport lost owner")?
+            .clone();
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or("Qwen pending transport absent")?;
+        if latest.phase != G1WorkerPhase::Paused
+            || latest.episode_id != pending.observation.episode_id
+            || latest.timing.episode_integrations * 20_000_000 != pending.observation.sim_time_ns
+        {
+            return Err("Qwen result cannot replace a moving or reset physical boundary".into());
+        }
+        let session = self.session.as_mut().ok_or("Qwen session absent")?;
+        if session.expire_pending(unix_ms()?, pending.observation.sim_time_ns) {
+            return Err(
+                "Qwen transport image expired; native owner remains explicitly paused".into(),
+            );
+        }
+        let Some(reply) = self.worker.try_recv().map_err(|e| e.to_string())? else {
+            return Ok(false);
+        };
+        let raw = reply
+            .result
+            .as_ref()
+            .map(|d| serde_json::to_value(d).unwrap())
+            .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
+        let decision = session
+            .accept(reply, unix_ms()?, pending.observation.sim_time_ns)
+            .map_err(|e| e.to_string())?;
+        self.record(outcome,serde_json::json!({"event":"transport_decision_admitted","model_decision":raw,"qwen_observation":decision.stamp,
+            "image_age_ms":decision.image_to_decision_ms,"service_elapsed_ms":decision.service_elapsed_ms}))?;
+        supported_request(&decision)?;
+        let pending = self.pending.take().unwrap();
+        if decision.stamp != pending.qwen_stamp
+            || input_hash(&pending.directory.join("ego.png"))? != pending.image_sha256
+            || input_hash(&pending.directory.join("audit_stamp.json"))? != pending.stamp_sha256
+            || input_hash(&pending.directory.join("observation.json"))? != pending.input_sha256
+        {
+            return Err("Qwen dispatch inputs changed while local inference was pending".into());
+        }
+        let proposal = &pending.localization["navigation_proposal"];
+        let distance = proposal["relative_distance_m"]
+            .as_f64()
+            .ok_or("Qwen RGB coarse distance absent")?
+            - 0.65;
+        if !(0.1..=1.85).contains(&distance) {
+            return Err("Qwen RGB coarse distance outside original bounds".into());
+        }
+        let goal = MobileCarryGoal {
+            observation: pending.observation,
+            heading_yaw_source_rad: proposal["heading_yaw_source_rad"]
+                .as_f64()
+                .ok_or("Qwen RGB heading absent")? as f32,
+            relative_distance_m: distance as f32,
+        };
+        goal.validate().map_err(|e| e.to_string())?;
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("Qwen transport lost sole mobile owner".into());
+        };
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: goal.observation.sim_time_ns + 41_000_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(42),
+                command: MobileAssistCommand::ClassicalCarry(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        outcome
+            .0
+            .lock()
+            .unwrap()
+            .mobile_assist_handoff
+            .as_mut()
+            .unwrap()["visual_approach"] = serde_json::json!({
+            "actual_localization":pending.localization,"executed_coarse_goal":goal,"reobservation_margin_m":0.65,
+            "localization_and_qwen_wall_ms":pending.started.elapsed().as_secs_f64()*1000.,"physics_paused_during_localization":true,
+            "same_owner_boundary_tick":latest.timing.episode_integrations,"object_truth_in_command":false,
+            "qwen_target_selection":true,"qwen_decision_id":decision.decision_id,"task_qualified":false,
+        });
+        self.executed_decision = Some(decision);
+        runtime
+            .mobile_assist
+            .as_mut()
+            .unwrap()
+            .visual_goal_submitted = true;
+        runtime.requested = false;
+        Ok(false)
+    }
+
+    pub(super) fn transport(
+        &mut self,
+        runtime: &mut CaptureRuntime,
+        outcome: &CaptureOutcome,
+        port: &G1CameraPort,
+    ) -> Result<bool, String> {
+        if self.executed_decision.is_some() {
+            return Err("single Qwen transport already admitted".into());
+        }
+        if self.pending.is_some() {
+            return self.poll_transport(runtime, outcome);
+        }
+        if let Some(job) = runtime
+            .mobile_assist
+            .as_ref()
+            .and_then(|a| a.vision_job.as_ref())
+        {
+            let Some(reply) = job.try_take() else {
+                return Ok(false);
+            };
+            let observation = job.observation;
+            self.start_transport(runtime, outcome, observation, reply?)?;
+            runtime.mobile_assist.as_mut().unwrap().vision_job.take();
+        } else {
+            start_marker_job(runtime, port, "visual_approach")?;
+        }
+        Ok(false)
+    }
+
+    pub(super) fn record_failure(
+        &self,
+        outcome: &CaptureOutcome,
+        reason: &str,
+    ) -> Result<(), String> {
+        self.record(outcome,serde_json::json!({"event":"dispatch_failed","reason":reason,"additional_executor_actions":0,"explicit_pause_required":true}))
+    }
+
+    pub(super) fn final_feedback(
+        &mut self,
+        runtime: &CaptureRuntime,
+        outcome: &CaptureOutcome,
+    ) -> Result<bool, String> {
+        if self.completed {
+            return Ok(true);
+        }
+        let latest = runtime
+            .latest
+            .as_ref()
+            .ok_or("Qwen final feedback lost owner")?;
+        let decision = self
+            .executed_decision
+            .as_ref()
+            .ok_or("Qwen transport was not executed")?;
+        let sim_time_ns = latest.timing.episode_integrations * 20_000_000;
+        if latest.phase != G1WorkerPhase::Paused || latest.episode_id != decision.stamp.episode_id {
+            return Err("Qwen final feedback requires its same paused episode".into());
+        }
+        if !self.feedback_pending {
+            let stamp: G1CaptureStamp = serde_json::from_slice(
+                &fs::read(runtime.options.output.join("ego_stamp.json"))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let snapshot = crate::g1_decision_diagnostic::snapshot_from_capture(
+                &stamp,
+                fs::read(runtime.options.output.join("ego_640x480.png"))
+                    .map_err(|e| e.to_string())?,
+            )?;
+            if snapshot.stamp.episode_id != latest.episode_id
+                || snapshot.stamp.sim_time_ns != sim_time_ns
+            {
+                return Err("Qwen final RGB mismatches completed native owner".into());
+            }
+            let feedback=ExecutionFeedback {episode_id:latest.episode_id,decision_id:decision.decision_id,status:FeedbackStatus::Running,
+                summary:"搬运和开手动作已结束。请根据当前图像复核可见关系；尚未给出物理验收结果，不能仅因动作结束宣称任务成功。诊断执行预算已用完，现在只能观察或停止。".into(),sim_time_ns};
+            let session = self.session.as_mut().unwrap();
+            session
+                .record_feedback(feedback.clone())
+                .map_err(|e| e.to_string())?;
+            session.revoke_physical_skills();
+            let input = session
+                .prepare(snapshot, unix_ms()?, sim_time_ns)
+                .map_err(|e| e.to_string())?;
+            self.worker.try_submit(input).map_err(|e| e.to_string())?;
+            self.feedback_pending = true;
+            self.record(outcome,serde_json::json!({"event":"final_feedback_submitted","executor_feedback":feedback,"physical_capabilities_revoked":true}))?;
+        }
+        let session = self.session.as_mut().unwrap();
+        if session.expire_pending(unix_ms()?, sim_time_ns) {
+            return Err("Qwen final observation expired; explicit pause retained".into());
+        }
+        let Some(reply) = self.worker.try_recv().map_err(|e| e.to_string())? else {
+            return Ok(false);
+        };
+        let raw = reply
+            .result
+            .as_ref()
+            .map(|d| serde_json::to_value(d).unwrap())
+            .unwrap_or_else(|e| serde_json::json!({"error":e.to_string()}));
+        let admitted = session
+            .accept(reply, unix_ms()?, sim_time_ns)
+            .map_err(|e| e.to_string())?;
+        if !matches!(
+            admitted.request,
+            SkillRequest::Observe | SkillRequest::Stop { .. }
+        ) {
+            return Err("Qwen final feedback restored withdrawn physical skills".into());
+        }
+        self.record(outcome,serde_json::json!({"event":"final_feedback_admitted","model_decision":raw,"observation":admitted.stamp,
+            "image_age_ms":admitted.image_to_decision_ms,"service_elapsed_ms":admitted.service_elapsed_ms,"additional_executor_actions":0}))?;
+        self.completed = true;
+        Ok(true)
+    }
+}
+
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod tests {
+    use super::*;
+    fn decision(request: SkillRequest) -> ValidatedDecision {
+        ValidatedDecision {
+            decision_id: 1,
+            stamp: ObservationStamp {
+                episode_id: 7,
+                frame_id: 3,
+                sim_time_ns: 0,
+                captured_at_unix_ms: 1,
+            },
+            request,
+            reason: "test".into(),
+            image_to_decision_ms: 0,
+            service_elapsed_ms: 0,
+        }
+    }
+    #[test]
+    fn dispatch_binds_only_the_explicit_mobile_public_roles() {
+        let request = SkillRequest::ExecuteTask {
+            task_profile: TaskProfile::MobileBox,
+            target_id: "box_marker_22".into(),
+            destination_id: "bin_marker_21".into(),
+        };
+        assert!(supported_request(&decision(request.clone())).is_ok());
+        for (profile, target, destination) in [
+            (TaskProfile::StaticApple, "box_marker_22", "bin_marker_21"),
+            (TaskProfile::MobileBox, "foreign_box", "bin_marker_21"),
+            (TaskProfile::MobileBox, "box_marker_22", "foreign_bin"),
+        ] {
+            assert!(
+                supported_request(&decision(SkillRequest::ExecuteTask {
+                    task_profile: profile,
+                    target_id: target.into(),
+                    destination_id: destination.into()
+                }))
+                .is_err()
+            );
+        }
+        assert!(supported_request(&decision(SkillRequest::Observe)).is_err());
+        assert!(
+            supported_request(&decision(SkillRequest::Stop {
+                reason: "unsupported".into()
+            }))
+            .is_err()
+        );
+    }
+    #[test]
+    fn dispatch_requires_both_unique_current_geometry_roles_and_provenance() {
+        let valid = serde_json::json!({"detections":[{"kind":"carried_box","marker_id":22},{"kind":"target_bin","marker_id":21}],"world_or_contact_truth_input":false,"task_qualified":false,"camera_mount_profile":"auxiliary_grip_overview"});
+        assert!(require_marker_roles(&valid).is_ok());
+        let mut absent = valid.clone();
+        absent["detections"].as_array_mut().unwrap().pop();
+        assert!(require_marker_roles(&absent).is_err());
+        let mut duplicate = valid.clone();
+        duplicate["detections"]
+            .as_array_mut()
+            .unwrap()
+            .push(valid["detections"][0].clone());
+        assert!(require_marker_roles(&duplicate).is_err());
+        for key in ["world_or_contact_truth_input", "task_qualified"] {
+            let mut changed = valid.clone();
+            changed[key] = true.into();
+            assert!(require_marker_roles(&changed).is_err());
+        }
+    }
+}

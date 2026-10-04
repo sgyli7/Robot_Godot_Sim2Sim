@@ -311,6 +311,77 @@ fn disabled_executor_generation_is_bounded_and_ignoring_it_cannot_enable_executi
 }
 
 #[test]
+fn withdrawing_execution_retains_feedback_and_rejects_another_physical_request() {
+    let mut session = session(TaskProfile::StaticApple, true);
+    let first = session
+        .prepare(observation(1, 1), 1000, 20_000_000)
+        .unwrap();
+    let admitted = session
+        .accept(reply(&first, decision(execute())), 1100, 20_000_000)
+        .unwrap();
+    session
+        .record_feedback(ExecutionFeedback {
+            episode_id: 1,
+            decision_id: admitted.decision_id,
+            status: FeedbackStatus::Running,
+            summary: "Motion ended; inspect the next RGB before reporting task success.".into(),
+            sim_time_ns: 40_000_000,
+        })
+        .unwrap();
+    session.revoke_physical_skills();
+    let next = session
+        .prepare(observation(1, 2), 1200, 40_000_000)
+        .unwrap();
+    assert_eq!(next.available_skills, SkillAvailability::default());
+    assert_eq!(next.remembered_targets.len(), 2);
+    assert_eq!(next.feedback.len(), 1);
+    assert!(
+        session
+            .accept(reply(&next, decision(execute())), 1300, 40_000_000)
+            .is_err()
+    );
+    assert!(session.take_safe_stop().is_some());
+    let last = session
+        .prepare(observation(1, 3), 1400, 60_000_000)
+        .unwrap();
+    let mut observe = decision(SkillRequest::Observe);
+    observe.observed_targets.clear();
+    assert_eq!(
+        session
+            .accept(reply(&last, observe), 1500, 60_000_000)
+            .unwrap()
+            .request,
+        SkillRequest::Observe
+    );
+}
+
+#[test]
+fn withdrawing_capabilities_cancels_pending_reply_without_resetting_frame_identity() {
+    let mut session = session(TaskProfile::StaticApple, true);
+    let pending = session
+        .prepare(observation(1, 1), 1000, 20_000_000)
+        .unwrap();
+    session.revoke_physical_skills();
+    assert!(!session.is_pending());
+    assert!(session.take_safe_stop().is_some());
+    assert!(
+        session
+            .accept(reply(&pending, decision(execute())), 1100, 20_000_000)
+            .is_err()
+    );
+    assert!(
+        session
+            .prepare(observation(1, 1), 1100, 20_000_000)
+            .is_err()
+    );
+    let fresh = session
+        .prepare(observation(1, 2), 1200, 40_000_000)
+        .unwrap();
+    assert!(fresh.request_id > pending.request_id);
+    assert_eq!(fresh.available_skills, SkillAvailability::default());
+}
+
+#[test]
 fn malformed_unknown_skill_and_truncated_output_are_rejected() {
     for body in [
         "{}".to_owned(),

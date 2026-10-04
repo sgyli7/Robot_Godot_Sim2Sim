@@ -30,6 +30,7 @@ use bevy::{
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_continuous;
+mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_visual_transfer;
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -164,6 +165,9 @@ struct CaptureConfiguration {
     mobile_assist: Option<MobileAssistCaptureConfiguration>,
     #[serde(default)]
     mobile_scan: Option<MobileScanCaptureConfiguration>,
+    /// Explicit post-grasp source-task test; never enables the interactive UI.
+    #[serde(default)]
+    diagnostic_qwen_dispatch: Option<mobile_qwen_dispatch::Configuration>,
     #[serde(default)]
     station: Option<super::g1_station_environment::G1StationConfiguration>,
 }
@@ -960,6 +964,7 @@ fn run_from_file(
         config.task_lab,
         config.mobile_assist,
         config.mobile_scan,
+        config.diagnostic_qwen_dispatch,
         config.station,
         config.static_startup,
         config.static_marker_assets,
@@ -1397,6 +1402,8 @@ pub(super) struct CaptureRuntime {
     interactive: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     continuous_route: Option<mobile_continuous::ContinuousMobileRoute>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    qwen_dispatch: Option<Mutex<mobile_qwen_dispatch::Dispatch>>,
     static_marker_worker: Option<StaticMarkerWorker>,
     static_visual_grasp: bool,
     static_visual_transfer: bool,
@@ -1656,6 +1663,7 @@ pub fn run_capture(
         None,
         None,
         None,
+        None,
         false,
         None,
         None,
@@ -1688,6 +1696,7 @@ fn run_capture_owner(
     task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
     mobile_assist: Option<MobileAssistCaptureConfiguration>,
     mobile_scan: Option<MobileScanCaptureConfiguration>,
+    diagnostic_qwen_dispatch: Option<mobile_qwen_dispatch::Configuration>,
     station: Option<super::g1_station_environment::G1StationConfiguration>,
     static_startup: bool,
     static_marker_assets: Option<BackgroundVisualConfiguration>,
@@ -1699,6 +1708,13 @@ fn run_capture_owner(
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
     let mobile_carry = mode == CaptureMode::MobileCarry;
+    if let Some(qwen) = &diagnostic_qwen_dispatch {
+        if !cfg!(feature = "g1_constraint_diagnostic") {
+            return Err("Qwen transport requires the explicit constraint diagnostic feature".into());
+        }
+        qwen.validate_entry(mode, &config)?;
+    }
+    let qwen_dispatch_enabled = diagnostic_qwen_dispatch.is_some();
     let static_memory_observe = mode == CaptureMode::StaticMemoryPlaceObserve;
     let static_unheld_regrasp = mode == CaptureMode::StaticUnheldRegrasp;
     let static_pregrasp = mode == CaptureMode::StaticPregrasp;
@@ -2224,6 +2240,9 @@ fn run_capture_owner(
     if continuous {
         outcome.0.lock().unwrap().scope = "native_bounded_continuous_actual_rgb_grasp_classical_carry_release_source_scene_not_qualified";
     }
+    if qwen_dispatch_enabled {
+        outcome.0.lock().unwrap().scope = "native_source_mobile_postgrasp_local_qwen_transport_and_feedback_diagnostic_not_qualified";
+    }
     if let Some(preparation) = station_preparation {
         let mut receipt = outcome.0.lock().unwrap();
         receipt.environment = if matches!(&config, CaptureRunnerConfig::Mobile(_)) {
@@ -2254,6 +2273,10 @@ fn run_capture_owner(
         let ArenaTaskBodyConfig::StaticAgile(b)=&c.body else {return Err("observed placement AGILE absent".into());};
         Some(static_observed_place::StaticObservedPlaceRoute::new(static_marker_vision.as_ref().ok_or("observed placement CPU configuration absent")?,program,b.task_objects.as_ref().ok_or("observed placement public geometry absent")?)?)
     } else {None};
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    let qwen_dispatch = diagnostic_qwen_dispatch
+        .map(|c| mobile_qwen_dispatch::Dispatch::new(c, episode_id).map(Mutex::new))
+        .transpose()?;
     let worker = config.spawn(
         predictive_limit_diagnostic,
         diagnostic_constraint_sweeps,
@@ -2411,6 +2434,8 @@ fn run_capture_owner(
             interactive,
             #[cfg(feature = "g1_constraint_diagnostic")]
             continuous_route,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            qwen_dispatch,
             static_marker_worker,
             static_visual_grasp,
             static_visual_transfer,
@@ -3825,6 +3850,18 @@ fn drive_visual_approach(
     outcome: &CaptureOutcome,
     port: &G1CameraPort,
 ) -> Result<bool, String> {
+    if let Some(dispatch) = runtime.qwen_dispatch.take() {
+        let result = {
+            let mut guard = dispatch.lock().map_err(|_| "Qwen dispatch poisoned")?;
+            let result = guard.transport(runtime, outcome, port);
+            if let Err(reason) = &result {
+                guard.record_failure(outcome, reason)?;
+            }
+            result
+        };
+        runtime.qwen_dispatch = Some(dispatch);
+        return result;
+    }
     use simulation_minigame::g1::{
         mobile_assist::MobileAssistCommand, mobile_navigation::MobileCarryGoal,
         worker::TimedCommand,
@@ -5334,6 +5371,21 @@ fn drive_capture(
                     return Err(
                         "startup/task owner evidence did not cover every integration".into(),
                     );
+                }
+            }
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            if let Some(dispatch) = runtime.qwen_dispatch.take() {
+                let result = {
+                    let mut guard = dispatch.lock().map_err(|_| "Qwen dispatch poisoned")?;
+                    let result = guard.final_feedback(&runtime, &outcome);
+                    if let Err(reason) = &result {
+                        guard.record_failure(&outcome, reason)?;
+                    }
+                    result
+                };
+                runtime.qwen_dispatch = Some(dispatch);
+                if !result? {
+                    return Ok(());
                 }
             }
             outcome.0.lock().unwrap().capture_succeeded = true;
