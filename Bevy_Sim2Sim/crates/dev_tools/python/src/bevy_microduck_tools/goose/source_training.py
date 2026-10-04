@@ -22,6 +22,7 @@ REVISION = "goose_flat_standing_ppo_v1"
 VELOCITY_REVISION = "goose_flat_low_speed_ppo_v1"
 VELOCITY_TRANSFER_REVISION = "goose_standing_to_velocity_transfer_v1"
 ASYMMETRIC_REVISION = "goose_low_speed_asymmetric_ppo_v1"
+FORWARD_REVISION = "goose_flat_forward_course_v1"
 
 
 def completed_root_state(env):
@@ -165,6 +166,37 @@ def make_asymmetric_low_speed_cfg(model_path: Path, contract_path: Path, **kwarg
     return cfg
 
 
+def make_forward_cfg(model_path: Path, contract_path: Path, **kwargs):
+    """One locomotion goal before combining opposite directions and turns."""
+    cfg = make_low_speed_cfg(model_path, contract_path, **kwargs)
+    command = cfg.commands["velocity"]
+    command.ranges.lin_vel_x = (.025, .055)
+    command.ranges.ang_vel_z = (0., 0.)
+    command.rel_standing_envs = .1
+    command.resampling_time_range = (4., 6.)
+    return cfg
+
+
+def initialize_leg_exploration(runner, *, std=.12):
+    """One-time Gaussian warm start; deterministic Actor and physics unchanged.
+
+    The declared Goose order puts twelve leg axes after the six upper axes.
+    Remove their old Adam moments when assigning a new exploration parameter;
+    all mean-policy, value-model and other optimizer state remains intact.
+    """
+    if not 0 < std <= 1:
+        raise ValueError("Finite Gaussian exploration std must be in (0, 1]")
+    parameter = runner.alg.actor.distribution.log_std_param
+    if parameter.shape != (18,):
+        raise ValueError("Exploration requires the original 18-axis Gaussian")
+    with torch.no_grad():
+        parameter[6:] = parameter.new_tensor(std).log()
+        state = runner.alg.optimizer.state.get(parameter, {})
+        for key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            if key in state:
+                state[key][6:].zero_()
+
+
 def initialize_velocity_transfer(runner, command_cfg, *, initialize_critic=True):
     """Initialize only previously unused goal inputs of a standing policy.
 
@@ -241,7 +273,7 @@ class GooseRslEnv(RslRlVecEnvWrapper):
         return observations.to(dtype=torch.float32), rewards.float(), dones, extras
 
 
-def make_runner_cfg(*, seed=41, critic_group="actor"):
+def make_runner_cfg(*, seed=41, critic_group="actor", entropy_coef=.001):
     cfg = RslRlOnPolicyRunnerCfg(
         seed=seed, num_steps_per_env=24, max_iterations=1500,
         obs_groups={"actor": ("actor",), "critic": (critic_group,)},
@@ -250,7 +282,7 @@ def make_runner_cfg(*, seed=41, critic_group="actor"):
                               "std_type": "log"}),
         critic=RslRlModelCfg(hidden_dims=(128, 128), obs_normalization=True),
         algorithm=RslRlPpoAlgorithmCfg(num_learning_epochs=4, num_mini_batches=4,
-            learning_rate=3e-4, entropy_coef=.001),
+            learning_rate=3e-4, entropy_coef=entropy_coef),
         logger="tensorboard", save_interval=100, upload_model=False,
         experiment_name="goose_standing", run_name=REVISION, clip_actions=1.)
     return asdict(cfg)

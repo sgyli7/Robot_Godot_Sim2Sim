@@ -11,7 +11,7 @@ from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv
 from bevy_microduck_tools.goose.source_training import (
     GooseRslEnv, completed_root_state, fallen, make_low_speed_cfg,
     make_runner_cfg, make_standing_cfg, initialize_velocity_transfer,
-    make_asymmetric_low_speed_cfg)
+    make_asymmetric_low_speed_cfg, make_forward_cfg, initialize_leg_exploration)
 
 
 def build_environment(tmp_path, monkeypatch, config_factory):
@@ -47,6 +47,55 @@ def asymmetric_environment(tmp_path, monkeypatch):
     env = build_environment(tmp_path, monkeypatch, make_asymmetric_low_speed_cfg)
     yield env
     env.close()
+
+
+@pytest.fixture
+def forward_environment(tmp_path, monkeypatch):
+    env = build_environment(tmp_path, monkeypatch, make_forward_cfg)
+    yield env
+    env.close()
+
+
+def test_forward_course_keeps_native_physics_and_no_velocity_assist(forward_environment):
+    env = forward_environment
+    command = env.cfg.commands["velocity"]
+    assert command.ranges.lin_vel_x == (.025, .055)
+    assert command.ranges.lin_vel_y == (0., 0.)
+    assert command.ranges.ang_vel_z == (0., 0.)
+    assert command.rel_standing_envs == .1 and command.init_velocity_prob == 0
+    assert env.cfg.decimation == 1 and env.cfg.sim.mujoco.timestep == .02
+
+
+def test_exploration_preserves_mean_actor_and_native_resume(forward_environment):
+    wrapper = GooseRslEnv(forward_environment)
+    cfg = make_runner_cfg(entropy_coef=.01)
+    cfg["num_steps_per_env"] = 4
+    cfg["algorithm"].update(num_learning_epochs=1, num_mini_batches=2)
+    runner = MjlabOnPolicyRunner(wrapper, cfg, log_dir=None, device="cpu")
+    checkpoint = os.environ.get("GOOSE_MOTION_CHECKPOINT")
+    if checkpoint:
+        runner.load(checkpoint, strict=True, map_location="cpu")
+    actor = runner.alg.actor
+    inputs = wrapper.get_observations()
+    before = actor(inputs).detach().clone()
+    upper_std = actor.distribution.log_std_param[:6].detach().clone()
+    previous_state = {key: value.clone() for key, value in
+        runner.alg.optimizer.state.get(actor.distribution.log_std_param, {}).items()}
+    initialize_leg_exploration(runner)
+    torch.testing.assert_close(actor(inputs), before, atol=0, rtol=0)
+    torch.testing.assert_close(actor.distribution.log_std_param[:6], upper_std, atol=0, rtol=0)
+    torch.testing.assert_close(actor.distribution.log_std_param[6:].exp(), torch.full((12,), .12))
+    state = runner.alg.optimizer.state.get(actor.distribution.log_std_param, {})
+    if checkpoint:
+        torch.testing.assert_close(state["step"], previous_state["step"], atol=0, rtol=0)
+        for key in ("exp_avg", "exp_avg_sq"):
+            torch.testing.assert_close(state[key][:6], previous_state[key][:6], atol=0, rtol=0)
+        assert not state["exp_avg"][6:].any() and not state["exp_avg_sq"][6:].any()
+    with pytest.raises(ValueError):
+        initialize_leg_exploration(runner, std=float("nan"))
+    runner.learn(1)
+    assert wrapper.real_integrations == 8
+    assert torch.isfinite(actor.distribution.log_std_param).all()
 
 
 def test_terminal_reset_preserves_timeout_and_other_world(environment):
