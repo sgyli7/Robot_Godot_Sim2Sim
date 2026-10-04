@@ -24,7 +24,11 @@ struct Detection {
     marker_id: u32,
     root_from_object: [[f64; 4]; 4],
     reprojection_rms_px: f64,
-    per_view_reprojection_rms_px: [f64; 2],
+    per_view_reprojection_rms_px: Vec<f64>,
+    #[serde(default)]
+    observed_view_indices: Option<Vec<u8>>,
+    #[serde(default)]
+    pixel_method: Option<String>,
     minimum_edge_px: f64,
     optimizer_evaluations: u32,
 }
@@ -53,9 +57,21 @@ impl PairResult {
         images: &[String; 2],
         inputs: &[String; 2],
         geometry_sha256: &str,
+        role_coverage: bool,
     ) -> Result<StaticObservedPlaceGoal, String> {
-        if self.schema != "g1_static_actual_fixed_pair_rgb_localization_v1"
-            || self.source != "public_existing_fixed_camera_pair_joint_pattern_v1"
+        let expected = if role_coverage {
+            (
+                "g1_static_actual_fixed_pair_role_coverage_localization_v2",
+                "public_fixed_pair_explicit_per_role_view_coverage_v2",
+            )
+        } else {
+            (
+                "g1_static_actual_fixed_pair_rgb_localization_v1",
+                "public_existing_fixed_camera_pair_joint_pattern_v1",
+            )
+        };
+        if self.schema != expected.0
+            || self.source != expected.1
             || &self.observations != observations
             || &self.image_sha256 != images
             || &self.input_sha256 != inputs
@@ -76,7 +92,22 @@ impl PairResult {
             .iter()
             .zip([("t1_apple", 31), ("t1_plate", 32)])
         {
-            if entry.object_kind != kind
+            let raw_arena = role_coverage
+                && kind == "t1_apple"
+                && entry.observed_view_indices.as_deref() == Some(&[1])
+                && entry.pixel_method.as_deref()
+                    == Some("standard_dictionary_subpixel_corner_pnp_v1");
+            let paired_pattern = role_coverage
+                && entry.observed_view_indices.as_deref() == Some(&[0, 1])
+                && entry.pixel_method.as_deref() == Some("public_fixed_pair_joint_pattern_v1");
+            let coverage_valid = if role_coverage {
+                raw_arena || paired_pattern
+            } else {
+                entry.observed_view_indices.is_none() && entry.pixel_method.is_none()
+            };
+            if !coverage_valid
+                || entry.per_view_reprojection_rms_px.len() != if raw_arena { 1 } else { 2 }
+                || entry.object_kind != kind
                 || entry.marker_id != marker
                 || !entry.reprojection_rms_px.is_finite()
                 || !(0.0..=1.0).contains(&entry.reprojection_rms_px)
@@ -86,7 +117,11 @@ impl PairResult {
                     .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
                 || !entry.minimum_edge_px.is_finite()
                 || entry.minimum_edge_px < 8.0
-                || !(1..=100).contains(&entry.optimizer_evaluations)
+                || if raw_arena {
+                    entry.optimizer_evaluations != 0
+                } else {
+                    !(1..=100).contains(&entry.optimizer_evaluations)
+                }
             {
                 return Err("fixed-pair detection failed its unchanged pixel/identity gate".into());
             }
@@ -132,6 +167,7 @@ impl Drop for PairJob {
 pub(super) struct StaticObservedPlaceRoute {
     config: StaticMarkerVisionConfiguration,
     program: BackgroundVisualConfiguration,
+    role_coverage: bool,
     kinematics: StaticLeftPalmKinematics,
     geometry: StaticPlacementGeometry,
     job: Option<PairJob>,
@@ -143,9 +179,16 @@ impl StaticObservedPlaceRoute {
         geometry: &simulation_minigame::g1::task_objects::TaskObjectSceneConfig,
     ) -> Result<Self, String> {
         config.validate()?;
+        let name = program.path.file_name().and_then(|n| n.to_str());
+        let role_coverage = name == Some("unitree_g1_static_role_coverage_vision.py");
         if program.path.parent() != config.localizer_path.parent()
-            || program.path.file_name().and_then(|n| n.to_str())
-                != Some("unitree_g1_static_pair_vision.py")
+            || !matches!(
+                name,
+                Some(
+                    "unitree_g1_static_pair_vision.py"
+                        | "unitree_g1_static_role_coverage_vision.py"
+                )
+            )
         {
             return Err(
                 "observed placement requires its distinct pinned fixed-pair program".into(),
@@ -155,6 +198,7 @@ impl StaticObservedPlaceRoute {
         Ok(Self {
             config: config.clone(),
             program,
+            role_coverage,
             kinematics: StaticLeftPalmKinematics::new(
                 &G1Definition::load(&config.definition_path, &config.definition_sha256)
                     .map_err(|e| e.to_string())?,
@@ -326,6 +370,7 @@ impl StaticObservedPlaceRoute {
             &job.images,
             &job.inputs,
             self.geometry.definition_sha256(),
+            self.role_coverage,
         )?;
         let state = latest
             .measurement
@@ -503,6 +548,7 @@ mod tests {
                     &good.image_sha256,
                     &good.input_sha256,
                     &geometry,
+                    false,
                 )
         };
         assert!(admit(value.clone()).is_ok());
@@ -531,5 +577,52 @@ mod tests {
         let mut bad = value;
         bad["hidden_truth"] = true.into();
         assert!(admit(bad).is_err());
+    }
+    #[test]
+    fn explicit_one_view_method_cannot_impersonate_paired_pattern_or_supply_plate_from_one_view() {
+        let (mut value, config) = fixture();
+        value["schema"] = "g1_static_actual_fixed_pair_role_coverage_localization_v2".into();
+        value["source"] = "public_fixed_pair_explicit_per_role_view_coverage_v2".into();
+        for entry in value["detections"].as_array_mut().unwrap() {
+            entry["observed_view_indices"] = serde_json::json!([0, 1]);
+            entry["pixel_method"] = "public_fixed_pair_joint_pattern_v1".into();
+        }
+        value["detections"][0]["observed_view_indices"] = serde_json::json!([1]);
+        value["detections"][0]["pixel_method"] =
+            "standard_dictionary_subpixel_corner_pnp_v1".into();
+        value["detections"][0]["per_view_reprojection_rms_px"] = serde_json::json!([0.2]);
+        value["detections"][0]["optimizer_evaluations"] = 0.into();
+        let good: PairResult = serde_json::from_value(value.clone()).unwrap();
+        let geometry = "f".repeat(64);
+        let admit =
+            |v: serde_json::Value, coverage: bool| -> Result<StaticObservedPlaceGoal, String> {
+                serde_json::from_value::<PairResult>(v)
+                    .map_err(|e| e.to_string())?
+                    .goal(
+                        &config,
+                        &good.observations,
+                        &good.image_sha256,
+                        &good.input_sha256,
+                        &geometry,
+                        coverage,
+                    )
+            };
+        assert!(admit(value.clone(), true).is_ok());
+        assert!(admit(value.clone(), false).is_err());
+        let mut bad = value.clone();
+        bad["detections"][0]["observed_view_indices"] = serde_json::json!([0]);
+        assert!(admit(bad, true).is_err());
+        let mut bad = value.clone();
+        bad["detections"][0]["pixel_method"] = "public_fixed_pair_joint_pattern_v1".into();
+        assert!(admit(bad, true).is_err());
+        let mut bad = value.clone();
+        bad["detections"][1]["observed_view_indices"] = serde_json::json!([1]);
+        bad["detections"][1]["pixel_method"] = "standard_dictionary_subpixel_corner_pnp_v1".into();
+        bad["detections"][1]["per_view_reprojection_rms_px"] = serde_json::json!([0.2]);
+        bad["detections"][1]["optimizer_evaluations"] = 0.into();
+        assert!(admit(bad, true).is_err());
+        let mut bad = value;
+        bad["detections"][0]["per_view_reprojection_rms_px"] = serde_json::json!([0.2, 0.2]);
+        assert!(admit(bad, true).is_err());
     }
 }
