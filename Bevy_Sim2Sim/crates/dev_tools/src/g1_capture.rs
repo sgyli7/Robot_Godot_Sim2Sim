@@ -34,6 +34,8 @@ mod mobile_continuous;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_height_recovery;
 #[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_held_feedback;
+#[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_pickup;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -3786,6 +3788,7 @@ fn drive_auxiliary_fine_approach(
             .as_f64()
             .filter(|r| r.is_finite())
             .ok_or("fine approach lacks finite current RGB rim clearance")?;
+        mobile_held_feedback::check(runtime, outcome, &reply, "before_fine_carry", 2000)?;
         if required_raise > 0. {
             let wall_ms = job.started.elapsed().as_secs_f64() * 1000.;
             return mobile_height_recovery::submit_from_current_rgb(
@@ -4611,6 +4614,7 @@ fn drive_visual_approach(
         {
             return Err("visual goal belongs to an old episode/boundary".into());
         }
+        mobile_held_feedback::check(runtime, outcome, &reply, "before_coarse_carry", 2000)?;
         let proposal = &reply["navigation_proposal"];
         // Reobserve from a clear intermediate waypoint before final placement.
         // This margin is explicitly traditional geometry, not a VLA action.
@@ -4858,6 +4862,15 @@ fn start_marker_job(
         .mobile_assist
         .as_ref()
         .ok_or("marker job stage absent")?;
+    if assist.pickup.completed()
+        && (stage_directory == "visual_approach"
+            || stage_directory.starts_with("visual_fine_approach"))
+    {
+        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(
+            MarkerVisionJob::start_with_held_box_feedback(config, directory, observation)?,
+        );
+        return Ok(());
+    }
     if matches!(
         stage_directory,
         "visual_release_alignment" | "visual_release_alignment_after_thumb"

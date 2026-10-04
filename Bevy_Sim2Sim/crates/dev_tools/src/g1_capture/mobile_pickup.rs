@@ -15,11 +15,18 @@ pub(super) struct Pickup {
     goal: Option<MobileRaiseGoal>,
     holding_ticks: Option<u32>,
     accepted: bool,
+    transport_baseline: Option<serde_json::Value>,
 }
 
 impl Pickup {
     pub fn completed(&self) -> bool {
         self.accepted
+    }
+
+    pub(super) fn transport_baseline(&self) -> Option<&serde_json::Value> {
+        self.accepted
+            .then_some(self.transport_baseline.as_ref())
+            .flatten()
     }
 
     pub fn completed_hold_ticks(
@@ -279,6 +286,7 @@ pub(super) fn drive(
     let assist = runtime.mobile_assist.as_mut().unwrap();
     assist.vision_job.take();
     assist.pickup.accepted = true;
+    assist.pickup.transport_baseline = Some(reply);
     runtime.requested = false;
     Ok(false)
 }

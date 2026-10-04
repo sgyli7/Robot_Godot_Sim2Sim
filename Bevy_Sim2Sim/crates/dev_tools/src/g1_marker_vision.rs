@@ -119,6 +119,8 @@ mod persistent;
 pub(super) use persistent::PersistentMarkerWorker;
 
 #[cfg(feature = "g1_constraint_diagnostic")]
+pub(crate) mod mobile_held;
+#[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_pair;
 mod static_observation;
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -354,7 +356,22 @@ mod worker {
             observation: ObservationStamp,
             memory: Option<MarkerTargetMemory>,
         ) -> Result<Self, String> {
-            Self::start_internal(config, directory, observation, memory, false, false)
+            Self::start_internal(config, directory, observation, memory, false, false, false)
+        }
+
+        /// Current paired RGB feedback for a completed pickup's next carry.
+        pub fn start_with_held_box_feedback(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+        ) -> Result<Self, String> {
+            if !config.same_tick_box_pair
+                || config.same_tick_box_only
+                || config.task_geometry.is_none()
+            {
+                return Err("held-box feedback requires normal current paired geometry".into());
+            }
+            Self::start_internal(config, directory, observation, None, false, false, true)
         }
 
         pub fn start_box_view(
@@ -368,7 +385,7 @@ mod worker {
             if config.same_tick_box_pair && !config.same_tick_box_only {
                 return Err("paired pickup feedback requires its explicit box-only mode".into());
             }
-            Self::start_internal(config, directory, observation, None, true, false)
+            Self::start_internal(config, directory, observation, None, true, false, false)
         }
 
         pub fn start_placement_view(
@@ -381,7 +398,7 @@ mod worker {
                     "placement view requires bound public geometry and auxiliary labels".into(),
                 );
             }
-            Self::start_internal(config, directory, observation, None, false, true)
+            Self::start_internal(config, directory, observation, None, false, true, false)
         }
 
         fn start_internal(
@@ -391,6 +408,7 @@ mod worker {
             memory: Option<MarkerTargetMemory>,
             box_view_only: bool,
             placement_view_only: bool,
+            held_box_feedback: bool,
         ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
@@ -474,6 +492,9 @@ mod worker {
                         if placement_view_only {
                             command.arg("--placement-view-only");
                         }
+                        if held_box_feedback {
+                            command.arg("--held-box-feedback");
+                        }
                         if let Some(calibration) = &config.fiducial_calibration {
                             command.arg("--fiducials").arg(&calibration.path);
                         }
@@ -532,6 +553,7 @@ mod worker {
                             placement_view_only,
                         )?;
                         super::mobile_pair::validate_reply(&reply, &input_document, pair.as_ref())?;
+                        super::mobile_held::validate_requested_feedback(&reply, observation, held_box_feedback)?;
                         if config
                             .fiducial_calibration
                             .as_ref()
@@ -1228,7 +1250,9 @@ mod worker {
             } else {
                 Some(serde_json::from_value(f["memory"].clone()).map_err(|e| e.to_string())?)
             };
-            let job = if f["placement_view_only"] == true {
+            let job = if f["expected_held_box_feedback"] == true {
+                MarkerVisionJob::start_with_held_box_feedback(config, directory.clone(), stamp)?
+            } else if f["placement_view_only"] == true {
                 MarkerVisionJob::start_placement_view(config, directory.clone(), stamp)?
             } else if f["box_view_only"] == true {
                 MarkerVisionJob::start_box_view(config, directory.clone(), stamp)?
@@ -1262,6 +1286,11 @@ mod worker {
                 return Ok(());
             }
             let result = reply?;
+            if f["expected_held_box_feedback"] == true
+                && result["held_box_feedback"]["schema"] != "g1_current_paired_rgb_relative_grip_v1"
+            {
+                return Err("requested current held-box feedback absent".into());
+            }
             fs::write(directory.join("roundtrip_receipt.json"),serde_json::to_vec_pretty(&serde_json::json!({
                 "actual_saved_rgb_fixture":true,"fresh_vla_calls":0,"actual_integrations":0,
                 "qualified":false,"wall_ms":job.started.elapsed().as_secs_f64()*1000.,"reply":result,

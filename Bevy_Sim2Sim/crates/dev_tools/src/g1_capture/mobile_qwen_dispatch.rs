@@ -648,6 +648,14 @@ impl Dispatch {
         {
             return Err("Qwen dispatch inputs changed while local inference was pending".into());
         }
+        // The owner stayed paused during Qwen; preserve its existing20s TTL.
+        mobile_held_feedback::check(
+            runtime,
+            outcome,
+            &pending.localization,
+            "before_coarse_carry",
+            20_000,
+        )?;
         let proposal = &pending.localization["navigation_proposal"];
         let distance = proposal["relative_distance_m"]
             .as_f64()
@@ -716,7 +724,15 @@ impl Dispatch {
                 return Ok(false);
             };
             let observation = job.observation;
-            self.start_transport(runtime, outcome, observation, reply?)?;
+            let localization = reply?;
+            mobile_held_feedback::check(
+                runtime,
+                outcome,
+                &localization,
+                "before_qwen_request",
+                2000,
+            )?;
+            self.start_transport(runtime, outcome, observation, localization)?;
             runtime.mobile_assist.as_mut().unwrap().vision_job.take();
         } else {
             start_marker_job(runtime, port, "visual_approach")?;

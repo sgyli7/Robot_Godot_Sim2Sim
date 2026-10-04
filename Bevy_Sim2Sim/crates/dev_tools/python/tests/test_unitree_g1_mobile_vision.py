@@ -81,6 +81,15 @@ def thumb_proposal(right_inward=.065, joint_limit=1., floor_margin=.03, left_pat
 
 @unittest.skipUnless(vision is not None, "visual tests require the pinned G1 OpenCV runtime")
 class FinePlanningTests(unittest.TestCase):
+    def test_held_feedback_cannot_request_memory_unpaired_or_other_modes(self):
+        for kwargs in [{}, {"secondary_image_path": Path("secondary")},
+                       {"secondary_image_path": Path("secondary"), "secondary_observation_path": Path("state"), "box_view_only": True},
+                       {"secondary_image_path": Path("secondary"), "secondary_observation_path": Path("state"), "memory_path": Path("memory")},
+                       {"secondary_image_path": Path("secondary"), "secondary_observation_path": Path("state"), "placement_view_only": True}]:
+            with self.assertRaisesRegex(ValueError, "held-box feedback requires"):
+                vision.localize(Path("absent_rgb"), Path("absent_self"), Path("definition"),
+                                held_box_feedback=True, **kwargs)
+
     def test_far_containment_is_not_erased_by_a_single_step_horizon(self):
         proposal = fine_proposal(-.79)
         self.assertIsNotNone(proposal)
