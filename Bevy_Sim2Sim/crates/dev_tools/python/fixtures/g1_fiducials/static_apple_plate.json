@@ -3,8 +3,8 @@
   "dictionary": "DICT_4X4_50",
   "layout_profile": "static_apple_plate",
   "png_paths": [
-    "static_apple_31.png",
-    "static_plate_32.png"
+    "../../../../../assets/game/scenes/dev/g1_fiducials/static_apple_31.png",
+    "../../../../../assets/game/scenes/dev/g1_fiducials/static_plate_32.png"
   ],
   "png_sha256": [
     "65c943d2f0451cea07075a225f67918595f83c03a9186a156f6c882b63d2b452",

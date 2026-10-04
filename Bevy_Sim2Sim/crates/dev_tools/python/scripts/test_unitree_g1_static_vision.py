@@ -41,7 +41,7 @@ class StaticObservationTests(unittest.TestCase):
             with self.assertRaises(ValueError):observation(path)
 
     def test_stale_or_changed_print_mount_cannot_reinterpret_an_observation(self):
-        base=Path(__file__).resolve().parents[4];labels=base/'assets/game/scenes/dev/g1_fiducials/static_apple_plate.json'
+        base=Path(__file__).resolve().parents[4];labels=base/'crates/dev_tools/python/fixtures/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
         if not definition.exists():self.skipTest('byte-bound original public model is not installed')
         with tempfile.TemporaryDirectory() as root:
@@ -52,7 +52,7 @@ class StaticObservationTests(unittest.TestCase):
                     localize(image,path,definition,stale,hashlib.sha256(stale.read_bytes()).hexdigest())
 
     def test_plain_actual_rgb_yields_no_object_pose_or_actuation(self):
-        base=Path(__file__).resolve().parents[4];labels=base/'assets/game/scenes/dev/g1_fiducials/static_apple_plate.json'
+        base=Path(__file__).resolve().parents[4];labels=base/'crates/dev_tools/python/fixtures/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
         if not definition.exists():self.skipTest('byte-bound original public model is not installed')
         with tempfile.TemporaryDirectory() as root:
@@ -61,7 +61,7 @@ class StaticObservationTests(unittest.TestCase):
             self.assertEqual(result['detections'],[]);self.assertFalse(result['actuation_proposed']);self.assertFalse(result['task_qualified'])
 
     def test_prepared_public_model_uses_each_current_joint_state(self):
-        base=Path(__file__).resolve().parents[4];labels=base/'assets/game/scenes/dev/g1_fiducials/static_apple_plate.json'
+        base=Path(__file__).resolve().parents[4];labels=base/'crates/dev_tools/python/fixtures/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
         if not definition.exists():self.skipTest('byte-bound original public model is not installed')
         assets=PinnedPublicStaticVisionAssets(definition,labels,hashlib.sha256(labels.read_bytes()).hexdigest())
@@ -69,7 +69,7 @@ class StaticObservationTests(unittest.TestCase):
         self.assertGreater(np.max(abs(before-assets.root_camera(q))),.01)
 
     def test_prepared_asset_does_not_reparse_model_or_accept_changed_identity(self):
-        base=Path(__file__).resolve().parents[4];labels=base/'assets/game/scenes/dev/g1_fiducials/static_apple_plate.json'
+        base=Path(__file__).resolve().parents[4];labels=base/'crates/dev_tools/python/fixtures/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
         if not definition.exists():self.skipTest('byte-bound original public model is not installed')
         identity=hashlib.sha256(labels.read_bytes()).hexdigest()
@@ -84,7 +84,7 @@ class StaticObservationTests(unittest.TestCase):
                 localize(image,path,definition,labels,'0'*64,public_assets=assets)
 
     def test_changed_bytes_after_preparation_reject_instead_of_using_cache(self):
-        base=Path(__file__).resolve().parents[4];source=base/'assets/game/scenes/dev/g1_fiducials/static_apple_plate.json'
+        base=Path(__file__).resolve().parents[4];source=base/'crates/dev_tools/python/fixtures/g1_fiducials/static_apple_plate.json'
         definition=Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
         if not definition.exists():self.skipTest('byte-bound original public model is not installed')
         with tempfile.TemporaryDirectory() as root:

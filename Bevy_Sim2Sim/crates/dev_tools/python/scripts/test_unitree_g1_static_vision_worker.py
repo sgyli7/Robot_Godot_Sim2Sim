@@ -33,7 +33,7 @@ class StaticWorkerTests(unittest.TestCase):
                       'directory':str(self.directory),'observation':self.stamp}
 
     def worker(self, episode=12):
-        scripts=Path(__file__).parent;labels=scripts.parents[3]/'assets/game/scenes/dev/g1_fiducials/static_apple_plate.json'
+        scripts=Path(__file__).parent;labels=scripts.parents[3]/'crates/dev_tools/python/fixtures/g1_fiducials/static_apple_plate.json'
         env=os.environ.copy();env.update(OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1')
         child=subprocess.Popen([sys.executable,str(scripts/'unitree_g1_static_vision_worker.py'),
             '--definition',str(self.definition),'--fiducials',str(labels),'--fiducial-sha256',sha(labels),
