@@ -28,6 +28,7 @@ use bevy::{
     winit::WinitPlugin,
 };
 
+mod local_model_startup;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_continuous;
 mod mobile_qwen_dispatch;
@@ -101,6 +102,10 @@ pub struct G1CaptureOptions {
 #[serde(deny_unknown_fields)]
 struct CaptureConfiguration {
     runner: CaptureRunnerConfig,
+    /// Separate zero-Tick preparation; the owning launcher starts models only
+    /// after the renderer-ready receipt. Original task deadlines stay in force.
+    #[serde(default)]
+    local_model_startup: Option<local_model_startup::Configuration>,
     visual_path: PathBuf,
     visual_sha256: String,
     #[serde(default)]
@@ -1107,6 +1112,7 @@ fn run_from_file(
         config.static_grasp_template,
         config.static_grasp_fixed_camera_pair,
         config.static_pair_program,
+        config.local_model_startup,
         mode,
     )
 }
@@ -1134,6 +1140,8 @@ pub struct G1CaptureReceipt {
     pub native_station_illumination: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_startup: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_model_startup: Option<serde_json::Value>,
     pub floor_center_engine: [f32; 3],
     pub floor_full_extents_m: [f32; 3],
     pub floor_contact_friction: f32,
@@ -1278,6 +1286,7 @@ impl G1CaptureReceipt {
             native_station_preparation: None,
             native_station_illumination: None,
             static_startup: None,
+            local_model_startup: None,
             floor_center_engine: [0., -0.25, 0.],
             floor_full_extents_m: [40., 0.5, 40.],
             floor_contact_friction: floor_friction,
@@ -1516,6 +1525,7 @@ pub(super) struct CaptureRuntime {
     options: G1CaptureOptions,
     episode_id: u64,
     started: Instant,
+    local_model_startup: Option<local_model_startup::Gate>,
     render_frames: u32,
     latest: Option<Arc<CaptureSnapshot>>,
     command_submitted: bool,
@@ -1825,6 +1835,7 @@ pub fn run_capture(
         None,
         false,
         None,
+        None,
         CaptureMode::Camera,
     )
 }
@@ -1859,9 +1870,18 @@ fn run_capture_owner(
     static_grasp_template: Option<BackgroundVisualConfiguration>,
     static_grasp_fixed_camera_pair: bool,
     static_pair_program: Option<BackgroundVisualConfiguration>,
+    local_model_startup: Option<local_model_startup::Configuration>,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
+    if local_model_startup.is_some() && mode != CaptureMode::StationMobileRelease {
+        return Err(
+            "renderer-first local model preparation is an explicit station-release entry".into(),
+        );
+    }
+    let local_model_startup = local_model_startup
+        .map(local_model_startup::Gate::new)
+        .transpose()?;
     let mobile_carry = mode == CaptureMode::MobileCarry;
     let station_carry = mode == CaptureMode::StationMobileCarry;
     let station_release = mode == CaptureMode::StationMobileRelease;
@@ -2814,6 +2834,7 @@ fn run_capture_owner(
             options,
             episode_id,
             started: Instant::now(),
+            local_model_startup,
             render_frames: 0,
             latest: None,
             command_submitted: false,
@@ -5834,6 +5855,35 @@ fn drive_capture(
         if !render_ready && !prefetch_running {
             return Ok(());
         }
+        if runtime.local_model_startup.is_some() {
+            if latest.phase != G1WorkerPhase::Paused || latest.timing.episode_integrations != 0 {
+                return Err("local model preparation requires a paused zero-Tick owner".into());
+            }
+            let episode_id = runtime.episode_id;
+            let output = runtime.options.output.clone();
+            let gate = runtime.local_model_startup.as_mut().unwrap();
+            if !gate.renderer_announced {
+                fs::write(
+                    output.join("local_models_waiting.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "schema":"g1_renderer_ready_before_local_models_v1","episode_id":episode_id,
+                        "native_tick":0,"renderer_ready":true,"first_task_image_not_requested":true,
+                        "task_qualified":false,
+                    }))
+                    .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                gate.renderer_announced = true;
+            }
+            let Some(admission) = gate.poll(episode_id, latest.timing.episode_integrations)? else {
+                return Ok(());
+            };
+            outcome.0.lock().unwrap().local_model_startup = Some(admission);
+            runtime.local_model_startup.take();
+            // Preparation has its own explicit bound and receipt. The existing
+            // physical-task timeout and every image TTL begin with fresh input.
+            runtime.started = Instant::now();
+        }
         #[cfg(feature = "g1_constraint_diagnostic")]
         if let Some(dispatch) = runtime.qwen_dispatch.take() {
             let result = {
@@ -6301,8 +6351,20 @@ fn drive_capture(
         Ok(())
     })();
     let error = result.err().or_else(|| {
-        (!runtime.interactive && runtime.started.elapsed() > runtime.options.timeout)
-            .then(|| format!("native camera diagnostic timed out: {}", port.progress()))
+        if runtime
+            .local_model_startup
+            .as_ref()
+            .is_some_and(local_model_startup::Gate::expired)
+        {
+            return Some("local model preparation exceeded its explicit360s bound".into());
+        }
+        (!runtime.interactive
+            && runtime.started.elapsed() > runtime.options.timeout
+            && !runtime
+                .local_model_startup
+                .as_ref()
+                .is_some_and(|gate| gate.renderer_announced))
+        .then(|| format!("native camera diagnostic timed out: {}", port.progress()))
     });
     if let Some(error) = error {
         runtime.worker.pause();
