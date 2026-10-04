@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::types::{EpisodeId, ObservationStamp, SkillAvailability, SkillRequest};
+use crate::types::{EpisodeId, ObservationStamp, SkillAvailability, SkillRequest, TaskProfile};
 
 use super::{DecisionError, ObservationSnapshot, RegisteredTarget, TaskGoal};
 
@@ -165,7 +165,7 @@ pub fn decision_json_schema() -> Value {
 /// executor needs an image-grounded observation/stop summary, not unused target
 /// enumeration. Runtime admission remains authoritative even if a server
 /// ignores this schema. Active task decisions retain their target evidence.
-pub(super) fn request_schema(availability: SkillAvailability) -> Value {
+pub(super) fn request_schema(availability: SkillAvailability, profile: TaskProfile) -> Value {
     let mut schema = decision_json_schema();
     schema["properties"]["reason"]["maxLength"] = json!(64);
     schema["properties"]["observed_targets"]["items"]["properties"]["visible_description"]["maxLength"] =
@@ -173,18 +173,30 @@ pub(super) fn request_schema(availability: SkillAvailability) -> Value {
     let variants = schema["properties"]["request"]["anyOf"]
         .as_array_mut()
         .expect("authored request variants");
+    let execute_enabled = match profile {
+        TaskProfile::StaticApple => availability.static_apple,
+        TaskProfile::MobileBox => availability.mobile_box,
+    };
+    let navigation_enabled = profile == TaskProfile::MobileBox
+        && availability.mobile_box
+        && availability.navigate_adjustment;
+    variants.retain(
+        |variant| match variant["properties"]["skill"]["const"].as_str() {
+            Some("observe" | "stop") => true,
+            Some("execute_task") => execute_enabled,
+            Some("navigate_adjustment") => navigation_enabled,
+            _ => false,
+        },
+    );
     for variant in variants.iter_mut() {
         if variant["properties"]["skill"]["const"] == "stop" {
             variant["properties"]["reason"]["maxLength"] = json!(64);
         }
+        if variant["properties"]["skill"]["const"] == "execute_task" {
+            variant["properties"]["task_profile"]["enum"] = json!([profile]);
+        }
     }
-    if !availability.static_apple && !availability.mobile_box && !availability.navigate_adjustment {
-        variants.retain(|variant| {
-            matches!(
-                variant["properties"]["skill"]["const"].as_str(),
-                Some("observe" | "stop")
-            )
-        });
+    if !execute_enabled && !navigation_enabled {
         schema["properties"]["observed_targets"]["maxItems"] = json!(0);
         // No item can exist at maxItems=0. Avoid compiling an unreachable
         // target grammar; active-task schemas keep the complete evidence type.

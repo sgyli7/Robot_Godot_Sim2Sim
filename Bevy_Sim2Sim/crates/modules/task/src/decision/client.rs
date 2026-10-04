@@ -183,7 +183,7 @@ impl LocalQwenClient {
             "model":self.config.model,
             "temperature":0.0,"max_tokens":self.config.max_output_tokens,"stream":false,
             "chat_template_kwargs":{"enable_thinking":false},
-            "response_format":{"type":"json_schema","json_schema":{"name":"g1_task_decision","strict":true,"schema":request_schema(input.available_skills)}},
+            "response_format":{"type":"json_schema","json_schema":{"name":"g1_task_decision","strict":true,"schema":request_schema(input.available_skills, input.goal.profile)}},
             "messages":[
                 {"role":"system","content":SYSTEM_PROMPT},
                 {"role":"user","content":[

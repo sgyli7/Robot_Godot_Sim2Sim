@@ -276,6 +276,64 @@ fn sends_real_png_and_strict_schema_without_privileged_state() {
 }
 
 #[test]
+fn generated_choices_match_current_task_and_capabilities() {
+    let client = LocalQwenClient::new(LocalQwenConfig::default()).unwrap();
+    for profile in [TaskProfile::StaticApple, TaskProfile::MobileBox] {
+        for flags in 0..8 {
+            let availability = SkillAvailability {
+                static_apple: flags & 1 != 0,
+                mobile_box: flags & 2 != 0,
+                navigate_adjustment: flags & 4 != 0,
+            };
+            let mut input = input();
+            input.goal.profile = profile;
+            input.available_skills = availability;
+            let body = client.request_body(&input).unwrap();
+            let schema = &body["response_format"]["json_schema"]["schema"];
+            let variants = schema["properties"]["request"]["anyOf"].as_array().unwrap();
+            let skills: Vec<_> = variants
+                .iter()
+                .map(|variant| variant["properties"]["skill"]["const"].as_str().unwrap())
+                .collect();
+            assert!(skills.contains(&"observe") && skills.contains(&"stop"));
+            let can_execute = match profile {
+                TaskProfile::StaticApple => availability.static_apple,
+                TaskProfile::MobileBox => availability.mobile_box,
+            };
+            let can_navigate = profile == TaskProfile::MobileBox
+                && availability.mobile_box
+                && availability.navigate_adjustment;
+            assert_eq!(
+                skills.contains(&"execute_task"),
+                can_execute,
+                "{profile:?}/{flags}"
+            );
+            assert_eq!(
+                skills.contains(&"navigate_adjustment"),
+                can_navigate,
+                "{profile:?}/{flags}"
+            );
+            assert_eq!(
+                skills.len(),
+                2 + usize::from(can_execute) + usize::from(can_navigate)
+            );
+            if let Some(execute) = variants
+                .iter()
+                .find(|variant| variant["properties"]["skill"]["const"] == "execute_task")
+            {
+                assert_eq!(
+                    execute["properties"]["task_profile"]["enum"],
+                    json!([profile])
+                );
+            }
+            if !can_execute && !can_navigate {
+                assert_eq!(schema["properties"]["observed_targets"]["maxItems"], 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn disabled_executor_generation_is_bounded_and_ignoring_it_cannot_enable_execution() {
     let mut session = session(TaskProfile::StaticApple, false);
     let input = session
