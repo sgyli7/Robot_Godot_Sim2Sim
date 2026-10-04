@@ -122,6 +122,19 @@ mod worker {
     };
     use task_minigame::types::ObservationStamp;
 
+    fn auxiliary_camera_profile(profile: &str) -> bool {
+        matches!(
+            profile,
+            "auxiliary_grip_overview" | "auxiliary_bin_placement"
+        )
+    }
+
+    fn auxiliary_reply_camera(reply: &serde_json::Value) -> bool {
+        reply["camera_mount_profile"]
+            .as_str()
+            .is_some_and(auxiliary_camera_profile)
+    }
+
     #[derive(Clone, serde::Deserialize, serde::Serialize)]
     #[serde(deny_unknown_fields)]
     pub(crate) struct MarkerTargetMemory {
@@ -314,9 +327,10 @@ mod worker {
                         let camera_profile = input_document["camera_mount_profile"]
                             .as_str()
                             .unwrap_or("arena_ego");
-                        if !matches!(camera_profile, "arena_ego" | "auxiliary_grip_overview")
-                            || (camera_profile == "auxiliary_grip_overview"
+                        if !(camera_profile == "arena_ego" || auxiliary_camera_profile(camera_profile))
+                            || (auxiliary_camera_profile(camera_profile)
                                 && config.fiducial_calibration.is_none())
+                            || (camera_profile == "auxiliary_bin_placement" && (memory.is_some() || box_view_only))
                         {
                             return Err("unbound fixed observation camera profile".into());
                         }
@@ -422,11 +436,11 @@ mod worker {
                                 && reply["camera_mount_profile"] != camera_profile)
                             || (config.fiducial_calibration.is_none()
                                 && (!reply["fiducial_calibration_sha256"].is_null()
-                                    || reply["camera_mount_profile"] == "auxiliary_grip_overview"))
+                                    || auxiliary_reply_camera(&reply)))
                         {
                             return Err("unbound fixed camera/marker calibration reply".into());
                         }
-                        if camera_profile == "auxiliary_grip_overview"
+                        if auxiliary_camera_profile(camera_profile)
                             && reply["current_box_palm_center_distance_m"]
                                 .as_f64()
                                 .is_none_or(|d| !d.is_finite() || !(0. ..=0.25).contains(&d))
@@ -599,7 +613,7 @@ mod worker {
         }
         if placement_view_only {
             if reply["placement_view_only"] != true
-                || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+                || !auxiliary_reply_camera(reply)
                 || memory.is_some()
                 || !reply["navigation_proposal"].is_null()
                 || !reply["target_memory_estimate"].is_null()
@@ -653,10 +667,7 @@ mod worker {
         let proposal = &reply["navigation_proposal"];
         if proposal.is_null() {
             let fine = &reply["fine_approach_proposal"];
-            if memory.is_some()
-                || fine["state"] != "aligned"
-                || reply["camera_mount_profile"] != "auxiliary_grip_overview"
-            {
+            if memory.is_some() || fine["state"] != "aligned" || !auxiliary_reply_camera(reply) {
                 return Err("missing navigation requires current whole-box alignment".into());
             }
             // The owned worker binds this declared geometry hash to its pinned
@@ -717,7 +728,7 @@ mod worker {
             || p["source_geometry_sha256"] != geometry_hash
             || p["world_or_contact_truth_input"] != false
             || p["task_qualified"] != false
-            || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+            || !auxiliary_reply_camera(reply)
             || !interval.iter().all(|n| n.is_finite())
             || interval[0] < 0.
             || interval[1] > 0.70
@@ -1016,6 +1027,21 @@ mod worker {
                 "release_admitted":true,"release_goal":{"observation":stamp,"target_palm_gap_m":0.35,"duration_ticks":100},
             });
             assert!(validate_release_reply(&reply, stamp, "geometry").is_ok());
+            let mut placement_camera = reply.clone();
+            placement_camera["camera_mount_profile"] = "auxiliary_bin_placement".into();
+            assert!(
+                validate_reply_for_policy(
+                    &placement_camera,
+                    stamp,
+                    "image",
+                    "input",
+                    "definition",
+                    None,
+                    false,
+                    true
+                )
+                .is_ok()
+            );
             assert!(
                 validate_reply_for_policy(
                     &reply,
@@ -1077,6 +1103,9 @@ mod worker {
                 "goal":{"observation":stamp,"heading_yaw_source_rad":-1.57,"relative_distance_m":0.1},
             });
             assert!(validate_fine_reply(&reply, stamp, "geometry").is_ok());
+            let mut placement_camera = reply.clone();
+            placement_camera["camera_mount_profile"] = "auxiliary_bin_placement".into();
+            assert!(validate_fine_reply(&placement_camera, stamp, "geometry").is_ok());
             for mutation in 0..9 {
                 let mut bad = reply.clone();
                 let p = &mut bad["fine_approach_proposal"];
