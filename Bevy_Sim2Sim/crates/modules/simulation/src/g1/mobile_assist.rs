@@ -48,6 +48,9 @@ pub enum MobileAssistCommand {
     ClassicalReobserve(MobileScanGoal),
     ClassicalLower(MobileLowerGoal),
     ClassicalRaise(MobileRaiseGoal),
+    /// Station-only initial pickup after completed calibrated grip settling.
+    /// Separate from the original raise-after-carry contract.
+    ClassicalPickupRaise(MobileRaiseGoal),
     ClassicalRelease(MobileReleaseGoal),
     ClassicalRestore(MobileRestoreGoal),
     ClassicalGripSettle(MobileHoldGoal),
@@ -103,6 +106,15 @@ impl MobileAssistCommand {
             Self::ClassicalReobserve(goal) => goal.validate(),
             Self::ClassicalLower(goal) => goal.validate(),
             Self::ClassicalRaise(goal) => goal.validate(),
+            Self::ClassicalPickupRaise(goal) => {
+                goal.validate()?;
+                if goal.distance_m != 0.1 || goal.duration_ticks != 100 {
+                    return Err(invalid(
+                        "initial pickup requires the declared10cm/100Tick lift",
+                    ));
+                }
+                Ok(())
+            }
             Self::ClassicalRelease(goal) => goal.validate(),
             Self::ClassicalRestore(goal) => goal.validate(),
             Self::ClassicalGripSettle(goal) => goal.validate(),
@@ -198,6 +210,7 @@ pub struct MobileAssistRunner {
     reobserve: Option<ScanState>,
     lower: Option<MobileGripLowering>,
     raise: Option<MobileGripRaising>,
+    pickup_raise: Option<MobileGripRaising>,
     release: Option<MobileGripRelease>,
     restore: Option<MobileGripRestoring>,
     grip_settle: Option<GripSettleState>,
@@ -276,6 +289,7 @@ impl MobileAssistRunner {
             reobserve: None,
             lower: None,
             raise: None,
+            pickup_raise: None,
             release: None,
             restore: None,
             grip_settle: None,
@@ -332,9 +346,13 @@ impl MobileAssistRunner {
         } else if let Some(hold) = &self.hold {
             hold.completed()
         } else if self.carry.is_none() && self.scan.is_none() {
-            self.grip_settle
-                .as_ref()
-                .is_some_and(|s| s.holding.completed())
+            if let Some(pickup) = &self.pickup_raise {
+                pickup.completed()
+            } else {
+                self.grip_settle
+                    .as_ref()
+                    .is_some_and(|s| s.holding.completed())
+            }
         } else {
             self.carry.as_ref().is_some_and(|c| c.navigator.stopped())
                 || self.scan.as_ref().is_some_and(|s| s.navigator.completed())
@@ -467,6 +485,17 @@ impl MobileAssistRunner {
                 return Err(invalid(
                     "transport turn requires a new image after grip settling",
                 ));
+            }
+            if let Some(pickup) = &self.pickup_raise {
+                if !pickup.completed() || observation.frame_id <= pickup.goal().observation.frame_id
+                {
+                    return Err(invalid(
+                        "station turn requires a newer completed-pickup RGB boundary",
+                    ));
+                }
+                // Keep the elevated measured-target posture. Returning the
+                // pre-lift hold command would lower the box during the turn.
+                return Ok((pickup.command().clone(), settle.grip.clone()));
             }
             return Ok((settle.holding.command().clone(), settle.grip.clone()));
         }
@@ -762,6 +791,10 @@ impl MobileAssistRunner {
                     || self.lower.as_ref().is_some_and(|lower| !lower.completed())
                     || self.raise.as_ref().is_some_and(|raise| !raise.completed())
                     || self
+                        .pickup_raise
+                        .as_ref()
+                        .is_some_and(|raise| !raise.completed())
+                    || self
                         .release
                         .as_ref()
                         .is_some_and(|release| !release.completed())
@@ -789,6 +822,7 @@ impl MobileAssistRunner {
                 self.reobserve = None;
                 self.lower = None;
                 self.raise = None;
+                self.pickup_raise = None;
                 self.release = None;
                 self.restore = None;
                 self.hold = None;
@@ -1174,6 +1208,46 @@ impl MobileAssistRunner {
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
             }
+            MobileAssistCommand::ClassicalPickupRaise(goal) => {
+                let state = self.owner.measurement()?;
+                if !self.station_fixture
+                    || self.carry.is_some()
+                    || self.scan.is_some()
+                    || self.release.is_some()
+                    || self.raise.is_some()
+                    || self.lower.is_some()
+                    || self
+                        .grip_settle
+                        .as_ref()
+                        .is_none_or(|s| !s.holding.completed())
+                {
+                    return Err(invalid(
+                        "initial pickup requires the completed stationary station grip before any transport",
+                    ));
+                }
+                if self.pickup_raise.is_none() {
+                    self.classical_admission(goal.observation, &state)?;
+                    let (command, _) = self.prepare_classical(&goal.observation, &state)?;
+                    self.pickup_raise =
+                        Some(MobileGripRaising::new(goal.clone(), &state, command)?);
+                }
+                let pickup = self.pickup_raise.as_mut().unwrap();
+                if pickup.goal() != goal {
+                    return Err(invalid("initial pickup goal changed while executing"));
+                }
+                let raising = pickup.update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&raising.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalRaise {
+                        goal: goal.clone(),
+                        raising,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
             MobileAssistCommand::ClassicalRaise(goal) => {
                 if self.release.is_some() {
                     return Err(invalid("raising after opening requires new grasp/reset"));
@@ -1278,6 +1352,45 @@ mod tests {
     struct Sequence {
         schema: String,
         chunks: Vec<PolicyActionChunk>,
+    }
+
+    #[test]
+    fn declared_pickup_goal_cannot_silently_replace_the_legacy_raise_contract() {
+        let mut goal = MobileRaiseGoal {
+            observation: ObservationStamp {
+                episode_id: 1,
+                frame_id: 6,
+                sim_time_ns: 6_000_000_000,
+                captured_at_unix_ms: 1,
+            },
+            distance_m: 0.1,
+            duration_ticks: 100,
+        };
+        assert!(
+            MobileAssistCommand::ClassicalPickupRaise(goal.clone())
+                .validate()
+                .is_ok()
+        );
+        goal.distance_m = 0.18;
+        goal.duration_ticks = 150;
+        assert!(
+            MobileAssistCommand::ClassicalRaise(goal.clone())
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            MobileAssistCommand::ClassicalPickupRaise(goal.clone())
+                .validate()
+                .is_err()
+        );
+        goal.distance_m = 0.1;
+        goal.duration_ticks = 100;
+        goal.observation.episode_id = 0;
+        assert!(
+            MobileAssistCommand::ClassicalPickupRaise(goal)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

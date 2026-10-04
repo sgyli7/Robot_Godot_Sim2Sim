@@ -196,7 +196,7 @@ pub(super) fn drive(
                 episode_id: runtime.episode_id,
                 valid_until_sim_ns: observation.sim_time_ns + 10_000_000_000,
                 valid_until_wall: Instant::now() + Duration::from_secs(12),
-                command: MobileAssistCommand::ClassicalRaise(goal.clone()),
+                command: MobileAssistCommand::ClassicalPickupRaise(goal.clone()),
             })
             .map_err(|e| e.to_string())?;
         outcome
