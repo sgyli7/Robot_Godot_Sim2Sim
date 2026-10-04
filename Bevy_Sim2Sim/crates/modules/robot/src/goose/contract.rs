@@ -46,6 +46,10 @@ pub struct GooseControlContract {
     pub positive_mechanical_power_limit_w: f64,
     pub phase_frequency_hz: f64,
     pub model_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_revision: Option<String>,
 }
 
 /// Axis limits are SI values from the same neutral mechanical contract.
@@ -76,9 +80,25 @@ impl GooseControlContract {
                     | "goose_task_collision_v1_full50"
                     | "goose_task_collision_v1_condensed50"
             ) | ("goose_50hz_experimental_si_v2", "goose_460_full50_be_v2")
+                | ("goose_task_proxy_si_v1", "goose_task_proxy_11_v1")
         );
+        let task_proxy = self.schema == "goose_task_proxy_si_v1";
+        let revision_valid = match (
+            self.runtime_revision.as_deref(),
+            self.controller_revision.as_deref(),
+            task_proxy,
+        ) {
+            (
+                Some("goose_task_proxy_be_contact_v1"),
+                Some("sampled_pd_kp_parent_kd_quarter_v1"),
+                true,
+            )
+            | (_, _, false) => true,
+            _ => false,
+        };
         if self.robot != "Goose_V0.1"
             || !identity_valid
+            || !revision_valid
             || self.action_size != GOOSE_ACTION_DIMENSION
             || self.observation_size != GOOSE_OBSERVATION_DIMENSION
             || [self.physics_dt_s, self.torque_dt_s, self.policy_dt_s]
@@ -457,7 +477,25 @@ mod tests {
             positive_mechanical_power_limit_w: 350.0,
             phase_frequency_hz: 1.2,
             model_sha256: "a".repeat(64),
+            runtime_revision: None,
+            controller_revision: None,
         }
+    }
+
+    #[test]
+    fn task_proxy_requires_its_exact_runtime_and_controller_pair() {
+        let mut candidate = contract();
+        candidate.schema = "goose_task_proxy_si_v1".into();
+        candidate.candidate = "goose_task_proxy_11_v1".into();
+        assert!(candidate.validate().is_err());
+        candidate.runtime_revision = Some("goose_task_proxy_be_contact_v1".into());
+        candidate.controller_revision = Some("sampled_pd_kp_parent_kd_quarter_v1".into());
+        assert!(candidate.validate().is_ok());
+        candidate.controller_revision = Some("unregistered_controller".into());
+        assert!(candidate.validate().is_err());
+        candidate.controller_revision = Some("sampled_pd_kp_parent_kd_quarter_v1".into());
+        candidate.schema = "goose_50hz_candidate_si_v1".into();
+        assert!(candidate.validate().is_err());
     }
 
     #[test]

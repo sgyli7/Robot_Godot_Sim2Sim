@@ -8,7 +8,7 @@
 
 **2026-10-05 最近批次实绩：** 前进大探索完成1,086次PPO／17,376个新Adam／333.6万GPU积分，461.17秒，GPU已释放。最终独立CPU前进第35Tick、后退第85Tick超原足底深度门槛，停止最高约.72m/s，均不晋升；中期虽有正方向位移，速度频谱主要25Hz，不能算移动能力。[完整失败与诊断](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_forward_course_001)。
 
-**目标接入已取得确切断点：** 当前生产loader在004身份登记处拒绝、早于世界创建，实际body/joint/collider/积分为0，因此没有该版本Bevy性能成绩。供方已交21体/11叶的具名独立接收器，后续接回新schema、接触分支和控制属于Lab；不返回硬件、不绕过身份或静默换物理。[接回清单](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_bevy_performance_001/performance_cycle10/minimal_reconnect_worklist.json)。源端继续训练不依赖此项，性能agent已完成周期10并闲置。
+**目标接入：004 身份与合同绑定组件已接回，动态接触仍待准入。** 已登记独立21体／11实际凸叶 schema，新版本要求原运行时／控制器revision、模型与合同字节哈希及完整自碰撞排除集合一致；旧版本保留。实际004接收CLI通过，12个错误输入全部拒绝，17项robot＋23项simulation回归通过（原有10项ignored保留），618项结构检查通过。原M0探针现在通过身份解析，在构建处明确拒绝缺少的具名足底运行时；实际积分0、target_complete=false，不走旧full50刚性接触。尚无该版Bevy性能或M0-T资格，下一步复用已交付接触分支，并对新Goose自由根显式开启旋转归一化，保持其他机器人默认行为。[代码与实际接收收据](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_lab004_registration_001)。此项属于Lab，不返回硬件；源端继续训练不依赖此项，性能agent已完成周期10并闲置。
 
 **接收背景（2026-10-04）：虚拟侧实施已接回，不再等待 PCB、采购或完整制造放行。** 2026-10-04 已 `read_thread` 核对原硬件聊天中的人类新指令：优先虚拟侧跑通，先完成训练前置并抓紧训练。当前冻结 `goose_task_proxy_11_v1` **004** 包；不混入 478 检修门或 525 制动安装候选 SI，后续硬件变更另立版本回归。现有两小时 heartbeat 已改为跟进虚拟实施，不建立新聊天或独立 PM。
 

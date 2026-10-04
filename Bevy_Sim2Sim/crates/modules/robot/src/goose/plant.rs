@@ -5,7 +5,10 @@ use std::{collections::HashSet, fs, path::Path};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{RobotError, goose::contract::GOOSE_JOINT_ORDER};
+use crate::{
+    RobotError,
+    goose::contract::{GOOSE_JOINT_ORDER, GooseControlContract},
+};
 
 /// A source-derived mechanical tree, including collision and linkage provenance.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -94,6 +97,62 @@ pub struct GooseJawLoop {
 }
 
 impl GoosePlant {
+    /// Bind the exact control bytes and source self-contact exceptions.
+    pub fn bound_control_contract(&self, bytes: &[u8]) -> Result<GooseControlContract, RobotError> {
+        self.validate()?;
+        if format!("{:x}", Sha256::digest(bytes)) != self.derived_contract_sha256 {
+            return Err(invalid("Goose control bytes do not match the plant hash"));
+        }
+        let contract: GooseControlContract = serde_json::from_slice(bytes)
+            .map_err(|error| invalid(format!("Goose control JSON: {error}")))?;
+        contract.validate()?;
+        if contract.candidate != self.candidate_id || contract.model_sha256 != self.model_sha256 {
+            return Err(invalid(
+                "Goose control/model identity differs from its plant",
+            ));
+        }
+        if self.is_task_proxy() {
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|error| invalid(format!("Goose collision contract JSON: {error}")))?;
+            let rows = value["collision_exclusions"]
+                .as_array()
+                .ok_or_else(|| invalid("Source collision exclusions absent"))?;
+            let mut expected = HashSet::new();
+            for row in rows {
+                let mut pair = [
+                    row["body1"]
+                        .as_str()
+                        .ok_or_else(|| invalid("Invalid source exclusion"))?
+                        .to_owned(),
+                    row["body2"]
+                        .as_str()
+                        .ok_or_else(|| invalid("Invalid source exclusion"))?
+                        .to_owned(),
+                ];
+                pair.sort();
+                expected.insert(pair);
+            }
+            let observed: HashSet<_> = self
+                .exclusions
+                .iter()
+                .cloned()
+                .map(|mut pair| {
+                    pair.sort();
+                    pair
+                })
+                .collect();
+            if rows.len() != expected.len()
+                || self.exclusions.len() != observed.len()
+                || expected != observed
+            {
+                return Err(invalid(
+                    "Native collision exclusions differ from source contract",
+                ));
+            }
+        }
+        Ok(contract)
+    }
+
     /// Return the parsed contract and the hash of the exact bytes read.
     pub fn read(path: &Path) -> Result<(Self, String), RobotError> {
         let bytes = fs::read(path).map_err(|error| invalid(error.to_string()))?;
@@ -114,6 +173,7 @@ impl GoosePlant {
                     | "goose_task_collision_v1_full50"
                     | "goose_task_collision_v1_condensed50"
             ) | ("goose_plant50_experimental_v2", "goose_460_full50_be_v2")
+                | ("goose_task_proxy_plant_v1", "goose_task_proxy_11_v1")
         );
         if !identity_valid
             || self.physics_hz != 50
@@ -153,9 +213,24 @@ impl GoosePlant {
                 return Err(invalid("Goose mechanical identity needs lowercase SHA256"));
             }
         }
-        let expected_bodies = if self.is_condensed() { 21 } else { 33 };
+        let expected_bodies = if self.is_condensed() || self.is_task_proxy() {
+            21
+        } else {
+            33
+        };
         if self.bodies.len() != expected_bodies || self.joints.len() + 1 != self.bodies.len() {
             return Err(invalid("Goose candidate body/coordinate counts mismatch"));
+        }
+        if self.is_task_proxy()
+            && (self.colliders.len() != 11
+                || self
+                    .colliders
+                    .iter()
+                    .any(|collider| collider.kind != "convex_mesh"))
+        {
+            return Err(invalid(
+                "Goose task proxy requires its eleven actual convex leaves",
+            ));
         }
         let names: HashSet<_> = self.bodies.iter().map(|body| body.name.as_str()).collect();
         if names.len() != self.bodies.len() || !names.contains("torso") {
@@ -303,6 +378,11 @@ impl GoosePlant {
         finite(&self.jaw_loop.output_pin_world_m)?;
         unit_axis(self.jaw_loop.rotation_axis_world)?;
         Ok(())
+    }
+
+    /// This version uses the explicitly declared task-proxy contact runtime.
+    pub fn is_task_proxy(&self) -> bool {
+        self.schema == "goose_task_proxy_plant_v1" && self.candidate_id == "goose_task_proxy_11_v1"
     }
 
     /// Pad masses have been merged; target construction still needs a contact law.

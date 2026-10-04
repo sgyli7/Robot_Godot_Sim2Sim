@@ -79,6 +79,11 @@ impl GooseAssembly {
     /// Build full50 faithfully. Condensed contact requires a separate native law.
     pub fn build(simulation: &mut SimulationWorld, plant: &GoosePlant) -> Result<Self, RobotError> {
         plant.validate()?;
+        if plant.is_task_proxy() {
+            return Err(invalid(
+                "Goose task proxy needs its versioned frictional sole runtime; the full50 builder cannot substitute rigid contact",
+            ));
+        }
         if simulation.clock_profile() != PhysicsClockProfile::Goose50 {
             return Err(invalid(
                 "Goose needs the explicit single-step 50 Hz world profile",
