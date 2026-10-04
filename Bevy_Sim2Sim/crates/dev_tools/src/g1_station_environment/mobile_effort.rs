@@ -19,6 +19,7 @@ use std::{
 use task_minigame::{policy::PolicyActionChunk, types::TaskProfile};
 
 mod foreaft;
+mod insertion;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
