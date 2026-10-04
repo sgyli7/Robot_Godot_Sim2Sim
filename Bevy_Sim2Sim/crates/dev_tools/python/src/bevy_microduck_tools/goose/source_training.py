@@ -24,6 +24,7 @@ VELOCITY_TRANSFER_REVISION = "goose_standing_to_velocity_transfer_v1"
 ASYMMETRIC_REVISION = "goose_low_speed_asymmetric_ppo_v1"
 FORWARD_REVISION = "goose_flat_forward_course_v1"
 SMOOTH_FORWARD_REVISION = "goose_flat_smooth_forward_course_v1"
+SOLE_BOUNDED_FORWARD_REVISION = "goose_flat_sole_bounded_forward_course_v1"
 
 
 def completed_root_state(env):
@@ -184,6 +185,51 @@ def make_smooth_forward_cfg(model_path: Path, contract_path: Path, **kwargs):
     cfg = make_forward_cfg(model_path, contract_path, **kwargs)
     cfg.rewards["action_change"] = RewardTermCfg(func=action_rate_l2, weight=-.1)
     return cfg
+
+
+def make_sole_bounded_forward_cfg(model_path: Path, contract_path: Path, **kwargs):
+    """Retain the forward task while limiting it to admitted sole travel."""
+    cfg = make_smooth_forward_cfg(model_path, contract_path, **kwargs)
+    cfg.terminations["sole_travel"] = TerminationTermCfg(
+        func=sole_travel_exceeded, params={"max_depth_m": .0015})
+    return cfg
+
+
+def sole_travel_depth(env):
+    """Read the completed collision soles using public native kinematics.
+
+    The upstream reward/terminal boundary precedes its full forward refresh.
+    Kinematics refreshes derived geometry only; it does not integrate, solve
+    contacts, or change raw qpos/qvel, torque or action/drive history.
+    """
+    import warp as wp
+    import mujoco_warp as mjw
+    from .native_geometry import collision_mesh_vertices
+
+    if env.contact_adapter is None:
+        raise ValueError("Sole travel requires the frozen task-proxy contact runtime")
+    if not hasattr(env, "_goose_sole_support"):
+        model = env.sim.mj_model
+        env._goose_sole_support = [
+            (int(g), torch.as_tensor(
+                collision_mesh_vertices(model, int(model.geom_dataid[g]))[0],
+                dtype=env.sim.data.geom_xpos.dtype, device=env.device))
+            for g in env.contact_adapter.feet.numpy().tolist()]
+        if len(env._goose_sole_support) != 2:
+            raise ValueError("Frozen Goose requires exactly two collision soles")
+    with wp.ScopedDevice(env.sim.wp_device):
+        mjw.kinematics(env.sim.wp_model, env.sim.wp_data)
+    depths = []
+    for geom, vertices in env._goose_sole_support:
+        rotation = env.sim.data.geom_xmat[:, geom].reshape(env.num_envs, 3, 3)
+        z = vertices@rotation[:, 2, :].T + env.sim.data.geom_xpos[:, geom, 2]
+        depths.append(-z.min(dim=0).values)
+    return torch.stack(depths).max(dim=0).values.clamp_min(0)
+
+
+def sole_travel_exceeded(env, max_depth_m=.0015):
+    """Terminate the completed failed Tick; callers retain it before resetting."""
+    return sole_travel_depth(env) > max_depth_m
 
 
 def initialize_leg_exploration(runner, *, std=.12):

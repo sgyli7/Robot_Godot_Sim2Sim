@@ -12,10 +12,10 @@ from bevy_microduck_tools.goose.source_training import (
     GooseRslEnv, completed_root_state, fallen, make_low_speed_cfg,
     make_runner_cfg, make_standing_cfg, initialize_velocity_transfer,
     make_asymmetric_low_speed_cfg, make_forward_cfg, initialize_leg_exploration,
-    make_smooth_forward_cfg)
+    make_smooth_forward_cfg, make_sole_bounded_forward_cfg)
 
 
-def build_environment(tmp_path, monkeypatch, config_factory):
+def build_environment(tmp_path, monkeypatch, config_factory, *, episode_length_s=.06):
     monkeypatch.chdir(tmp_path)
     package = os.environ.get("GOOSE_FROZEN_TASK_PROXY_PACKAGE")
     if not package:
@@ -26,7 +26,7 @@ def build_environment(tmp_path, monkeypatch, config_factory):
         package/"robots/Goose_V0.1/configs/task_proxy_11_v1_contract.json",
         package, tmp_path/"candidate")
     return GooseDevelopmentEnv(config_factory(model, contract, num_envs=2,
-        episode_length_s=.06), "cpu")
+        episode_length_s=episode_length_s), "cpu")
 
 
 @pytest.fixture
@@ -287,3 +287,120 @@ def test_new_goal_transfer_preserves_standing_actions(low_speed_environment):
         for key, value in values.items():
             torch.testing.assert_close(runner.alg.optimizer.state[p][key], value, atol=0, rtol=0)
     assert wrapper.real_integrations == 0
+
+
+def test_sole_travel_terminal_preserves_the_actual_failed_tick(tmp_path, monkeypatch):
+    """Replay the real failed policy, compare raw physics before any reset."""
+    import numpy as np
+    import mujoco
+    from bevy_microduck_tools.goose.native_geometry import collision_mesh_vertices
+    from bevy_microduck_tools.goose.batch_drive import _quat_matrix
+    trace = os.environ.get("GOOSE_SOURCE_DOMAIN_FAILURE_TRACE")
+    if not trace:
+        pytest.skip("Recorded actual failed Actor actions required")
+    actions = np.load(trace)["actions"]
+    paths = [tmp_path/"original", tmp_path/"bounded"]
+    for path in paths:
+        path.mkdir()
+    original = build_environment(paths[0], monkeypatch, make_smooth_forward_cfg,
+                                 episode_length_s=12.)
+    bounded = build_environment(paths[1], monkeypatch, make_sole_bounded_forward_cfg,
+                                episode_length_s=12.)
+    try:
+        for env in (original, bounded):
+            env.reset()
+            env.command_manager.get_command("velocity").zero_()
+        model = bounded.sim.mj_model
+        feet = [g for g in range(model.ngeom)
+                if "flexible_sole" in mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)]
+        assert len(feet) == 2
+        reached = False
+        for index, action in enumerate(actions):
+            batch = torch.tensor(action, dtype=torch.float32).repeat(2, 1)
+            _, _, old_done, _, _ = original.step(batch)
+            _, _, new_done, timeout, _ = bounded.step(batch)
+            for name in ("qpos", "qvel", "qacc", "qacc_warmstart", "ctrl", "time"):
+                torch.testing.assert_close(getattr(original.sim.data, name),
+                    getattr(bounded.sim.data, name), atol=0, rtol=0)
+            torch.testing.assert_close(original.action_manager.get_term("goose").drive.last_tau,
+                bounded.action_manager.get_term("goose").drive.last_tau, atol=0, rtol=0)
+            np.testing.assert_array_equal(original.sim.wp_data.nacon.numpy(),
+                                          bounded.sim.wp_data.nacon.numpy())
+            count = int(original.sim.wp_data.nacon.numpy()[0])
+            for field in ("geom", "pos", "dist", "efc_address", "worldid"):
+                np.testing.assert_array_equal(
+                    getattr(original.sim.wp_data.contact, field).numpy()[:count],
+                    getattr(bounded.sim.wp_data.contact, field).numpy()[:count])
+            for world, count in enumerate(original.sim.data.nefc.numpy()):
+                np.testing.assert_array_equal(
+                    original.sim.wp_data.efc.force.numpy()[world, :count],
+                    bounded.sim.wp_data.efc.force.numpy()[world, :count])
+            depths = []
+            for gid in feet:
+                points, _ = collision_mesh_vertices(model, int(model.geom_dataid[gid]))
+                points = torch.tensor(points, dtype=bounded.sim.data.xpos.dtype)
+                q = torch.tensor(model.geom_quat[gid]).reshape(1, 4)
+                points = points@_quat_matrix(q)[0].to(points.dtype).T
+                points += torch.tensor(model.geom_pos[gid], dtype=points.dtype)
+                body = int(model.geom_bodyid[gid])
+                rotation = bounded.sim.data.xmat[:, body].reshape(2, 3, 3)
+                z = points@rotation[:, 2, :].T + bounded.sim.data.xpos[:, body, 2]
+                depths.append(-z.min(dim=0).values)
+            beyond = torch.stack(depths).max(dim=0).values > .0015
+            if beyond.any():
+                assert not old_done.any(), "Original actual loop must reproduce the missing terminal"
+                assert torch.equal(new_done, beyond), "Completed sole violation must terminate this Tick"
+                assert not timeout.any()
+                assert bounded.common_step_counter == index+1
+                assert torch.all(bounded.action_manager.get_term("goose").drive.completed_ticks == index+1)
+                actual_time = bounded.sim.data.time.clone()
+                torch.testing.assert_close(actual_time,
+                    torch.full_like(actual_time, (index+1)*.02), atol=2e-6, rtol=0)
+                reached = True
+                break
+        assert reached, "Retain a replay that actually reaches the source sole boundary"
+    finally:
+        original.close()
+        bounded.close()
+
+
+def test_sole_terminal_is_recorded_before_the_rsl_reset(tmp_path, monkeypatch):
+    import numpy as np
+    from bevy_microduck_tools.goose.source_training import sole_travel_depth
+    trace = os.environ.get("GOOSE_SOURCE_DOMAIN_FAILURE_TRACE")
+    if not trace:
+        pytest.skip("Recorded actual failed Actor actions required")
+    env = build_environment(tmp_path, monkeypatch, make_sole_bounded_forward_cfg,
+                            episode_length_s=12.)
+    captured = []
+    def terminal(current, ids, timeouts, observation):
+        captured.append({"ids": ids.clone(), "depth": sole_travel_depth(current)[ids].clone(),
+            "qpos": current.sim.data.qpos[ids].clone(),
+            "phase": current.action_manager.get_term("goose").drive.phase[ids].clone(),
+            "timeouts": timeouts[ids].clone(), "observation": observation["actor"][ids].clone()})
+    try:
+        wrapper = GooseRslEnv(env, on_terminal=terminal)
+        for action in np.load(trace)["actions"]:
+            _, _, done, _ = wrapper.step(torch.tensor(action, dtype=torch.float32).repeat(2, 1))
+            if done.any():
+                assert captured and torch.all(captured[-1]["depth"] > .0015)
+                ids = captured[-1]["ids"]
+                assert not captured[-1]["timeouts"].any()
+                assert torch.all(captured[-1]["phase"] > 0)
+                assert not torch.equal(captured[-1]["qpos"], env.sim.data.qpos[ids])
+                assert torch.all(env.action_manager.get_term("goose").drive.phase[ids] == 0)
+                assert wrapper.real_integrations == env.common_step_counter*2
+                break
+        else:
+            pytest.fail("Recorded sole violation must reach the real RSL reset boundary")
+        cfg = make_runner_cfg()
+        cfg["num_steps_per_env"] = 4
+        cfg["algorithm"].update(num_learning_epochs=1, num_mini_batches=2)
+        runner = MjlabOnPolicyRunner(wrapper, cfg, log_dir=None, device="cpu")
+        before = wrapper.real_integrations
+        runner.learn(1)
+        assert wrapper.real_integrations == before+8
+        assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
+        assert runner.alg.optimizer.state
+    finally:
+        env.close()
