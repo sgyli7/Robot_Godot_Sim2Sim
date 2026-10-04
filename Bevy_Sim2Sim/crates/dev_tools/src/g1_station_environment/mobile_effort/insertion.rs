@@ -11,6 +11,16 @@ use task_minigame::types::ObservationStamp;
 #[test]
 #[ignore = "one CPU50Hz probe <=350steps; archived RGB300 numeric offset is synthetic200Tick admission;0freshVLA/Qwen/RGB; never qualification"]
 fn recorded_pregrasp_bounded_insertion_mechanics() -> Result<(), String> {
+    recorded_probe(false)
+}
+
+#[test]
+#[ignore = "one distinct CPU50Hz probe <=400steps; open original palms before fixed insertion;0freshVLA/Qwen/RGB; never qualification"]
+fn recorded_open_then_insertion_mechanics() -> Result<(), String> {
+    recorded_probe(true)
+}
+
+fn recorded_probe(opening_first: bool) -> Result<(), String> {
     let path = PathBuf::from(std::env::var("G1_MOTOR_REPLAY_FIXTURE").map_err(|e| e.to_string())?);
     let hash = std::env::var("G1_MOTOR_REPLAY_FIXTURE_SHA256").map_err(|e| e.to_string())?;
     let fixture: Fixture =
@@ -53,6 +63,7 @@ fn recorded_pregrasp_bounded_insertion_mechanics() -> Result<(), String> {
     writeln!(evidence,"{}",json!({"event":"insertion_probe_start","fixture_sha256":hash,
         "original_scene_unchanged":true,"preparation":preparation,"before_counts":owner.progress_counts(),
         "fresh_RGB_N16_Qwen":0,"synthetic_goal_admission":true,"task_qualified":false,
+        "opening_before_insertion":opening_first,"reacquisition_motion_is_unadmitted_diagnostic_only":true,
         "actual_visual_closed_loop":false,"close_without_fresh_image_is_diagnostic_only":true}))
         .map_err(|e|e.to_string())?;
     let mut last = None;
@@ -95,6 +106,9 @@ fn recorded_pregrasp_bounded_insertion_mechanics() -> Result<(), String> {
         }
     }
     let original = last.ok_or("no original command")?;
+    if opening_first {
+        return opening_sequence(&mut owner, &calibration, original, &mut evidence);
+    }
     let state = owner.measurement().map_err(|e| e.to_string())?;
     // Numeric proposal from archived actual RGB300, intentionally NOT current
     // RGB200. This seam tests mechanics only; native visual admission is open.
@@ -176,6 +190,82 @@ fn recorded_pregrasp_bounded_insertion_mechanics() -> Result<(), String> {
         "{}",
         json!({"event":"insertion_probe_complete","actual_counts":owner.progress_counts(),
         "fresh_RGB_N16_Qwen":0,"actual_visual_closed_loop":false,"task_qualified":false})
+    )
+    .map_err(|e| e.to_string())?;
+    evidence.sync_all().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn opening_sequence(
+    owner: &mut G1Runner,
+    calibration: &MobileGripCalibration,
+    mut command: G1Command,
+    evidence: &mut fs::File,
+) -> Result<(), String> {
+    let original = command.clone();
+    command.navigation = [0.; 3];
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    // Existing horizontal release interface supports a0.25..0.35m target.
+    // This one diagnostic uses0.30m once, without an aperture search.
+    let gap_increment = calibration
+        .horizontal_opening_increment(&state, &command, 0.30, 50)
+        .map_err(|e| e.to_string())?;
+    for tick in 201..=300 {
+        let state = owner.measurement().map_err(|e| e.to_string())?;
+        let (phase, correction) = if tick <= 250 {
+            (
+                "diagnostic_open",
+                calibration.spread_horizontal(&state, &command, gap_increment),
+            )
+        } else {
+            (
+                "diagnostic_open_insertion",
+                calibration.translate(
+                    &state,
+                    &command,
+                    [
+                        0.04147769055522918 / 50.,
+                        0.0017943696767093705 / 50.,
+                        0.00008364434917117667 / 50.,
+                    ],
+                ),
+            )
+        };
+        let correction = correction.map_err(|e| e.to_string())?;
+        command = correction.command;
+        for slot in (22..29).chain(36..43) {
+            let upper = slot - robot_minigame::g1::contract::LOWER_COUNT;
+            if command.upper_positions[upper] != original.upper_positions[upper] {
+                return Err("opening probe changed original finger targets".into());
+            }
+        }
+        let step = owner.step(&command).map_err(|e| e.to_string())?;
+        writeln!(evidence,"{}",json!({"event":"insertion_physical_step","phase":phase,
+            "tick":tick,"body":journal_body_value(&step)?,"command":command,"correction":correction.receipt,
+            "fresh_post_motion_image_required_in_product":true,"native_visual_close_admitted":false}))
+            .map_err(|e|e.to_string())?;
+    }
+    let state = owner.measurement().map_err(|e| e.to_string())?;
+    let closing = calibration
+        .correct(&state, &command)
+        .map_err(|e| e.to_string())?;
+    for tick in 301..=400 {
+        let step = owner.step(&closing.command).map_err(|e| e.to_string())?;
+        writeln!(
+            evidence,
+            "{}",
+            json!({"event":"insertion_physical_step","phase":"diagnostic_open_close",
+            "tick":tick,"body":journal_body_value(&step)?,"command":closing.command,
+            "native_visual_close_admitted":false})
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    writeln!(
+        evidence,
+        "{}",
+        json!({"event":"insertion_probe_complete","actual_counts":owner.progress_counts(),
+        "fresh_RGB_N16_Qwen":0,"actual_visual_closed_loop":false,"task_qualified":false,
+        "opening_before_insertion":true})
     )
     .map_err(|e| e.to_string())?;
     evidence.sync_all().map_err(|e| e.to_string())?;
