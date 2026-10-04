@@ -7,13 +7,14 @@ import os
 import stat
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from bevy_microduck_tools.authorization import Rejection
 from bevy_microduck_tools.profile_discovery import (
     _finish_discovery_budget, preflight_parent, reserve_discovery)
-from bevy_microduck_tools import workflow
+from bevy_microduck_tools import workflow, profile_discovery
 from bevy_microduck_tools.workflow import TrainingBudget
 from test_profile_v10 import _fixture
 
@@ -47,9 +48,14 @@ def test_delayed_atomic_commit_across_deadline_never_exposes_completed(tmp_path,
     result = []
     commit_attempts = []
     paused_at = []
+    # Only the closure's monotonic clock is synthetic. Event timeouts and real
+    # replace/fsync still run normally, irrespective of host startup latency.
+    clock = [100.0]
+    monkeypatch.setattr(profile_discovery, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], time=time.time))
 
     def pause_before_durable_step(message):
-        paused_at.append(time.monotonic())
+        paused_at.append(clock[0])
         entered.set()
         if not release.wait(2):
             raise TimeoutError(message)
@@ -81,7 +87,7 @@ def test_delayed_atomic_commit_across_deadline_never_exposes_completed(tmp_path,
             return original_fsync(fd)
 
         monkeypatch.setattr(workflow.os, "fsync", delayed_fsync)
-    started = time.monotonic()
+    started = clock[0]
     deadline = started + .25
 
     def close():
@@ -94,10 +100,12 @@ def test_delayed_atomic_commit_across_deadline_never_exposes_completed(tmp_path,
     worker = threading.Thread(target=close)
     worker.start()
     try:
-        assert entered.wait(1)
-        while time.monotonic() < deadline + .025:
-            observed.append(_state(path))
-            time.sleep(.002)
+        assert entered.wait(2)
+        observed.append(_state(path))
+        # Advance across the deadline while the selected durable step is still
+        # blocked. Release occurs only after both before/after observations.
+        clock[0] = deadline + .025
+        observed.append(_state(path))
     finally:
         release.set()
         worker.join(timeout=2)
