@@ -196,3 +196,77 @@ PY
 ```
 
 已成功的 12 秒科学站持箱行走 GIF 继续保留，不将本阶段失败片段发布为放置成功。所有正式验收要求继续保留，整体任务仍在推进。
+## 科学站视觉搬运与容器释放：单次通过
+
+2026-10-04，episode `20643` 完成一次新的实际科学站视觉运行：四次原配 N1.6 本体相机推理抓箱，当前标记 RGB 定位，传统几何／自身状态搬运，有限原有拇指电机准备，重新观察后松手。箱子水平移动 **1.957984 米**，机器人从持物等待结束处移动 **1.384178 米**；全部 **2,507 Tick** 均为 50 Hz、一次 20 ms 积分、一次真实 Homie 身体推理和一次电机更新，明确保留 4 PGS 开发诊断配置。
+
+独立验收确认箱体所有碰撞顶点进入原配容器底面上方的目标区、没有机器人接触、由容器向上接触冲量支撑、低于既定速度阈值并连续稳定 **2.6 秒**。最终目标区最小边距为 **55.31 毫米**，线速度 `1.27e-6 m/s`、角速度 `1.04e-6 rad/s`；全程站立，最低 upright cosine 为 `0.9912678`。抓取后至松手前的 **2,082 Tick** 全部为当前手部接触支撑，无物体附着约束，且没有脚以外的正固定站体接触冲量。
+
+这次解决了两个具体问题。原矩形包围估算会把旋转箱体的空角算成障碍；新估算以全部原碰撞凸包顶点验证分离平面，仍要求 **10 毫米净空／350 毫米张手上限**，原失败握姿仍被拒绝。一次离线有界几何求解选出左拇指两个原关节目标 `[-0.04068526, -0.18428603] rad`，原电机进行 50 Tick 渐变、50 Tick 收敛，其他手指、手掌／手臂目标和增益保持原控制语义；跟踪误差超过 `0.02 rad` 会暂停。该准备动作仅由当前目标区图像批准，不能授权松手。
+
+初次接入运行 `0442` 真实完成准备，但相机请求在后台命令确认前读取了旧的“等待已完成”状态：第 2182 Tick 图像被交给第 2282 Tick 边界，严格检查拒绝执行。该失败已保留，并先用毫秒级状态回归测试复现 RED，再修正完成状态选择和相机最小原生 Tick 请求。成功运行 `0443` 的准备图像是 frame 14／Tick 2182；**松手依据另一张真实 frame 15／Tick 2282 图像**，目标区边距估计 51.25 毫米，最大张手处最小凸包分离下界 18.53 毫米。没有重写旧图像时间戳。
+
+前 2,182 个物理步骤、四张原配 ArenaEgo RGB 和 52 个原配模型输入／动作数组与先前失败握姿运行逐 float32／逐像素一致；全部 2,507 个身体与物件物理状态与先通过的有限机械测试一致。独立真值只进入验收器，未进入任务定位、指令或动作。功能工作区测试 **341 passed／77 ignored**，默认工作区 **246 passed／35 ignored**；实际视觉 Python 几何回归 5 passed，包括旋转箱体空角、5 毫米不足、真实接触和不可信优化器候选；新状态交接回归先 RED、后 GREEN。其余独立 Python 脚本 61 passed；未改动的原 USD 材质测试在单独 Arena 环境可导入，因本轮未指定原始 USD 路径而 5 skipped。
+
+![科学站持物行走和容器松手，12 秒两段原速节选](media/g1_science_station_box_release_12s.gif)
+
+GIF 是原 1920×1080、25 FPS、8×MSAA 窗口录像的 **36–41 秒行走＋57–64 秒释放**两个原速片段，中间有一次直接切镜；裁切 `[0,180,1080,864]` 后缩到 900×720，共 150 帧、每帧 80 ms。没有加速、补帧、重绘运动或替换物理轨迹。原视频长度 64.48 秒，SHA-256 `5fdb1b0595ba96057a31e99b389835530e8b5f2228902d2abf2bffb12eac63e2`；GIF SHA-256 `c60467e9ccdfdece6e4e9a765010645280138102cfff17cd955782438819361d`。
+
+实际运行源码为 `21bb6e8968813b568b65938dbf9ca5522f06a50b`，执行文件 SHA-256 `458b9c5f8947e1b2ce772f5587443ae6a188ce4f2803e03c78dc96eb06106c39`。完整新／失败录像、逐 Tick 原始记录、当前 RGB／图像身份、模型健康计数、机械对照、测试日志、精确执行文件与源码进入外部只读证据目录：
+
+```text
+/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_visual_release_milestone_001
+```
+
+本机已有缓存下的复跑入口如下。需要外部原配本体、ORT、Homie、N1.6 权重和站体纹理缓存；这不是从空机器安装的完整手册。服务只绑定本机，启动前先确认 5558 未被占用；停止命令只针对本段自己启动的模型进程。
+
+```bash
+set -e
+cd /home/ethan/Projects/TempWorktree/Sai_Lab/unitree_g1/Bevy_Sim2Sim
+G1_RELEASE_ARCHIVE=/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_visual_release_milestone_001
+G1_STAGE_OUTPUT="$PWD/.scratch/g1/station_release_$(date +%Y%m%dT%H%M%S)"
+mkdir -p "$G1_STAGE_OUTPUT"
+export G1_RELEASE_ARCHIVE G1_STAGE_OUTPUT
+/home/ethan/models/unitree_g1/envs/policy_gr00t_n16_cu13/bin/python - <<'PY'
+import hashlib, json, os, socket
+from pathlib import Path
+with socket.socket() as lease_probe:
+    lease_probe.bind(('127.0.0.1',5558))
+a=Path(os.environ['G1_RELEASE_ARCHIVE']); o=Path(os.environ['G1_STAGE_OUTPUT'])
+c=json.loads((a/'evidence/g1_station_t2_bin_live_20261004_0443/config.json').read_text())
+p=a/'source/Bevy_Sim2Sim/crates/dev_tools/python/scripts/unitree_g1_mobile_vision.py'
+assert hashlib.sha256(p.read_bytes()).hexdigest()==c['mobile_scan']['vision']['script_sha256']
+c['mobile_scan']['vision']['script_path']=str(p)
+(o/'config.json').write_text(json.dumps(c,indent=2)+'\n')
+PY
+/home/ethan/models/unitree_g1/envs/policy_gr00t_n16_cu13/bin/python -u \
+  "$G1_RELEASE_ARCHIVE/source/Bevy_Sim2Sim/crates/dev_tools/python/scripts/unitree_g1_mobile_server.py" \
+  --gr00t-source /home/ethan/Projects/Sai_Lab/upstream/unitree_g1/isaac_gr00t_n16 \
+  --model-root /home/ethan/models/unitree_g1/mobile_box/dfe74af855007f26093f362cd2d7a2f404b64b93 \
+  --receipt /home/ethan/Projects/Sai_Lab/.scratch/unitree_g1/policy/mobile_box_files.json \
+  --runtime-env /home/ethan/models/unitree_g1/envs/policy_gr00t_n16_cu13 \
+  --port 5558 --seed 42 --capture-dir "$G1_STAGE_OUTPUT/policy_captures" \
+  > "$G1_STAGE_OUTPUT/model.log" 2>&1 &
+g1_stage_model_pid=$!
+trap 'kill -TERM "$g1_stage_model_pid" 2>/dev/null; wait "$g1_stage_model_pid" || true' EXIT
+for g1_stage_attempt in $(seq 1 90); do
+  curl --max-time 1 --fail --silent http://127.0.0.1:5558/health && break
+  sleep 1
+done
+curl --max-time 1 --fail http://127.0.0.1:5558/health
+kill -0 "$g1_stage_model_pid"
+"$G1_RELEASE_ARCHIVE/evidence/g1_station_t2_bin_live_20261004_0443/executed_app" \
+  --scene g1_station_mobile_release_diagnostic --robot g1 \
+  --g1-config "$G1_STAGE_OUTPUT/config.json" --g1-ticks 3300 \
+  --output "$G1_STAGE_OUTPUT/native"
+/home/ethan/models/unitree_g1/envs/policy_gr00t_n16_cu13/bin/python \
+  "$G1_RELEASE_ARCHIVE/source/Bevy_Sim2Sim/crates/dev_tools/python/scripts/unitree_g1_mobile_placement_audit.py" \
+  --definition /home/ethan/models/unitree_g1/task_assets/20261001_frozen/native_task_objects_t1_60_diagnostic_v2.json \
+  --trace "$G1_STAGE_OUTPUT/native/owner_steps.jsonl" \
+  --output "$G1_STAGE_OUTPUT/independent_placement_audit.json"
+kill -TERM "$g1_stage_model_pid"
+wait "$g1_stage_model_pid" || true
+trap - EXIT
+```
+
+**本轮没有调用 Qwen，不是正式 8/10 成绩。** 活跃物理区间 sim/wall 为 `0.99893977`、积压和控制误期均为 0，但模型／图像边界仍有显式暂停，不能计为全程连续 1×。初始自然语言调度、两任务各五组位置×两种子、恢复／重置／故障、模型共存、完整性能和低坡／门槛仍须完成。当前完整目标和全部 28 项验收继续保持 ACTIVE；本阶段合入主干不代表全任务完成。
