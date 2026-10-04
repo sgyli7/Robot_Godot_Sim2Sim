@@ -314,6 +314,7 @@ impl Dispatch {
             .0
             .lock()
             .map_err(|_| "Qwen transport receipt poisoned")?;
+        merge_mobile_handoff(&mut receipt.mobile_assist_handoff, serde_json::json!({}))?;
         let handoff = receipt
             .mobile_assist_handoff
             .as_mut()

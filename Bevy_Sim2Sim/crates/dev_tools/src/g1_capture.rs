@@ -3577,11 +3577,14 @@ fn drive_mobile_assist(
             command,
         })
         .map_err(|e| e.to_string())?;
-    outcome.0.lock().unwrap().mobile_assist_handoff = Some(serde_json::json!({
-        "goal":goal,"goal_origin":origin,
-        "original_vla_grasp_chunks":4,"actual_rgb_handoff":true,"traditional_grip_navigation":true,
-        "object_truth_in_command":false,"task_qualified":false,"autonomous_goal_selection":false,
-    }));
+    merge_mobile_handoff(
+        &mut outcome.0.lock().unwrap().mobile_assist_handoff,
+        serde_json::json!({
+            "goal":goal,"goal_origin":origin,
+            "original_vla_grasp_chunks":4,"actual_rgb_handoff":true,"traditional_grip_navigation":true,
+            "object_truth_in_command":false,"task_qualified":false,"autonomous_goal_selection":false,
+        }),
+    )?;
     let assist = runtime.mobile_assist.as_mut().unwrap();
     if assist.station_motion {
         assist.station_hold_submitted = true;
@@ -3590,6 +3593,49 @@ fn drive_mobile_assist(
     }
     runtime.requested = false;
     Ok(false)
+}
+
+/// Initial decisions can precede the physical grasp handoff. Updating grasp
+/// fields must retain those original decision events and acquisition identities.
+fn merge_mobile_handoff(
+    handoff: &mut Option<serde_json::Value>,
+    fields: serde_json::Value,
+) -> Result<(), String> {
+    let fields = fields
+        .as_object()
+        .ok_or("mobile handoff update must be an object")?;
+    let current = handoff.get_or_insert_with(|| serde_json::json!({}));
+    current
+        .as_object_mut()
+        .ok_or("mobile handoff receipt must be an object")?
+        .extend(fields.clone());
+    Ok(())
+}
+
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod initial_handoff_tests {
+    use super::*;
+    #[test]
+    fn zero_tick_decisions_survive_the_later_physical_grasp_handoff() {
+        let mut handoff = None;
+        merge_mobile_handoff(&mut handoff, serde_json::json!({})).unwrap();
+        handoff.as_mut().unwrap()["qwen_postgrasp_transport"] = serde_json::json!({
+            "events":[{"event":"initial_profile_decision_admitted","observation":{"episode_id":20645,"sim_time_ns":0,"frame_id":38}}]
+        });
+        let original = handoff.as_ref().unwrap()["qwen_postgrasp_transport"].clone();
+        merge_mobile_handoff(&mut handoff,serde_json::json!({"goal":{"sim_time_ns":4_000_000_000_u64},"original_vla_grasp_chunks":4})).unwrap();
+        assert_eq!(
+            handoff.as_ref().unwrap()["qwen_postgrasp_transport"],
+            original
+        );
+        assert_eq!(handoff.as_ref().unwrap()["original_vla_grasp_chunks"], 4);
+    }
+    #[test]
+    fn malformed_handoff_receipt_is_rejected_before_mutation() {
+        let mut handoff = Some(serde_json::json!([]));
+        assert!(merge_mobile_handoff(&mut handoff, serde_json::json!({})).is_err());
+        assert_eq!(handoff, Some(serde_json::json!([])));
+    }
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
