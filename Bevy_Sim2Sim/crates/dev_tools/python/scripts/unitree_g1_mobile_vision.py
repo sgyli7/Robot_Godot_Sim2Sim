@@ -397,7 +397,11 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
     lower, upper = floor[:, :2].min(axis=0)+.02, floor[:, :2].max(axis=0)-.02
     direction = poses[21][:3, :3].T @ rotation(observation["measured_joints"]["root_rotation_wxyz"]).T @ np.array([math.cos(heading), math.sin(heading), 0.])
     current_margin = float(min((points[:, :2]-(lower-.02)).min(), ((upper+.02)-points[:, :2]).min()))
-    lo, hi = 0., .70
+    # Compute the complete geometric interval before applying the existing
+    # five-command travel budget. Clipping hi first can erase a feasible target
+    # or turn a wide interval into a falsely blocked narrow one. Each command
+    # still advances only .15 m and requires another current image.
+    lo, hi = 0., math.inf
     for axis in (0, 1):
         for coordinate in points[:, axis]:
             if abs(direction[axis]) < 1e-8:
@@ -406,7 +410,7 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             else:
                 ends = sorted([(lower[axis]-coordinate)/direction[axis], (upper[axis]-coordinate)/direction[axis]])
                 lo, hi = max(lo, ends[0]), min(hi, ends[1])
-    if hi < lo:
+    if hi < lo or not math.isfinite(hi) or lo > 5 * .15:
         return None
     aligned = current_margin >= .02
     blocked = not aligned and (hi-lo < .04 or hi < .15)

@@ -732,7 +732,9 @@ mod worker {
             || !auxiliary_reply_camera(reply)
             || !interval.iter().all(|n| n.is_finite())
             || interval[0] < 0.
-            || interval[1] > 0.70
+            // The interval describes complete geometry, not one command. Its
+            // first feasible point must fit the existing five 0.15 m steps.
+            || interval[0] > 5. * 0.15
             || interval[0] > interval[1]
             || !current_margin.is_finite()
             || p["maximum_physical_step_m"] != 0.15
@@ -1270,6 +1272,18 @@ mod worker {
                 "goal":{"observation":stamp,"heading_yaw_source_rad":-1.57,"relative_distance_m":0.1},
             });
             assert!(validate_fine_reply(&reply, stamp, "geometry").is_ok());
+            // Frozen RGB failures had feasible intervals across/beyond 0.70 m.
+            // Only the next 0.15 m command is admitted, followed by a new image.
+            for interval in [[0.663, 0.775], [0.747, 0.848]] {
+                let mut distant = reply.clone();
+                distant["fine_approach_proposal"]["physical_containment_distance_interval_m"] =
+                    serde_json::json!(interval);
+                assert!(validate_fine_reply(&distant, stamp, "geometry").is_ok());
+            }
+            let mut unreachable = reply.clone();
+            unreachable["fine_approach_proposal"]["physical_containment_distance_interval_m"] =
+                serde_json::json!([0.751, 0.85]);
+            assert!(validate_fine_reply(&unreachable, stamp, "geometry").is_err());
             let mut placement_camera = reply.clone();
             placement_camera["camera_mount_profile"] = "auxiliary_bin_placement".into();
             assert!(validate_fine_reply(&placement_camera, stamp, "geometry").is_ok());
