@@ -115,12 +115,12 @@ struct WarehouseMdl {
     roughness_min_max: [f32; 2],
 }
 
-type BackgroundMaterial = ExtendedMaterial<StandardMaterial, BackgroundAlbedo>;
+pub(crate) type BackgroundMaterial = ExtendedMaterial<StandardMaterial, BackgroundAlbedo>;
 
 /// Original OmniPBR adds the scalar to the linear texture lookup before tint
 /// and lighting. StandardMaterial alone can only multiply its texture lookup.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-struct BackgroundAlbedo {
+pub(crate) struct BackgroundAlbedo {
     #[uniform(100)]
     tint_and_add: Vec4,
     #[uniform(101)]

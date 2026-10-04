@@ -14,6 +14,10 @@ Sai_Lab 汇集三个独立的机器人 Sim2Sim 工程，覆盖 MicroDuck、Unitr
 
 ![G1 科学站持箱行走，12 秒原速开发诊断](Bevy_Sim2Sim/docs/media/g1_science_station_box_carry_12s.gif)
 
+![G1 在源任务近似场景搬箱、行走和释放，12 秒原速开发诊断](Bevy_Sim2Sim/docs/media/g1_source_box_carry_12s.gif)
+
+原有取放和源场景搬箱录像已按 URI 风格重新录制。G1 保留官方银灰外壳和深色关节，科学站使用蓝／黄橙／暖白配色；风格只作用于主窗口，VLA 相机和控制合同保持原样。实现与验证见 [G1 展示渲染](Bevy_Sim2Sim/docs/g1_uri_presentation.md)。
+
 G1 新一轮已在科学站完成真实抓箱和持物行走：箱子水平移动 **2.29 米**，抓取后的 1,154 个步骤均由手接触支撑，新增 12 秒原速 GIF。此前科学站苹果取放放稳 6.02 秒；源任务近似场景搬箱移动 1.99 米、放稳并松手 2.52 秒，相关录像继续保留。抓取后本地 Qwen 视觉调度与反馈已有一次源任务场景的真实运行。以上均为诊断成果，**科学站目标容器放置、T1/T2 各 8/10 和全程连续运行仍待验收**。录像和具体边界见 [Bevy 主页](Bevy_Sim2Sim/README.md#g1-新进展科学站持箱行走)。
 
 - **工程基础**：一个 Rapier 世界，默认 50 Hz、每 Tick 一次积分；G1 与 MicroDuck 保留独立合同；实时开发窗口使用独立工作线程执行物理和 CPU ONNX 推理。
