@@ -191,6 +191,26 @@ impl MobileGripCalibration {
         self.solve(state, previous, None, Some(gap_increment_m), None)
     }
 
+    /// Approach the unchanged source gap in at most50 increments. This uses
+    /// command FK and self state only and keeps original fingers/rotations.
+    /// A large one-jump close is rejected, never clipped to a joint bound.
+    pub fn approach_source_gap(
+        &self,
+        state: &G1Measurement,
+        previous: &G1Command,
+        remaining_ticks: u32,
+    ) -> Result<MobileGripCorrection, RobotError> {
+        if !(1..=50).contains(&remaining_ticks) {
+            return Err(invalid("source-gap closing requires1..50 remaining Ticks"));
+        }
+        let gap = self.commanded_gap(state, previous)?;
+        let increment = (SOURCE_PALM_GAP_M - gap) / f64::from(remaining_ticks);
+        if gap < SOURCE_PALM_GAP_M - 1e-6 || increment.abs() > 0.004 {
+            return Err(invalid("source-gap closing exceeds2mm per palm per Tick"));
+        }
+        self.solve(state, previous, None, Some(increment), None)
+    }
+
     /// Spread perpendicular to gravity while preserving each palm's height.
     /// Unlike a tilted palm-to-palm line, this adds no differential lift.
     pub fn spread_horizontal(
@@ -668,6 +688,77 @@ mod tests {
         state: serde_json::Value,
         command: G1Command,
         goal: super::super::mobile_lowering::MobileLowerGoal,
+    }
+
+    #[derive(Deserialize)]
+    struct CloseFixture {
+        state: serde_json::Value,
+        command: G1Command,
+    }
+
+    #[test]
+    #[ignore = "hash-bound actual open-insertion300Tick self/command; pure50step source close,0physics/models"]
+    fn real_open_grip_bounded_source_close_envelope() -> Result<(), RobotError> {
+        let env = |name| std::env::var(name).map_err(|e| invalid(format!("{name}: {e}")));
+        let definition = G1Definition::load(
+            Path::new(&env("G1_GRIP_DEFINITION")?),
+            &env("G1_GRIP_DEFINITION_SHA256")?,
+        )?;
+        let fixture: CloseFixture = serde_json::from_slice(&bound_bytes(
+            Path::new(&env("G1_GRIP_FIXTURE")?),
+            &env("G1_GRIP_FIXTURE_SHA256")?,
+        )?)
+        .map_err(|e| invalid(e.to_string()))?;
+        let state = measurement(fixture.state).map_err(|e| invalid(e.to_string()))?;
+        let calibration = MobileGripCalibration::new(&definition)?;
+        // Actual same failed call remains RED. It must not be made legal by
+        // widening the per-command bound or altering the source grasp gap.
+        assert!(calibration.correct(&state, &fixture.command).is_err());
+        for remaining in [0, 1, 51] {
+            assert!(
+                calibration
+                    .approach_source_gap(&state, &fixture.command, remaining)
+                    .is_err()
+            );
+        }
+        let original = fixture.command;
+        let mut command = original.clone();
+        let mut steps = Vec::new();
+        for index in 0..50 {
+            let mut synthetic = state.clone();
+            synthetic.source_tick += index;
+            synthetic.sim_time_ns = synthetic.source_tick * 20_000_000;
+            let correction =
+                calibration.approach_source_gap(&synthetic, &command, 50 - index as u32)?;
+            assert!(correction.receipt.maximum_joint_target_change_rad <= 0.1);
+            assert!(correction.receipt.maximum_palm_position_residual_m <= 1e-6);
+            assert_eq!(
+                correction.command.upper_positions[7..14],
+                original.upper_positions[7..14]
+            );
+            assert_eq!(
+                correction.command.upper_positions[21..28],
+                original.upper_positions[21..28]
+            );
+            command = correction.command;
+            steps.push(correction.receipt);
+        }
+        let gap = calibration.commanded_gap(&state, &command)?;
+        assert!((gap - SOURCE_PALM_GAP_M).abs() < 1e-6);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(env("G1_GRIP_OUTPUT")?)
+            .map_err(|e| invalid(e.to_string()))?;
+        serde_json::to_writer_pretty(
+            file,
+            &serde_json::json!({"actual_integrations":0,
+            "actual_model_inferences":0,"synthetic_future_self_states_numeric_only":true,
+            "original_one_jump_close_still_rejected":true,"commanded_final_source_gap_m":gap,
+            "steps":steps,"command":command,"qualified":false}),
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        Ok(())
     }
 
     #[derive(Deserialize)]

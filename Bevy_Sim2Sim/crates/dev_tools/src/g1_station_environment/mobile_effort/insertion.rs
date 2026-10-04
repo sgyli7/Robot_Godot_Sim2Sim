@@ -11,16 +11,22 @@ use task_minigame::types::ObservationStamp;
 #[test]
 #[ignore = "one CPU50Hz probe <=350steps; archived RGB300 numeric offset is synthetic200Tick admission;0freshVLA/Qwen/RGB; never qualification"]
 fn recorded_pregrasp_bounded_insertion_mechanics() -> Result<(), String> {
-    recorded_probe(false)
+    recorded_probe(false, false)
 }
 
 #[test]
 #[ignore = "one distinct CPU50Hz probe <=400steps; open original palms before fixed insertion;0freshVLA/Qwen/RGB; never qualification"]
 fn recorded_open_then_insertion_mechanics() -> Result<(), String> {
-    recorded_probe(true)
+    recorded_probe(true, false)
 }
 
-fn recorded_probe(opening_first: bool) -> Result<(), String> {
+#[test]
+#[ignore = "one distinct CPU50Hz probe <=450steps; same300Tick open-insertion prefix then50 bounded close/100hold;0freshVLA/Qwen/RGB; never qualification"]
+fn recorded_open_insert_bounded_close_mechanics() -> Result<(), String> {
+    recorded_probe(true, true)
+}
+
+fn recorded_probe(opening_first: bool, bounded_close: bool) -> Result<(), String> {
     let path = PathBuf::from(std::env::var("G1_MOTOR_REPLAY_FIXTURE").map_err(|e| e.to_string())?);
     let hash = std::env::var("G1_MOTOR_REPLAY_FIXTURE_SHA256").map_err(|e| e.to_string())?;
     let fixture: Fixture =
@@ -107,7 +113,13 @@ fn recorded_probe(opening_first: bool) -> Result<(), String> {
     }
     let original = last.ok_or("no original command")?;
     if opening_first {
-        return opening_sequence(&mut owner, &calibration, original, &mut evidence);
+        return opening_sequence(
+            &mut owner,
+            &calibration,
+            original,
+            &mut evidence,
+            bounded_close,
+        );
     }
     let state = owner.measurement().map_err(|e| e.to_string())?;
     // Numeric proposal from archived actual RGB300, intentionally NOT current
@@ -201,6 +213,7 @@ fn opening_sequence(
     calibration: &MobileGripCalibration,
     mut command: G1Command,
     evidence: &mut fs::File,
+    bounded_close: bool,
 ) -> Result<(), String> {
     let original = command.clone();
     command.navigation = [0.; 3];
@@ -246,6 +259,45 @@ fn opening_sequence(
             .map_err(|e|e.to_string())?;
     }
     let state = owner.measurement().map_err(|e| e.to_string())?;
+    if bounded_close {
+        for tick in 301..=350 {
+            let state = owner.measurement().map_err(|e| e.to_string())?;
+            let correction = calibration
+                .approach_source_gap(&state, &command, 351 - tick)
+                .map_err(|e| e.to_string())?;
+            command = correction.command;
+            let step = owner.step(&command).map_err(|e| e.to_string())?;
+            writeln!(
+                evidence,
+                "{}",
+                json!({"event":"insertion_physical_step","phase":"diagnostic_bounded_close",
+                "tick":tick,"body":journal_body_value(&step)?,"command":command,
+                "correction":correction.receipt,"native_visual_close_admitted":false})
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        for tick in 351..=450 {
+            let step = owner.step(&command).map_err(|e| e.to_string())?;
+            writeln!(
+                evidence,
+                "{}",
+                json!({"event":"insertion_physical_step","phase":"diagnostic_post_close_hold",
+                "tick":tick,"body":journal_body_value(&step)?,"command":command,
+                "native_visual_close_admitted":false})
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        writeln!(
+            evidence,
+            "{}",
+            json!({"event":"insertion_probe_complete","actual_counts":owner.progress_counts(),
+            "fresh_RGB_N16_Qwen":0,"actual_visual_closed_loop":false,"task_qualified":false,
+            "opening_before_insertion":true,"bounded_source_gap_closing":true})
+        )
+        .map_err(|e| e.to_string())?;
+        evidence.sync_all().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let closing = calibration
         .correct(&state, &command)
         .map_err(|e| e.to_string())?;
