@@ -11,7 +11,8 @@ from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv
 from bevy_microduck_tools.goose.source_training import (
     GooseRslEnv, completed_root_state, fallen, make_low_speed_cfg,
     make_runner_cfg, make_standing_cfg, initialize_velocity_transfer,
-    make_asymmetric_low_speed_cfg, make_forward_cfg, initialize_leg_exploration)
+    make_asymmetric_low_speed_cfg, make_forward_cfg, initialize_leg_exploration,
+    make_smooth_forward_cfg)
 
 
 def build_environment(tmp_path, monkeypatch, config_factory):
@@ -54,6 +55,28 @@ def forward_environment(tmp_path, monkeypatch):
     env = build_environment(tmp_path, monkeypatch, make_forward_cfg)
     yield env
     env.close()
+
+
+def test_smooth_forward_native_regularizer_executes_actual_update(tmp_path, monkeypatch):
+    from mjlab.envs.mdp import action_rate_l2
+    env = build_environment(tmp_path, monkeypatch, make_smooth_forward_cfg)
+    try:
+        assert env.cfg.rewards["action_change"].func is action_rate_l2
+        assert env.cfg.rewards["action_change"].weight == -.1
+        wrapper = GooseRslEnv(env)
+        cfg = make_runner_cfg(entropy_coef=.01)
+        cfg["num_steps_per_env"] = 4
+        cfg["algorithm"].update(num_learning_epochs=1, num_mini_batches=2)
+        runner = MjlabOnPolicyRunner(wrapper, cfg, log_dir=None, device="cpu")
+        checkpoint = os.environ.get("GOOSE_MOTION_CHECKPOINT")
+        if checkpoint:
+            runner.load(checkpoint, strict=True, map_location="cpu")
+        initialize_leg_exploration(runner, std=.06)
+        runner.learn(1)
+        assert wrapper.real_integrations == 8
+        assert all(torch.isfinite(value).all() for value in runner.alg.actor.parameters())
+    finally:
+        env.close()
 
 
 def test_forward_course_keeps_native_physics_and_no_velocity_assist(forward_environment):

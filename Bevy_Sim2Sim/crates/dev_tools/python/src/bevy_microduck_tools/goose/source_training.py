@@ -23,6 +23,7 @@ VELOCITY_REVISION = "goose_flat_low_speed_ppo_v1"
 VELOCITY_TRANSFER_REVISION = "goose_standing_to_velocity_transfer_v1"
 ASYMMETRIC_REVISION = "goose_low_speed_asymmetric_ppo_v1"
 FORWARD_REVISION = "goose_flat_forward_course_v1"
+SMOOTH_FORWARD_REVISION = "goose_flat_smooth_forward_course_v1"
 
 
 def completed_root_state(env):
@@ -174,6 +175,14 @@ def make_forward_cfg(model_path: Path, contract_path: Path, **kwargs):
     command.ranges.ang_vel_z = (0., 0.)
     command.rel_standing_envs = .1
     command.resampling_time_range = (4., 6.)
+    return cfg
+
+
+def make_smooth_forward_cfg(model_path: Path, contract_path: Path, **kwargs):
+    """Use the mature velocity task's native action-rate regularization."""
+    from mjlab.envs.mdp import action_rate_l2
+    cfg = make_forward_cfg(model_path, contract_path, **kwargs)
+    cfg.rewards["action_change"] = RewardTermCfg(func=action_rate_l2, weight=-.1)
     return cfg
 
 
