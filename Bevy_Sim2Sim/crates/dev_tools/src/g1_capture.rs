@@ -31,6 +31,8 @@ use bevy::{
 mod local_model_startup;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_continuous;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_height_recovery;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
@@ -195,6 +197,8 @@ struct MobileScanCaptureConfiguration {
     lowering: Option<MobileLowerCaptureConfiguration>,
     #[serde(default)]
     vision: Option<MarkerVisionConfiguration>,
+    #[serde(default)]
+    current_rgb_height_recovery: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -244,6 +248,8 @@ struct MobileAssistCaptureRuntime {
     fine_alignment_confirmed: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     fine_goals_submitted: u32,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    height_recovery: mobile_height_recovery::Recovery,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -345,6 +351,8 @@ impl MobileAssistCaptureRuntime {
             fine_alignment_confirmed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             fine_goals_submitted: 0,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            height_recovery: mobile_height_recovery::Recovery::default(),
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -1613,6 +1621,7 @@ impl CaptureRuntime {
         self.episode_id = episode_id;
         #[cfg(feature = "g1_constraint_diagnostic")]
         if let Some(assist) = &mut self.mobile_assist {
+            assist.height_recovery = mobile_height_recovery::Recovery::default();
             if let Some(pair) = assist.pending_box_pair.take() {
                 assist.box_pair_restore_mount = Some(pair.primary_mount);
             }
@@ -2177,6 +2186,16 @@ fn run_capture_owner(
     }
     if let Some(vision) = mobile_scan.as_ref().and_then(|c| c.vision.as_ref()) {
         vision.validate()?;
+    }
+    if mobile_scan.as_ref().is_some_and(|c| {
+        c.current_rgb_height_recovery
+            && (mode != CaptureMode::StationMobileRelease
+                || c.vision.as_ref().is_none_or(|v| !v.same_tick_box_pair))
+    }) {
+        return Err(
+            "current RGB height recovery requires the explicit paired station release profile"
+                .into(),
+        );
     }
     if static_marker_assets.is_some()
         && (!matches!(
@@ -3425,6 +3444,9 @@ fn drive_mobile_assist(
         return station_carry::continue_after_hold(runtime, outcome, port);
     }
     if assist.submitted {
+        if assist.height_recovery.pending() {
+            return mobile_height_recovery::await_completion(runtime, outcome);
+        }
         let blocked_stop = latest.phase == G1WorkerPhase::Paused && latest.assist_step.as_ref()
             .is_some_and(|step| matches!(&step.execution, MobileAssistExecution::ClassicalCarry { navigation, .. } if navigation.blocked_stop_completed));
         if blocked_stop && assist.station_motion && !assist.auxiliary_release {
@@ -3457,11 +3479,19 @@ fn drive_mobile_assist(
                     assist.submitted_carry_observation,
                 )
             });
-        if assist.auxiliary_release && carry_complete && !assist.fine_alignment_confirmed {
+        let recovered_boundary = latest.phase == G1WorkerPhase::Paused
+            && latest
+                .assist_step
+                .as_ref()
+                .is_some_and(|step| assist.height_recovery.completed_for(&step.execution));
+        if assist.auxiliary_release
+            && (carry_complete || recovered_boundary)
+            && !assist.fine_alignment_confirmed
+        {
             return drive_auxiliary_fine_approach(runtime, outcome, port);
         }
         if assist.auxiliary_release
-            && carry_complete
+            && (carry_complete || recovered_boundary)
             && assist.fine_alignment_confirmed
             && !assist.hold_submitted
         {
@@ -3729,13 +3759,24 @@ fn drive_auxiliary_fine_approach(
         if observation.episode_id != runtime.episode_id
             || observation.sim_time_ns != latest.timing.episode_integrations * 20_000_000
             || reply["camera_mount_profile"] != assist.auxiliary_camera_name()
-            || reply["clearance_proposal"]["required_raise_m"]
-                .as_f64()
-                .is_none_or(|r| r > 0.)
         {
             return Err(
                 "fine approach lacks current auxiliary RGB/rim clearance; owner remains paused"
                     .into(),
+            );
+        }
+        let required_raise = reply["clearance_proposal"]["required_raise_m"]
+            .as_f64()
+            .filter(|r| r.is_finite())
+            .ok_or("fine approach lacks finite current RGB rim clearance")?;
+        if required_raise > 0. {
+            let wall_ms = job.started.elapsed().as_secs_f64() * 1000.;
+            return mobile_height_recovery::submit_from_current_rgb(
+                runtime,
+                outcome,
+                reply,
+                observation,
+                wall_ms,
             );
         }
         let state = reply["fine_approach_proposal"]["state"]
@@ -3807,7 +3848,12 @@ fn drive_auxiliary_fine_approach(
         runtime.requested = false;
         return Ok(false);
     }
-    let directory = if assist.fine_goals_submitted == 0 {
+    let directory = if assist.height_recovery.used() {
+        format!(
+            "visual_fine_after_height_recovery_{:02}",
+            assist.fine_goals_submitted + 1
+        )
+    } else if assist.fine_goals_submitted == 0 {
         "visual_fine_approach".to_string()
     } else {
         format!(
