@@ -13,6 +13,7 @@ ui = ["dep:bevy"]
 bevy = { workspace = true, optional = true, features = ["bevy_ui", "bevy_ui_render", "bevy_ui_widgets", "bevy_input_focus", "ui_picking", "system_clipboard"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 base64 = "=0.22.1"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }

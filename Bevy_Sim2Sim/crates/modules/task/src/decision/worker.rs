@@ -12,11 +12,39 @@ use std::{
 
 use crate::types::EpisodeId;
 
-use super::{DecisionError, DecisionInput, DecisionReply, LocalQwenClient};
+use super::{
+    DecisionError, DecisionInput, DecisionReply, LocalQwenClient, SelectionInput, SelectionReply,
+};
+use crate::types::ObservationStamp;
+
+enum Input {
+    Visual(DecisionInput),
+    Selection(SelectionInput),
+}
+impl Input {
+    fn stamp(&self) -> ObservationStamp {
+        match self {
+            Self::Visual(i) => i.observation.stamp,
+            Self::Selection(i) => i.context.observation.stamp,
+        }
+    }
+}
+enum Reply {
+    Visual(DecisionReply),
+    Selection(SelectionReply),
+}
+impl Reply {
+    fn stamp(&self) -> ObservationStamp {
+        match self {
+            Self::Visual(r) => r.stamp,
+            Self::Selection(r) => r.stamp,
+        }
+    }
+}
 
 pub struct DecisionWorker {
-    requests: Option<SyncSender<DecisionInput>>,
-    replies: Receiver<DecisionReply>,
+    requests: Option<SyncSender<Input>>,
+    replies: Receiver<Reply>,
     busy: Arc<AtomicBool>,
     episode: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
@@ -27,7 +55,7 @@ pub struct DecisionWorker {
 
 impl DecisionWorker {
     pub fn spawn(client: LocalQwenClient, episode_id: EpisodeId) -> Result<Self, DecisionError> {
-        let (requests, input) = mpsc::sync_channel::<DecisionInput>(1);
+        let (requests, input) = mpsc::sync_channel::<Input>(1);
         let (output, replies) = mpsc::sync_channel(1);
         let busy = Arc::new(AtomicBool::new(false));
         let episode = Arc::new(AtomicU64::new(episode_id));
@@ -48,29 +76,33 @@ impl DecisionWorker {
                     if worker_shutdown.load(Ordering::Acquire) {
                         break;
                     }
-                    if worker_episode.load(Ordering::Acquire)
-                        != request.observation.stamp.episode_id
-                    {
+                    if worker_episode.load(Ordering::Acquire) != request.stamp().episode_id {
                         worker_busy.store(false, Ordering::Release);
                         continue;
                     }
                     let started = Instant::now();
                     worker_attempts.fetch_add(1, Ordering::AcqRel);
-                    let result = client.decide(&request);
+                    let stamp = request.stamp();
+                    let reply = match request {
+                        Input::Visual(request) => Reply::Visual(DecisionReply {
+                            request_id: request.request_id,
+                            stamp,
+                            result: client.decide(&request),
+                            elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        }),
+                        Input::Selection(request) => Reply::Selection(SelectionReply {
+                            request_id: request.context.request_id,
+                            stamp,
+                            result: client.select_verified(&request),
+                            elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        }),
+                    };
                     worker_results.fetch_add(1, Ordering::AcqRel);
-                    if worker_episode.load(Ordering::Acquire)
-                        != request.observation.stamp.episode_id
-                    {
+                    if worker_episode.load(Ordering::Acquire) != stamp.episode_id {
                         worker_discarded.fetch_add(1, Ordering::AcqRel);
                         worker_busy.store(false, Ordering::Release);
                         continue;
                     }
-                    let reply = DecisionReply {
-                        request_id: request.request_id,
-                        stamp: request.observation.stamp,
-                        elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                        result,
-                    };
                     if output.try_send(reply).is_err() {
                         worker_busy.store(false, Ordering::Release);
                     }
@@ -92,7 +124,15 @@ impl DecisionWorker {
     /// At most one submitted, running, or unconsumed request exists. Busy is
     /// returned immediately instead of accumulating old images or decisions.
     pub fn try_submit(&self, input: DecisionInput) -> Result<(), DecisionError> {
-        if input.observation.stamp.episode_id != self.episode.load(Ordering::Acquire) {
+        self.submit(Input::Visual(input))
+    }
+
+    pub fn try_submit_selection(&self, input: SelectionInput) -> Result<(), DecisionError> {
+        self.submit(Input::Selection(input))
+    }
+
+    fn submit(&self, input: Input) -> Result<(), DecisionError> {
+        if input.stamp().episode_id != self.episode.load(Ordering::Acquire) {
             return Err(DecisionError::Rejected("worker generation mismatch".into()));
         }
         if self
@@ -118,10 +158,30 @@ impl DecisionWorker {
     }
 
     pub fn try_recv(&self) -> Result<Option<DecisionReply>, DecisionError> {
+        match self.receive()? {
+            Some(Reply::Visual(reply)) => Ok(Some(reply)),
+            Some(Reply::Selection(_)) => Err(DecisionError::Response(
+                "selection reply received by visual-claim consumer".into(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub fn try_recv_selection(&self) -> Result<Option<SelectionReply>, DecisionError> {
+        match self.receive()? {
+            Some(Reply::Selection(reply)) => Ok(Some(reply)),
+            Some(Reply::Visual(_)) => Err(DecisionError::Response(
+                "visual-claim reply received by selection consumer".into(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn receive(&self) -> Result<Option<Reply>, DecisionError> {
         match self.replies.try_recv() {
             Ok(reply) => {
                 self.busy.store(false, Ordering::Release);
-                if reply.stamp.episode_id == self.episode.load(Ordering::Acquire) {
+                if reply.stamp().episode_id == self.episode.load(Ordering::Acquire) {
                     Ok(Some(reply))
                 } else {
                     Ok(None)

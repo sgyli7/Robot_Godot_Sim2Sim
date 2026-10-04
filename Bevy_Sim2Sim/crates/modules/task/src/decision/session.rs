@@ -8,7 +8,8 @@ use crate::types::{EpisodeId, ObservationStamp, SkillAvailability, SkillRequest,
 
 use super::{
     DecisionError, DecisionInput, DecisionMemory, DecisionReply, ExecutionFeedback, FeedbackStatus,
-    ModelDecision, ObservationSnapshot, TargetKind, TaskGoal, VisualTarget,
+    ModelDecision, ObservationSnapshot, RgbVerifiedTargets, SelectionInput, SelectionReply,
+    TargetKind, TaskGoal, VisualTarget,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -55,6 +56,7 @@ pub struct DecisionSession {
     recent_decisions: VecDeque<DecisionMemory>,
     next_request: u64,
     pending: Option<(u64, ObservationStamp)>,
+    pending_rgb_targets: Option<RgbVerifiedTargets>,
     latest_decision: Option<u64>,
     last_frame: Option<u64>,
     safe_stop: Option<String>,
@@ -86,6 +88,7 @@ impl DecisionSession {
             recent_decisions: VecDeque::new(),
             next_request: 1,
             pending: None,
+            pending_rgb_targets: None,
             latest_decision: None,
             last_frame: None,
             safe_stop: None,
@@ -131,6 +134,7 @@ impl DecisionSession {
         self.feedback.clear();
         self.recent_decisions.clear();
         self.pending = None;
+        self.pending_rgb_targets = None;
         self.latest_decision = None;
         self.last_frame = None;
         self.safe_stop = Some("scene reset; discard prior action history".into());
@@ -164,6 +168,7 @@ impl DecisionSession {
             .checked_add(1)
             .ok_or_else(|| DecisionError::Rejected("request sequence exhausted".into()))?;
         self.pending = Some((request_id, observation.stamp));
+        self.pending_rgb_targets = None;
         self.last_frame = Some(observation.stamp.frame_id);
         Ok(DecisionInput {
             request_id,
@@ -176,12 +181,32 @@ impl DecisionSession {
         })
     }
 
+    /// Bind detector measurements to the exact submitted image. Unlike the
+    /// visual-claim path, the model selects among these IDs without reporting
+    /// detections. Runtime freshness, capabilities and geometry stay separate.
+    pub fn prepare_selection(
+        &mut self,
+        observation: ObservationSnapshot,
+        verified_targets: RgbVerifiedTargets,
+        now_unix_ms: u64,
+        current_sim_time_ns: u64,
+    ) -> Result<SelectionInput, DecisionError> {
+        verified_targets.validate_binding(&observation)?;
+        let context = self.prepare(observation, now_unix_ms, current_sim_time_ns)?;
+        self.pending_rgb_targets = Some(verified_targets.clone());
+        Ok(SelectionInput {
+            context,
+            verified_targets,
+        })
+    }
+
     /// Clear a failed submission/transport and request a local safe stop. The
     /// runtime must consume take_safe_stop even if it chooses to request a retry.
     pub fn service_failed(&mut self, request_id: u64, reason: impl Into<String>) {
         if let Some((pending, stamp)) = self.pending.filter(|(pending, _)| *pending == request_id) {
             let reason = bounded_text(reason.into(), 512);
             self.pending = None;
+            self.pending_rgb_targets = None;
             self.remember_failure(pending, stamp.sim_time_ns, reason);
         }
     }
@@ -202,6 +227,7 @@ impl DecisionSession {
     pub fn cancel_pending(&mut self, reason: impl Into<String>) {
         let reason = bounded_text(reason.into(), 512);
         if let Some((request_id, stamp)) = self.pending.take() {
+            self.pending_rgb_targets = None;
             self.remember_failure(request_id, stamp.sim_time_ns, reason);
         } else {
             self.safe_stop = Some(reason);
@@ -228,7 +254,70 @@ impl DecisionSession {
         self.pending = None;
         let request_id = reply.request_id;
         let sim_time_ns = reply.stamp.sim_time_ns;
-        let result = self.accept_current(reply, now_unix_ms, current_sim_time_ns);
+        let result = if self.pending_rgb_targets.take().is_some() {
+            Err(DecisionError::Rejected(
+                "RGB selection cannot be admitted as a model visual-claim reply".into(),
+            ))
+        } else {
+            self.accept_current(reply, now_unix_ms, current_sim_time_ns)
+        };
+        if let Err(error) = &result {
+            self.remember_failure(
+                request_id,
+                sim_time_ns,
+                bounded_text(error.to_string(), 512),
+            );
+        }
+        result
+    }
+
+    pub fn accept_selection(
+        &mut self,
+        reply: SelectionReply,
+        now_unix_ms: u64,
+        current_sim_time_ns: u64,
+    ) -> Result<ValidatedDecision, DecisionError> {
+        if self.pending != Some((reply.request_id, reply.stamp)) {
+            return Err(DecisionError::Rejected(
+                "unmatched selection request or previous episode".into(),
+            ));
+        }
+        self.pending = None;
+        let request_id = reply.request_id;
+        let sim_time_ns = reply.stamp.sim_time_ns;
+        let result = (|| {
+            let targets = self.pending_rgb_targets.take().ok_or_else(|| {
+                DecisionError::Rejected(
+                    "selection reply lacks prepared current RGB evidence".into(),
+                )
+            })?;
+            self.check_stamp(reply.stamp, now_unix_ms, current_sim_time_ns)?;
+            let decision = reply.result?;
+            if decision.episode_id != self.episode_id
+                || decision.frame_id != reply.stamp.frame_id
+                || decision.reason.trim().is_empty()
+                || decision.reason.len() > 128
+            {
+                return Err(DecisionError::Rejected(
+                    "selection has wrong frame, episode or rationale".into(),
+                ));
+            }
+            let visible = targets
+                .targets()
+                .iter()
+                .map(|target| (target.id.as_str(), target.kind))
+                .collect();
+            let request = decision.request.resolve(self.goal.profile);
+            self.validate_skill(&request, &visible)?;
+            Ok(self.remember_admission(
+                request_id,
+                reply.stamp,
+                request,
+                decision.reason,
+                reply.elapsed_ms,
+                now_unix_ms,
+            ))
+        })();
         if let Err(error) = &result {
             self.remember_failure(
                 request_id,
@@ -256,7 +345,7 @@ impl DecisionSession {
         let visible: BTreeMap<_, _> = decision
             .observed_targets
             .iter()
-            .map(|target| (target.id.as_str(), target))
+            .map(|target| (target.id.as_str(), target.kind))
             .collect();
         self.validate_skill(&decision.request, &visible)?;
         for visual in decision.observed_targets {
@@ -279,30 +368,49 @@ impl DecisionSession {
                 .expect("nonempty registry");
             self.targets.remove(&oldest);
         }
-        self.latest_decision = Some(reply.request_id);
+        Ok(self.remember_admission(
+            reply.request_id,
+            reply.stamp,
+            decision.request,
+            decision.reason,
+            reply.elapsed_ms,
+            now_unix_ms,
+        ))
+    }
+
+    fn remember_admission(
+        &mut self,
+        request_id: u64,
+        stamp: ObservationStamp,
+        request: SkillRequest,
+        reason: String,
+        service_elapsed_ms: u64,
+        now_unix_ms: u64,
+    ) -> ValidatedDecision {
+        self.latest_decision = Some(request_id);
         if self.recent_decisions.len() == 8 {
             self.recent_decisions.pop_front();
         }
         self.recent_decisions.push_back(DecisionMemory {
-            decision_id: reply.request_id,
-            frame_id: reply.stamp.frame_id,
-            request: decision.request.clone(),
-            reason: decision.reason.clone(),
+            decision_id: request_id,
+            frame_id: stamp.frame_id,
+            request: request.clone(),
+            reason: reason.clone(),
         });
-        Ok(ValidatedDecision {
-            decision_id: reply.request_id,
-            stamp: reply.stamp,
-            request: decision.request,
-            reason: decision.reason,
-            image_to_decision_ms: now_unix_ms - reply.stamp.captured_at_unix_ms,
-            service_elapsed_ms: reply.elapsed_ms,
-        })
+        ValidatedDecision {
+            decision_id: request_id,
+            stamp,
+            request,
+            reason,
+            image_to_decision_ms: now_unix_ms - stamp.captured_at_unix_ms,
+            service_elapsed_ms,
+        }
     }
 
     fn validate_skill(
         &self,
         request: &SkillRequest,
-        visible: &BTreeMap<&str, &VisualTarget>,
+        visible: &BTreeMap<&str, TargetKind>,
     ) -> Result<(), DecisionError> {
         let reject = |message: &str| DecisionError::Rejected(message.into());
         match request {
@@ -332,8 +440,8 @@ impl DecisionSession {
                     TaskProfile::StaticApple => TargetKind::Apple,
                     TaskProfile::MobileBox => TargetKind::Box,
                 };
-                if target.kind != expected
-                    || destination.kind != TargetKind::PlacementZone
+                if *target != expected
+                    || *destination != TargetKind::PlacementZone
                     || target_id == destination_id
                 {
                     return Err(reject(

@@ -2,12 +2,17 @@
 
 mod client;
 mod observation;
+mod selection;
 mod session;
 mod wire;
 mod worker;
 
 pub use client::{LocalQwenClient, LocalQwenConfig};
 pub use observation::{CameraRgb, ObservationSnapshot, TaskGoal};
+pub use selection::{
+    RgbTarget, RgbVerifiedTargets, SelectionDecision, SelectionInput, SelectionReply,
+    SelectionRequest,
+};
 pub use session::{DecisionLimits, DecisionSession, RegisteredTarget, ValidatedDecision};
 pub use wire::{
     DecisionInput, DecisionMemory, DecisionReply, ExecutionFeedback, FeedbackStatus, ModelDecision,

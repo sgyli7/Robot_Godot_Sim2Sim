@@ -11,7 +11,8 @@ use task_minigame::{
     decision::{
         CameraRgb, DecisionError, DecisionInput, DecisionLimits, DecisionReply, DecisionSession,
         DecisionWorker, ExecutionFeedback, FeedbackStatus, LocalQwenClient, LocalQwenConfig,
-        ModelDecision, ObservationSnapshot, TargetKind, TaskGoal, VisualTarget,
+        ModelDecision, ObservationSnapshot, RgbTarget, RgbVerifiedTargets, SelectionDecision,
+        SelectionInput, SelectionReply, SelectionRequest, TargetKind, TaskGoal, VisualTarget,
     },
     types::{ObservationStamp, RobotSelfState, SkillAvailability, SkillRequest, TaskProfile},
 };
@@ -106,6 +107,387 @@ fn reply(input: &DecisionInput, mut result: ModelDecision) -> DecisionReply {
 
 fn completion(decision: &ModelDecision, finish_reason: &str) -> String {
     json!({"choices":[{"message":{"content":serde_json::to_string(decision).unwrap()},"finish_reason":finish_reason}]}).to_string()
+}
+
+fn rgb_observation(episode: u64, frame: u64) -> ObservationSnapshot {
+    let mut observation = observation(episode, frame);
+    observation.camera = CameraRgb::from_rgb("head", 64, 48, vec![127; 64 * 48 * 3]).unwrap();
+    observation
+}
+
+fn rgb_targets(observation: &ObservationSnapshot) -> RgbVerifiedTargets {
+    RgbVerifiedTargets::bind_current_rgb(
+        observation,
+        vec![
+            RgbTarget {
+                id: "box_22".into(),
+                kind: TargetKind::Box,
+                public_description: "brown box marker22".into(),
+                marker_id: 22,
+                marker_bbox_xyxy: [0.1, 0.2, 0.4, 0.6],
+                minimum_edge_px: 12.0,
+                reprojection_rms_px: 0.3,
+            },
+            RgbTarget {
+                id: "bin_21".into(),
+                kind: TargetKind::PlacementZone,
+                public_description: "blue placement zone marker21".into(),
+                marker_id: 21,
+                marker_bbox_xyxy: [0.5, 0.1, 0.8, 0.4],
+                minimum_edge_px: 10.0,
+                reprojection_rms_px: 0.1,
+            },
+        ],
+    )
+    .unwrap()
+}
+
+fn selection(input: &SelectionInput, request: SelectionRequest) -> SelectionReply {
+    SelectionReply {
+        request_id: input.context.request_id,
+        stamp: input.context.observation.stamp,
+        elapsed_ms: 100,
+        result: Ok(SelectionDecision {
+            episode_id: input.context.observation.stamp.episode_id,
+            frame_id: input.context.observation.stamp.frame_id,
+            request,
+            reason: "Visible box and bin".into(),
+        }),
+    }
+}
+
+fn selected_execute() -> SelectionRequest {
+    SelectionRequest::ExecuteTask {
+        target_id: "box_22".into(),
+        destination_id: "bin_21".into(),
+    }
+}
+
+#[test]
+fn rgb_selection_keeps_detector_evidence_distinct_and_carries_execution_feedback() {
+    let mut session = session(TaskProfile::MobileBox, true);
+    let observation = rgb_observation(1, 1);
+    let input = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    let admitted = session
+        .accept_selection(selection(&input, selected_execute()), 1100, 20_000_000)
+        .unwrap();
+    assert!(matches!(
+        admitted.request,
+        SkillRequest::ExecuteTask {
+            task_profile: TaskProfile::MobileBox,
+            ..
+        }
+    ));
+    assert_eq!(
+        session.targets().count(),
+        0,
+        "detector measurements must not be minted as model visual claims"
+    );
+    session
+        .record_feedback(ExecutionFeedback {
+            episode_id: 1,
+            decision_id: admitted.decision_id,
+            status: FeedbackStatus::Failed,
+            summary: "Visible box moved relative to palms".into(),
+            sim_time_ns: 20_000_000,
+        })
+        .unwrap();
+    let next = rgb_observation(1, 2);
+    let input = session
+        .prepare_selection(next.clone(), rgb_targets(&next), 1200, 40_000_000)
+        .unwrap();
+    assert_eq!(input.context.feedback.len(), 1);
+    assert_eq!(input.context.feedback[0].status, FeedbackStatus::Failed);
+    assert_eq!(input.context.recent_decisions.len(), 1);
+    assert_eq!(input.verified_targets.stamp().frame_id, 2);
+}
+
+#[test]
+fn rgb_selection_rejects_camera_substitution_even_with_identical_stamp() {
+    let original = rgb_observation(1, 1);
+    let targets = rgb_targets(&original);
+    let mut substitute = original.clone();
+    substitute.camera = CameraRgb::from_rgb("head", 64, 48, vec![126; 64 * 48 * 3]).unwrap();
+    let mut session = session(TaskProfile::MobileBox, true);
+    assert!(
+        session
+            .prepare_selection(substitute, targets.clone(), 1000, 20_000_000)
+            .is_err()
+    );
+    assert!(!session.is_pending());
+    let mut substitute = original;
+    substitute.stamp.frame_id = 2;
+    assert!(
+        session
+            .prepare_selection(substitute, targets, 1000, 20_000_000)
+            .is_err()
+    );
+    assert!(!session.is_pending());
+}
+
+#[test]
+fn rgb_selection_rejects_invisible_or_incompatible_ids_and_withdrawn_capabilities() {
+    for request in [
+        SelectionRequest::ExecuteTask {
+            target_id: "unseen_box".into(),
+            destination_id: "bin_21".into(),
+        },
+        SelectionRequest::ExecuteTask {
+            target_id: "bin_21".into(),
+            destination_id: "box_22".into(),
+        },
+    ] {
+        let mut session = session(TaskProfile::MobileBox, true);
+        let observation = rgb_observation(1, 1);
+        let input = session
+            .prepare_selection(
+                observation.clone(),
+                rgb_targets(&observation),
+                1000,
+                20_000_000,
+            )
+            .unwrap();
+        assert!(
+            session
+                .accept_selection(selection(&input, request), 1100, 20_000_000)
+                .is_err()
+        );
+        assert!(session.take_safe_stop().is_some());
+    }
+    let mut session = session(TaskProfile::MobileBox, false);
+    let observation = rgb_observation(1, 1);
+    let input = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    assert!(
+        session
+            .accept_selection(selection(&input, selected_execute()), 1100, 20_000_000)
+            .is_err()
+    );
+}
+
+#[test]
+fn rgb_selection_cannot_reuse_expired_reset_or_wrong_wire_results() {
+    let limits = DecisionLimits {
+        max_frame_age_ms: 20_000,
+        max_sim_age_ns: 1_000_000_000,
+        target_ttl_ms: 20_000,
+    };
+    let mut session = DecisionSession::new(
+        1,
+        goal(TaskProfile::MobileBox),
+        SkillAvailability {
+            mobile_box: true,
+            ..Default::default()
+        },
+        limits,
+    )
+    .unwrap();
+    let observation = rgb_observation(1, 1);
+    let input = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    assert!(session.expire_pending(21_001, 20_000_000));
+    assert!(
+        session
+            .accept_selection(selection(&input, selected_execute()), 21_001, 20_000_000)
+            .is_err()
+    );
+    session.reset(2, goal(TaskProfile::MobileBox)).unwrap();
+    assert!(
+        session
+            .accept_selection(selection(&input, selected_execute()), 1100, 20_000_000)
+            .is_err()
+    );
+    let observation = rgb_observation(2, 1);
+    let input = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    assert!(
+        session
+            .accept(
+                reply(&input.context, decision(SkillRequest::Observe)),
+                1100,
+                20_000_000
+            )
+            .is_err()
+    );
+    assert!(!session.is_pending());
+    assert!(session.take_safe_stop().is_some());
+}
+
+#[test]
+fn rgb_selection_http_omits_repeated_detections_and_excludes_unknown_target_ids() {
+    let mut session = session(TaskProfile::MobileBox, true);
+    let observation = rgb_observation(1, 1);
+    let input = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    let selected = selection(&input, selected_execute()).result.unwrap();
+    let body = json!({"choices":[{"message":{"content":serde_json::to_string(&selected).unwrap()},"finish_reason":"stop"}]}).to_string();
+    let mock = serve("200 OK", body, Duration::ZERO);
+    let worker = DecisionWorker::spawn(client(&mock.url, Duration::from_secs(2)), 1).unwrap();
+    worker.try_submit_selection(input.clone()).unwrap();
+    assert!(matches!(
+        worker.try_submit(input.context.clone()),
+        Err(DecisionError::Busy)
+    ));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let reply = loop {
+        assert!(
+            Instant::now() < deadline,
+            "bounded selector worker never returned"
+        );
+        if let Some(reply) = worker.try_recv_selection().unwrap() {
+            break reply;
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    session.accept_selection(reply, 1100, 20_000_000).unwrap();
+    let request = mock.request.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(request["max_tokens"].as_u64().unwrap() <= 128);
+    let schema = &request["response_format"]["json_schema"]["schema"];
+    assert!(schema["properties"].get("observed_targets").is_none());
+    let execute = schema["properties"]["request"]["anyOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["properties"]["action"]["const"] == "execute_task")
+        .unwrap();
+    assert_eq!(
+        execute["properties"]["target_id"]["enum"],
+        json!(["box_22"])
+    );
+    assert_eq!(
+        execute["properties"]["destination_id"]["enum"],
+        json!(["bin_21"])
+    );
+    assert!(execute["properties"].get("task_profile").is_none());
+    for variant in schema["properties"]["request"]["anyOf"].as_array().unwrap() {
+        assert_eq!(
+            variant["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap(),
+            "action",
+            "the pinned ordered JSON grammar must choose an action before branch-specific arguments"
+        );
+    }
+    let context: Value = serde_json::from_str(
+        request["messages"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        context["rgb_verified_targets"]["image_sha256"],
+        input.verified_targets.image_sha256()
+    );
+    assert!(
+        context["rgb_verified_targets"]["targets"][0]
+            .get("world_position")
+            .is_none()
+    );
+    assert_eq!(worker.transport_counts(), (1, 1, 0));
+    mock.handle.join().unwrap();
+}
+
+#[test]
+fn delayed_rgb_selection_cannot_cancel_a_new_episode_request() {
+    let mut session = session(TaskProfile::MobileBox, true);
+    let first = rgb_observation(1, 1);
+    let old = session
+        .prepare_selection(first.clone(), rgb_targets(&first), 1000, 20_000_000)
+        .unwrap();
+    session.reset(2, goal(TaskProfile::MobileBox)).unwrap();
+    let next = rgb_observation(2, 1);
+    let new = session
+        .prepare_selection(next.clone(), rgb_targets(&next), 1000, 20_000_000)
+        .unwrap();
+    assert!(
+        session
+            .accept_selection(selection(&old, selected_execute()), 1100, 20_000_000)
+            .is_err()
+    );
+    assert!(session.is_pending());
+    assert!(
+        session
+            .accept_selection(selection(&new, selected_execute()), 1100, 20_000_000)
+            .is_ok()
+    );
+}
+
+#[test]
+fn rgb_worker_discards_running_old_episode_and_never_starts_parallel_http() {
+    let mut session = session(TaskProfile::MobileBox, true);
+    let observation = rgb_observation(1, 1);
+    let old = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    let decision = selection(&old, selected_execute()).result.unwrap();
+    let body = json!({"choices":[{"message":{"content":serde_json::to_string(&decision).unwrap()},"finish_reason":"stop"}]}).to_string();
+    let mock = serve("200 OK", body, Duration::from_millis(80));
+    let worker = DecisionWorker::spawn(client(&mock.url, Duration::from_secs(2)), 1).unwrap();
+    worker.try_submit_selection(old).unwrap();
+    mock.request.recv_timeout(Duration::from_secs(1)).unwrap();
+    worker.reset_episode(2).unwrap();
+    session.reset(2, goal(TaskProfile::MobileBox)).unwrap();
+    let observation = rgb_observation(2, 1);
+    let new = session
+        .prepare_selection(
+            observation.clone(),
+            rgb_targets(&observation),
+            1000,
+            20_000_000,
+        )
+        .unwrap();
+    assert!(matches!(
+        worker.try_submit_selection(new),
+        Err(DecisionError::Busy)
+    ));
+    mock.handle.join().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while worker.is_busy() {
+        assert!(Instant::now() < deadline);
+        assert!(worker.try_recv_selection().unwrap().is_none());
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(worker.try_recv_selection().unwrap().is_none());
+    assert_eq!(worker.transport_counts(), (1, 1, 1));
 }
 
 struct MockServer {
