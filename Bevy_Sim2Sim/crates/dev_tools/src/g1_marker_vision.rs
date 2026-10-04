@@ -119,6 +119,8 @@ mod persistent;
 pub(super) use persistent::PersistentMarkerWorker;
 
 #[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_geometry;
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub(crate) mod mobile_held;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_pair;
@@ -356,7 +358,16 @@ mod worker {
             observation: ObservationStamp,
             memory: Option<MarkerTargetMemory>,
         ) -> Result<Self, String> {
-            Self::start_internal(config, directory, observation, memory, false, false, false)
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                memory,
+                false,
+                false,
+                false,
+                false,
+            )
         }
 
         /// Current paired RGB feedback for a completed pickup's next carry.
@@ -371,7 +382,50 @@ mod worker {
             {
                 return Err("held-box feedback requires normal current paired geometry".into());
             }
-            Self::start_internal(config, directory, observation, None, false, false, true)
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                false,
+                false,
+                true,
+                false,
+            )
+        }
+
+        /// Geometry-only diagnostic from current paired RGB and measured self
+        /// state. It cannot replace navigation or held-object action admission.
+        pub(crate) fn start_with_held_contact_geometry(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+        ) -> Result<Self, String> {
+            if !config.same_tick_box_pair
+                || config.same_tick_box_only
+                || config.task_geometry.is_none()
+                || config.persistent_worker.is_some()
+            {
+                return Err("hand geometry requires bound paired RGB and public geometry".into());
+            }
+            let helper = config
+                .script_path
+                .parent()
+                .ok_or("hand geometry script has no parent")?
+                .join("unitree_g1_mobile_hand_geometry.py");
+            if digest(&helper, 128 * 1024)? != super::mobile_geometry::helper_hash() {
+                return Err("hand geometry helper differs from the compiled source".into());
+            }
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                false,
+                false,
+                true,
+                true,
+            )
         }
 
         pub fn start_box_view(
@@ -385,7 +439,16 @@ mod worker {
             if config.same_tick_box_pair && !config.same_tick_box_only {
                 return Err("paired pickup feedback requires its explicit box-only mode".into());
             }
-            Self::start_internal(config, directory, observation, None, true, false, false)
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                true,
+                false,
+                false,
+                false,
+            )
         }
 
         pub fn start_placement_view(
@@ -398,7 +461,16 @@ mod worker {
                     "placement view requires bound public geometry and auxiliary labels".into(),
                 );
             }
-            Self::start_internal(config, directory, observation, None, false, true, false)
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                false,
+                true,
+                false,
+                false,
+            )
         }
 
         fn start_internal(
@@ -409,6 +481,7 @@ mod worker {
             box_view_only: bool,
             placement_view_only: bool,
             held_box_feedback: bool,
+            held_contact_geometry: bool,
         ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
@@ -495,6 +568,9 @@ mod worker {
                         if held_box_feedback {
                             command.arg("--held-box-feedback");
                         }
+                        if held_contact_geometry {
+                            command.arg("--held-contact-geometry");
+                        }
                         if let Some(calibration) = &config.fiducial_calibration {
                             command.arg("--fiducials").arg(&calibration.path);
                         }
@@ -542,7 +618,15 @@ mod worker {
                         let reply: serde_json::Value =
                             serde_json::from_slice(&fs::read(output).map_err(|e| e.to_string())?)
                                 .map_err(|e| e.to_string())?;
-                        validate_reply_for_policy(
+                        if held_contact_geometry {
+                            super::mobile_geometry::validate_reply(
+                                &reply, observation, &image_hash, &input_hash,
+                                &config.definition_sha256,
+                                &config.task_geometry.as_ref().unwrap().sha256,
+                            )?;
+                        } else {
+                            super::mobile_geometry::reject_unrequested(&reply)?;
+                            validate_reply_for_policy(
                             &reply,
                             observation,
                             &image_hash,
@@ -551,7 +635,8 @@ mod worker {
                             memory.as_ref().zip(memory_hash.as_deref()),
                             box_view_only,
                             placement_view_only,
-                        )?;
+                            )?;
+                        }
                         super::mobile_pair::validate_reply(&reply, &input_document, pair.as_ref())?;
                         super::mobile_held::validate_requested_feedback(&reply, observation, held_box_feedback)?;
                         if config
@@ -574,7 +659,7 @@ mod worker {
                             return Err("current auxiliary RGB box is outside the bounded self FK grip region; owner remains paused".into());
                         }
                         if let Some(geometry) = &config.task_geometry {
-                            if reply["target_memory_used"] != true {
+                            if reply["target_memory_used"] != true && !held_contact_geometry {
                                 validate_clearance_reply(&reply, observation, &geometry.sha256)?;
                             }
                             if placement_view_only {
@@ -1250,7 +1335,9 @@ mod worker {
             } else {
                 Some(serde_json::from_value(f["memory"].clone()).map_err(|e| e.to_string())?)
             };
-            let job = if f["expected_held_box_feedback"] == true {
+            let job = if f["expected_held_contact_geometry"] == true {
+                MarkerVisionJob::start_with_held_contact_geometry(config, directory.clone(), stamp)?
+            } else if f["expected_held_box_feedback"] == true {
                 MarkerVisionJob::start_with_held_box_feedback(config, directory.clone(), stamp)?
             } else if f["placement_view_only"] == true {
                 MarkerVisionJob::start_placement_view(config, directory.clone(), stamp)?
