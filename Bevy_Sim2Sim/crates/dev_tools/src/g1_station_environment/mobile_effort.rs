@@ -18,6 +18,8 @@ use std::{
 };
 use task_minigame::{policy::PolicyActionChunk, types::TaskProfile};
 
+mod foreaft;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fixture {
