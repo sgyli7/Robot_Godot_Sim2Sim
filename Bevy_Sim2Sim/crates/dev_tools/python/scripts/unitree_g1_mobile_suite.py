@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
-from unitree_g1_mobile_capture_audit import REVISION, audit, digest
+from unitree_g1_mobile_capture_audit import REVISION, audit, digest, partial_trace_evidence
 
 SCRIPTS = Path(__file__).resolve().parent
 RULES = {"cases": 10, "required_successes": 8, "linear_speed_max_m_s": .02,
@@ -41,6 +41,31 @@ TOOLS = {"unitree_g1_mobile_suite.py", "unitree_g1_mobile_capture_audit.py",
 
 def save(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+
+
+def failed_case_evidence(case, calls, error):
+    """Report a failed strict audit without admitting any task success."""
+    result = {"evidence_verified": False, "strict_task_passed": False,
+              "audit_error": repr(error), "actual_integrations": None, "fresh_vla_calls": calls,
+              "partial_trace_verified": False}
+    receipt_path = Path(case) / "native/capture_receipt.json"
+    if receipt_path.exists():
+        try:
+            partial = json.loads(receipt_path.read_text())
+            result["failure_reason"] = partial.get("failure_reason")
+            qwen = partial.get("mobile_assist_handoff", {}).get("qwen_postgrasp_transport", {})
+            if "http_results" in qwen:
+                result["qwen_http_results"] = qwen["http_results"]
+        except (OSError, ValueError, TypeError, AttributeError) as receipt_error:
+            result["partial_receipt_error"] = repr(receipt_error)
+    try:
+        result.update(partial_trace_evidence(case))
+    except Exception as trace_error:
+        result["partial_trace_error"] = repr(trace_error)
+    # The failed full audit is retained even if recorded integrations verify.
+    result["evidence_verified"] = False
+    result["strict_task_passed"] = False
+    return result
 
 
 def validate(manifest, scripts=SCRIPTS):
@@ -285,14 +310,7 @@ def run(args):
                                 and after["current_episode_id"] == episode)
                             result["strict_task_passed"] &= result["model_counter_verified"] and execution["app_exit_code"] == 0
                         except Exception as error:
-                            result = {"evidence_verified": False, "strict_task_passed": False,
-                                      "audit_error": repr(error), "actual_integrations": 0, "fresh_vla_calls": calls}
-                            receipt_path = current / "native/capture_receipt.json"
-                            if receipt_path.exists():
-                                partial = json.loads(receipt_path.read_text())
-                                result["actual_integrations"] = partial["actual_integrations"]
-                                result["failure_reason"] = partial["failure_reason"]
-                                result["qwen_http_results"] = partial.get("mobile_assist_handoff", {}).get("qwen_postgrasp_transport", {}).get("http_results", 0)
+                            result = failed_case_evidence(current, calls, error)
                         result.update(position_id=spec["position_id"], seed=seed, episode_id=episode)
                         video_path = current / "mobile_live_full.mp4"
                         if video_path.exists():
@@ -301,9 +319,15 @@ def run(args):
                         save(current / "execution.json", execution)
                         save(current / "independent_route_audit.json", result)
                         summary["cases"].append(result)
-                        summary["actual_integrations"] += result["actual_integrations"]
+                        summary["actual_integrations"] += result["actual_integrations"] or 0
+                        if not result["evidence_verified"]:
+                            summary["actual_integrations_is_lower_bound"] = True
+                        if result["actual_integrations"] is None:
+                            summary.setdefault("unknown_integration_cases", []).append(episode)
                         summary["fresh_vla_calls"] += calls
                         summary["qwen_http_results"] += result.get("qwen_http_results", 0)
+                        if "qwen_http_results" not in result:
+                            summary["qwen_http_results_is_lower_bound"] = True
                         summary["successes"] += int(result["strict_task_passed"])
                         save(args.output / "summary.json", summary)
                         print(f"EVENT case ended strict_pass={result['strict_task_passed']} ticks={result['actual_integrations']} N16={calls} score={summary['successes']}/{len(summary['cases'])}", flush=True)

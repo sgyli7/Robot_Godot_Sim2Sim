@@ -123,6 +123,39 @@ def qwen_evidence(native, receipt, episode):
     return hashlib.sha256(png).hexdigest() == events[0]["image_sha256"]
 
 
+def partial_trace_evidence(case):
+    """Verify recorded integrations only; an incomplete run cannot pass a task.
+
+    This does not invent a capture receipt, infer missing model calls, or prove
+    that the trace covers every integration before process termination.
+    """
+    case = Path(case)
+    cfg = json.loads((case / "config.json").read_text())
+    body_cfg = cfg["runner"]["body"]["mobile_homie_v2"]
+    episode = body_cfg["episode_id"]
+    definition_path = Path(body_cfg["definition"])
+    object_path = Path(body_cfg["task_objects"]["definition"])
+    if (episode <= 0 or digest(definition_path) != body_cfg["definition_sha256"]
+            or digest(object_path) != body_cfg["task_objects"]["definition_sha256"]):
+        raise ValueError("Partial trace has unbound episode/robot/object definitions")
+    trace = case / "native/owner_steps.jsonl"
+    with trace.open() as stream:
+        rows = [json.loads(line) for line in stream]
+    if any(row["episode_id"] != episode for row in rows):
+        raise ValueError("Partial trace belongs to a foreign episode")
+    route = route_evidence(json.loads(definition_path.read_text()), rows) if rows else {}
+    for row in rows:
+        frame = row["body"]["mobile_homie_v2"].get("frame")
+        if frame is not None and (frame["episode_id"] != episode
+                                  or frame["source_tick"] != row["owner_episode_integrations"]):
+            raise ValueError("Partial trace frame identity disagrees with recorded integration")
+    return {"actual_integrations": len(rows), "recorded_integrations": len(rows),
+            "partial_trace_verified": True, "trace_complete_before_termination_proven": False,
+            "application_receipt_missing": not (case / "native/capture_receipt.json").exists(),
+            "trace_sha256": digest(trace), "partial_route": route,
+            "strict_task_passed": False, "full_task_qualified": False}
+
+
 def audit(case, seed):
     case = Path(case)
     native = case / "native"

@@ -10,7 +10,7 @@ import subprocess
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import unitree_g1_mobile_suite as suite
-from unitree_g1_mobile_capture_audit import route_evidence
+from unitree_g1_mobile_capture_audit import digest, route_evidence
 
 
 def manifest(directory):
@@ -56,6 +56,72 @@ def route_fixture():
 
 
 class MobileSuiteTests(unittest.TestCase):
+    def partial_case(self, directory):
+        definition, rows = route_fixture()
+        (directory / "native").mkdir()
+        body = directory / "robot.json"
+        objects = directory / "objects.json"
+        body.write_text(json.dumps(definition))
+        objects.write_text("{}")
+        cfg = {"runner": {"body": {"mobile_homie_v2": {
+            "episode_id": 17, "definition": str(body), "definition_sha256": digest(body),
+            "task_objects": {"definition": str(objects), "definition_sha256": digest(objects)}}}}}
+        (directory / "config.json").write_text(json.dumps(cfg))
+        for row in rows:
+            row["episode_id"] = 17
+        trace = directory / "native/owner_steps.jsonl"
+        trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        return rows, trace
+
+    def test_timeout_retains_verified_trace_count_without_fabricating_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            rows, trace = self.partial_case(directory)
+            result = suite.failed_case_evidence(directory, 4, FileNotFoundError("capture_receipt.json"))
+            self.assertEqual(result["actual_integrations"], len(rows))
+            self.assertTrue(result["partial_trace_verified"])
+            self.assertFalse(result["evidence_verified"])
+            self.assertFalse(result["strict_task_passed"])
+            self.assertTrue(result["application_receipt_missing"])
+            self.assertEqual(result["trace_sha256"], digest(trace))
+            self.assertEqual(result["fresh_vla_calls"], 4)
+            self.assertNotIn("qwen_http_results", result)
+            self.assertFalse((directory / "native/capture_receipt.json").exists())
+
+    def test_invalid_or_missing_partial_trace_is_unknown_instead_of_zero(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            rows, trace = self.partial_case(directory)
+            for mutation in ["duplicate", "foreign_episode", "substep", "truncated", "missing"]:
+                changed = copy.deepcopy(rows)
+                if mutation == "duplicate": changed[-1]["owner_episode_integrations"] -= 1
+                if mutation == "foreign_episode": changed[-1]["episode_id"] = 18
+                if mutation == "substep": changed[-1]["body"]["mobile_homie_v2"]["step_configuration"]["physics_hz"] = 200
+                trace.write_text("".join(json.dumps(row) + "\n" for row in changed))
+                if mutation == "truncated": trace.write_text(trace.read_text() + '{"episode_id":')
+                if mutation == "missing": trace.unlink()
+                result = suite.failed_case_evidence(directory, 4, RuntimeError("strict audit failed"))
+                self.assertIsNone(result["actual_integrations"], mutation)
+                self.assertFalse(result["partial_trace_verified"], mutation)
+                self.assertFalse(result["strict_task_passed"], mutation)
+                self.assertIn("partial_trace_error", result)
+
+    def test_foreign_definitions_and_unverified_receipt_counts_cannot_override_trace(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            rows, _ = self.partial_case(directory)
+            receipt = directory / "native/capture_receipt.json"
+            receipt.write_text(json.dumps({"actual_integrations": 999, "failure_reason": "timeout"}))
+            result = suite.failed_case_evidence(directory, 4, RuntimeError("mismatched count"))
+            self.assertEqual(result["actual_integrations"], len(rows))
+            self.assertFalse(result["application_receipt_missing"])
+            self.assertFalse(result["evidence_verified"])
+            (directory / "robot.json").write_text("{}")
+            result = suite.failed_case_evidence(directory, 4, RuntimeError("changed definition"))
+            self.assertIsNone(result["actual_integrations"])
+            self.assertFalse(result["partial_trace_verified"])
+            self.assertIn("unbound", result["partial_trace_error"])
+
     def test_foreign_window_closing_retries_only_the_read_without_restarting_app(self):
         child = Mock(pid=123)
         child.poll.return_value = None
