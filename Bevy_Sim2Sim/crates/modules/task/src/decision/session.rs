@@ -8,8 +8,9 @@ use crate::types::{EpisodeId, ObservationStamp, SkillAvailability, SkillRequest,
 
 use super::{
     DecisionError, DecisionInput, DecisionMemory, DecisionReply, ExecutionFeedback, FeedbackStatus,
-    ModelDecision, ObservationSnapshot, RgbVerifiedTargets, SelectionInput, SelectionReply,
-    TargetKind, TaskGoal, VisualTarget,
+    ModelDecision, ObservationSnapshot, ProfileStartInput, ProfileStartReply, ProfileStartRequest,
+    RgbVerifiedTargets, SelectionInput, SelectionReply, TargetKind, TaskGoal,
+    ValidatedProfileStart, VisualTarget,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +58,7 @@ pub struct DecisionSession {
     next_request: u64,
     pending: Option<(u64, ObservationStamp)>,
     pending_rgb_targets: Option<RgbVerifiedTargets>,
+    pending_profile_start: bool,
     latest_decision: Option<u64>,
     last_frame: Option<u64>,
     safe_stop: Option<String>,
@@ -89,6 +91,7 @@ impl DecisionSession {
             next_request: 1,
             pending: None,
             pending_rgb_targets: None,
+            pending_profile_start: false,
             latest_decision: None,
             last_frame: None,
             safe_stop: None,
@@ -135,6 +138,7 @@ impl DecisionSession {
         self.recent_decisions.clear();
         self.pending = None;
         self.pending_rgb_targets = None;
+        self.pending_profile_start = false;
         self.latest_decision = None;
         self.last_frame = None;
         self.safe_stop = Some("scene reset; discard prior action history".into());
@@ -169,6 +173,7 @@ impl DecisionSession {
             .ok_or_else(|| DecisionError::Rejected("request sequence exhausted".into()))?;
         self.pending = Some((request_id, observation.stamp));
         self.pending_rgb_targets = None;
+        self.pending_profile_start = false;
         self.last_frame = Some(observation.stamp.frame_id);
         Ok(DecisionInput {
             request_id,
@@ -200,6 +205,75 @@ impl DecisionSession {
         })
     }
 
+    /// Select whether to start the goal's declared fixed profile. This request
+    /// does not register targets or authorize any later geometric operation.
+    pub fn prepare_profile_start(
+        &mut self,
+        observation: ObservationSnapshot,
+        now_unix_ms: u64,
+        current_sim_time_ns: u64,
+    ) -> Result<ProfileStartInput, DecisionError> {
+        let context = self.prepare(observation, now_unix_ms, current_sim_time_ns)?;
+        self.pending_profile_start = true;
+        Ok(ProfileStartInput { context })
+    }
+
+    pub fn accept_profile_start(
+        &mut self,
+        reply: ProfileStartReply,
+        now_unix_ms: u64,
+        current_sim_time_ns: u64,
+    ) -> Result<ValidatedProfileStart, DecisionError> {
+        if self.pending != Some((reply.request_id, reply.stamp)) {
+            return Err(DecisionError::Rejected(
+                "unmatched profile start or previous episode".into(),
+            ));
+        }
+        self.pending = None;
+        let result = (|| {
+            if !std::mem::take(&mut self.pending_profile_start)
+                || self.pending_rgb_targets.take().is_some()
+            {
+                return Err(DecisionError::Rejected(
+                    "profile start lacks its prepared request kind".into(),
+                ));
+            }
+            self.check_stamp(reply.stamp, now_unix_ms, current_sim_time_ns)?;
+            let decision = reply.result?;
+            if decision.episode_id != self.episode_id
+                || decision.frame_id != reply.stamp.frame_id
+                || decision.reason.trim().is_empty()
+                || decision.reason.len() > 128
+            {
+                return Err(DecisionError::Rejected(
+                    "profile start has wrong generation, frame or rationale".into(),
+                ));
+            }
+            if matches!(decision.request, ProfileStartRequest::BeginFixedProfile {})
+                && !self.availability.supports(self.goal.profile)
+            {
+                return Err(DecisionError::Rejected(
+                    "fixed profile is not enabled by the executor".into(),
+                ));
+            }
+            Ok(ValidatedProfileStart {
+                decision_id: reply.request_id,
+                stamp: reply.stamp,
+                decision,
+                image_to_decision_ms: now_unix_ms - reply.stamp.captured_at_unix_ms,
+                service_elapsed_ms: reply.elapsed_ms,
+            })
+        })();
+        if let Err(error) = &result {
+            self.remember_failure(
+                reply.request_id,
+                reply.stamp.sim_time_ns,
+                bounded_text(error.to_string(), 512),
+            );
+        }
+        result
+    }
+
     /// Clear a failed submission/transport and request a local safe stop. The
     /// runtime must consume take_safe_stop even if it chooses to request a retry.
     pub fn service_failed(&mut self, request_id: u64, reason: impl Into<String>) {
@@ -207,6 +281,7 @@ impl DecisionSession {
             let reason = bounded_text(reason.into(), 512);
             self.pending = None;
             self.pending_rgb_targets = None;
+            self.pending_profile_start = false;
             self.remember_failure(pending, stamp.sim_time_ns, reason);
         }
     }
@@ -228,6 +303,7 @@ impl DecisionSession {
         let reason = bounded_text(reason.into(), 512);
         if let Some((request_id, stamp)) = self.pending.take() {
             self.pending_rgb_targets = None;
+            self.pending_profile_start = false;
             self.remember_failure(request_id, stamp.sim_time_ns, reason);
         } else {
             self.safe_stop = Some(reason);
@@ -254,7 +330,9 @@ impl DecisionSession {
         self.pending = None;
         let request_id = reply.request_id;
         let sim_time_ns = reply.stamp.sim_time_ns;
-        let result = if self.pending_rgb_targets.take().is_some() {
+        let result = if std::mem::take(&mut self.pending_profile_start)
+            || self.pending_rgb_targets.take().is_some()
+        {
             Err(DecisionError::Rejected(
                 "RGB selection cannot be admitted as a model visual-claim reply".into(),
             ))
@@ -286,6 +364,11 @@ impl DecisionSession {
         let request_id = reply.request_id;
         let sim_time_ns = reply.stamp.sim_time_ns;
         let result = (|| {
+            if std::mem::take(&mut self.pending_profile_start) {
+                return Err(DecisionError::Rejected(
+                    "profile start cannot be admitted as RGB target selection".into(),
+                ));
+            }
             let targets = self.pending_rgb_targets.take().ok_or_else(|| {
                 DecisionError::Rejected(
                     "selection reply lacks prepared current RGB evidence".into(),

@@ -1215,3 +1215,196 @@ fn worker_reset_discards_running_old_episode_without_parallel_inference() {
     }
     assert!(worker.try_recv().unwrap().is_none());
 }
+
+fn profile_reply(
+    input: &task_minigame::decision::ProfileStartInput,
+    action: task_minigame::decision::ProfileStartRequest,
+) -> task_minigame::decision::ProfileStartReply {
+    task_minigame::decision::ProfileStartReply {
+        request_id: input.context.request_id,
+        stamp: input.context.observation.stamp,
+        elapsed_ms: 10,
+        result: Ok(task_minigame::decision::ProfileStartDecision {
+            episode_id: input.context.observation.stamp.episode_id,
+            frame_id: input.context.observation.stamp.frame_id,
+            request: action,
+            reason: "fixed profile decision".into(),
+        }),
+    }
+}
+
+#[test]
+fn fixed_profile_admission_registers_no_unseen_targets_and_preserves_stop_choice() {
+    use task_minigame::decision::ProfileStartRequest;
+    let client = LocalQwenClient::new(LocalQwenConfig::default()).unwrap();
+    for enabled in [false, true] {
+        for action in [
+            ProfileStartRequest::BeginFixedProfile {},
+            ProfileStartRequest::Observe {},
+            ProfileStartRequest::Stop {},
+        ] {
+            let mut session = session(TaskProfile::MobileBox, enabled);
+            let input = session
+                .prepare_profile_start(observation(1, 1), 1000, 20_000_000)
+                .unwrap();
+            let body = client.profile_start_request_body(&input).unwrap();
+            let choices = body["response_format"]["json_schema"]["schema"]["properties"]["request"]
+                ["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap();
+            assert!(choices.contains(&json!("observe")) && choices.contains(&json!("stop")));
+            assert_eq!(choices.contains(&json!("begin_fixed_profile")), enabled);
+            assert!(
+                body["messages"][1]["content"][1]["image_url"]["url"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:image/png;base64,")
+            );
+            let admitted = session.accept_profile_start(
+                profile_reply(&input, action.clone()),
+                1100,
+                20_000_000,
+            );
+            assert_eq!(
+                admitted.is_ok(),
+                enabled || action != ProfileStartRequest::BeginFixedProfile {}
+            );
+            assert_eq!(
+                session.targets().count(),
+                0,
+                "profile start cannot create visual target memory"
+            );
+        }
+    }
+}
+
+#[test]
+fn fixed_profile_admission_rejects_expiration_reset_revoke_and_foreign_frame() {
+    use task_minigame::decision::ProfileStartRequest;
+    for mutation in [
+        "expired",
+        "reset",
+        "revoked",
+        "wrong_frame",
+        "wrong_episode",
+        "future_stamp",
+        "wire_kind",
+    ] {
+        let mut session = session(TaskProfile::MobileBox, true);
+        let input = session
+            .prepare_profile_start(observation(1, 1), 1000, 20_000_000)
+            .unwrap();
+        let mut reply = profile_reply(&input, ProfileStartRequest::BeginFixedProfile {});
+        let mut now = 1100;
+        match mutation {
+            "expired" => now = 31_001,
+            "reset" => session.reset(2, goal(TaskProfile::MobileBox)).unwrap(),
+            "revoked" => session.revoke_physical_skills(),
+            "wrong_frame" => reply.result.as_mut().unwrap().frame_id = 2,
+            "wrong_episode" => reply.result.as_mut().unwrap().episode_id = 2,
+            "future_stamp" => now = 999,
+            "wire_kind" => {
+                assert!(
+                    session
+                        .accept(
+                            DecisionReply {
+                                request_id: reply.request_id,
+                                stamp: reply.stamp,
+                                elapsed_ms: 10,
+                                result: Ok(decision(SkillRequest::Observe))
+                            },
+                            1100,
+                            20_000_000
+                        )
+                        .is_err()
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            session
+                .accept_profile_start(reply, now, 20_000_000)
+                .is_err(),
+            "{mutation}"
+        );
+    }
+}
+
+#[test]
+fn late_fixed_profile_reply_does_not_cancel_new_episode_request() {
+    use task_minigame::decision::ProfileStartRequest;
+    let mut session = session(TaskProfile::MobileBox, true);
+    let old = session
+        .prepare_profile_start(observation(1, 1), 1000, 20_000_000)
+        .unwrap();
+    session.reset(2, goal(TaskProfile::MobileBox)).unwrap();
+    let new = session
+        .prepare_profile_start(observation(2, 1), 1000, 20_000_000)
+        .unwrap();
+    assert!(
+        session
+            .accept_profile_start(
+                profile_reply(&old, ProfileStartRequest::BeginFixedProfile {}),
+                1100,
+                20_000_000
+            )
+            .is_err()
+    );
+    assert!(session.is_pending());
+    assert!(
+        session
+            .accept_profile_start(
+                profile_reply(&new, ProfileStartRequest::BeginFixedProfile {}),
+                1100,
+                20_000_000
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn fixed_profile_worker_uses_the_local_bounded_transport_without_actuator_fields() {
+    use task_minigame::decision::{ProfileStartDecision, ProfileStartRequest};
+    let model = ProfileStartDecision {
+        episode_id: 1,
+        frame_id: 1,
+        request: ProfileStartRequest::BeginFixedProfile {},
+        reason: "supported fixed profile".into(),
+    };
+    let mock = serve("200 OK",json!({"choices":[{"message":{"content":serde_json::to_string(&model).unwrap()},"finish_reason":"stop"}]}).to_string(),Duration::ZERO);
+    let client = LocalQwenClient::new(LocalQwenConfig {
+        base_url: mock.url.clone(),
+        ..Default::default()
+    })
+    .unwrap();
+    let worker = DecisionWorker::spawn(client, 1).unwrap();
+    let mut session = session(TaskProfile::MobileBox, true);
+    let input = session
+        .prepare_profile_start(observation(1, 1), 1000, 20_000_000)
+        .unwrap();
+    worker.try_submit_profile_start(input.clone()).unwrap();
+    assert!(matches!(
+        worker.try_submit_profile_start(input),
+        Err(DecisionError::Busy)
+    ));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let reply = loop {
+        if let Some(reply) = worker.try_recv_profile_start().unwrap() {
+            break reply;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    };
+    session
+        .accept_profile_start(reply, 1100, 20_000_000)
+        .unwrap();
+    let body = mock.request.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        body["response_format"]["json_schema"]["name"],
+        "g1_fixed_profile_start_v1"
+    );
+    assert_eq!(body["max_tokens"], 128);
+    assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(worker.transport_counts(), (1, 1, 0));
+    mock.handle.join().unwrap();
+}

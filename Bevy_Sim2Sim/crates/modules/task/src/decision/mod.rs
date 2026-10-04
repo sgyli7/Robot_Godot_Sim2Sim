@@ -2,6 +2,7 @@
 
 mod client;
 mod observation;
+mod profile_start;
 mod selection;
 mod session;
 mod wire;
@@ -9,6 +10,10 @@ mod worker;
 
 pub use client::{LocalQwenClient, LocalQwenConfig};
 pub use observation::{CameraRgb, ObservationSnapshot, TaskGoal};
+pub use profile_start::{
+    ProfileStartDecision, ProfileStartInput, ProfileStartReply, ProfileStartRequest,
+    ValidatedProfileStart,
+};
 pub use selection::{
     RgbTarget, RgbVerifiedTargets, SelectionDecision, SelectionInput, SelectionReply,
     SelectionRequest,

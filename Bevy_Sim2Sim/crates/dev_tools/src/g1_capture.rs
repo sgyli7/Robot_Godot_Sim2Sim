@@ -1888,9 +1888,11 @@ fn run_capture_owner(
             } else {
                 mobile_scan.is_some()
             }
-            || diagnostic_qwen_dispatch.is_some())
+            || diagnostic_qwen_dispatch
+                .as_ref()
+                .is_some_and(|q| !station_release || !q.is_station_initial()))
     {
-        return Err("station T2 fixture entry permits zero-Tick camera initialization,200Tick/four-fresh-chunk grasp,2300Tick public-aisle carry/stop, or3300Tick actual marked RGB bin approach/release, with100Tick self-state hold; source warehouse, prefetch and Qwen dispatch remain inadmissible".into());
+        return Err("station T2 fixture entry permits zero-Tick camera initialization,200Tick/four-fresh-chunk grasp,2300Tick public-aisle carry/stop, or3300Tick actual marked RGB bin approach/release, with100Tick self-state hold; only the explicit initial station Qwen scope may dispatch the3300Tick fixture; source warehouse and prefetch remain inadmissible".into());
     }
     if let Some(qwen) = &diagnostic_qwen_dispatch {
         if !cfg!(feature = "g1_constraint_diagnostic") {
@@ -2562,7 +2564,11 @@ fn run_capture_owner(
         outcome.0.lock().unwrap().scope = "native_bounded_continuous_actual_rgb_grasp_classical_carry_release_source_scene_not_qualified";
     }
     if qwen_dispatch_enabled {
-        outcome.0.lock().unwrap().scope = "native_source_mobile_postgrasp_local_qwen_transport_and_feedback_diagnostic_not_qualified";
+        outcome.0.lock().unwrap().scope = if station_release {
+            "native_station_initial_local_qwen_fixed_profile_and_rgb_transport_feedback_diagnostic_not_qualified"
+        } else {
+            "native_source_mobile_postgrasp_local_qwen_transport_and_feedback_diagnostic_not_qualified"
+        };
     }
     if let Some(preparation) = station_preparation {
         let mut receipt = outcome.0.lock().unwrap();
@@ -5637,6 +5643,23 @@ fn drive_capture(
         });
         if !render_ready && !prefetch_running {
             return Ok(());
+        }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(dispatch) = runtime.qwen_dispatch.take() {
+            let result = {
+                let mut guard = dispatch
+                    .lock()
+                    .map_err(|_| "Qwen initial dispatch poisoned")?;
+                let result = guard.initial(&mut runtime, &outcome, &port);
+                if let Err(reason) = &result {
+                    guard.record_failure(&outcome, reason)?;
+                }
+                result
+            };
+            runtime.qwen_dispatch = Some(dispatch);
+            if !result? {
+                return Ok(());
+            }
         }
         if runtime.live_policy.is_some() && !drive_bounded_task(&mut runtime, &outcome, &port)? {
             return Ok(());

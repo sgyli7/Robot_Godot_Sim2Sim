@@ -1,6 +1,6 @@
-//! Explicit post-grasp source-task diagnostic. Local Qwen admits one transport
-//! request; current RGB geometry and the existing sole owner execute it. The
-//! original grasp/search preparation is disclosed and is not Qwen controlled.
+//! Explicit finite Qwen dispatch. The station scope additionally admits the
+//! fixed profile from initial RGB before any policy or physics update. Target
+//! localization and original policy/classical control remain distinct.
 use super::*;
 #[cfg(feature = "g1_constraint_diagnostic")]
 use sha2::{Digest, Sha256};
@@ -12,7 +12,7 @@ use simulation_minigame::g1::{
 use task_minigame::{
     decision::{
         DecisionLimits, DecisionSession, DecisionWorker, ExecutionFeedback, FeedbackStatus,
-        ObservationSnapshot, RgbTarget, RgbVerifiedTargets, ValidatedDecision,
+        ObservationSnapshot, ProfileStartRequest, RgbTarget, RgbVerifiedTargets, ValidatedDecision,
     },
     types::{SkillAvailability, SkillRequest},
 };
@@ -26,6 +26,7 @@ use task_minigame::{
 enum Scope {
     PostgraspSourceMobileTransportV1,
     PostgraspSourceMobileTransportV2RgbVerifiedSelection,
+    ScientificStationMobileFromInstructionV1,
 }
 
 #[derive(Clone, Deserialize)]
@@ -44,12 +45,18 @@ impl Configuration {
     ) -> Result<(), String> {
         match self.scope {
             Scope::PostgraspSourceMobileTransportV1
-            | Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection => {}
+            | Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection
+            | Scope::ScientificStationMobileFromInstructionV1 => {}
         }
         let CaptureRunnerConfig::Task(task) = config else {
             return Err("Qwen transport diagnostic requires the matched task owner".into());
         };
-        if mode != CaptureMode::MobileAuxiliaryRelease
+        if mode
+            != if self.is_station_initial() {
+                CaptureMode::StationMobileRelease
+            } else {
+                CaptureMode::MobileAuxiliaryRelease
+            }
             || task.body.profile() != TaskProfile::MobileBox
             || task.max_observation_wall_age_ms != 20_000
             || task.max_observation_age_ns != 1_000_000_000
@@ -67,7 +74,26 @@ impl Configuration {
         TaskGoal {
             instruction: self.instruction.clone(),
             profile: TaskProfile::MobileBox,
-            public_scene_description: "Finite post-grasp source-task development diagnostic, not task qualification. The four original grasp chunks and public-map search already completed. Only the original brown-box-to-blue-bin task is supported. The publicly printed carried-box marker22 names box_marker_22; the target-zone marker21 names bin_marker_21. Use these IDs for the visibly supported box and blue placement zone. No navigation adjustment is available.".into(),
+            public_scene_description: format!(
+                "Finite post-grasp {} development diagnostic, not task qualification. The four original grasp chunks and public-map search already completed. Only the original brown-box-to-blue-bin task is supported. The publicly printed carried-box marker22 names box_marker_22; the target-zone marker21 names bin_marker_21. Use these IDs for the visibly supported box and blue placement zone. No navigation adjustment is available.",
+                if self.is_station_initial() {
+                    "scientific-station fixed-profile"
+                } else {
+                    "source-task"
+                }
+            ),
+        }
+    }
+
+    pub(super) fn is_station_initial(&self) -> bool {
+        matches!(self.scope, Scope::ScientificStationMobileFromInstructionV1)
+    }
+
+    fn initial_goal(&self) -> TaskGoal {
+        TaskGoal {
+            instruction: self.instruction.clone(),
+            profile: TaskProfile::MobileBox,
+            public_scene_description: "Declared finite scientific-station development profile, not task qualification. Only the fixed original brown-box-to-blue-bin mobile task is supported. Begin admits four original N1.6 grasp chunks and the disclosed public-aisle search. It does not assert that the destination is visible or located. Transport still requires another Qwen decision over both actual RGB marker22(box) and marker21(blue placement zone); release requires separate new calibrated RGB checks. No apple task, arbitrary object/destination or navigation adjustment is available.".into(),
         }
     }
 
@@ -75,6 +101,7 @@ impl Configuration {
         matches!(
             self.scope,
             Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection
+                | Scope::ScientificStationMobileFromInstructionV1
         )
     }
 
@@ -83,6 +110,9 @@ impl Configuration {
             Scope::PostgraspSourceMobileTransportV1 => "postgrasp_source_mobile_transport_v1",
             Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection => {
                 "postgrasp_source_mobile_transport_v2_rgb_verified_selection"
+            }
+            Scope::ScientificStationMobileFromInstructionV1 => {
+                "scientific_station_mobile_from_instruction_v1"
             }
         }
     }
@@ -112,6 +142,15 @@ struct PendingTransport {
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
+struct PendingInitial {
+    stamp: ObservationStamp,
+    directory: PathBuf,
+    image_sha256: String,
+    capture_sha256: String,
+    request_sha256: String,
+}
+
+#[cfg(feature = "g1_constraint_diagnostic")]
 pub(super) struct Dispatch {
     configuration: Configuration,
     worker: DecisionWorker,
@@ -120,6 +159,8 @@ pub(super) struct Dispatch {
     executed_decision: Option<ValidatedDecision>,
     feedback_pending: bool,
     completed: bool,
+    initial_pending: Option<PendingInitial>,
+    initial_admitted: bool,
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -263,6 +304,8 @@ impl Dispatch {
             executed_decision: None,
             feedback_pending: false,
             completed: false,
+            initial_pending: None,
+            initial_admitted: false,
         })
     }
 
@@ -281,6 +324,8 @@ impl Dispatch {
                 "detector_measurements_are_model_claims":false,"initial_grasp_and_search_qwen_controlled":false,
                 "physics_paused_during_qwen":true,"public_marker_roles":{"box_marker_22":22,"bin_marker_21":21},
                 "maximum_transport_admissions":1,"world_or_contact_truth_input":false,"task_qualified":false,"events":[],
+                "initial_fixed_profile_admission_required":self.configuration.is_station_initial(),
+                "initial_grasp_and_search_use_disclosed_fixed_executor":true,
             });
         }
         let events = handoff["qwen_postgrasp_transport"]["events"]
@@ -295,6 +340,148 @@ impl Dispatch {
         handoff["qwen_postgrasp_transport"]["http_results"] = results.into();
         handoff["qwen_postgrasp_transport"]["discarded_results"] = discarded.into();
         Ok(())
+    }
+
+    /// No action chunk, standing command or integration may precede admission.
+    pub(super) fn initial(
+        &mut self,
+        runtime: &mut CaptureRuntime,
+        outcome: &CaptureOutcome,
+        port: &G1CameraPort,
+    ) -> Result<bool, String> {
+        if !self.configuration.is_station_initial() || self.initial_admitted {
+            return Ok(true);
+        }
+        let latest = runtime.latest.as_ref().ok_or("initial Qwen lacks owner")?;
+        if latest.phase != G1WorkerPhase::Paused
+            || latest.episode_id != runtime.episode_id
+            || latest.timing.episode_integrations != 0
+            || runtime.startup_ticks != 0
+            || runtime
+                .live_policy
+                .as_ref()
+                .is_none_or(|p| p.submitted_chunks != 0 || p.pending.is_some())
+        {
+            return Err("initial Qwen requires the unchanged zero-Tick native boundary before any policy inference".into());
+        }
+        if let Some(pending) = &self.initial_pending {
+            let session = self.session.as_mut().ok_or("initial Qwen session absent")?;
+            if session.expire_pending(unix_ms()?, 0) {
+                return Err("initial Qwen image expired; zero-Tick owner remains paused".into());
+            }
+            let Some(reply) = self
+                .worker
+                .try_recv_profile_start()
+                .map_err(|e| e.to_string())?
+            else {
+                return Ok(false);
+            };
+            let admitted = session
+                .accept_profile_start(reply, unix_ms()?, 0)
+                .map_err(|e| e.to_string())?;
+            if admitted.stamp != pending.stamp
+                || input_hash(&pending.directory.join("ego.png"))? != pending.image_sha256
+                || input_hash(&pending.directory.join("audit_stamp.json"))?
+                    != pending.capture_sha256
+                || input_hash(&pending.directory.join("model_request.json"))?
+                    != pending.request_sha256
+            {
+                return Err("initial Qwen input changed during inference".into());
+            }
+            self.record(outcome,serde_json::json!({"event":"initial_profile_decision_admitted",
+                "model_decision":admitted.decision,"observation":admitted.stamp,
+                "image_age_ms":admitted.image_to_decision_ms,"service_elapsed_ms":admitted.service_elapsed_ms,
+                "actual_integrations_before_admission":0,"original_policy_calls_before_admission":0,
+                "target_localization_claim":false,"release_authorized":false}))?;
+            match admitted.decision.request {
+                ProfileStartRequest::BeginFixedProfile {} => {}
+                ProfileStartRequest::Observe {} => return Err("initial Qwen requested more observation; no policy or physical continuation admitted".into()),
+                ProfileStartRequest::Stop {} => return Err(format!("initial Qwen requested an explicit stop: {}",admitted.decision.reason)),
+            }
+            self.initial_admitted = true;
+            self.initial_pending = None;
+            self.session = None;
+            runtime.requested = false;
+            return Ok(true);
+        }
+        if !runtime.requested {
+            port.request_physics_frame(runtime.episode_id, 0)?;
+            runtime.requested = true;
+            return Ok(false);
+        }
+        let Some(frame) = port.take() else {
+            return Ok(false);
+        };
+        let frame = frame?;
+        if frame.stamp.source != CameraPoseSource::PhysicsBody
+            || frame.stamp.mount_profile != G1CameraMountProfile::ArenaEgo
+            || frame.stamp.episode_id != runtime.episode_id
+            || frame.stamp.source_ticks != [0; 2]
+            || frame.stamp.sim_time_ns != 0
+        {
+            return Err("initial Qwen RGB is not the actual original camera at zero Tick".into());
+        }
+        let rgb = task_minigame::decision::CameraRgb::from_rgb(
+            "initial_arena_ego",
+            frame.width,
+            frame.height,
+            frame.rgb,
+        )
+        .map_err(|e| e.to_string())?;
+        let directory = runtime.options.output.join("initial_qwen");
+        fs::create_dir(&directory).map_err(|e| e.to_string())?;
+        fs::write(directory.join("ego.png"), rgb.png()).map_err(|e| e.to_string())?;
+        fs::write(
+            directory.join("audit_stamp.json"),
+            serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let snapshot =
+            crate::g1_decision_diagnostic::snapshot_from_capture(&frame.stamp, rgb.png().to_vec())?;
+        let mut session = DecisionSession::new(
+            runtime.episode_id,
+            self.configuration.initial_goal(),
+            SkillAvailability {
+                mobile_box: true,
+                ..Default::default()
+            },
+            DecisionLimits {
+                max_frame_age_ms: 20_000,
+                max_sim_age_ns: 1_000_000_000,
+                target_ttl_ms: 20_000,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let input = session
+            .prepare_profile_start(snapshot, unix_ms()?, 0)
+            .map_err(|e| e.to_string())?;
+        let body = self
+            .configuration
+            .client()?
+            .profile_start_request_body(&input)
+            .map_err(|e| e.to_string())?;
+        fs::write(
+            directory.join("model_request.json"),
+            serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        self.worker
+            .try_submit_profile_start(input.clone())
+            .map_err(|e| e.to_string())?;
+        self.initial_pending = Some(PendingInitial {
+            stamp: input.context.observation.stamp,
+            directory: directory.clone(),
+            image_sha256: input_hash(&directory.join("ego.png"))?,
+            capture_sha256: input_hash(&directory.join("audit_stamp.json"))?,
+            request_sha256: input_hash(&directory.join("model_request.json"))?,
+        });
+        self.session = Some(session);
+        let pending = self.initial_pending.as_ref().unwrap();
+        self.record(outcome,serde_json::json!({"event":"initial_profile_request_submitted","observation":pending.stamp,
+            "actual_integrations_before_request":0,"original_policy_calls_before_request":0,
+            "image_sha256":pending.image_sha256,"capture_sha256":pending.capture_sha256,"request_sha256":pending.request_sha256,
+            "target_localization_claim":false,"world_or_contact_truth_input":false}))?;
+        Ok(false)
     }
 
     fn start_transport(

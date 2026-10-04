@@ -13,31 +13,36 @@ use std::{
 use crate::types::EpisodeId;
 
 use super::{
-    DecisionError, DecisionInput, DecisionReply, LocalQwenClient, SelectionInput, SelectionReply,
+    DecisionError, DecisionInput, DecisionReply, LocalQwenClient, ProfileStartInput,
+    ProfileStartReply, SelectionInput, SelectionReply,
 };
 use crate::types::ObservationStamp;
 
 enum Input {
     Visual(DecisionInput),
     Selection(SelectionInput),
+    ProfileStart(ProfileStartInput),
 }
 impl Input {
     fn stamp(&self) -> ObservationStamp {
         match self {
             Self::Visual(i) => i.observation.stamp,
             Self::Selection(i) => i.context.observation.stamp,
+            Self::ProfileStart(i) => i.context.observation.stamp,
         }
     }
 }
 enum Reply {
     Visual(DecisionReply),
     Selection(SelectionReply),
+    ProfileStart(ProfileStartReply),
 }
 impl Reply {
     fn stamp(&self) -> ObservationStamp {
         match self {
             Self::Visual(r) => r.stamp,
             Self::Selection(r) => r.stamp,
+            Self::ProfileStart(r) => r.stamp,
         }
     }
 }
@@ -96,6 +101,12 @@ impl DecisionWorker {
                             result: client.select_verified(&request),
                             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
                         }),
+                        Input::ProfileStart(request) => Reply::ProfileStart(ProfileStartReply {
+                            request_id: request.context.request_id,
+                            stamp,
+                            result: client.start_fixed_profile(&request),
+                            elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        }),
                     };
                     worker_results.fetch_add(1, Ordering::AcqRel);
                     if worker_episode.load(Ordering::Acquire) != stamp.episode_id {
@@ -131,6 +142,10 @@ impl DecisionWorker {
         self.submit(Input::Selection(input))
     }
 
+    pub fn try_submit_profile_start(&self, input: ProfileStartInput) -> Result<(), DecisionError> {
+        self.submit(Input::ProfileStart(input))
+    }
+
     fn submit(&self, input: Input) -> Result<(), DecisionError> {
         if input.stamp().episode_id != self.episode.load(Ordering::Acquire) {
             return Err(DecisionError::Rejected("worker generation mismatch".into()));
@@ -160,7 +175,7 @@ impl DecisionWorker {
     pub fn try_recv(&self) -> Result<Option<DecisionReply>, DecisionError> {
         match self.receive()? {
             Some(Reply::Visual(reply)) => Ok(Some(reply)),
-            Some(Reply::Selection(_)) => Err(DecisionError::Response(
+            Some(Reply::Selection(_) | Reply::ProfileStart(_)) => Err(DecisionError::Response(
                 "selection reply received by visual-claim consumer".into(),
             )),
             None => Ok(None),
@@ -170,8 +185,18 @@ impl DecisionWorker {
     pub fn try_recv_selection(&self) -> Result<Option<SelectionReply>, DecisionError> {
         match self.receive()? {
             Some(Reply::Selection(reply)) => Ok(Some(reply)),
-            Some(Reply::Visual(_)) => Err(DecisionError::Response(
+            Some(Reply::Visual(_) | Reply::ProfileStart(_)) => Err(DecisionError::Response(
                 "visual-claim reply received by selection consumer".into(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub fn try_recv_profile_start(&self) -> Result<Option<ProfileStartReply>, DecisionError> {
+        match self.receive()? {
+            Some(Reply::ProfileStart(reply)) => Ok(Some(reply)),
+            Some(Reply::Visual(_) | Reply::Selection(_)) => Err(DecisionError::Response(
+                "foreign reply received by fixed profile consumer".into(),
             )),
             None => Ok(None),
         }
