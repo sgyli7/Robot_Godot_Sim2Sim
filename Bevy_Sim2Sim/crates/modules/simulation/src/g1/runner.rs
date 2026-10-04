@@ -134,6 +134,8 @@ pub struct G1Runner {
     policy: HomiePolicy,
     actuator_backend: G1ActuatorBackend,
     halted: bool,
+    #[cfg(feature = "sim2sim_motor_row_trace")]
+    motor_effort_owner: Arc<()>,
 }
 
 impl G1Runner {
@@ -233,6 +235,8 @@ impl G1Runner {
             policy,
             actuator_backend: config.actuator_backend,
             halted: false,
+            #[cfg(feature = "sim2sim_motor_row_trace")]
+            motor_effort_owner: Arc::new(()),
         })
     }
 
@@ -1241,3 +1245,9 @@ mod tests {
 #[cfg(all(test, feature = "sim2sim_motor_row_trace"))]
 #[path = "runner/actuator_diagnostic.rs"]
 mod actuator_diagnostic;
+
+#[cfg(feature = "sim2sim_motor_row_trace")]
+#[path = "runner/motor_effort_window.rs"]
+mod motor_effort_window;
+#[cfg(feature = "sim2sim_motor_row_trace")]
+pub use motor_effort_window::G1MotorEffortWindow;

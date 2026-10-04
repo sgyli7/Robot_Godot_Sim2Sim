@@ -19,6 +19,13 @@ mod mobile_fixtures;
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod mobile_hold;
 
+#[cfg(all(
+    test,
+    feature = "sim2sim_motor_row_trace",
+    feature = "g1_contact_point_diagnostic"
+))]
+mod mobile_effort;
+
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod static_contact_revalidation;
 
