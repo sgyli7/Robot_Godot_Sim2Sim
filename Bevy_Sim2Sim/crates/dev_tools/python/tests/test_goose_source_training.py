@@ -10,7 +10,7 @@ from bevy_microduck_tools.goose.mjlab_baseline import build_task_proxy_reference
 from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv
 from bevy_microduck_tools.goose.source_training import (
     GooseRslEnv, completed_root_state, fallen, make_low_speed_cfg,
-    make_runner_cfg, make_standing_cfg)
+    make_runner_cfg, make_standing_cfg, initialize_velocity_transfer)
 
 
 def build_environment(tmp_path, monkeypatch, config_factory):
@@ -129,3 +129,42 @@ def test_reward_uses_command_that_produced_action(low_speed_environment):
     torch.testing.assert_close(env.reward_manager._step_reward[:, idx], expected)
     torch.testing.assert_close(obs["actor"][:, 6:9], torch.tensor([[.05, 0., .1]]).expand(2, -1))
     assert wrapper.real_integrations == 2
+
+
+def test_new_goal_transfer_preserves_standing_actions(low_speed_environment):
+    checkpoint = os.environ.get("GOOSE_STANDING_CHECKPOINT")
+    if not checkpoint:
+        pytest.skip("Actual frozen standing checkpoint required")
+    env = low_speed_environment
+    wrapper = GooseRslEnv(env)
+    runner = MjlabOnPolicyRunner(wrapper, make_runner_cfg(), log_dir=None, device="cpu")
+    runner.load(checkpoint, strict=True, map_location="cpu")
+    runner.alg.eval_mode()
+    observation = wrapper.get_observations()
+    observation["actor"][:, 6:9] = 0
+    with torch.inference_mode():
+        expected = runner.alg.actor(observation).clone()
+    before = {k:v.clone() for k,v in runner.alg.actor.state_dict().items()}
+    optimizer_before = {p:{k:v.clone() for k,v in values.items() if torch.is_tensor(v)}
+                        for p, values in runner.alg.optimizer.state.items()}
+    if not os.environ.get("GOOSE_TRANSFER_NEGATIVE_CONTROL"):
+        initialize_velocity_transfer(runner, env.cfg.commands["velocity"])
+    for command in ((0.,0.,0.),(.06,0.,0.),(-.04,0.,0.),(0.,0.,.15),(0.,0.,-.15)):
+        observation["actor"][:, 6:9] = torch.tensor(command)
+        with torch.inference_mode():
+            actual = runner.alg.actor(observation)
+        torch.testing.assert_close(actual, expected, atol=2e-7, rtol=0)
+    # Already learned inputs and output behavior must remain intact.
+    for k, value in runner.alg.actor.state_dict().items():
+        if k == "mlp.0.weight":
+            torch.testing.assert_close(value[:, :6], before[k][:, :6], atol=0, rtol=0)
+            torch.testing.assert_close(value[:, 9:], before[k][:, 9:], atol=0, rtol=0)
+        elif k in ("obs_normalizer._mean", "obs_normalizer._std", "obs_normalizer._var"):
+            torch.testing.assert_close(value[..., :6], before[k][..., :6], atol=0, rtol=0)
+            torch.testing.assert_close(value[..., 9:], before[k][..., 9:], atol=0, rtol=0)
+        else:
+            torch.testing.assert_close(value, before[k], atol=0, rtol=0)
+    for p, values in optimizer_before.items():
+        for key, value in values.items():
+            torch.testing.assert_close(runner.alg.optimizer.state[p][key], value, atol=0, rtol=0)
+    assert wrapper.real_integrations == 0

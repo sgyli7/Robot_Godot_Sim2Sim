@@ -19,6 +19,7 @@ from .mjlab_env import actor_observation, make_development_env_cfg
 
 REVISION = "goose_flat_standing_ppo_v1"
 VELOCITY_REVISION = "goose_flat_low_speed_ppo_v1"
+VELOCITY_TRANSFER_REVISION = "goose_standing_to_velocity_transfer_v1"
 
 
 def completed_root_state(env):
@@ -145,6 +146,44 @@ def make_low_speed_cfg(model_path: Path, contract_path: Path, *, num_envs=16,
     # Zero-command velocity tracking supplies the standing/stop objective.
     del cfg.rewards["standing_drift"]
     return cfg
+
+
+def initialize_velocity_transfer(runner, command_cfg):
+    """Initialize only previously unused goal inputs of a standing policy.
+
+    The standing checkpoint saw zero commands exclusively. Its random input
+    columns were never trained and zero variance magnifies a new command.
+    Zero those columns and seed their moments from the declared command
+    distribution. All existing state inputs, output weights, exploration and
+    optimizer history remain intact; PPO is free to learn goal conditioning.
+    This is a one-time transfer initialization, never a runtime action override.
+    """
+    nonstanding = 1-command_cfg.rel_standing_envs
+    ranges = command_cfg.ranges
+    intervals = (ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)
+    means = [nonstanding*(low+high)/2 for low, high in intervals]
+    variances = [nonstanding*((high-low)**2/12+((low+high)/2)**2)-mean**2
+                 for (low, high), mean in zip(intervals, means)]
+    models = (runner.alg.actor, runner.alg.critic)
+    for model in models:
+        if model.mlp[0].in_features != 65:
+            raise ValueError("Standing transfer requires the original 65-value input")
+        normalizer = model.obs_normalizer
+        if (normalizer._mean[..., 6:9].abs().any()
+                or normalizer._var[..., 6:9].abs().any()):
+            raise ValueError("Do not erase an already trained velocity policy")
+        state = runner.alg.optimizer.state.get(model.mlp[0].weight, {})
+        if any(state[key][:, 6:9].abs().any()
+               for key in ("exp_avg", "exp_avg_sq") if key in state):
+            raise ValueError("Standing checkpoint contains learned command optimizer history")
+    with torch.no_grad():
+        for model in models:
+            model.mlp[0].weight[:, 6:9].zero_()
+            normalizer = model.obs_normalizer
+            normalizer._mean[..., 6:9] = normalizer._mean.new_tensor(means)
+            normalizer._var[..., 6:9] = normalizer._var.new_tensor(variances)
+            normalizer._std[..., 6:9] = normalizer._var[..., 6:9].sqrt()
+    return VELOCITY_TRANSFER_REVISION
 
 
 class GooseRslEnv(RslRlVecEnvWrapper):
