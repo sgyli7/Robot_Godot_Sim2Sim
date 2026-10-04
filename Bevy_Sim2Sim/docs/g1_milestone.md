@@ -155,12 +155,44 @@ T1/T2 正式合同与控制配置、各 5 组初始位置 × 2 个种子的至�
 
 本轮源码提交为 `3a22a489c55fccc897612eb1fea94869fdb4aaf6`，实际应用 SHA256 为 `73d7fad394cf090b652387111d60b376a871757d7724b7ef67b2596241eac9af`。本轮五个机械／视觉实验合计 **10,189 次**积分、身体控制和力矩更新，**12 次**新 N1.6 推理；Qwen、N1.7、源 SDK 物理、训练和参数网格均为零。仍是明确的 4 PGS 开发诊断，保持 50 Hz／每 Tick 一次积分。原速窗口录像、失败图像、命令、源码、独立审计和旧回执回归证据存放于 `/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_bin_diagnosis_001/`。
 
-仅用于复现当前失败边界，复用前述 localhost 5558 的 N1.6 服务后运行：
+以下保存的是旧版遮挡边界。复用前述 localhost 5558 的 N1.6 服务，并将该配置的 `mobile_scan.vision.script_path` 指向同一证据目录 `source/Bevy_Sim2Sim/crates/dev_tools/python/scripts/unitree_g1_mobile_vision.py` 后，使用该目录内的原始可执行文件；保持原脚本哈希。当前脚本已经增加新相机，不能直接套用旧配置的身份校验。
 
 ```bash
-./target/debug/bevy_sim2sim --scene g1_station_mobile_release_diagnostic --robot g1 \
-  --g1-config /home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_bin_diagnosis_001/evidence/g1_station_t2_bin_live_20261004_0435/config.json \
+/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_bin_diagnosis_001/evidence/g1_station_t2_bin_live_20261004_0435/executed_app --scene g1_station_mobile_release_diagnostic --robot g1 \
+  --g1-config .scratch/g1_station_bin_previous_config.json \
   --g1-ticks 3300 --output .scratch/g1_station_bin_new_diagnostic
 ```
 
 当前主页持箱行走 GIF 继续保留；本次未通过的放置尝试不替代该成功阶段录像。T1/T2 各 8/10、科学站完整视觉放置、初始自然语言 Qwen 调度、全程连续 1×、恢复／地形／性能与完整交付要求均继续保留。
+
+## 科学站放置相机与释放姿态诊断：仍未通过
+
+同日增加独立的 `auxiliary_bin_placement` 被动本体相机：在原 Arena 相机安装点上方 230 mm，原光学安装方向再上倾 7°；相对原有辅助视角抬高 80 mm、向下多倾 8°。原配 N1.6 的 ArenaEgo、原辅助相机和 640×480 针孔参数保留。单次几何诊断先复现旧视角对容器标记下排的遮挡，再推导新安装位；没有相机网格、物理参数搜索或训练。只在科学站容器诊断的已完成保护停止处切换，并在暂停的新边界取得实际图像。
+
+episode **20637** 执行 2,082 次真实积分和四次新 N1.6 推理。新实际图像完整显示两个标记，但开发工具的相机白名单遗漏新名称而拒绝继续。保存图片的独立定位确认两个标记，最短编码边约 30.6 px、最大重投影误差 0.332 px；原配四张 ArenaEgo 图、全部 52 个模型数组及前 2,082 个物理状态与旧版一致。两条失败回归复现了遗漏后，白名单和回执检查统一绑定新固定安装位；仍要求当前双标记、原几何、手部邻近、旧 episode 隔离和原放置条件。新安装位不接受目标记忆替代当前图像。
+
+episode **20638** 完成新相机定位、确认箱体投影入区，再增加 100 Tick 站立持物等待，共 **2,182 次**积分／身体控制／力矩更新、四次新 N1.6 推理。前 2,082 个物理状态与旧版一致，抓取后的全部 1,982 个样本保持正手接触支撑，最低站立余弦 **0.991268**。活跃仿真／墙钟比 **0.998978**，积压和控制误期为零；模型／图像边界仍有暂停。
+
+新鲜释放图像的目标区边距 **44.8 mm**、落差 **321.4 mm**、机器人线速度 **0.00349 m/s** 均满足原条件，但旧手部预测要求掌间距 **491 mm**，超过原 **350 mm** 上限。独立几何复核确认图像箱心与原生真值相差约 **3.43 mm**；包围矩形的预测较保守，但精确凸包距离在 350 mm 张掌处仍只有约 **9.87 mm**（图像）／**8.06 mm**（独立真值），低于现有 **10 mm** 条件，局限位于左手拇指。因此保留拒绝；本轮**没有松手或任务成功**。这些独立真值计算没有进入执行链路，未修改释放合同或阈值。下一步先验证可执行的释放握姿，再进行新视觉任务运行。
+
+本阶段额外执行 **4,264 次**真实积分、身体控制和力矩更新，**8 次**新原配 N1.6 推理；离线相机／凸包诊断零积分、零模型调用。Qwen、N1.7、源 SDK 物理、训练和参数网格均为零。实际运行源码为 `62550d9daa700cfe185e7fb73feb6d6427a5ad1b`，实际应用 SHA256 为 `ee606f099bf2ff691374da1f00b4b562b8f556ec5641e22584d38853f66920f2`。完整失败录像、实际相机图像、精确可执行文件、回归和诊断保存在 `/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_placement_camera_diagnosis_001/`。
+
+在工程目录内，复用 localhost 5558 的原配 N1.6 服务后，下面入口复现本次释放检查拒绝。配置仅将视觉脚本路径移至归档中的同一哈希文件；外部本体、权重、动态库与纹理缓存仍需按制品清单准备。
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import json
+archive = Path('/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_placement_camera_diagnosis_001')
+configuration = json.loads((archive / 'evidence/g1_station_t2_bin_live_20261004_0438/config.json').read_text())
+configuration['mobile_scan']['vision']['script_path'] = str(archive / 'source/Bevy_Sim2Sim/crates/dev_tools/python/scripts/unitree_g1_mobile_vision.py')
+Path('.scratch').mkdir(exist_ok=True)
+Path('.scratch/g1_station_placement_config.json').write_text(json.dumps(configuration, indent=2) + '\n')
+PY
+/home/ethan/ProjectBackups/2026-10-04/Sai_Lab/g1_station_t2_placement_camera_diagnosis_001/evidence/g1_station_t2_bin_live_20261004_0438/executed_app \
+  --scene g1_station_mobile_release_diagnostic --robot g1 \
+  --g1-config .scratch/g1_station_placement_config.json \
+  --g1-ticks 3300 --output .scratch/g1_station_placement_new_diagnostic
+```
+
+已成功的 12 秒科学站持箱行走 GIF 继续保留，不将本阶段失败片段发布为放置成功。所有正式验收要求继续保留，整体任务仍在推进。
