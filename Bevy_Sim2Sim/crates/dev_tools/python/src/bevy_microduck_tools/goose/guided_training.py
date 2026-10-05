@@ -61,6 +61,41 @@ def excessive_ground_depth(env):
     return (rigid_collision_depth(env)-.003).clamp_min(0)
 
 
+def standing_target_error(env):
+    """Preserve neutral standing without imposing a gait on new directions."""
+    term = env.action_manager.get_term("goose")
+    standing = term.commands.abs().sum(-1) < .001
+    return standing*term.drive.actions.square().mean(-1)
+
+
+def make_command_expansion_cfg(model_path, contract_path, *, num_envs=1024,
+                               seed=113, full_range=False):
+    """Warm-start mature goal-conditioned PPO from the learned forward Actor.
+
+    The wider command domain has no forced forward reference. Stand targets
+    are training rewards only; deployed actions always come from the Actor.
+    """
+    cfg = make_mature_velocity_cfg(model_path, contract_path,
+        num_envs=num_envs, seed=seed, forward_only=False)
+    command = cfg.commands["velocity"]
+    if not full_range:
+        command.ranges.lin_vel_x = (-.06, .12)
+        command.ranges.lin_vel_y = (-.05, .05)
+        command.ranges.ang_vel_z = (-.3, .3)
+    command.rel_standing_envs = .25
+    command.resampling_time_range = (4., 8.)
+    cfg.rewards["velocity"].weight = 10.
+    cfg.rewards["velocity"].params["std"] = .08
+    cfg.rewards["yaw"].weight = 8.
+    cfg.rewards["yaw"].params["std"] = .15
+    cfg.rewards["standing_target"] = RewardTermCfg(
+        func=standing_target_error, weight=-500.)
+    cfg.rewards["ground_depth"] = RewardTermCfg(
+        func=excessive_ground_depth, weight=-20.)
+    cfg.rewards["action_change"].weight = -.05
+    return cfg
+
+
 def make_guided_velocity_cfg(model_path, contract_path, reference_path,
                              reference_sha256, *, num_envs=1024, seed=109):
     """A narrow first forward course, followed by independent NN evaluation."""

@@ -117,6 +117,18 @@ def recovery_dense_stand_reward(env, nominal_height):
     return upright*raised*motion
 
 
+def near_stand_target_cost(env, nominal_height):
+    """Reduce unnecessary targets once the body has reached standing height.
+
+    Folded low get-up postures remain unconstrained by this term. The
+    original normalized neutral target is a training reference only.
+    """
+    up, height, _, _ = recovery_state(env)
+    near = (up >= .9) & (height >= .85*nominal_height)
+    actions = env.action_manager.get_term("goose").drive.actions
+    return near*actions.square().mean(-1)
+
+
 def recovery_stand_motion(env):
     up, _, velocity, angular = recovery_state(env)
     return (up >= .95)*(velocity.square().sum(-1)+.1*angular.square().sum(-1))
@@ -224,7 +236,7 @@ def record_progressive_hold(env, env_ids, *, nominal_height):
 
 def make_progressive_recovery_cfg(model_path, contract_path, parent_library,
         parent_sha256, progressive_library, progressive_sha256, *, level=0,
-        dense_stability=False, **kwargs):
+        dense_stability=False, anchored_stand=False, **kwargs):
     """Public event curriculum over a hash-bound library; same get-up task."""
     cfg = make_recovery_cfg(model_path, contract_path, parent_library,
         parent_sha256, **kwargs)
@@ -247,4 +259,8 @@ def make_progressive_recovery_cfg(model_path, contract_path, parent_library,
     cfg.events["recovery_hold"].func = record_progressive_hold
     if dense_stability:
         cfg.rewards["stable_stand"].func = recovery_dense_stand_reward
+    if anchored_stand:
+        cfg.rewards["near_stand_target"] = RewardTermCfg(
+            func=near_stand_target_cost, weight=-500.,
+            params=cfg.rewards["stable_stand"].params.copy())
     return cfg

@@ -5,6 +5,7 @@ limits, 65-value Actor, native integration and manual reset boundary remain
 owned by the existing Goose adapters.
 """
 from dataclasses import asdict
+from math import isfinite
 
 import torch
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
@@ -15,6 +16,46 @@ from .foot_curriculum import make_rigid_motion_course_cfg, rigid_contact_limit_e
 from .source_training import commanded_observation, critic_motion_state
 
 REVISION = "goose_mature_humanoid_ppo_v1"
+
+
+def initialize_unused_lateral_yaw(runner, command_cfg):
+    """Initialize unused command columns while retaining learned forward gait.
+
+    A forward-only checkpoint has zero lateral/yaw normalization variance.
+    Its arbitrary input weights must not amplify the first nonzero command.
+    Check both models before changing anything; preserve forward conditioning,
+    state inputs, output weights, Gaussian exploration and all Adam history.
+    """
+    indices = (7, 8)
+    probability = 1-command_cfg.rel_standing_envs
+    intervals = (command_cfg.ranges.lin_vel_y, command_cfg.ranges.ang_vel_z)
+    means = [probability*(lo+hi)/2 for lo, hi in intervals]
+    variances = [probability*((hi-lo)**2/12+((lo+hi)/2)**2)-mean**2
+        for (lo, hi), mean in zip(intervals, means)]
+    if (not all(isfinite(v) for v in [probability, *means, *variances])
+            or not 0 < probability <= 1 or min(variances) <= 0
+            or any(lo >= hi for lo, hi in intervals)):
+        raise ValueError("Command expansion requires finite nonzero training ranges")
+    models = (runner.alg.actor, runner.alg.critic)
+    for model, dimension in zip(models, (65, 69), strict=True):
+        if model.mlp[0].in_features != dimension:
+            raise ValueError("Command expansion requires Actor65 and Critic69")
+        normalizer = model.obs_normalizer
+        if (normalizer._mean[..., indices].abs().any()
+                or normalizer._var[..., indices].abs().any()):
+            raise ValueError("Lateral/yaw inputs already have learned statistics")
+        state = runner.alg.optimizer.state.get(model.mlp[0].weight, {})
+        if any(state[key][:, indices].abs().any()
+                for key in ("exp_avg", "exp_avg_sq") if key in state):
+            raise ValueError("Lateral/yaw inputs already have learned Adam history")
+    with torch.no_grad():
+        for model in models:
+            model.mlp[0].weight[:, indices] = 0.
+            normalizer = model.obs_normalizer
+            normalizer._mean[..., indices] = normalizer._mean.new_tensor(means)
+            normalizer._var[..., indices] = normalizer._var.new_tensor(variances)
+            normalizer._std[..., indices] = normalizer._var[..., indices].sqrt()
+    return "goose_unused_lateral_yaw_transfer_v1"
 
 
 def make_mature_runner_cfg(*, seed, recovery=False):

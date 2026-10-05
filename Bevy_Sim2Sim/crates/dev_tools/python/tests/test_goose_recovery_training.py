@@ -69,6 +69,28 @@ def test_dense_stability_requires_raised_upright_and_rewards_reduced_motion(monk
     assert course.recovery_stable(None, 1.).tolist() == [False, False, False, True]
 
 
+def test_near_stand_reference_leaves_folded_getup_actions_and_hold_metric_unchanged(monkeypatch):
+    from types import SimpleNamespace
+    from bevy_microduck_tools.goose import recovery_training as course
+
+    up = torch.tensor([.89, .99, .99, .99])
+    height = torch.tensor([1., .84, 1., 1.])
+    velocity = torch.zeros((4, 3))
+    angular = torch.zeros((4, 3))
+    actions = torch.full((4, 18), .2)
+    actions[3] = 0.
+    original = actions.clone()
+    env = SimpleNamespace(action_manager=SimpleNamespace(
+        get_term=lambda name: SimpleNamespace(drive=SimpleNamespace(actions=actions))))
+    monkeypatch.setattr(course, "recovery_state", lambda _: (up, height, velocity, angular))
+
+    before = course.recovery_stable(env, 1.).clone()
+    cost = course.near_stand_target_cost(env, 1.)
+    torch.testing.assert_close(cost, torch.tensor([0., 0., .04, 0.]))
+    assert torch.equal(actions, original)
+    assert torch.equal(course.recovery_stable(env, 1.), before)
+
+
 def test_progressive_birth_preserves_other_worlds_and_counts_real_hold(tmp_path, monkeypatch):
     from bevy_microduck_tools.goose.recovery_training import make_progressive_recovery_cfg
 
