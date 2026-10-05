@@ -1,5 +1,6 @@
 """Session isolation and owned cleanup tests; no simulated task successes."""
 import copy
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -28,6 +29,38 @@ def configuration(profile):
 
 
 class StationSessionTests(unittest.TestCase):
+    def test_one_process_cannot_take_resources_while_a_peer_holds_the_session(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "session.lock"
+            descriptor = session.acquire_session_lock(path)
+            try:
+                probe = subprocess.run([sys.executable, "-c",
+                    "import sys; sys.path.insert(0,sys.argv[1]); "
+                    "import unitree_g1_station_session as s; s.acquire_session_lock(sys.argv[2])",
+                    str(Path(session.__file__).parent), str(path)], capture_output=True, text=True)
+                self.assertNotEqual(probe.returncode, 0)
+                self.assertIn("Another G1 station session", probe.stderr)
+            finally:
+                os.close(descriptor)
+            descriptor = session.acquire_session_lock(path)
+            os.close(descriptor)
+            link = Path(temporary) / "link"
+            link.symlink_to(path)
+            with self.assertRaises(OSError):
+                session.acquire_session_lock(link)
+
+    def test_restart_with_same_label_cannot_be_stopped_as_the_original_session(self):
+        receipt = {"qwen_identity": {"Id": "ours", "State": {"StartedAt": "first"}}}
+        changed = {"Id": "ours", "State": {"Running": True, "StartedAt": "another-start"}}
+        with patch.object(session, "inspect_qwen", return_value=changed), \
+                patch.object(session, "close_owned", return_value=0) as close, \
+                patch.object(session.subprocess, "run") as stop:
+            errors = session.cleanup_session(receipt, object(), None, None, None, True, Path("service"))
+        stop.assert_not_called()
+        self.assertTrue(errors)
+        self.assertFalse(receipt["all_owned_handles_reaped"])
+        self.assertEqual(close.call_count, 4)
+
     def test_static_qwen_gate_cannot_modify_the_original_body_or_action_contract(self):
         original = configuration("static")
         snapshot = copy.deepcopy(original)

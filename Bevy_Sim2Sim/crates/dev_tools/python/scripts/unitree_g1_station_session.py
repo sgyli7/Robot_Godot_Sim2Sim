@@ -7,12 +7,14 @@ qualification is granted. Closing the window or Ctrl+C reaps owned processes.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import signal
 import socket
+import stat
 import subprocess
 import time
 import urllib.error
@@ -23,6 +25,7 @@ REVISIONS = {"static": "7f78bebf1a90131e7304beacfcd47eb27bad16ab",
              "mobile": "dfe74af855007f26093f362cd2d7a2f404b64b93"}
 DEFAULT_CACHE = Path("/home/ethan/models/unitree_g1")
 QWEN_SERVICE = Path("/home/ethan/LocalServices/Local_Qwen/qwen38-27b-fp8-dgx-spark/g1-service.sh")
+SESSION_LOCK = Path("/tmp/sai-g1-station-session.lock")
 
 
 def digest(path):
@@ -106,6 +109,29 @@ def check_unused_port(port):
         probe.bind(("127.0.0.1", port))
 
 
+def acquire_session_lock(path=SESSION_LOCK):
+    """One resource owner across profiles/worktrees; reject peers immediately.
+
+    Keep the lock inode after closing: unlinking a held lock would allow two
+    processes to acquire different files with the same path.
+    """
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise ValueError("G1 session lock is not an owned regular file")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("Another G1 station session owns the models; close it first") from error
+        os.ftruncate(fd, 0)
+        os.write(fd, json.dumps({"owner_pid": os.getpid(), "scope": "g1_station_session"}).encode())
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def inspect_qwen():
     value = json.loads(subprocess.check_output(
         ["docker", "inspect", "qwen38-27b-fp8-g1"], text=True))[0]
@@ -129,6 +155,10 @@ def cleanup_session(receipt, model, app, recorder, qwen_start, started_qwen, ser
         try:
             current = inspect_qwen()  # Refuses a changed/foreign owner.
             if current["State"]["Running"]:
+                initial = receipt.get("qwen_identity")
+                if initial is not None and (current["Id"] != initial["Id"]
+                        or current["State"]["StartedAt"] != initial["State"]["StartedAt"]):
+                    raise ValueError("Qwen container identity/start changed; refusing to stop another session")
                 subprocess.run([str(service), "stop"], check=True, timeout=45)
             stopped = inspect_qwen()
             receipt["qwen_stopped_identity"] = stopped
@@ -175,6 +205,7 @@ def run(args):
         print("EVENT prepared immutable session configuration; no processes or inference", flush=True)
         return 0
     model = app = recorder = qwen_start = None
+    session_lock = None
     started_qwen = False
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -183,6 +214,8 @@ def run(args):
             return json.load(response)
 
     try:
+        session_lock = acquire_session_lock()
+        receipt["resource_owner_lock"] = str(SESSION_LOCK)
         check_unused_port(args.policy_port)
         if use_qwen and inspect_qwen()["State"]["Running"]:
             raise ValueError("The owned G1 Qwen service is already managed by another active session")
@@ -250,6 +283,9 @@ def run(args):
     finally:
         errors = cleanup_session(receipt, model, app, recorder, qwen_start,
                                  started_qwen, args.qwen_service)
+        if session_lock is not None:
+            os.close(session_lock)
+            receipt["resource_owner_lock_released"] = True
         save(args.output / "session_receipt.json", receipt)
         print("EVENT owned session cleanup verified" if not errors else
               "EVENT owned session cleanup failed; see session_receipt.json", flush=True)
