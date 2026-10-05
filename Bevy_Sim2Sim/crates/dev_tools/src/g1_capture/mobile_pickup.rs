@@ -91,6 +91,54 @@ fn verify(
     native_tick: u64,
     now_ms: u64,
 ) -> Result<serde_json::Value, String> {
+    verify_with_validation(
+        origin,
+        current,
+        displacement,
+        native_tick,
+        now_ms,
+        validate_feedback_pose,
+    )
+}
+
+pub(super) fn verify_geometry_lift(
+    origin: &serde_json::Value,
+    current: &serde_json::Value,
+    displacement: [f64; 3],
+    native_tick: u64,
+    now_ms: u64,
+) -> Result<serde_json::Value, String> {
+    fn validate(reply: &serde_json::Value) -> Result<(), String> {
+        if reply["geometry_lift_feedback"] != true
+            || reply["world_or_contact_truth_input"] != false
+            || reply["held_contact_geometry"].is_null()
+            || reply["same_tick_box_pair_pose"]["schema"]
+                != "g1_actual_rgb_same_tick_box_pair_pose_v1"
+            || !reply["navigation_proposal"].is_null()
+            || !reply["clearance_proposal"].is_null()
+        {
+            return Err("lift feedback lacks current paired RGB/wholehand geometry".into());
+        }
+        for key in [
+            "current_box_gravity_center_m",
+            "current_midpalm_gravity_center_m",
+            "current_box_relative_left_palm_m",
+        ] {
+            feedback_vector(reply, key)?;
+        }
+        Ok(())
+    }
+    verify_with_validation(origin, current, displacement, native_tick, now_ms, validate)
+}
+
+fn verify_with_validation(
+    origin: &serde_json::Value,
+    current: &serde_json::Value,
+    displacement: [f64; 3],
+    native_tick: u64,
+    now_ms: u64,
+    validate: fn(&serde_json::Value) -> Result<(), String>,
+) -> Result<serde_json::Value, String> {
     let a: ObservationStamp =
         serde_json::from_value(origin["observation"].clone()).map_err(|e| e.to_string())?;
     let b: ObservationStamp =
@@ -115,7 +163,7 @@ fn verify(
         );
     }
     for reply in [origin, current] {
-        validate_feedback_pose(reply)?;
+        validate(reply)?;
     }
     let difference = |key: &str| -> Result<[f64; 3], String> {
         let before = feedback_vector(origin, key)?;

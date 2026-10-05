@@ -67,6 +67,11 @@ class OriginalThumbInsertionTests(unittest.TestCase):
             propose({},current,None,{},closed_reference=reference)
         self.assertEqual(json.dumps(current,sort_keys=True),before)
 
+    def test_lift_feedback_cannot_use_unpaired_or_forecast_authority(self):
+        for kwargs in [{}, {"held_contact_geometry":True,"held_box_feedback":True,"closed_regrasp":True}]:
+            with self.assertRaisesRegex(ValueError,"lift feedback requires explicit current paired"):
+                localize(Path("a"),Path("b"),Path("d"),lift_feedback=True,**kwargs)
+
     def test_unpaired_or_memory_grasp_mode_fails_before_loading_files(self):
         for kwargs in [{}, {"secondary_image_path": Path("b"), "secondary_observation_path": Path("c"),
                             "geometry_path": Path("g"), "memory_path": Path("m")}]:

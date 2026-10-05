@@ -369,6 +369,7 @@ mod worker {
                 false,
                 false,
                 None,
+                false,
             )
         }
 
@@ -395,6 +396,7 @@ mod worker {
                 false,
                 false,
                 None,
+                false,
             )
         }
 
@@ -431,6 +433,7 @@ mod worker {
                 true,
                 false,
                 None,
+                false,
             )
         }
 
@@ -456,6 +459,7 @@ mod worker {
                 false,
                 false,
                 None,
+                false,
             )
         }
 
@@ -480,6 +484,7 @@ mod worker {
                 false,
                 false,
                 None,
+                false,
             )
         }
 
@@ -519,6 +524,7 @@ mod worker {
                 true,
                 true,
                 None,
+                false,
             )
         }
         pub(crate) fn start_with_open_regrasp_forecast(
@@ -555,6 +561,44 @@ mod worker {
                 true,
                 false,
                 Some(reference),
+                false,
+            )
+        }
+        pub(crate) fn start_with_lift_feedback(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+        ) -> Result<Self, String> {
+            if !config.same_tick_box_pair
+                || config.same_tick_box_only
+                || config.task_geometry.is_none()
+                || config.persistent_worker.is_some()
+            {
+                return Err("lift feedback requires current finite paired geometry".into());
+            }
+            let parent = config
+                .script_path
+                .parent()
+                .ok_or("lift script lacks parent")?;
+            if digest(
+                &parent.join("unitree_g1_mobile_hand_geometry.py"),
+                128 * 1024,
+            )? != super::mobile_geometry::helper_hash()
+            {
+                return Err("lift geometry helper differs from compiled source".into());
+            }
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                false,
+                false,
+                true,
+                true,
+                false,
+                None,
+                true,
             )
         }
         fn start_internal(
@@ -568,6 +612,7 @@ mod worker {
             held_contact_geometry: bool,
             closed_regrasp: bool,
             closed_reference: Option<PathBuf>,
+            lift_feedback: bool,
         ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
@@ -660,6 +705,7 @@ mod worker {
                         if held_contact_geometry {
                             command.arg("--held-contact-geometry");
                         }
+                        if lift_feedback {command.arg("--lift-feedback");}
                         if closed_regrasp { command.arg("--closed-regrasp"); }
                         if let Some(reference)=&closed_reference { command.arg("--closed-reference").arg(reference); }
                         if let Some(calibration) = &config.fiducial_calibration {
@@ -730,6 +776,7 @@ mod worker {
                         }
                         super::mobile_geometry::validate_closed_regrasp(&reply,observation,closed_regrasp)?;
                         super::mobile_geometry::validate_open_regrasp(&reply,observation,closed_reference.as_deref())?;
+                        if (reply["geometry_lift_feedback"]==true)!=lift_feedback {return Err("unrequested or missing lift feedback".into());}
                         super::mobile_pair::validate_reply(&reply, &input_document, pair.as_ref())?;
                         super::mobile_held::validate_requested_feedback(&reply, observation, held_box_feedback)?;
                         if config

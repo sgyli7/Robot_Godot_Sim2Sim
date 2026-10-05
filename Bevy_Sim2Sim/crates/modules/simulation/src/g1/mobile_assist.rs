@@ -60,6 +60,8 @@ pub enum MobileAssistCommand {
     ClassicalGraspCenter(MobileCenterGoal),
     ClassicalGraspOpen(MobileOpenGoal),
     ClassicalRegrasp(MobileRegraspGoal),
+    /// Finite lift test after a completed current-observation regrasp hold.
+    ClassicalRegraspPickupRaise(MobileRaiseGoal),
     ClassicalHold(MobileHoldGoal),
     ClassicalThumbClearance(MobileThumbGoal),
     ClassicalModelWait(MobileWaitGoal),
@@ -112,7 +114,7 @@ impl MobileAssistCommand {
             Self::ClassicalReobserve(goal) => goal.validate(),
             Self::ClassicalLower(goal) => goal.validate(),
             Self::ClassicalRaise(goal) => goal.validate(),
-            Self::ClassicalPickupRaise(goal) => {
+            Self::ClassicalPickupRaise(goal) | Self::ClassicalRegraspPickupRaise(goal) => {
                 goal.validate()?;
                 if goal.distance_m != 0.1 || goal.duration_ticks != 100 {
                     return Err(invalid(
@@ -1465,6 +1467,52 @@ impl MobileAssistRunner {
                     execution: MobileAssistExecution::ClassicalRelease {
                         goal: goal.clone(),
                         opening,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalRegraspPickupRaise(goal) => {
+                let state = self.owner.measurement()?;
+                if !self.station_fixture
+                    || self.carry.is_some()
+                    || self.scan.is_some()
+                    || self.release.is_some()
+                {
+                    return Err(invalid("regrasp pickup belongs before station transport"));
+                }
+                if self.pickup_raise.is_none() {
+                    let regrasp = self
+                        .regrasp
+                        .as_ref()
+                        .ok_or_else(|| invalid("regrasp pickup lost its actual closed hold"))?;
+                    if !regrasp.completed()
+                        || regrasp.goal().phase != MobileRegraspPhase::Hold
+                        || state.source_tick != regrasp.goal().end_tick()
+                        || goal.observation.frame_id <= regrasp.goal().observation.frame_id
+                    {
+                        return Err(invalid(
+                            "regrasp pickup requires fresh RGB after its own completed100Tick hold",
+                        ));
+                    }
+                    let command = regrasp.command().clone();
+                    self.classical_admission(goal.observation, &state)?;
+                    self.pickup_raise =
+                        Some(MobileGripRaising::new(goal.clone(), &state, command)?);
+                    self.regrasp = None;
+                }
+                let pickup = self.pickup_raise.as_mut().unwrap();
+                if pickup.goal() != goal {
+                    return Err(invalid("regrasp pickup goal changed during actual lift"));
+                }
+                let raising = pickup.update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&raising.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalRaise {
+                        goal: goal.clone(),
+                        raising,
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })

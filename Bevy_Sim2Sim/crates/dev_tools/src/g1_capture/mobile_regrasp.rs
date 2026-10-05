@@ -261,6 +261,17 @@ pub(super) fn drive(
         }
         MobileRegraspPhase::Close => MobileRegraspPhase::Hold,
         MobileRegraspPhase::Hold => {
+            if matches!(&runtime.mobile_assist.as_ref().unwrap().configuration,MobileAssistStage::Scan(c) if c.current_regrasp_lift_probe)
+            {
+                if goal.attempt != 1 {
+                    return Err("lift probe cannot repeat regrasp".into());
+                }
+                let assist = runtime.mobile_assist.as_mut().unwrap();
+                assist.vision_job = None;
+                assist.regrasp_lift = Some(super::mobile_regrasp_lift::Probe::default());
+                runtime.requested = false;
+                return Ok(false);
+            }
             let p = &reply["closed_regrasp_proposal"];
             if p["geometry_candidate_found"] != true {
                 return Err("post-regrasp measured thumbs lack bounded depth candidate".into());

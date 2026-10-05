@@ -686,7 +686,9 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             "heading_yaw_source_rad": heading, "relative_distance_m": .1}}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None, held_box_feedback=False, grasp_centering=False, held_contact_geometry=False, closed_regrasp=False, closed_reference_path=None):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None, held_box_feedback=False, grasp_centering=False, held_contact_geometry=False, closed_regrasp=False, closed_reference_path=None, lift_feedback=False):
+    if lift_feedback and (not held_contact_geometry or not held_box_feedback or closed_regrasp or closed_reference_path is not None):
+        raise ValueError("lift feedback requires explicit current paired hand geometry")
     if closed_reference_path is not None and (not held_contact_geometry or not held_box_feedback or closed_regrasp or grasp_centering):
         raise ValueError("opened forecast requires explicit paired geometry and closed self reference")
     if closed_regrasp and (not held_contact_geometry or not held_box_feedback or grasp_centering):
@@ -885,7 +887,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                 # Finite pickup feedback uses only these measured RGB/self
                 # vectors. It never receives shelf/contact/world body poses.
                 left_relative = np.linalg.inv(frames[28]) @ np.r_[center, 1.]
-                if box_view_only:
+                if box_view_only or lift_feedback:
                     result["current_box_gravity_center_m"] = (root_rotation @ center).tolist()
                     result["current_midpalm_gravity_center_m"] = (root_rotation @ midpoint).tolist()
                     result["current_box_relative_left_palm_m"] = left_relative[:3].tolist()
@@ -899,6 +901,8 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                         result["held_contact_geometry"] = measure(
                             definition, observation, by_id[22] @ np.linalg.inv(marker_mounts[22]),
                             public_json(geometry_path, public_assets))
+    if lift_feedback:
+        result["geometry_lift_feedback"] = True
     if fiducial_path is not None:
         result["fiducial_calibration_sha256"] = fiducial_hash
         result["marker_layout_profile"] = layout_profile
@@ -971,11 +975,12 @@ def main():
     parser.add_argument("--held-contact-geometry", action="store_true")
     parser.add_argument("--closed-regrasp", action="store_true")
     parser.add_argument("--closed-reference", type=Path)
+    parser.add_argument("--lift-feedback", action="store_true")
     args = parser.parse_args()
     result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials, args.placement_view_only,
                       secondary_image_path=args.secondary_image, secondary_observation_path=args.secondary_observation,
                       held_box_feedback=args.held_box_feedback, grasp_centering=args.grasp_centering,
-                      held_contact_geometry=args.held_contact_geometry, closed_regrasp=args.closed_regrasp, closed_reference_path=args.closed_reference)
+                      held_contact_geometry=args.held_contact_geometry, closed_regrasp=args.closed_regrasp, closed_reference_path=args.closed_reference, lift_feedback=args.lift_feedback)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

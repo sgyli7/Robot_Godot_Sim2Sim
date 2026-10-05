@@ -45,6 +45,8 @@ mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_regrasp;
 #[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_regrasp_lift;
+#[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_observed_grasp;
@@ -228,6 +230,9 @@ struct MobileScanCaptureConfiguration {
     /// At most two current closed-RGB reacquisitions, each with fresh phase views.
     #[serde(default)]
     current_closed_regrasp: bool,
+    /// One finite original lift after the first current regrasp, no carry.
+    #[serde(default)]
+    current_regrasp_lift_probe: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -291,6 +296,8 @@ struct MobileAssistCaptureRuntime {
     pregrasp_close_submitted_at: Option<Instant>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     regrasp: Option<mobile_regrasp::Recovery>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    regrasp_lift: Option<mobile_regrasp_lift::Probe>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -411,6 +418,8 @@ impl MobileAssistCaptureRuntime {
             pregrasp_close_submitted_at: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             regrasp: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            regrasp_lift: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2247,7 +2256,8 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        (c.current_closed_regrasp && !c.pregrasp_source_close_once)
+        (c.current_regrasp_lift_probe && !c.current_closed_regrasp)
+            || (c.current_closed_regrasp && !c.pregrasp_source_close_once)
             || ((c.pregrasp_open_once || c.pregrasp_source_close_once) && !c.pregrasp_geometry_only)
             || (c.pregrasp_open_once && c.pregrasp_source_close_once)
             || c.pregrasp_geometry_only
@@ -4943,7 +4953,10 @@ fn start_marker_job(
                 .output
                 .join("regrasp_1_held/observation.json")
         };
-        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(if settled_forecast {
+        let lift_feedback = stage_directory.starts_with("regrasp_lift_");
+        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(if lift_feedback {
+            MarkerVisionJob::start_with_lift_feedback(config, directory, observation)?
+        } else if settled_forecast {
             MarkerVisionJob::start_with_open_regrasp_forecast(
                 config,
                 directory,
