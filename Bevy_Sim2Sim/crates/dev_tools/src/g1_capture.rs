@@ -1777,6 +1777,12 @@ impl CaptureRuntime {
         self.static_marker_activation_render_frame = None;
         #[cfg(feature = "g1_constraint_diagnostic")]
         {
+            if let Some(dispatch) = &mut self.qwen_dispatch {
+                dispatch
+                    .lock()
+                    .map_err(|_| "Qwen reset poisoned")?
+                    .reset_episode(episode_id)?;
+            }
             if let Some(route) = &mut self.static_observed_grasp_route {
                 route.reset_episode();
             }
@@ -2046,6 +2052,11 @@ fn run_capture_owner(
     #[cfg(feature = "g1_constraint_diagnostic")]
     if let Some(controls) = &station_task_controls {
         controls.validate(mode, task_lab.is_some())?;
+        if mode == CaptureMode::StationMobileRelease
+            && (diagnostic_qwen_dispatch.is_none() || local_model_startup.is_some())
+        {
+            return Err("mobile controls require the original local Qwen admission and externally prepared model services".into());
+        }
     }
     #[cfg(feature = "g1_constraint_diagnostic")]
     let controlled = station_task_controls.is_some();

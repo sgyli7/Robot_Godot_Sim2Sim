@@ -296,6 +296,20 @@ fn current_rgb_targets(
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl Dispatch {
+    pub(super) fn reset_episode(&mut self, episode_id: u64) -> Result<(), String> {
+        self.worker
+            .reset_episode(episode_id)
+            .map_err(|e| e.to_string())?;
+        self.session = None;
+        self.pending = None;
+        self.executed_decision = None;
+        self.feedback_pending = false;
+        self.completed = false;
+        self.initial_pending = None;
+        self.initial_admitted = false;
+        Ok(())
+    }
+
     pub(super) fn new(configuration: Configuration, episode_id: u64) -> Result<Self, String> {
         let worker = DecisionWorker::spawn(configuration.client()?, episode_id)
             .map_err(|e| e.to_string())?;

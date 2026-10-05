@@ -16,10 +16,13 @@ pub(super) struct Configuration {
 impl Configuration {
     pub(super) fn validate(&self, mode: CaptureMode, task_lab: bool) -> Result<(), String> {
         if !(2..=10).contains(&self.maximum_episodes)
-            || mode != CaptureMode::StaticObservedPlace
+            || !matches!(
+                mode,
+                CaptureMode::StaticObservedPlace | CaptureMode::StationMobileRelease
+            )
             || task_lab
         {
-            return Err("station controls require the separate static observed-place experiment and 2..=10 fresh episodes".into());
+            return Err("station controls require a separate static observed-place or station mobile-release experiment and 2..=10 fresh episodes".into());
         }
         Ok(())
     }
@@ -49,6 +52,7 @@ pub(super) struct State {
     root: PathBuf,
     initial_receipt: G1CaptureReceipt,
     initial_episode: u64,
+    profile: TaskProfile,
     phase: Phase,
     episodes: u32,
     instruction: String,
@@ -79,10 +83,11 @@ impl State {
     }
     fn save(&self, runtime: &CaptureRuntime, window_closed: bool) -> Result<(), String> {
         fs::write(self.root.join("station_controls_receipt.json"), serde_json::to_vec_pretty(&serde_json::json!({
-            "schema":"g1_native_fixed_static_task_controls_v1",
+            "schema":"g1_native_fixed_profile_task_controls_v1",
             "scope":"chinese_buttons_bound_experiment_stop_reset_fresh_world",
-            "task_qualified":false,"Qwen_decision_admission":false,
-            "original_VLA_then_disclosed_classical_grasp_place":true,
+            "task_qualified":false,"Qwen_decision_admission":self.profile == TaskProfile::MobileBox,
+            "original_VLA_then_disclosed_classical_control":true,
+            "profile":self.profile,
             "physics_hz":50,"integrations_per_tick":1,
             "initial_episode":self.initial_episode,"current_episode":runtime.episode_id,
             "phase":self.phase,"instruction":self.instruction,"failure":self.failure,
@@ -107,6 +112,11 @@ pub(super) fn install(
         .map_err(|_| "controls receipt poisoned")?
         .clone();
     let runtime = &mut *app.world_mut().resource_mut::<CaptureRuntime>();
+    let profile = runtime
+        .live_policy
+        .as_ref()
+        .ok_or("controls require their matched task policy")?
+        .profile;
     runtime.controls = Some(State {
         smoke: if configuration.smoke_stop_reset {
             Smoke::FirstStart
@@ -117,6 +127,7 @@ pub(super) fn install(
         root: root.into(),
         initial_receipt: baseline,
         initial_episode: runtime.episode_id,
+        profile,
         phase: Phase::Waiting,
         episodes: 1,
         instruction: String::new(),
@@ -128,9 +139,17 @@ pub(super) fn install(
     });
     runtime.controls.as_ref().unwrap().save(runtime, false)?;
     app.insert_resource(TaskUiPresentation {
-        title: "G1 · 静态取放实验".into(),
+        title: match profile {
+            TaskProfile::StaticApple => "G1 · 静态取放实验",
+            TaskProfile::MobileBox => "G1 · 移动搬箱实验",
+        }
+        .into(),
         help: "仅支持下方固定任务。Ctrl+Enter 启动，Esc 暂停；再次启动前请重置。".into(),
-        initial_instruction: "把苹果放到盘子里".into(),
+        initial_instruction: match profile {
+            TaskProfile::StaticApple => "把苹果放到盘子里",
+            TaskProfile::MobileBox => "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。",
+        }
+        .into(),
     })
     .add_plugins(TaskUiPlugin)
     .add_systems(
@@ -142,15 +161,22 @@ pub(super) fn install(
     Ok(())
 }
 
-fn bound_instruction(instruction: &str) -> bool {
+fn bound_instruction(profile: TaskProfile, instruction: &str) -> bool {
     let text = instruction.trim();
     !text.is_empty()
         && text.len() <= 4096
         && text.chars().count() <= 1024
-        && matches!(
-            text,
-            "把苹果放到盘子里" | "把苹果放到盘中" | "将苹果放入盘子"
-        )
+        && match profile {
+            TaskProfile::StaticApple => matches!(
+                text,
+                "把苹果放到盘子里" | "把苹果放到盘中" | "将苹果放入盘子"
+            ),
+            TaskProfile::MobileBox => matches!(
+                text,
+                "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。"
+                    | "把 A 区的棕色箱子搬到 B 区的蓝色容器里"
+            ),
+        }
 }
 fn ready(runtime: &CaptureRuntime) -> bool {
     runtime.latest.as_ref().is_some_and(|snapshot| {
@@ -181,7 +207,11 @@ fn smoke_actions(
         Smoke::Disabled | Smoke::Done => {}
         Smoke::FirstStart if ready(&runtime) => {
             actions.write(TaskUiAction::Start {
-                instruction: "把苹果放到盘子里".into(),
+                instruction: match state.profile {
+                    TaskProfile::StaticApple => "把苹果放到盘子里",
+                    TaskProfile::MobileBox => "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。",
+                }
+                .into(),
             });
             state.smoke = Smoke::FirstStop;
         }
@@ -211,7 +241,11 @@ fn smoke_actions(
         }
         Smoke::FreshStart if ready(&runtime) && runtime.episode_id > state.initial_episode => {
             actions.write(TaskUiAction::Start {
-                instruction: "把苹果放到盘子里".into(),
+                instruction: match state.profile {
+                    TaskProfile::StaticApple => "把苹果放到盘子里",
+                    TaskProfile::MobileBox => "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。",
+                }
+                .into(),
             });
             state.smoke = Smoke::Finish {
                 frame: runtime.render_frames,
@@ -268,8 +302,8 @@ fn apply_actions(
                         status.failure = Some("请等待初始化；停止或完成后先重置".into());
                         continue;
                     }
-                    if !bound_instruction(&instruction) {
-                        status.failure = Some("当前固定任务入口仅支持：把苹果放到盘子里".into());
+                    if !bound_instruction(state.profile, &instruction) {
+                        state.failure = Some("当前入口仅支持输入框中的固定任务".into());
                         continue;
                     }
                     state.instruction = instruction;
@@ -363,7 +397,11 @@ fn apply_actions(
         } else {
             state.instruction.clone()
         };
-        next_status.profile = "固定静态取放实验（3/10，未达标）".into();
+        next_status.profile = match state.profile {
+            TaskProfile::StaticApple => "固定静态取放实验（3/10，未达标）",
+            TaskProfile::MobileBox => "固定移动搬箱实验（未通过正式验收）",
+        }
+        .into();
         next_status.stage = match state.phase {
             Phase::Waiting => "等待启动",
             Phase::Running => "执行中",
@@ -372,7 +410,11 @@ fn apply_actions(
             Phase::Failed => "执行失败；物理已暂停",
         }
         .into();
-        next_status.model_service = "本地 N1.7；随后使用已披露的几何控制".into();
+        next_status.model_service = match state.profile {
+            TaskProfile::StaticApple => "本地 N1.7；随后使用已披露的几何控制",
+            TaskProfile::MobileBox => "本地 Qwen、N1.6；随后使用已披露的传统控制",
+        }
+        .into();
         next_status.last_decision = format!(
             "episode {}，实际 {} Tick",
             runtime.episode_id,
@@ -411,7 +453,7 @@ pub(super) fn finish(_app: &mut App, root: &Path) -> Result<(), String> {
     let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    if value["schema"] != "g1_native_fixed_static_task_controls_v1" {
+    if value["schema"] != "g1_native_fixed_profile_task_controls_v1" {
         return Err("foreign controls receipt".into());
     }
     value["window_closed"] = true.into();
@@ -444,15 +486,33 @@ mod tests {
         assert!(
             config
                 .validate(CaptureMode::StationMobileRelease, false)
-                .is_err()
+                .is_ok()
         );
         assert!(
             config
                 .validate(CaptureMode::StaticObservedPlace, true)
                 .is_err()
         );
-        assert!(bound_instruction("把苹果放到盘子里"));
-        assert!(!bound_instruction("把苹果放到地板上"));
-        assert!(!bound_instruction(""));
+        assert!(bound_instruction(
+            TaskProfile::StaticApple,
+            "把苹果放到盘子里"
+        ));
+        assert!(!bound_instruction(
+            TaskProfile::StaticApple,
+            "把苹果放到地板上"
+        ));
+        assert!(!bound_instruction(TaskProfile::StaticApple, ""));
+        assert!(bound_instruction(
+            TaskProfile::MobileBox,
+            "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。"
+        ));
+        assert!(!bound_instruction(
+            TaskProfile::MobileBox,
+            "把苹果放到盘子里"
+        ));
+        assert!(!bound_instruction(
+            TaskProfile::StaticApple,
+            "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。"
+        ));
     }
 }
