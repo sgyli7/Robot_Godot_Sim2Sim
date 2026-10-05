@@ -101,7 +101,13 @@ def make_foot_course_cfg(model_path: Path, contract_path: Path, **kwargs):
 
 
 def rigid_collision_depth(env):
-    """Completed rigid mesh/plane depth; FK query only, never an integration."""
+    """Current rigid depth without changing the live derived-data snapshot.
+
+    Terminations run before upstream refreshes derived data for observations.
+    Running FK on live data here would mix current poses with previous-step
+    velocities in rewards. Use separate FK-only data; no extra integration,
+    contact solve, or change to the real world's allocation occurs.
+    """
     import torch
     import warp as wp
     import mujoco_warp as mjw
@@ -117,11 +123,22 @@ def rigid_collision_depth(env):
         if len(env._goose_rigid_support) != 11 or env.contact_adapter is not None:
             raise ValueError("Rigid course requires11 original convex leaves,native contact")
     with wp.ScopedDevice(env.sim.wp_device):
-        mjw.kinematics(env.sim.wp_model, env.sim.wp_data)
+        if not hasattr(env, "_goose_rigid_depth_data"):
+            env._goose_rigid_depth_data = mjw.make_data(
+                env.sim.mj_model, nworld=env.num_envs, nconmax=0,
+                nccdmax=0, njmax=0, njmax_nnz=0)
+        data = env._goose_rigid_depth_data
+        wp.copy(data.qpos, env.sim.wp_data.qpos)
+        if env.sim.mj_model.nmocap:
+            wp.copy(data.mocap_pos, env.sim.wp_data.mocap_pos)
+            wp.copy(data.mocap_quat, env.sim.wp_data.mocap_quat)
+        mjw.kinematics(env.sim.wp_model, data)
+    positions = wp.to_torch(data.geom_xpos)
+    matrices = wp.to_torch(data.geom_xmat)
     depths = []
     for geom, vertices in env._goose_rigid_support:
-        rotation = env.sim.data.geom_xmat[:, geom].reshape(env.num_envs, 3, 3)
-        z = vertices@rotation[:, 2, :].T+env.sim.data.geom_xpos[:, geom, 2]
+        rotation = matrices[:, geom].reshape(env.num_envs, 3, 3)
+        z = vertices@rotation[:, 2, :].T+positions[:, geom, 2]
         depths.append(-z.min(dim=0).values)
     return torch.stack(depths).max(dim=0).values.clamp_min(0)
 

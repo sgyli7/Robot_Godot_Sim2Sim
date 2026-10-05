@@ -298,3 +298,62 @@ def test_primitive_feet_fit_original_bottom_and_keep_si_and_real_controller(tmp_
         drive.commit(rt.last_tau[None])
         np.testing.assert_array_equal(drive.last_tau[0], rt.last_tau)
     assert rt.physics_integrations == 20 and int(drive.completed_ticks[0]) == 20
+
+
+def test_depth_check_keeps_reward_snapshot_and_reads_current_geometry(source):
+    from bevy_microduck_tools.goose.foot_curriculum import (
+        rigid_collision_depth, rigid_contact_limit_exceeded)
+    from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv
+    from mjlab.managers.termination_manager import TerminationTermCfg
+
+    model, contract, _ = source
+    cfg = make_development_env_cfg(model, contract, num_envs=2)
+    cfg.terminations["depth"] = TerminationTermCfg(
+        func=rigid_contact_limit_exceeded, params={"max_depth_m": .05})
+    env = GooseDevelopmentEnv(cfg, "cpu")
+    fields = ("qpos", "qvel", "xpos", "xquat", "xipos", "subtree_com", "cvel",
+              "geom_xpos", "geom_xmat", "time")
+    captured = {}
+    original_termination = env.termination_manager.compute
+    original_reward = env.reward_manager.compute
+
+    def termination():
+        captured.update({name: getattr(env.sim.data, name).clone() for name in fields})
+        return original_termination()
+
+    def reward(dt):
+        for name in fields:
+            torch.testing.assert_close(getattr(env.sim.data, name).clone(), captured[name],
+                                       atol=0, rtol=0)
+        return original_reward(dt)
+
+    env.termination_manager.compute = termination
+    env.reward_manager.compute = reward
+    try:
+        env.reset()
+        for tick in range(8):
+            actions = torch.zeros((2, 18))
+            actions[0, 6:] = .01 if tick % 2 else -.01
+            env.step(actions)
+            before = {name: getattr(env.sim.data, name).clone() for name in fields}
+            depth = rigid_collision_depth(env)
+            for name in fields:
+                torch.testing.assert_close(getattr(env.sim.data, name).clone(), before[name],
+                                           atol=0, rtol=0)
+            host = mujoco.MjData(env.sim.mj_model)
+            from bevy_microduck_tools.goose.native_geometry import collision_geom_vertices
+            for world in range(2):
+                host.qpos[:] = env.sim.data.qpos[world].numpy()
+                mujoco.mj_kinematics(env.sim.mj_model, host)
+                expected = max(0., max(-float((
+                    collision_geom_vertices(env.sim.mj_model, geom)
+                    @ host.geom_xmat[geom].reshape(3, 3).T
+                    + host.geom_xpos[geom])[:, 2].min())
+                    for geom in range(env.sim.mj_model.ngeom)
+                    if env.sim.mj_model.geom_type[geom] in (
+                        mujoco.mjtGeom.mjGEOM_MESH, mujoco.mjtGeom.mjGEOM_BOX)))
+                assert float(depth[world]) == pytest.approx(expected, abs=2e-6)
+        assert env._sim_step_counter == 8
+        assert env.action_manager.get_term("goose").drive.completed_ticks.tolist() == [8, 8]
+    finally:
+        env.close()
