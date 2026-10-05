@@ -140,6 +140,10 @@ pub(crate) struct StaticMarkerWorker {
 }
 
 impl StaticMarkerWorker {
+    /// A new process binds immutable calibration to a fresh artifact directory.
+    pub(crate) fn reset_configuration(&self) -> StaticMarkerVisionConfiguration {
+        self.config.clone()
+    }
     pub(crate) fn spawn(
         config: StaticMarkerVisionConfiguration,
         root: &Path,

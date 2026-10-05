@@ -98,7 +98,7 @@ impl ContinuousMobileRoute {
         if self.worker.is_none() {
             self.worker = Some(PersistentMarkerWorker::spawn(
                 self.vision.clone(),
-                &runtime.options.output,
+                &runtime.output,
                 runtime.episode_id,
             )?);
         }

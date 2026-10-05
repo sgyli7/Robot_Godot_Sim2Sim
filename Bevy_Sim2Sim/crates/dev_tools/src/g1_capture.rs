@@ -58,6 +58,8 @@ mod static_observed_place;
 mod static_visual_transfer;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod station_carry;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod station_controls;
 mod terminal_failure;
 use rendering_minigame::{
     StationRenderHealth, StationScene, default_asset_root,
@@ -185,6 +187,10 @@ struct CaptureConfiguration {
     render_only_environment_translation: Option<[f64; 3]>,
     #[serde(default)]
     task_lab: Option<super::g1_task_lab::G1TaskLabConfiguration>,
+    /// Explicit fixed-profile experiment controls; never changes benchmark defaults.
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    #[serde(default)]
+    station_task_controls: Option<station_controls::Configuration>,
     #[serde(default)]
     mobile_assist: Option<MobileAssistCaptureConfiguration>,
     #[serde(default)]
@@ -1248,6 +1254,8 @@ fn run_from_file(
         config.static_grasp_fixed_camera_pair,
         config.static_pair_program,
         config.local_model_startup,
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        config.station_task_controls,
         mode,
     )
 }
@@ -1658,6 +1666,9 @@ fn reserve_source_light_clusters(
 pub(super) struct CaptureRuntime {
     worker: CaptureWorker,
     options: G1CaptureOptions,
+    output: PathBuf,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    controls: Option<station_controls::State>,
     episode_id: u64,
     started: Instant,
     local_model_startup: Option<local_model_startup::Gate>,
@@ -1750,7 +1761,33 @@ impl CaptureRuntime {
         if let Some(assist) = &mut self.mobile_assist {
             assist.reset_episode();
         }
+        if let Some(live) = &mut self.live_policy {
+            live.boundary_image_window = None;
+            live.wait_image_min_tick = None;
+            live.completed = false;
+        }
+        self.command_submitted = false;
         self.startup_submitted = false;
+        self.ego_saved = false;
+        self.main_saved = Arc::new(Mutex::new(Ok(false)));
+        self.static_grasp_pair_secondary = false;
+        self.static_observed_place_target_tick = None;
+        self.static_regrasp_started = false;
+        self.static_auxiliary_activation_frame = None;
+        self.static_marker_activation_render_frame = None;
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        {
+            if let Some(route) = &mut self.static_observed_grasp_route {
+                route.reset_episode();
+            }
+            if let Some(route) = &mut self.static_observed_place_route {
+                route.reset_episode();
+            }
+            if let Some(evidence) = &mut self.startup_evidence {
+                evidence.static_self_samples.clear();
+            }
+        }
+        self.started = Instant::now();
         self.latest = None;
         self.requested = false;
         Ok(episode_id)
@@ -1963,6 +2000,8 @@ pub fn run_capture(
         false,
         None,
         None,
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        None,
         CaptureMode::Camera,
     )
 }
@@ -1998,9 +2037,20 @@ fn run_capture_owner(
     static_grasp_fixed_camera_pair: bool,
     static_pair_program: Option<BackgroundVisualConfiguration>,
     local_model_startup: Option<local_model_startup::Configuration>,
+    #[cfg(feature = "g1_constraint_diagnostic")] station_task_controls: Option<
+        station_controls::Configuration,
+    >,
     mode: CaptureMode,
 ) -> Result<G1CaptureReceipt, String> {
     let interactive = mode == CaptureMode::TaskLab;
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    if let Some(controls) = &station_task_controls {
+        controls.validate(mode, task_lab.is_some())?;
+    }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    let controlled = station_task_controls.is_some();
+    #[cfg(not(feature = "g1_constraint_diagnostic"))]
+    let controlled = false;
     if local_model_startup.is_some() && mode != CaptureMode::StationMobileRelease {
         return Err(
             "renderer-first local model preparation is an explicit station-release entry".into(),
@@ -2716,6 +2766,13 @@ fn run_capture_owner(
         .map_err(|error| format!("capture output must be new: {error}"))?;
     let output = options.output.clone();
     let episode_id = config.episode();
+    let artifact_output = if controlled {
+        let path = output.join(format!("episode_{episode_id}"));
+        fs::create_dir(&path).map_err(|e| e.to_string())?;
+        path
+    } else {
+        output.clone()
+    };
     let outcome = CaptureOutcome(Arc::new(Mutex::new(G1CaptureReceipt::initial(
         options.ticks,
         &config,
@@ -2967,7 +3024,7 @@ fn run_capture_owner(
         .unwrap()
         .factory_verified_diagnostic_constraint_sweeps = diagnostic_constraint_sweeps;
     let static_marker_worker = static_marker_vision
-        .map(|c| StaticMarkerWorker::spawn(c, &options.output, episode_id))
+        .map(|c| StaticMarkerWorker::spawn(c, &artifact_output, episode_id))
         .transpose()?;
     let mut app = App::new();
     // Default mode uses the scene's enamel configuration only. Explicit station
@@ -2993,6 +3050,9 @@ fn run_capture_owner(
         .insert_resource(CaptureRuntime {
             worker,
             options,
+            output: artifact_output,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            controls: None,
             episode_id,
             started: Instant::now(),
             local_model_startup,
@@ -3119,6 +3179,10 @@ fn run_capture_owner(
         app.insert_resource(model)
             .add_plugins(G1BackgroundVisualPlugin);
     }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    if let Some(configuration) = station_task_controls {
+        station_controls::install(&mut app, configuration, &output, &outcome)?;
+    }
     let lab_outcome = task_lab
         .map(|configuration| {
             super::g1_task_lab::install(
@@ -3163,6 +3227,10 @@ fn run_capture_owner(
         )
         .map_err(|error| error.to_string())?;
     }
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    if controlled {
+        station_controls::finish(&mut app, &output)?;
+    }
     let mut receipt = outcome
         .0
         .lock()
@@ -3176,7 +3244,7 @@ fn run_capture_owner(
         serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    if (!receipt.capture_succeeded && !interactive)
+    if (!receipt.capture_succeeded && !interactive && !controlled)
         || (interactive && !matches!(exit, AppExit::Success))
     {
         return Err(receipt
@@ -3754,13 +3822,10 @@ fn drive_mobile_assist(
         frame.rgb,
     )
     .map_err(|e| e.to_string())?;
+    fs::write(runtime.output.join("carry_handoff_ego.png"), camera.png())
+        .map_err(|e| e.to_string())?;
     fs::write(
-        runtime.options.output.join("carry_handoff_ego.png"),
-        camera.png(),
-    )
-    .map_err(|e| e.to_string())?;
-    fs::write(
-        runtime.options.output.join("carry_handoff_stamp.json"),
+        runtime.output.join("carry_handoff_stamp.json"),
         serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
@@ -4450,13 +4515,10 @@ fn drive_lower_view(
         frame.rgb,
     )
     .map_err(|e| e.to_string())?;
+    fs::write(runtime.output.join("lower_handoff_ego.png"), rgb.png())
+        .map_err(|e| e.to_string())?;
     fs::write(
-        runtime.options.output.join("lower_handoff_ego.png"),
-        rgb.png(),
-    )
-    .map_err(|e| e.to_string())?;
-    fs::write(
-        runtime.options.output.join("lower_handoff_stamp.json"),
+        runtime.output.join("lower_handoff_stamp.json"),
         serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
@@ -4850,7 +4912,7 @@ fn capture_current_marker_frame(
     let input = marker_observation(&frame.stamp)?;
     let observation: ObservationStamp =
         serde_json::from_value(input["stamp"].clone()).map_err(|e| e.to_string())?;
-    let directory = runtime.options.output.join(stage_directory);
+    let directory = runtime.output.join(stage_directory);
     fs::create_dir(&directory).map_err(|e| e.to_string())?;
     let rgb = task_minigame::decision::CameraRgb::from_rgb(
         "native_ego",
@@ -4901,7 +4963,7 @@ fn capture_current_marker_pair(
         else {
             return Ok(None);
         };
-        let directory = runtime.options.output.join(stage);
+        let directory = runtime.output.join(stage);
         let first = serde_json::from_slice(
             &fs::read(directory.join("observation.json")).map_err(|e| e.to_string())?,
         )
@@ -4994,7 +5056,7 @@ fn start_marker_job(
     let Some((observation, rotation)) = captured else {
         return Ok(());
     };
-    let directory = runtime.options.output.join(stage_directory);
+    let directory = runtime.output.join(stage_directory);
     if stage_directory.starts_with("regrasp_")
         || matches!(
             stage_directory,
@@ -5367,7 +5429,7 @@ fn drive_live_policy(
         {
             return Err("live RGB was rendered from a different physical boundary".into());
         }
-        submit_live_observation(live, frame, &runtime.options.output)?;
+        submit_live_observation(live, frame, &runtime.output)?;
         runtime.requested = false;
         outcome.0.lock().unwrap().live_policy_inference_calls += 1;
     }
@@ -5570,7 +5632,7 @@ fn drive_waited_mobile_policy(
             }
             receipt.prefetch_image_events.push(serde_json::json!({"event":"standing_wait_readback_consumed","capture_sequence":frame.stamp.capture_sequence,"actual_image_tick":frame_tick,"display_tick":tick,"captured_at_unix_ms":frame.stamp.captured_at_unix_ms,"copy_encoded_at_unix_ms":frame.stamp.copy_encoded_at_unix_ms,"readback_completed_at_unix_ms":frame.stamp.readback_completed_at_unix_ms}));
         }
-        submit_live_observation(live, frame, &runtime.options.output)?;
+        submit_live_observation(live, frame, &runtime.output)?;
         runtime.requested = false;
         live.wait_image_min_tick = None;
         outcome.0.lock().unwrap().live_policy_inference_calls += 1;
@@ -5760,7 +5822,7 @@ fn drive_prefetched_policy(
             runtime.requested = false;
             return Ok(false);
         }
-        submit_live_observation(live, frame, &runtime.options.output)?;
+        submit_live_observation(live, frame, &runtime.output)?;
         runtime.requested = false;
         outcome.0.lock().unwrap().live_policy_inference_calls += 1;
     }
@@ -5794,7 +5856,14 @@ fn drive_capture(
 ) {
     runtime.render_frames += 1;
     let result = (|| -> Result<(), String> {
-        if let Some(worker) = &mut runtime.static_marker_worker {
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        let controls_running = runtime
+            .controls
+            .as_ref()
+            .is_none_or(|state| state.running());
+        #[cfg(not(feature = "g1_constraint_diagnostic"))]
+        let controls_running = true;
+        if controls_running && let Some(worker) = &mut runtime.static_marker_worker {
             if let Some(localization) = worker.poll()? {
                 let tick = localization["localization"]["observation"]["sim_time_ns"]
                     .as_u64()
@@ -5951,7 +6020,7 @@ fn drive_capture(
         let Some(latest) = runtime.latest.clone() else {
             return Ok(());
         };
-        if runtime.interactive {
+        if runtime.interactive || !controls_running {
             return Ok(());
         }
         if latest.phase == G1WorkerPhase::Stopped {
@@ -6146,7 +6215,7 @@ fn drive_capture(
                 return Err("local model preparation requires a paused zero-Tick owner".into());
             }
             let episode_id = runtime.episode_id;
-            let output = runtime.options.output.clone();
+            let output = runtime.output.clone();
             let gate = runtime.local_model_startup.as_mut().unwrap();
             if !gate.renderer_announced {
                 fs::write(
@@ -6306,7 +6375,7 @@ fn drive_capture(
             }
             port.request()?;
             runtime.requested = true;
-            let path = runtime.options.output.join("main_1920x1080.png");
+            let path = runtime.output.join("main_1920x1080.png");
             let saved = runtime.main_saved.clone();
             commands.spawn(Screenshot::primary_window()).observe(
                 move |event: On<ScreenshotCaptured>| {
@@ -6453,7 +6522,7 @@ fn drive_capture(
                 // Perception receives actual RGB plus original self sensors only.
                 let input = marker_observation(&frame.stamp)?;
                 fs::write(
-                    runtime.options.output.join("vision_observation.json"),
+                    runtime.output.join("vision_observation.json"),
                     serde_json::to_vec_pretty(&input).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
@@ -6504,13 +6573,13 @@ fn drive_capture(
             .try_into_dynamic()
             .map_err(|error| error.to_string())?
             .save(image_directory.as_ref().map_or_else(
-                || runtime.options.output.join("ego_640x480.png"),
+                || runtime.output.join("ego_640x480.png"),
                 |p| p.join("ego.png"),
             ))
             .map_err(|error| error.to_string())?;
             fs::write(
                 image_directory.as_ref().map_or_else(
-                    || runtime.options.output.join("ego_stamp.json"),
+                    || runtime.output.join("ego_stamp.json"),
                     |p| p.join("stamp.json"),
                 ),
                 serde_json::to_vec_pretty(&frame.stamp).map_err(|error| error.to_string())?,
@@ -6555,8 +6624,8 @@ fn drive_capture(
                         ("main_1920x1080.png", "static_grip_main_1920x1080.png"),
                     ] {
                         fs::copy(
-                            runtime.options.output.join(original),
-                            runtime.options.output.join(preserved),
+                            runtime.output.join(original),
+                            runtime.output.join(preserved),
                         )
                         .map_err(|e| e.to_string())?;
                     }
@@ -6632,6 +6701,13 @@ fn drive_capture(
                 }
             }
             outcome.0.lock().unwrap().capture_succeeded = true;
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            if let Some(state) = &mut runtime.controls {
+                state.complete();
+            } else {
+                exit.write(AppExit::Success);
+            }
+            #[cfg(not(feature = "g1_constraint_diagnostic"))]
             exit.write(AppExit::Success);
         }
         Ok(())
@@ -6643,6 +6719,14 @@ fn drive_capture(
             .is_some_and(local_model_startup::Gate::expired)
         {
             return Some("local model preparation exceeded its explicit360s bound".into());
+        }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if runtime
+            .controls
+            .as_ref()
+            .is_some_and(|state| !state.running())
+        {
+            return None;
         }
         (!runtime.interactive
             && runtime.started.elapsed() > runtime.options.timeout
@@ -6656,7 +6740,7 @@ fn drive_capture(
         runtime.worker.pause();
         let mut receipt = outcome.0.lock().unwrap();
         if let Err(reason) = terminal_failure::record(
-            &runtime.options.output,
+            &runtime.output,
             runtime.episode_id,
             &mut receipt,
             error,
@@ -6664,6 +6748,13 @@ fn drive_capture(
         ) {
             bevy::log::error!("capture failure checkpoint could not be saved: {reason}");
         }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(state) = &mut runtime.controls {
+            state.fail(receipt.failure_reason.clone().unwrap_or_default());
+        } else {
+            exit.write(AppExit::error());
+        }
+        #[cfg(not(feature = "g1_constraint_diagnostic"))]
         exit.write(AppExit::error());
     }
 }

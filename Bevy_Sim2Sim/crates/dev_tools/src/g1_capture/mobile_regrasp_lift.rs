@@ -162,7 +162,7 @@ pub(super) fn drive(
         "wholehand_geometry_only_pre_lift_candidate":true,"thumb0_contact_not_required_or_sufficient":true,
         "hand_only_support_requires_independent_truth_audit":true,"Qwen_results":0,"carry_release_submitted":false,"task_qualified":false});
     fs::write(
-        runtime.options.output.join("regrasp_lift_receipt.json"),
+        runtime.output.join("regrasp_lift_receipt.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;

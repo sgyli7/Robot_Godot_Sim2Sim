@@ -212,6 +212,9 @@ impl StaticObservedPlaceRoute {
             job: None,
         })
     }
+    pub(super) fn reset_episode(&mut self) {
+        self.job = None;
+    }
     fn start(&mut self, root: &Path) -> Result<(), String> {
         self.config.validate()?;
         bound_bytes(&self.program.path, &self.program.sha256).map_err(|e| e.to_string())?;
@@ -324,7 +327,7 @@ impl StaticObservedPlaceRoute {
             return Err("paired placement preparation requires paused owner".into());
         }
         if self.job.is_none() {
-            self.start(&runtime.options.output)?;
+            self.start(&runtime.output)?;
             return Ok(false);
         }
         let job = self.job.as_mut().unwrap();
@@ -422,7 +425,7 @@ impl StaticObservedPlaceRoute {
         if target > u64::from(runtime.options.ticks) {
             return Err("observed placement exceeds its explicit integration budget".into());
         }
-        fs::write(runtime.options.output.join("static_observed_place_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"schema":"g1_live_fixed_pair_observed_place_preflight_v1","target_tick":target,"geometry_ticks":receipts.len(),"physics_integrations":0,"model_calls":0,"world_or_contact_truth_input":false,"task_qualified":false,"steps":receipts})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        fs::write(runtime.output.join("static_observed_place_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"schema":"g1_live_fixed_pair_observed_place_preflight_v1","target_tick":target,"geometry_ticks":receipts.len(),"physics_integrations":0,"model_calls":0,"world_or_contact_truth_input":false,"task_qualified":false,"steps":receipts})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         fs::write(
             runtime
                 .options

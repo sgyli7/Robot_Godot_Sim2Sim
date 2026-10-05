@@ -168,8 +168,7 @@ impl StaticTransferRoute {
             return Err("static visual goal and current self time disagree".into());
         }
         let chunk: task_minigame::policy::PolicyActionChunk = serde_json::from_slice(
-            &fs::read(runtime.options.output.join("live_reply_0002.json"))
-                .map_err(|e| e.to_string())?,
+            &fs::read(runtime.output.join("live_reply_0002.json")).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         if chunk.profile != TaskProfile::StaticApple
@@ -209,7 +208,7 @@ impl StaticTransferRoute {
             command = next;
             receipts.push(receipt);
         }
-        fs::write(runtime.options.output.join("static_transfer_current_geometry_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"computed_geometry_points":receipts.len(),"receipts":receipts,"physics_integrations":0,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        fs::write(runtime.output.join("static_transfer_current_geometry_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"computed_geometry_points":receipts.len(),"receipts":receipts,"physics_integrations":0,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
             return Err("static visual transfer selected foreign physical owner".into());
         };
@@ -290,7 +289,7 @@ impl StaticTransferRoute {
                     worker.submit_grip_capture(&frame)?;
                 }
                 fs::write(
-                    runtime.options.output.join("static_grip_stamp.json"),
+                    runtime.output.join("static_grip_stamp.json"),
                     serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
@@ -341,7 +340,7 @@ impl StaticTransferRoute {
             )?
         };
         fs::write(
-            runtime.options.output.join("static_grip_verification.json"),
+            runtime.output.join("static_grip_verification.json"),
             serde_json::to_vec_pretty(&verification).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
@@ -437,7 +436,7 @@ impl StaticTransferRoute {
         )
         .map_err(|e| e.to_string())?;
         fs::write(
-            runtime.options.output.join("static_memory_current_rgb.png"),
+            runtime.output.join("static_memory_current_rgb.png"),
             current_rgb.png(),
         )
         .map_err(|e| e.to_string())?;
@@ -626,7 +625,7 @@ impl StaticTransferRoute {
             command = next;
             receipts.push(receipt);
         }
-        fs::write(runtime.options.output.join("static_memory_placement_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"source_displacement_m":delta.as_slice(),"computed_geometry_points":150,"receipts":receipts,"physics_integrations":0,"current_object_visual_detections":false,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        fs::write(runtime.output.join("static_memory_placement_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"source_displacement_m":delta.as_slice(),"computed_geometry_points":150,"receipts":receipts,"physics_integrations":0,"current_object_visual_detections":false,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
             return Err("static placement selected foreign owner".into());
         };
@@ -702,7 +701,7 @@ impl StaticTransferRoute {
             command = next;
             receipts.push(receipt);
         }
-        fs::write(runtime.options.output.join("static_observation_withdrawal_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"source_displacement_m":[0.,0.1,0.],"computed_geometry_points":100,"receipts":receipts,"physics_integrations":0,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        fs::write(runtime.output.join("static_observation_withdrawal_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"goal":goal,"source_displacement_m":[0.,0.1,0.],"computed_geometry_points":100,"receipts":receipts,"physics_integrations":0,"world_or_contact_truth_input":false,"task_qualified":false})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         let CaptureWorker::StaticStartup(worker) = &runtime.worker else {
             return Err("observation withdrawal selected foreign owner".into());
         };

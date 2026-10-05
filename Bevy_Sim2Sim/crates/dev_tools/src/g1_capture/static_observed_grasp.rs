@@ -92,6 +92,11 @@ impl StaticObservedGraspRoute {
             completed: false,
         })
     }
+    pub(super) fn reset_episode(&mut self) {
+        self.image_submitted = false;
+        self.target_tick = None;
+        self.completed = false;
+    }
     pub(super) fn completed(&self) -> bool {
         self.completed
     }
@@ -176,7 +181,7 @@ impl StaticObservedGraspRoute {
                     .unwrap()
                     .submit_capture(&frame)?;
                 fs::write(
-                    runtime.options.output.join("static_preclosure_stamp.json"),
+                    runtime.output.join("static_preclosure_stamp.json"),
                     serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
@@ -213,8 +218,7 @@ impl StaticObservedGraspRoute {
             return Err("unbounded current observed apple position".into());
         }
         let reply: task_minigame::policy::PolicyActionChunk = serde_json::from_slice(
-            &fs::read(runtime.options.output.join("live_reply_0001.json"))
-                .map_err(|e| e.to_string())?,
+            &fs::read(runtime.output.join("live_reply_0001.json")).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         if reply.profile != TaskProfile::StaticApple

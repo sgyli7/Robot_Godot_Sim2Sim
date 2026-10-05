@@ -432,7 +432,7 @@ impl Dispatch {
             frame.rgb,
         )
         .map_err(|e| e.to_string())?;
-        let directory = runtime.options.output.join("initial_qwen");
+        let directory = runtime.output.join("initial_qwen");
         fs::create_dir(&directory).map_err(|e| e.to_string())?;
         fs::write(directory.join("ego.png"), rgb.png()).map_err(|e| e.to_string())?;
         fs::write(
@@ -503,7 +503,7 @@ impl Dispatch {
             return Err("Qwen RGB geometry is not the current paused native boundary".into());
         }
         require_marker_roles(&localization)?;
-        let directory = runtime.options.output.join("visual_approach");
+        let directory = runtime.output.join("visual_approach");
         let stamp: G1CaptureStamp = serde_json::from_slice(
             &fs::read(directory.join("audit_stamp.json")).map_err(|e| e.to_string())?,
         )
@@ -773,14 +773,12 @@ impl Dispatch {
         }
         if !self.feedback_pending {
             let stamp: G1CaptureStamp = serde_json::from_slice(
-                &fs::read(runtime.options.output.join("ego_stamp.json"))
-                    .map_err(|e| e.to_string())?,
+                &fs::read(runtime.output.join("ego_stamp.json")).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
             let snapshot = crate::g1_decision_diagnostic::snapshot_from_capture(
                 &stamp,
-                fs::read(runtime.options.output.join("ego_640x480.png"))
-                    .map_err(|e| e.to_string())?,
+                fs::read(runtime.output.join("ego_640x480.png")).map_err(|e| e.to_string())?,
             )?;
             if snapshot.stamp.episode_id != latest.episode_id
                 || snapshot.stamp.sim_time_ns != sim_time_ns
