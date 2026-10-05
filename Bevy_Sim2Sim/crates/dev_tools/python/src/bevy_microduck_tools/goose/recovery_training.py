@@ -101,6 +101,22 @@ def recovery_stand_reward(env, nominal_height):
     return recovery_stable(env, nominal_height).float()
 
 
+def recovery_dense_stand_reward(env, nominal_height):
+    """Smooth stand feedback while the stochastic policy learns stabilization.
+
+    The hard150-Tick success metric is unchanged. A low, reclining body gets
+    zero from this term; a nearly standing body receives graded feedback for
+    reducing linear and angular motion instead of waiting for a rare binary
+    stable sample during exploration.
+    """
+    up, height, velocity, angular = recovery_state(env)
+    upright = ((up-.8)/.15).clamp(0., 1.)
+    raised = ((height/nominal_height-.65)/.2).clamp(0., 1.)
+    motion = torch.exp(-velocity.square().sum(-1)/.15**2
+        - angular.square().sum(-1)/.6**2)
+    return upright*raised*motion
+
+
 def recovery_stand_motion(env):
     up, _, velocity, angular = recovery_state(env)
     return (up >= .95)*(velocity.square().sum(-1)+.1*angular.square().sum(-1))
@@ -207,7 +223,8 @@ def record_progressive_hold(env, env_ids, *, nominal_height):
 
 
 def make_progressive_recovery_cfg(model_path, contract_path, parent_library,
-        parent_sha256, progressive_library, progressive_sha256, *, level=0, **kwargs):
+        parent_sha256, progressive_library, progressive_sha256, *, level=0,
+        dense_stability=False, **kwargs):
     """Public event curriculum over a hash-bound library; same get-up task."""
     cfg = make_recovery_cfg(model_path, contract_path, parent_library,
         parent_sha256, **kwargs)
@@ -228,4 +245,6 @@ def make_progressive_recovery_cfg(model_path, contract_path, parent_library,
         mode="reset", params={"poses": poses, "joint_names": params["joint_names"],
             "level": level})
     cfg.events["recovery_hold"].func = record_progressive_hold
+    if dense_stability:
+        cfg.rewards["stable_stand"].func = recovery_dense_stand_reward
     return cfg

@@ -56,6 +56,19 @@ def test_fallen_births_keep_real_contact_and_selective_reset_does_not_integrate(
         env.close()
 
 
+def test_dense_stability_requires_raised_upright_and_rewards_reduced_motion(monkeypatch):
+    from bevy_microduck_tools.goose import recovery_training as course
+    up = torch.tensor([.64, .99, .99, .99])
+    height = torch.tensor([1., .6, 1., 1.])
+    velocity = torch.tensor([[0., 0., 0.], [0., 0., 0.], [.1, 0., 0.], [0., 0., 0.]])
+    angular = torch.zeros((4, 3))
+    monkeypatch.setattr(course, "recovery_state", lambda env: (up, height, velocity, angular))
+    reward = course.recovery_dense_stand_reward(None, 1.)
+    assert reward[0] == reward[1] == 0.
+    assert 0. < reward[2] < reward[3] <= 1.
+    assert course.recovery_stable(None, 1.).tolist() == [False, False, False, True]
+
+
 def test_progressive_birth_preserves_other_worlds_and_counts_real_hold(tmp_path, monkeypatch):
     from bevy_microduck_tools.goose.recovery_training import make_progressive_recovery_cfg
 
