@@ -1334,6 +1334,8 @@ pub struct G1CaptureReceipt {
     pub live_action_chunks: Vec<serde_json::Value>,
     pub pauses_for_camera_and_policy: bool,
     pub mobile_assist_handoff: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_profile_qwen_start: Option<serde_json::Value>,
     pub disclosed_fiducials: Option<G1TaskFiducialReceipt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub static_marker_localization: Option<serde_json::Value>,
@@ -1479,6 +1481,7 @@ impl G1CaptureReceipt {
             live_action_chunks: Vec::new(),
             pauses_for_camera_and_policy: false,
             mobile_assist_handoff: None,
+            fixed_profile_qwen_start: None,
             disclosed_fiducials: None,
             static_marker_localization: None,
             static_grip_localization: None,
@@ -2853,7 +2856,9 @@ fn run_capture_owner(
         outcome.0.lock().unwrap().scope = "native_bounded_continuous_actual_rgb_grasp_classical_carry_release_source_scene_not_qualified";
     }
     if qwen_dispatch_enabled {
-        outcome.0.lock().unwrap().scope = if station_release {
+        outcome.0.lock().unwrap().scope = if static_observed_place {
+            "native_station_static_initial_local_qwen_N1_7_actual_rgb_classical_place_diagnostic_not_qualified"
+        } else if station_release {
             "native_station_initial_local_qwen_fixed_profile_and_rgb_transport_feedback_diagnostic_not_qualified"
         } else {
             "native_source_mobile_postgrasp_local_qwen_transport_and_feedback_diagnostic_not_qualified"

@@ -40,7 +40,8 @@ def argument_path(name, path):
     return path.absolute() if name == "policy_python" else path.resolve()
 
 
-def prepare_configuration(value, profile, port, maximum_episodes, smoke, inflight_reset=False):
+def prepare_configuration(value, profile, port, maximum_episodes, smoke, inflight_reset=False,
+                          with_local_qwen=False):
     """Build a new configuration before Rust loads it; never edit a live asset."""
     value = json.loads(json.dumps(value))
     body = "static_agile" if profile == "static" else "mobile_homie_v2"
@@ -62,6 +63,16 @@ def prepare_configuration(value, profile, port, maximum_episodes, smoke, infligh
     elif not (value.get("static_startup") and value.get("static_grasp_fixed_camera_pair")
               and value.get("static_pair_program")):
         raise ValueError("Static UI requires the disclosed observed-grasp/fixed-pair place route")
+    if profile == "static":
+        if value.get("diagnostic_qwen_dispatch") is not None:
+            raise ValueError("Static Qwen configuration is prepared only by --with-local-qwen")
+        if with_local_qwen:
+            value["diagnostic_qwen_dispatch"] = {
+                "scope": "scientific_station_static_from_instruction_v1",
+                "connection": {"endpoint": "http://127.0.0.1:8002/v1",
+                               "model": "qwen3.8-27b-fp8", "timeout_ms": 20000,
+                               "max_output_tokens": 128},
+                "instruction": "把苹果放到盘子里"}
     value["policy"]["endpoint"] = f"http://127.0.0.1:{port}/infer"
     value["station_task_controls"] = {"maximum_episodes": maximum_episodes,
                                       "smoke_stop_reset": smoke,
@@ -137,7 +148,8 @@ def cleanup_session(receipt, model, app, recorder, qwen_start, started_qwen, ser
 def run(args):
     config = prepare_configuration(json.loads(args.config.read_text()), args.profile,
                                    args.policy_port, args.maximum_episodes, args.smoke_stop_reset,
-                                   args.smoke_reset_during_qwen)
+                                   args.smoke_reset_during_qwen, args.with_local_qwen)
+    use_qwen = args.profile == "mobile" or args.with_local_qwen
     episode = args.episode_id if args.episode_id is not None else time.time_ns() // 1_000_000
     if not 0 < episode < (1 << 64) - args.maximum_episodes:
         raise ValueError("A positive episode identity with room for all resets is required")
@@ -155,6 +167,7 @@ def run(args):
                "prepared_only": args.prepare_only, "all_owned_handles_reaped": False,
                "N16_episode_rng_reset_enabled": False if args.profile == "mobile" else None}
     receipt["smoke_reset_during_actual_qwen"] = args.smoke_reset_during_qwen
+    receipt["local_qwen_initial_profile_gate"] = use_qwen
     save(args.output / "session_receipt.json", receipt)
     if args.prepare_only:
         receipt["all_owned_handles_reaped"] = True
@@ -171,7 +184,7 @@ def run(args):
 
     try:
         check_unused_port(args.policy_port)
-        if args.profile == "mobile" and inspect_qwen()["State"]["Running"]:
+        if use_qwen and inspect_qwen()["State"]["Running"]:
             raise ValueError("The owned G1 Qwen service is already managed by another active session")
         script = WORKSPACE / "crates/dev_tools/python/scripts" / (
             "unitree_g1_static_server.py" if args.profile == "static" else "unitree_g1_mobile_server.py")
@@ -204,7 +217,7 @@ def run(args):
         if actual.get("revision") != REVISIONS[args.profile] or actual["successful_inferences"] != 0:
             raise ValueError("Wrong model revision or reused inference owner")
         receipt["initial_model_health"] = actual
-        if args.profile == "mobile":
+        if use_qwen:
             started_qwen = True
             with (args.output / "qwen_start.log").open("x") as log:
                 qwen_start = subprocess.Popen([str(args.qwen_service), "start"], stdout=log,
@@ -254,6 +267,8 @@ def main():
     parser.add_argument("--smoke-stop-reset", action="store_true")
     parser.add_argument("--smoke-reset-during-qwen", action="store_true",
                         help="Reset at zero Tick while the real initial Qwen request is in flight")
+    parser.add_argument("--with-local-qwen", action="store_true",
+                        help="Admit the static original task from real initial RGB through local Qwen")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--ffmpeg", type=Path, default=Path("/home/ethan/.local/bin/ffmpeg"))

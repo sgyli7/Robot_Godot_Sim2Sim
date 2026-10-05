@@ -27,6 +27,7 @@ enum Scope {
     PostgraspSourceMobileTransportV1,
     PostgraspSourceMobileTransportV2RgbVerifiedSelection,
     ScientificStationMobileFromInstructionV1,
+    ScientificStationStaticFromInstructionV1,
 }
 
 #[derive(Clone, Deserialize)]
@@ -43,34 +44,26 @@ impl Configuration {
         mode: CaptureMode,
         config: &CaptureRunnerConfig,
     ) -> Result<(), String> {
-        match self.scope {
-            Scope::PostgraspSourceMobileTransportV1
-            | Scope::PostgraspSourceMobileTransportV2RgbVerifiedSelection
-            | Scope::ScientificStationMobileFromInstructionV1 => {}
-        }
         let CaptureRunnerConfig::Task(task) = config else {
             return Err("Qwen transport diagnostic requires the matched task owner".into());
         };
-        if mode
-            != if self.is_station_initial() {
-                CaptureMode::StationMobileRelease
-            } else {
-                CaptureMode::MobileAuxiliaryRelease
-            }
-            || task.body.profile() != TaskProfile::MobileBox
-            || task.max_observation_wall_age_ms != 20_000
+        if !self.entry_identity_matches(mode, task.body.profile(), task.max_observation_wall_age_ms)
             || task.max_observation_age_ns != 1_000_000_000
             || !(1..=20_000).contains(&self.connection.timeout_ms)
             || !(64..=512).contains(&self.connection.max_output_tokens)
-            || (self.uses_selection() && self.connection.max_output_tokens > 128)
+            || ((self.uses_selection() || self.is_static_initial())
+                && self.connection.max_output_tokens > 128)
         {
-            return Err("Qwen dispatch requires the explicit source mobile auxiliary release, unchanged20s/1s image limits, bounded20s transport and V1<=512/V2<=128tokens".into());
+            return Err("Qwen dispatch requires its distinct static observed-place or mobile release profile, unchanged action image TTL, bounded20s transport and selection/static<=128tokens".into());
         }
         self.goal().validate().map_err(|e| e.to_string())?;
         self.client().map(|_| ())
     }
 
     fn goal(&self) -> TaskGoal {
+        if self.is_static_initial() {
+            return self.initial_goal();
+        }
         TaskGoal {
             instruction: self.instruction.clone(),
             profile: TaskProfile::MobileBox,
@@ -86,10 +79,53 @@ impl Configuration {
     }
 
     pub(super) fn is_station_initial(&self) -> bool {
-        matches!(self.scope, Scope::ScientificStationMobileFromInstructionV1)
+        matches!(
+            self.scope,
+            Scope::ScientificStationMobileFromInstructionV1
+                | Scope::ScientificStationStaticFromInstructionV1
+        )
+    }
+
+    fn is_static_initial(&self) -> bool {
+        matches!(self.scope, Scope::ScientificStationStaticFromInstructionV1)
+    }
+
+    fn profile(&self) -> TaskProfile {
+        if self.is_static_initial() {
+            TaskProfile::StaticApple
+        } else {
+            TaskProfile::MobileBox
+        }
+    }
+
+    fn entry_identity_matches(
+        &self,
+        mode: CaptureMode,
+        profile: TaskProfile,
+        wall_age_ms: u64,
+    ) -> bool {
+        let (expected_mode, expected_age) = if self.is_static_initial() {
+            (CaptureMode::StaticObservedPlace, 2_000)
+        } else if self.is_station_initial() {
+            (CaptureMode::StationMobileRelease, 20_000)
+        } else {
+            (CaptureMode::MobileAuxiliaryRelease, 20_000)
+        };
+        mode == expected_mode && profile == self.profile() && wall_age_ms == expected_age
+    }
+
+    fn initial_startup_ticks(&self) -> u64 {
+        if self.is_static_initial() { 60 } else { 0 }
     }
 
     fn initial_goal(&self) -> TaskGoal {
+        if self.is_static_initial() {
+            return TaskGoal {
+                instruction: self.instruction.clone(),
+                profile: TaskProfile::StaticApple,
+                public_scene_description: "Declared finite scientific-station static development profile, not task qualification. Only the fixed original apple-to-plate task is supported. Begin admits the original AGILE standing startup and one original N1.7 forty-frame action block, followed by disclosed current paired-RGB marker31(apple)/marker32(plate) geometry and classical place control. It does not locate the destination, authorize release or predict success. No mobile task, arbitrary object/destination or navigation adjustment is available. This scope provides only initial profile admission; it has no final model feedback or automatic retry.".into(),
+            };
+        }
         TaskGoal {
             instruction: self.instruction.clone(),
             profile: TaskProfile::MobileBox,
@@ -113,6 +149,9 @@ impl Configuration {
             }
             Scope::ScientificStationMobileFromInstructionV1 => {
                 "scientific_station_mobile_from_instruction_v1"
+            }
+            Scope::ScientificStationStaticFromInstructionV1 => {
+                "scientific_station_static_from_instruction_v1"
             }
         }
     }
@@ -356,6 +395,30 @@ impl Dispatch {
             .0
             .lock()
             .map_err(|_| "Qwen transport receipt poisoned")?;
+        if self.configuration.is_static_initial() {
+            let admission = receipt.fixed_profile_qwen_start.get_or_insert_with(|| {
+                serde_json::json!({
+                "scope":self.configuration.scope_name(),"profile":"static_apple",
+                "initial_fixed_profile_admission_required":true,"physics_paused_during_qwen":true,
+                "maximum_initial_admissions":1,"original_policy":"N1.7_single40frame_block_AGILE",
+                "executor":"disclosed_actual_paired_RGB_classical_place",
+                "target_localization_claim":false,"world_or_contact_truth_input":false,
+                "final_rgb_model_feedback_implemented":false,"automatic_retry":false,
+                "task_qualified":false,"events":[]})
+            });
+            let events = admission["events"]
+                .as_array_mut()
+                .ok_or("static Qwen events absent")?;
+            if events.len() >= 4 {
+                return Err("static Qwen admission event budget exhausted".into());
+            }
+            events.push(event);
+            let (attempts, results, discarded) = self.worker.transport_counts();
+            admission["http_attempts"] = attempts.into();
+            admission["http_results"] = results.into();
+            admission["discarded_results"] = discarded.into();
+            return Ok(());
+        }
         merge_mobile_handoff(&mut receipt.mobile_assist_handoff, serde_json::json!({}))?;
         let handoff = receipt
             .mobile_assist_handoff
@@ -399,7 +462,7 @@ impl Dispatch {
         if latest.phase != G1WorkerPhase::Paused
             || latest.episode_id != runtime.episode_id
             || latest.timing.episode_integrations != 0
-            || runtime.startup_ticks != 0
+            || runtime.startup_ticks != self.configuration.initial_startup_ticks()
             || runtime
                 .live_policy
                 .as_ref()
@@ -491,7 +554,8 @@ impl Dispatch {
             runtime.episode_id,
             self.configuration.initial_goal(),
             SkillAvailability {
-                mobile_box: true,
+                mobile_box: self.configuration.profile() == TaskProfile::MobileBox,
+                static_apple: self.configuration.profile() == TaskProfile::StaticApple,
                 ..Default::default()
             },
             DecisionLimits {
@@ -801,6 +865,11 @@ impl Dispatch {
         runtime: &CaptureRuntime,
         outcome: &CaptureOutcome,
     ) -> Result<bool, String> {
+        // Static admission is explicitly limited to the zero-Tick start gate.
+        // No mobile box/bin feedback or transport is synthesized for it.
+        if self.configuration.is_static_initial() {
+            return Ok(true);
+        }
         if self.completed {
             return Ok(true);
         }
@@ -906,6 +975,54 @@ impl Dispatch {
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_gate_rejects_mobile_entry_and_preserves_distinct_action_ttl() {
+        let c: Configuration = serde_json::from_value(serde_json::json!({
+            "scope":"scientific_station_static_from_instruction_v1",
+            "connection":{"endpoint":"http://127.0.0.1:8002/v1","model":"qwen3.8-27b-fp8","timeout_ms":20000,"max_output_tokens":128},
+            "instruction":"把苹果放到盘子里"})).unwrap();
+        assert!(c.entry_identity_matches(
+            CaptureMode::StaticObservedPlace,
+            TaskProfile::StaticApple,
+            2_000
+        ));
+        assert!(!c.entry_identity_matches(
+            CaptureMode::StationMobileRelease,
+            TaskProfile::StaticApple,
+            2_000
+        ));
+        assert!(!c.entry_identity_matches(
+            CaptureMode::StaticObservedPlace,
+            TaskProfile::MobileBox,
+            2_000
+        ));
+        assert!(!c.entry_identity_matches(
+            CaptureMode::StaticObservedPlace,
+            TaskProfile::StaticApple,
+            20_000
+        ));
+        assert_eq!(c.initial_startup_ticks(), 60);
+        assert_eq!(c.initial_goal().profile, TaskProfile::StaticApple);
+        assert!(c.is_station_initial());
+        assert!(!c.uses_selection());
+        let mobile: Configuration = serde_json::from_value(serde_json::json!({
+            "scope":"scientific_station_mobile_from_instruction_v1",
+            "connection":{"endpoint":"http://127.0.0.1:8002/v1","model":"qwen3.8-27b-fp8","timeout_ms":20000,"max_output_tokens":128},
+            "instruction":"把箱子搬到蓝色容器里"})).unwrap();
+        assert!(mobile.entry_identity_matches(
+            CaptureMode::StationMobileRelease,
+            TaskProfile::MobileBox,
+            20_000
+        ));
+        assert!(!mobile.entry_identity_matches(
+            CaptureMode::StaticObservedPlace,
+            TaskProfile::StaticApple,
+            2_000
+        ));
+        assert_eq!(mobile.initial_startup_ticks(), 0);
+        assert!(mobile.uses_selection());
+    }
     fn decision(request: SkillRequest) -> ValidatedDecision {
         ValidatedDecision {
             decision_id: 1,

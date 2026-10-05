@@ -28,6 +28,21 @@ def configuration(profile):
 
 
 class StationSessionTests(unittest.TestCase):
+    def test_static_qwen_gate_cannot_modify_the_original_body_or_action_contract(self):
+        original = configuration("static")
+        snapshot = copy.deepcopy(original)
+        prepared = session.prepare_configuration(original, "static", 5557, 2, True,
+                                                  with_local_qwen=True)
+        self.assertEqual(original, snapshot)
+        self.assertEqual(prepared["runner"], snapshot["runner"])
+        self.assertEqual(prepared["policy"]["max_calls"], 1)
+        gate = prepared["diagnostic_qwen_dispatch"]
+        self.assertEqual(gate["scope"], "scientific_station_static_from_instruction_v1")
+        self.assertEqual(gate["connection"]["max_output_tokens"], 128)
+        self.assertEqual(gate["connection"]["endpoint"], "http://127.0.0.1:8002/v1")
+        with self.assertRaises(ValueError):
+            session.prepare_configuration(prepared, "static", 5557, 2, True)
+
     def test_model_python_keeps_its_actual_virtual_environment_prefix(self):
         with tempfile.TemporaryDirectory() as temporary:
             environment = Path(temporary) / "model_env"
