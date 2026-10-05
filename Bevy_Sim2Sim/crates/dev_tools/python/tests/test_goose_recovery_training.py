@@ -73,11 +73,12 @@ def test_near_stand_reference_leaves_folded_getup_actions_and_hold_metric_unchan
     from types import SimpleNamespace
     from bevy_microduck_tools.goose import recovery_training as course
 
-    up = torch.tensor([.89, .99, .99, .99])
-    height = torch.tensor([1., .84, 1., 1.])
-    velocity = torch.zeros((4, 3))
-    angular = torch.zeros((4, 3))
-    actions = torch.full((4, 18), .2)
+    up = torch.tensor([.94, .99, .99, .99, .99])
+    height = torch.tensor([1., .84, 1., 1., 1.])
+    velocity = torch.zeros((5, 3))
+    velocity[4, 0] = .2
+    angular = torch.zeros((5, 3))
+    actions = torch.full((5, 18), .2)
     actions[3] = 0.
     original = actions.clone()
     env = SimpleNamespace(action_manager=SimpleNamespace(
@@ -86,7 +87,7 @@ def test_near_stand_reference_leaves_folded_getup_actions_and_hold_metric_unchan
 
     before = course.recovery_stable(env, 1.).clone()
     cost = course.near_stand_target_cost(env, 1.)
-    torch.testing.assert_close(cost, torch.tensor([0., 0., .04, 0.]))
+    torch.testing.assert_close(cost, torch.tensor([0., 0., .04, 0., 0.]))
     assert torch.equal(actions, original)
     assert torch.equal(course.recovery_stable(env, 1.), before)
 

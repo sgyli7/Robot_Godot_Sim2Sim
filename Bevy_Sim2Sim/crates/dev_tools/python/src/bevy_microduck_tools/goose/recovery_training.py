@@ -123,8 +123,9 @@ def near_stand_target_cost(env, nominal_height):
     Folded low get-up postures remain unconstrained by this term. The
     original normalized neutral target is a training reference only.
     """
-    up, height, _, _ = recovery_state(env)
-    near = (up >= .9) & (height >= .85*nominal_height)
+    up, height, velocity, angular = recovery_state(env)
+    near = ((up >= .95) & (height >= .85*nominal_height)
+        & (velocity.norm(dim=-1) <= .1) & (angular.norm(dim=-1) <= .4))
     actions = env.action_manager.get_term("goose").drive.actions
     return near*actions.square().mean(-1)
 
