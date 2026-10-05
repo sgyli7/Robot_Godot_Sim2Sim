@@ -232,7 +232,7 @@ pub(super) fn drive(
                 .pickup
                 .accept_loaded_regrasp(raise, hold, reply, &checks)?;
             let assist = runtime.mobile_assist.as_mut().unwrap();
-            assist.regrasp_preparation_completed = true;
+            assist.request_loaded_transport_camera();
             assist.station_hold_submitted = true;
             assist.vision_job = None;
             runtime.requested = false;
@@ -258,6 +258,39 @@ pub(super) fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn loaded_handoff_requests_render_switch_and_names_the_same_camera() {
+        let mut assist = super::super::MobileAssistCaptureRuntime::new(
+            MobileAssistStage::Carry(super::super::MobileAssistCaptureConfiguration {
+                heading_yaw_source_rad: 0.,
+                relative_distance_m: 2.,
+            }),
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            true,
+        );
+        assist.box_pair_restore_mount = Some(G1CameraMountProfile::AuxiliaryPregraspOverview);
+        assist.box_pair_camera_activation_frame = Some(17);
+        assist.request_loaded_transport_camera();
+        assert_eq!(
+            assist.camera_mount(),
+            G1CameraMountProfile::AuxiliaryBinPlacement
+        );
+        assert_eq!(assist.auxiliary_camera_name(), "auxiliary_bin_placement");
+        assert_eq!(assist.box_pair_restore_mount, Some(assist.camera_mount()));
+        assert_eq!(assist.box_pair_camera_activation_frame, None);
+        // Clearing the acknowledged render request must retain the declared primary.
+        assist.box_pair_restore_mount = None;
+        assert_eq!(
+            assist.camera_mount(),
+            G1CameraMountProfile::AuxiliaryBinPlacement
+        );
+    }
+
     fn image(tick: u64, frame: u64, wall: u64, x: f64) -> serde_json::Value {
         let s = ObservationStamp {
             episode_id: 1,

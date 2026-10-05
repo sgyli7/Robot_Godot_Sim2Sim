@@ -371,11 +371,20 @@ impl MobileAssistCaptureRuntime {
 
     #[cfg(feature = "g1_constraint_diagnostic")]
     fn auxiliary_camera_name(&self) -> &'static str {
-        if self.station_placement_view_active {
-            "auxiliary_bin_placement"
-        } else {
-            "auxiliary_grip_overview"
+        match self.camera_mount() {
+            G1CameraMountProfile::AuxiliaryBinPlacement => "auxiliary_bin_placement",
+            G1CameraMountProfile::AuxiliaryGripOverview => "auxiliary_grip_overview",
+            G1CameraMountProfile::AuxiliaryPregraspOverview => "auxiliary_pregrasp_overview",
+            G1CameraMountProfile::ArenaEgo => "arena_ego",
+            G1CameraMountProfile::StaticPlacementOverview => "static_placement_overview",
         }
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn request_loaded_transport_camera(&mut self) {
+        self.regrasp_preparation_completed = true;
+        self.box_pair_restore_mount = Some(G1CameraMountProfile::AuxiliaryBinPlacement);
+        self.box_pair_camera_activation_frame = None;
     }
 
     fn new(
