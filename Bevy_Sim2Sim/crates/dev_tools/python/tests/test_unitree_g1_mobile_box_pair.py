@@ -32,7 +32,7 @@ class MobileBoxPairTests(unittest.TestCase):
         np.testing.assert_array_equal(pregrasp[:3, 3], legacy[:3, 3])
         self.assertGreater(np.max(np.abs(pregrasp[:3, :3]-legacy[:3, :3])), .05)
 
-    def fixture(self):
+    def fixture(self, marker_size=.06):
         k = np.array([[458.1245526, 0., 320.], [0., 458.1245526, 240.], [0., 0., 1.]])
         cameras = [np.eye(4), np.eye(4)]
         cameras[1][:3, 3] = [0., .08, 0.]
@@ -40,7 +40,8 @@ class MobileBoxPairTests(unittest.TestCase):
         pose = np.eye(4)
         pose[:3, :3] = cv2.Rodrigues(np.array([np.pi+.04, .02, .01]))[0]
         pose[:3, 3] = [0., .04, .46]
-        points = np.array([[-.03,.03,0], [.03,.03,0], [.03,-.03,0], [-.03,-.03,0]])
+        h = marker_size / 2
+        points = np.array([[-h,h,0], [h,h,0], [h,-h,0], [-h,-h,0]])
         pixels = []
         for camera in cameras:
             m = np.linalg.inv(camera) @ pose
@@ -63,6 +64,17 @@ class MobileBoxPairTests(unittest.TestCase):
         self.assertLess(np.linalg.norm(found[:3, 3]-pose[:3, 3]), .01)
         angle = np.degrees(np.arccos(np.clip((np.trace(found[:3, :3]@pose[:3, :3].T)-1)/2, -1, 1)))
         self.assertLess(angle, 3.)
+
+    def test_published_five_cm_label_uses_its_own_scale_and_fixed_baseline(self):
+        k, cameras, pose, pixels = self.fixture(.05)
+        result = vision.fit_current_box_camera_pair(pixels, k, cameras, .05)
+        np.testing.assert_allclose(result["root_from_marker"], pose, atol=1e-7, rtol=0)
+        for unsupported_size in [.0, .04, .055, .07, float('nan')]:
+            with self.assertRaises(ValueError):
+                vision.fit_current_box_camera_pair(pixels, k, cameras, unsupported_size)
+        cameras[1][:3, 3] = [0., .15, 0.]
+        with self.assertRaises(ValueError):
+            vision.fit_current_box_camera_pair(pixels, k, cameras, .05)
 
     def test_wrong_baseline_or_inconsistent_second_image_is_rejected(self):
         k, cameras, _, pixels = self.fixture()

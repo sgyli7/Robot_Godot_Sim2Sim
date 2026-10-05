@@ -108,10 +108,10 @@ def fit_current_box_camera_pair(pixels_by_view, intrinsics, cameras_in_root, mar
     cameras = np.asarray(cameras_in_root, dtype=np.float64)
     if (pixels.shape != (2, 4, 2) or cameras.shape != (2, 4, 4)
             or not np.isfinite(pixels).all() or not np.isfinite(cameras).all()
-            or not np.isfinite(intrinsics).all() or marker_size != .06
+            or not np.isfinite(intrinsics).all() or marker_size not in (.05, .06)
             or (pixels < 0).any() or (pixels >= [640., 480.]).any()
             or abs(np.linalg.norm(cameras[0, :3, 3]-cameras[1, :3, 3])-.08) > 1e-7):
-        raise ValueError("box pair requires current in-frame corners and the published8cm baseline")
+        raise ValueError("box pair requires the published5cm/6cm label, current in-frame corners and8cm baseline")
     for camera in cameras:
         if (not np.allclose(camera[3], [0, 0, 0, 1], atol=1e-8, rtol=0)
                 or not np.allclose(camera[:3, :3].T@camera[:3, :3], np.eye(3), atol=1e-6, rtol=0)
