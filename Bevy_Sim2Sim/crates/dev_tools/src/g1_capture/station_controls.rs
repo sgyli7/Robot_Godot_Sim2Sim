@@ -291,7 +291,7 @@ fn smoke_actions(
         Smoke::FreshStart if ready(&runtime) && runtime.episode_id > state.initial_episode => {
             actions.write(TaskUiAction::Start {
                 instruction: match state.profile {
-                    TaskProfile::StaticApple => "把苹果放到盘子里",
+                    TaskProfile::StaticApple => "将苹果放入盘子",
                     TaskProfile::MobileBox => "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。",
                 }
                 .into(),
@@ -354,6 +354,12 @@ fn apply_actions(
                     if !bound_instruction(state.profile, &instruction) {
                         state.failure = Some("当前入口仅支持输入框中的固定任务".into());
                         continue;
+                    }
+                    if let Some(dispatch) = &runtime.qwen_dispatch {
+                        dispatch
+                            .lock()
+                            .map_err(|_| "Qwen input binding poisoned")?
+                            .prepare_instruction(&instruction)?;
                     }
                     state.instruction = instruction;
                     state.phase = Phase::Running;

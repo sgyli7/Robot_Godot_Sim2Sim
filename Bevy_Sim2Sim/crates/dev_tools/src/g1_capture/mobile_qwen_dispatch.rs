@@ -192,6 +192,7 @@ struct PendingInitial {
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub(super) struct Dispatch {
     configuration: Configuration,
+    operator_instruction: Option<String>,
     worker: DecisionWorker,
     session: Option<DecisionSession>,
     pending: Option<PendingTransport>,
@@ -335,6 +336,38 @@ fn current_rgb_targets(
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl Dispatch {
+    fn decision_goal(&self, initial: bool) -> TaskGoal {
+        let mut goal = if initial {
+            self.configuration.initial_goal()
+        } else {
+            self.configuration.goal()
+        };
+        if let Some(instruction) = &self.operator_instruction {
+            goal.instruction = instruction.clone();
+        }
+        goal
+    }
+
+    /// Bind an already profile-checked UI input to the fresh runtime request.
+    /// The loaded configuration and an in-flight request remain immutable.
+    pub(super) fn prepare_instruction(&mut self, instruction: &str) -> Result<(), String> {
+        if !self.configuration.is_station_initial()
+            || self.initial_pending.is_some()
+            || self.initial_admitted
+            || self.session.is_some()
+            || self.executed_decision.is_some()
+        {
+            return Err(
+                "operator instruction requires a fresh unsubmitted fixed-profile episode".into(),
+            );
+        }
+        let mut goal = self.configuration.initial_goal();
+        goal.instruction = instruction.to_owned();
+        goal.validate().map_err(|e| e.to_string())?;
+        self.operator_instruction = Some(instruction.to_owned());
+        Ok(())
+    }
+
     pub(super) fn transport_status(&self) -> serde_json::Value {
         let (attempts, results, discarded) = self.worker.transport_counts();
         serde_json::json!({"http_attempts":attempts,"http_results":results,
@@ -371,6 +404,7 @@ impl Dispatch {
         self.completed = false;
         self.initial_pending = None;
         self.initial_admitted = false;
+        self.operator_instruction = None;
         Ok(())
     }
 
@@ -379,6 +413,7 @@ impl Dispatch {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             configuration,
+            operator_instruction: None,
             worker,
             session: None,
             pending: None,
@@ -552,7 +587,7 @@ impl Dispatch {
             crate::g1_decision_diagnostic::snapshot_from_capture(&frame.stamp, rgb.png().to_vec())?;
         let mut session = DecisionSession::new(
             runtime.episode_id,
-            self.configuration.initial_goal(),
+            self.decision_goal(true),
             SkillAvailability {
                 mobile_box: self.configuration.profile() == TaskProfile::MobileBox,
                 static_apple: self.configuration.profile() == TaskProfile::StaticApple,
@@ -591,6 +626,7 @@ impl Dispatch {
         self.session = Some(session);
         let pending = self.initial_pending.as_ref().unwrap();
         self.record(outcome,serde_json::json!({"event":"initial_profile_request_submitted","observation":pending.stamp,
+            "operator_instruction":self.decision_goal(true).instruction,
             "actual_integrations_before_request":0,"original_policy_calls_before_request":0,
             "image_sha256":pending.image_sha256,"capture_sha256":pending.capture_sha256,"request_sha256":pending.request_sha256,
             "target_localization_claim":false,"world_or_contact_truth_input":false}))?;
@@ -633,7 +669,7 @@ impl Dispatch {
         // the interactive lab continues to advertise Observe/Stop only.
         let mut session = DecisionSession::new(
             runtime.episode_id,
-            self.configuration.goal(),
+            self.decision_goal(false),
             SkillAvailability {
                 mobile_box: true,
                 ..Default::default()
@@ -975,6 +1011,35 @@ impl Dispatch {
 #[cfg(all(test, feature = "g1_constraint_diagnostic"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operator_input_enters_model_goal_without_mutating_config_or_surviving_reset() {
+        let c: Configuration = serde_json::from_value(serde_json::json!({
+            "scope":"scientific_station_static_from_instruction_v1",
+            "connection":{"endpoint":"http://127.0.0.1:8007/v1","model":"qwen3.8-27b-fp8","timeout_ms":20000,"max_output_tokens":128},
+            "instruction":"把苹果放到盘子里"})).unwrap();
+        let mut dispatch = Dispatch::new(c, 17).unwrap();
+        dispatch.prepare_instruction("将苹果放入盘子").unwrap();
+        assert_eq!(dispatch.configuration.instruction, "把苹果放到盘子里");
+        for initial in [true, false] {
+            assert_eq!(
+                dispatch.decision_goal(initial).instruction,
+                "将苹果放入盘子"
+            );
+            assert_eq!(
+                dispatch.decision_goal(initial).profile,
+                TaskProfile::StaticApple
+            );
+        }
+        assert_eq!(dispatch.worker.transport_counts(), (0, 0, 0));
+        dispatch.initial_admitted = true;
+        assert!(dispatch.prepare_instruction("把苹果放到盘中").is_err());
+        dispatch.reset_episode(18).unwrap();
+        assert!(dispatch.operator_instruction.is_none());
+        assert!(dispatch.prepare_instruction("").is_err());
+        dispatch.prepare_instruction("把苹果放到盘中").unwrap();
+        assert_eq!(dispatch.decision_goal(true).instruction, "把苹果放到盘中");
+    }
 
     #[test]
     fn static_gate_rejects_mobile_entry_and_preserves_distinct_action_ttl() {
