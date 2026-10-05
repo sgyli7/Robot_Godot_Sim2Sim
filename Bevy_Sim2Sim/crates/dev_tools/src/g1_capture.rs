@@ -421,7 +421,8 @@ impl MobileAssistCaptureRuntime {
             self.auxiliary_release,
             self.station_motion,
         );
-        self.box_pair_restore_mount = Some(self.camera_mount());
+        // A fresh episode starts with the original learned-policy camera.
+        // Auxiliary views are admitted only after its original grasp chunks.
     }
 
     fn new(
@@ -3350,6 +3351,38 @@ mod budget_tests {
         ] {
             assert_eq!(mode.assisted_tick_limit(), None);
         }
+    }
+}
+
+#[cfg(all(test, feature = "g1_constraint_diagnostic"))]
+mod fresh_mobile_camera_tests {
+    use super::*;
+
+    #[test]
+    fn reset_cannot_schedule_an_auxiliary_view_before_original_grasp_images() {
+        let mut runtime = MobileAssistCaptureRuntime::new(
+            MobileAssistStage::Carry(MobileAssistCaptureConfiguration {
+                heading_yaw_source_rad: 0.,
+                relative_distance_m: 2.,
+            }),
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            true,
+        );
+        runtime.completed = true;
+        runtime.station_placement_view_active = true;
+        runtime.box_pair_restore_mount = Some(G1CameraMountProfile::AuxiliaryBinPlacement);
+        runtime.fine_goals_submitted = 3;
+        runtime.reset_episode();
+        assert!(runtime.box_pair_restore_mount.is_none());
+        assert!(runtime.pending_box_pair.is_none());
+        assert!(!runtime.completed && !runtime.station_placement_view_active);
+        assert_eq!(runtime.fine_goals_submitted, 0);
+        assert!(runtime.auxiliary_view && runtime.station_motion);
     }
 }
 

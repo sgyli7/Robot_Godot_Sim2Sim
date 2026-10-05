@@ -294,10 +294,9 @@ mod tests {
                 && assist.regrasp_loaded.is_none()
         );
         assert!(assist.pending_box_pair.is_none() && assist.submitted_carry_observation.is_none());
-        assert_eq!(
-            assist.box_pair_restore_mount,
-            Some(G1CameraMountProfile::AuxiliaryGripOverview)
-        );
+        // A fresh world must first acquire original learned-policy images.
+        // The retained auxiliary profile is admitted only after its grasp.
+        assert!(assist.box_pair_restore_mount.is_none());
         assert!(
             matches!(assist.configuration, MobileAssistStage::Carry(ref c) if c.relative_distance_m == 2.)
         );

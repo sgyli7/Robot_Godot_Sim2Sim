@@ -10,7 +10,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest==9.1.1", "numpy==1.26.4", "pillow==12.3.0"]
+test = ["pytest==9.1.1", "numpy==1.26.4", "pillow==12.3.0", "scipy==1.15.3", "opencv-python-headless==4.11.0.86"]
 
 [project.scripts]
 bevy-microduck = "bevy_microduck_tools.cli:main"
