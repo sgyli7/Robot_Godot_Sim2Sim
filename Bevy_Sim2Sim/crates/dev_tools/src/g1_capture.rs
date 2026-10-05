@@ -273,6 +273,8 @@ struct MobileAssistCaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     pregrasp_open_goal: Option<simulation_minigame::g1::mobile_open::MobileOpenGoal>,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    pregrasp_open_submitted_at: Option<Instant>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     hold_submitted: bool,
@@ -379,6 +381,8 @@ impl MobileAssistCaptureRuntime {
             pickup: mobile_pickup::Pickup::default(),
             #[cfg(feature = "g1_constraint_diagnostic")]
             pregrasp_open_goal: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            pregrasp_open_submitted_at: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
