@@ -220,6 +220,24 @@ pub(super) fn drive(
         );
     }
     if tick == 1050 {
+        let carry_enabled = matches!(&assist.configuration,
+            MobileAssistStage::Scan(c) if c.verified_regrasp_pickup);
+        if carry_enabled {
+            let raise = assist.regrasp_lift.as_ref().unwrap().executed_goal()?;
+            let hold = v.goal.clone();
+            runtime
+                .mobile_assist
+                .as_mut()
+                .unwrap()
+                .pickup
+                .accept_loaded_regrasp(raise, hold, reply, &checks)?;
+            let assist = runtime.mobile_assist.as_mut().unwrap();
+            assist.regrasp_preparation_completed = true;
+            assist.station_hold_submitted = true;
+            assist.vision_job = None;
+            runtime.requested = false;
+            return Ok(false);
+        }
         let assist = runtime.mobile_assist.as_mut().unwrap();
         assist.vision_job = None;
         assist.completed = true;
@@ -269,5 +287,63 @@ mod tests {
         let mut reset = good.clone();
         reset["observation"]["episode_id"] = 2.into();
         assert!(evaluate(&a, &p, &reset, 1050, 5100).is_err());
+    }
+
+    #[test]
+    fn loaded_transport_certificate_requires_both_checks_and_its_final_hold() {
+        use robot_minigame::g1::contract::G1Command;
+        use simulation_minigame::g1::{mobile_hold::MobileHoldStep, mobile_raise::MobileRaiseGoal};
+        let a = image(850, 3, 1000, 0.);
+        let p = image(950, 5, 3000, 0.003);
+        let b = image(1050, 7, 5000, 0.004);
+        let checks = [
+            evaluate(&a, &a, &p, 950, 3100).unwrap(),
+            evaluate(&a, &p, &b, 1050, 5100).unwrap(),
+        ];
+        let raise = MobileRaiseGoal {
+            observation: ObservationStamp {
+                episode_id: 1,
+                frame_id: 1,
+                sim_time_ns: 13_000_000_000,
+                captured_at_unix_ms: 500,
+            },
+            distance_m: 0.1,
+            duration_ticks: 100,
+        };
+        let hold = MobileHoldGoal {
+            observation: crate::g1_marker_vision::mobile_held::paired_stamp(&p).unwrap(),
+        };
+        let mut pickup = super::super::mobile_pickup::Pickup::default();
+        assert!(
+            pickup
+                .accept_loaded_regrasp(raise.clone(), hold.clone(), b.clone(), &checks[..1])
+                .is_err()
+        );
+        let mut foreign = raise.clone();
+        foreign.observation.episode_id = 2;
+        assert!(
+            pickup
+                .accept_loaded_regrasp(foreign, hold.clone(), b.clone(), &checks)
+                .is_err()
+        );
+        pickup
+            .accept_loaded_regrasp(raise, hold.clone(), b, &checks)
+            .unwrap();
+        let mut execution = MobileAssistExecution::ClassicalHold {
+            goal: hold,
+            holding: MobileHoldStep {
+                command: G1Command::default(),
+                holding_ticks: 100,
+                stable_velocity_ticks: 100,
+                self_speed_m_s: 0.,
+                completed: true,
+            },
+        };
+        assert_eq!(pickup.completed_hold_ticks(&execution, 1050).unwrap(), 100);
+        assert!(pickup.completed_hold_ticks(&execution, 950).is_err());
+        if let MobileAssistExecution::ClassicalHold { goal, .. } = &mut execution {
+            goal.observation.frame_id += 1;
+        }
+        assert!(pickup.completed_hold_ticks(&execution, 1050).is_err());
     }
 }

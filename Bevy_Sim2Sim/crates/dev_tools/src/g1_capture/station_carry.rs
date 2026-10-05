@@ -109,7 +109,7 @@ pub(super) fn continue_after_hold(
                 serde_json::to_value(goal).map_err(|e| e.to_string())?,
                 "station_public_aisle_carry_after_hold",
                 "explicit_public_court_clear_aisle_not_target_bin_localization",
-                46_000_000_000,
+                observation.sim_time_ns + 40_000_000_000,
                 40,
             )
         }
@@ -124,7 +124,7 @@ pub(super) fn continue_after_hold(
                 serde_json::to_value(goal).map_err(|e| e.to_string())?,
                 "station_public_bin_scan_after_hold",
                 "explicit_public_map_search_heading_target_pose_requires_new_actual_rgb",
-                21_000_000_000,
+                observation.sim_time_ns + 15_000_000_000,
                 20,
             )
         }

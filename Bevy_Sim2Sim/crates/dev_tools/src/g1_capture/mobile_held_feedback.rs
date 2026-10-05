@@ -6,6 +6,7 @@ use crate::g1_marker_vision::mobile_held;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 fn evaluate(
     baseline: &Value,
     current: &Value,
@@ -14,13 +15,37 @@ fn evaluate(
     now_ms: u64,
     max_current_age_ms: u64,
 ) -> Result<Value, String> {
+    evaluate_with_loaded_baseline(
+        baseline,
+        current,
+        previous_carry,
+        native_tick,
+        now_ms,
+        max_current_age_ms,
+        false,
+    )
+}
+
+fn evaluate_with_loaded_baseline(
+    baseline: &Value,
+    current: &Value,
+    previous_carry: Option<ObservationStamp>,
+    native_tick: u64,
+    now_ms: u64,
+    max_current_age_ms: u64,
+    has_loaded_certificate: bool,
+) -> Result<Value, String> {
     let a = mobile_held::paired_stamp(baseline)?;
     let b = mobile_held::paired_stamp(current)?;
     let secondary_wall =
         current["same_tick_box_pair_pose"]["observations"][1]["captured_at_unix_ms"]
             .as_u64()
             .ok_or("held pair wall time absent")?;
-    if baseline["box_view_only"] != true
+    let declared_loaded_baseline = has_loaded_certificate
+        && baseline["geometry_lift_feedback"] == true
+        && baseline["box_view_only"] != true
+        && !baseline["held_contact_geometry"].is_null();
+    if (baseline["box_view_only"] != true && !declared_loaded_baseline)
         || !baseline["navigation_proposal"].is_null()
         || !baseline["clearance_proposal"].is_null()
         || a.episode_id != b.episode_id
@@ -116,13 +141,14 @@ pub(super) fn check(
                 .map_err(|e| e.to_string())
         })
         .transpose()?;
-    let feedback = evaluate(
+    let feedback = evaluate_with_loaded_baseline(
         baseline,
         current,
         previous,
         latest.timing.episode_integrations,
         now_ms,
         max_current_age_ms,
+        assist.pickup.has_loaded_certificate(),
     );
     let record = match &feedback {
         Ok(feedback) => {
@@ -146,6 +172,25 @@ pub(super) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn geometry_baseline_needs_own_loaded_certificate_and_keeps_original_limit() {
+        let mut a = fixture(500, 1, 1000, true);
+        a["box_view_only"] = false.into();
+        a["geometry_lift_feedback"] = true.into();
+        a["held_contact_geometry"] = serde_json::json!({"bodies":[]});
+        let mut b = fixture(1002, 5, 12_000, false);
+        assert!(evaluate_with_loaded_baseline(&a, &b, None, 1002, 12_010, 2000, false).is_err());
+        assert_eq!(
+            evaluate_with_loaded_baseline(&a, &b, None, 1002, 12_010, 2000, true).unwrap()["accepted"],
+            true
+        );
+        b["held_box_feedback"]["current_box_relative_left_palm_m"] =
+            serde_json::json!([0.021, 0., 0.]);
+        assert_eq!(
+            evaluate_with_loaded_baseline(&a, &b, None, 1002, 12_010, 2000, true).unwrap()["accepted"],
+            false
+        );
+    }
     fn fixture(tick: u64, frame: u64, wall: u64, box_only: bool) -> Value {
         let stamp = ObservationStamp {
             episode_id: 1,

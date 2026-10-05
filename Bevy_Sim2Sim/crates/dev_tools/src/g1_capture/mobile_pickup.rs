@@ -16,6 +16,7 @@ pub(super) struct Pickup {
     holding_ticks: Option<u32>,
     accepted: bool,
     transport_baseline: Option<serde_json::Value>,
+    loaded_hold_goal: Option<simulation_minigame::g1::mobile_hold::MobileHoldGoal>,
 }
 
 impl Pickup {
@@ -29,12 +30,61 @@ impl Pickup {
             .flatten()
     }
 
+    pub(super) fn has_loaded_certificate(&self) -> bool {
+        self.accepted && self.loaded_hold_goal.is_some()
+    }
+
+    pub(super) fn accept_loaded_regrasp(
+        &mut self,
+        raise: MobileRaiseGoal,
+        hold: simulation_minigame::g1::mobile_hold::MobileHoldGoal,
+        baseline: serde_json::Value,
+        checks: &[serde_json::Value],
+    ) -> Result<(), String> {
+        raise.validate().map_err(|e| e.to_string())?;
+        hold.validate().map_err(|e| e.to_string())?;
+        let stamp = crate::g1_marker_vision::mobile_held::paired_stamp(&baseline)?;
+        if self.accepted
+            || checks.len() != 2
+            || checks.iter().any(|c| c["accepted"] != true)
+            || baseline["geometry_lift_feedback"] != true
+            || baseline["box_view_only"] == true
+            || checks[1]["current_observation"] != serde_json::to_value(stamp).unwrap()
+            || stamp.episode_id != raise.observation.episode_id
+            || stamp.episode_id != hold.observation.episode_id
+            || stamp.sim_time_ns != raise.observation.sim_time_ns + 8_000_000_000
+            || stamp.sim_time_ns != hold.observation.sim_time_ns + 2_000_000_000
+            || stamp.frame_id <= hold.observation.frame_id
+            || hold.observation.frame_id <= raise.observation.frame_id
+            || stamp.captured_at_unix_ms <= hold.observation.captured_at_unix_ms
+            || hold.observation.captured_at_unix_ms <= raise.observation.captured_at_unix_ms
+            || raise.distance_m != 0.1
+            || raise.duration_ticks != 100
+        {
+            return Err("station route lacks the two completed own postload image checks".into());
+        }
+        self.goal = Some(raise);
+        self.loaded_hold_goal = Some(hold);
+        self.holding_ticks = Some(100);
+        self.transport_baseline = Some(baseline);
+        self.accepted = true;
+        Ok(())
+    }
+
     pub fn completed_hold_ticks(
         &self,
         execution: &MobileAssistExecution,
         tick: u64,
     ) -> Result<u32, String> {
-        if self.accepted && self.own_completed_raise(execution, tick) {
+        let loaded_completion = self.loaded_hold_goal.as_ref().is_some_and(|submitted| {
+            matches!(execution,MobileAssistExecution::ClassicalHold {goal,holding}
+                if goal==submitted && holding.completed && holding.holding_ticks==100 && holding.stable_velocity_ticks>=20
+                    && tick*20_000_000==submitted.observation.sim_time_ns+2_000_000_000)
+        });
+        if self.accepted
+            && (loaded_completion
+                || self.loaded_hold_goal.is_none() && self.own_completed_raise(execution, tick))
+        {
             self.holding_ticks
                 .ok_or("pickup lacks original grip hold".into())
         } else {

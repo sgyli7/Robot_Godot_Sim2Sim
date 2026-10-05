@@ -8,6 +8,15 @@ bound applies both to the850postload reference and each consecutive interval.
 The earlier650-to850 failed pickup verdict remains unchanged. This diagnostic
 admits no carry/release and is not a task success or a continuous1× result.
 
+The separate `verified_regrasp_pickup` station option permits the existing
+transport/placement route only after both postload image checks complete. Its
+fixed transport reference is the actual1050Tick image, with the original20mm
+cumulative slip bound. The original rejected650-to850 entry stays in the log.
+Transport uses the previously declared bin-placement primary and pregrasp
+secondary cameras, with their original extrinsics and80mm vertical baseline;
+neither learned-policy camera changes. Scan/carry stage expiry is relative to
+the actual new entry boundary; the global3300Tick budget remains unchanged.
+
 `crates/dev_tools/python/scripts/unitree_g1_t2_source_task.py` builds the frozen
 Arena brown-box-to-blue-bin task with its original Homie v2 controller. It uses
 the T2 Arena/Isaac Lab revisions and Isaac 6.1 assets checked by

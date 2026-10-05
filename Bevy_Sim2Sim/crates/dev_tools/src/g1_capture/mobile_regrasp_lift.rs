@@ -15,6 +15,14 @@ pub(super) struct Probe {
     submitted_at: Option<Instant>,
 }
 
+impl Probe {
+    pub(super) fn executed_goal(&self) -> Result<MobileRaiseGoal, String> {
+        self.goal
+            .clone()
+            .ok_or("loaded certification lost its actual lift goal".into())
+    }
+}
+
 pub(super) fn bilateral_candidate(reply: &serde_json::Value) -> bool {
     let Some(bodies) = reply["held_contact_geometry"]["bodies"].as_array() else {
         return false;

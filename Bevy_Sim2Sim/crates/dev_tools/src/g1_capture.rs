@@ -238,6 +238,9 @@ struct MobileScanCaptureConfiguration {
     /// Two unchanged-target holds with fresh paired RGB after load transfer.
     #[serde(default)]
     current_regrasp_stability_probe: bool,
+    /// Hand off only the two-image-certified loaded grasp to the station route.
+    #[serde(default)]
+    verified_regrasp_pickup: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -306,6 +309,8 @@ struct MobileAssistCaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     regrasp_loaded: Option<mobile_regrasp_loaded::Verification>,
     #[cfg(feature = "g1_constraint_diagnostic")]
+    regrasp_preparation_completed: bool,
+    #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
     hold_submitted: bool,
@@ -345,6 +350,10 @@ impl MobileAssistCaptureRuntime {
         #[cfg(feature = "g1_constraint_diagnostic")]
         if let Some(pair) = &self.pending_box_pair {
             return pair.secondary_mount;
+        }
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if self.regrasp_preparation_completed {
+            return G1CameraMountProfile::AuxiliaryBinPlacement;
         }
         if self.station_placement_view_active {
             G1CameraMountProfile::AuxiliaryBinPlacement
@@ -429,6 +438,8 @@ impl MobileAssistCaptureRuntime {
             regrasp_lift: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             regrasp_loaded: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            regrasp_preparation_completed: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2265,7 +2276,8 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        (c.current_regrasp_stability_probe && !c.current_regrasp_lift_probe)
+        (c.verified_regrasp_pickup && !c.current_regrasp_stability_probe)
+            || (c.current_regrasp_stability_probe && !c.current_regrasp_lift_probe)
             || (c.current_regrasp_lift_probe && !c.current_closed_regrasp)
             || (c.current_closed_regrasp && !c.pregrasp_source_close_once)
             || ((c.pregrasp_open_once || c.pregrasp_source_close_once) && !c.pregrasp_geometry_only)
@@ -2275,7 +2287,7 @@ fn run_capture_owner(
                     || mode != CaptureMode::StationMobileRelease
                     || diagnostic_qwen_dispatch.is_some()
                     || c.verified_station_pickup
-                    || c.current_rgb_height_recovery
+                    || (c.current_rgb_height_recovery && !c.verified_regrasp_pickup)
                     || c.vision.as_ref().is_none_or(|v| {
                         !v.same_tick_box_pair || v.same_tick_box_only || v.task_geometry.is_none()
                     }))
@@ -3538,7 +3550,9 @@ fn drive_mobile_assist(
     if assist.completed {
         return Ok(true);
     }
-    if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.pregrasp_geometry_only) {
+    if !assist.regrasp_preparation_completed
+        && matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.pregrasp_geometry_only)
+    {
         return mobile_pregrasp_geometry::drive(runtime, outcome, port);
     }
     if assist.station_motion && assist.station_hold_submitted && !assist.submitted {
@@ -4872,6 +4886,9 @@ fn capture_current_marker_pair(
         G1CameraMountProfile::AuxiliaryGripOverview
         | G1CameraMountProfile::AuxiliaryPregraspOverview => {
             G1CameraMountProfile::AuxiliaryBinPlacement
+        }
+        G1CameraMountProfile::AuxiliaryBinPlacement if assist.regrasp_preparation_completed => {
+            G1CameraMountProfile::AuxiliaryPregraspOverview
         }
         G1CameraMountProfile::AuxiliaryBinPlacement => G1CameraMountProfile::AuxiliaryGripOverview,
         G1CameraMountProfile::ArenaEgo | G1CameraMountProfile::StaticPlacementOverview => {
