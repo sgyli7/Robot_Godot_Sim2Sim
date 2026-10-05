@@ -96,7 +96,6 @@ pub(super) fn drive(
     });
     fs::write(
         runtime
-            .options
             .output
             .join("pregrasp_source_closed_geometry_receipt.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,

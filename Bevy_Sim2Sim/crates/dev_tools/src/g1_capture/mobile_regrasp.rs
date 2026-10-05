@@ -183,10 +183,7 @@ pub(super) fn drive(
         "depth_proposal":reply["closed_regrasp_proposal"],"open_closed_reference_forecast":reply["open_regrasp_forecast"],"task_qualified":false,"holding_proven":false,
         "world_or_contact_truth_input":false,"lift_carry_release_submitted":false});
     fs::write(
-        runtime
-            .options
-            .output
-            .join(format!("{directory}_receipt.json")),
+        runtime.output.join(format!("{directory}_receipt.json")),
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;

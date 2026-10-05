@@ -5070,14 +5070,10 @@ fn start_marker_job(
             stage_directory.starts_with("regrasp_") && stage_directory.ends_with("_settled");
         let reference = if stage_directory.starts_with("regrasp_1_") {
             runtime
-                .options
                 .output
                 .join("pregrasp_source_closed_geometry/observation.json")
         } else {
-            runtime
-                .options
-                .output
-                .join("regrasp_1_held/observation.json")
+            runtime.output.join("regrasp_1_held/observation.json")
         };
         let lift_feedback = stage_directory.starts_with("regrasp_lift_");
         runtime.mobile_assist.as_mut().unwrap().vision_job = Some(if lift_feedback {
@@ -5332,7 +5328,6 @@ fn drive_live_policy(
             .ok_or("live tick overflow")?;
         fs::write(
             runtime
-                .options
                 .output
                 .join(format!("live_reply_{:04}.json", reply.sequence_id)),
             serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
@@ -5403,7 +5398,6 @@ fn drive_live_policy(
             }
             fs::write(
                 runtime
-                    .options
                     .output
                     .join(format!("live_boundary_{:04}.json", live.submitted_chunks)),
                 serde_json::to_vec(step.as_ref()).map_err(|e| e.to_string())?,
@@ -5525,7 +5519,6 @@ fn drive_waited_mobile_policy(
         }
         fs::write(
             runtime
-                .options
                 .output
                 .join(format!("live_reply_{:04}.json", reply.sequence_id)),
             serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
@@ -5706,7 +5699,6 @@ fn drive_prefetched_policy(
             .ok_or("prefetch tick overflow")?;
         fs::write(
             runtime
-                .options
                 .output
                 .join(format!("live_reply_{:04}.json", reply.sequence_id)),
             serde_json::to_vec(&chunk).map_err(|e| e.to_string())?,
@@ -6528,16 +6520,12 @@ fn drive_capture(
                 .map_err(|e| e.to_string())?;
             }
             let image_directory = if runtime.static_grasp_pair_secondary {
-                let directory = runtime
-                    .options
-                    .output
-                    .join("static_grip_secondary_vision_input");
+                let directory = runtime.output.join("static_grip_secondary_vision_input");
                 fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
                 let observation = super::g1_marker_vision::static_observation(&frame.stamp)?;
                 let first: serde_json::Value = serde_json::from_slice(
                     &fs::read(
                         runtime
-                            .options
                             .output
                             .join("static_grip_vision_input/observation.json"),
                     )

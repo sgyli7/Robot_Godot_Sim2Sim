@@ -393,7 +393,6 @@ impl StaticObservedPlaceRoute {
         }
         let first = bounded_json(
             &runtime
-                .options
                 .output
                 .join("static_grip_vision_input/observation.json"),
         )?;
@@ -427,10 +426,7 @@ impl StaticObservedPlaceRoute {
         }
         fs::write(runtime.output.join("static_observed_place_preflight.json"),serde_json::to_vec_pretty(&serde_json::json!({"schema":"g1_live_fixed_pair_observed_place_preflight_v1","target_tick":target,"geometry_ticks":receipts.len(),"physics_integrations":0,"model_calls":0,"world_or_contact_truth_input":false,"task_qualified":false,"steps":receipts})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         fs::write(
-            runtime
-                .options
-                .output
-                .join("static_observed_place_goal.json"),
+            runtime.output.join("static_observed_place_goal.json"),
             serde_json::to_vec_pretty(&goal).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;

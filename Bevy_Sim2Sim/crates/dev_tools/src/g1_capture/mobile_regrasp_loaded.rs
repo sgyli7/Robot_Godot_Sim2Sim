@@ -200,10 +200,7 @@ pub(super) fn drive(
         "maximum_holds":2,"maximum_ticks_per_hold":100,"preload_failed_verdict_preserved":true,
         "world_or_contact_truth_input":false,"carry_release_submitted":false,"task_qualified":false});
     fs::write(
-        runtime
-            .options
-            .output
-            .join("regrasp_loaded_stability_receipt.json"),
+        runtime.output.join("regrasp_loaded_stability_receipt.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;

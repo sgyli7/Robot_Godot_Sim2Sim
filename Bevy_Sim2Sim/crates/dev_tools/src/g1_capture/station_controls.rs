@@ -211,6 +211,11 @@ fn smoke_actions(
                 frame: runtime.render_frames,
             };
         }
+        Smoke::Finish { .. } if state.phase == Phase::Failed => {
+            let _ = state.save(&runtime, false);
+            state.smoke = Smoke::Done;
+            exit.write(AppExit::error());
+        }
         Smoke::Finish { frame }
             if state.phase == Phase::Complete && runtime.render_frames > frame + 30 =>
         {
@@ -346,13 +351,14 @@ fn apply_actions(
                 state.stop_stable_frames = 0;
             }
         }
-        status.task = if state.instruction.is_empty() {
+        let mut next_status = status.clone();
+        next_status.task = if state.instruction.is_empty() {
             "把苹果放到盘子里".into()
         } else {
             state.instruction.clone()
         };
-        status.profile = "固定静态取放实验（3/10，未达标）".into();
-        status.stage = match state.phase {
+        next_status.profile = "固定静态取放实验（3/10，未达标）".into();
+        next_status.stage = match state.phase {
             Phase::Waiting => "等待启动",
             Phase::Running => "执行中",
             Phase::Stopped => "已暂停；重置后才能再次启动",
@@ -360,8 +366,8 @@ fn apply_actions(
             Phase::Failed => "执行失败；物理已暂停",
         }
         .into();
-        status.model_service = "本地 N1.7；随后使用已披露的几何控制".into();
-        status.last_decision = format!(
+        next_status.model_service = "本地 N1.7；随后使用已披露的几何控制".into();
+        next_status.last_decision = format!(
             "episode {}，实际 {} Tick",
             runtime.episode_id,
             runtime
@@ -369,7 +375,8 @@ fn apply_actions(
                 .as_ref()
                 .map_or(0, |s| s.timing.episode_integrations)
         );
-        status.failure = state.failure.clone();
+        next_status.failure = state.failure.clone();
+        status.set_if_neq(next_status);
         if !state.running() {
             runtime.lab_pause();
         }

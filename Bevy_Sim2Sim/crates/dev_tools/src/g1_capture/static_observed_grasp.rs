@@ -350,18 +350,12 @@ impl StaticObservedGraspRoute {
             "acquisition_ticks":acquisition_ticks,"lift_ticks":50,"hold_ticks":50,"target_tick":target,
             "physics_integrations":0,"model_calls":0,"world_or_contact_truth_input":false,"task_qualified":false,"receipts":receipts});
         fs::write(
-            runtime
-                .options
-                .output
-                .join("static_observed_grasp_preflight.json"),
+            runtime.output.join("static_observed_grasp_preflight.json"),
             serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         fs::write(
-            runtime
-                .options
-                .output
-                .join("static_observed_grasp_goal.json"),
+            runtime.output.join("static_observed_grasp_goal.json"),
             serde_json::to_vec_pretty(&goal).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;

@@ -116,10 +116,7 @@ pub(super) fn drive(
         "owner_execution_admitted":false,"geometry":reply["held_contact_geometry"],
     });
     fs::write(
-        runtime
-            .options
-            .output
-            .join("pregrasp_geometry_receipt.json"),
+        runtime.output.join("pregrasp_geometry_receipt.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
@@ -273,10 +270,7 @@ fn after_opening(
         "geometry":reply["held_contact_geometry"],
     });
     fs::write(
-        runtime
-            .options
-            .output
-            .join("pregrasp_opened_geometry_receipt.json"),
+        runtime.output.join("pregrasp_opened_geometry_receipt.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;

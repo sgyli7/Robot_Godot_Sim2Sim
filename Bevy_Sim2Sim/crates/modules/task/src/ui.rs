@@ -21,7 +21,7 @@ pub enum TaskUiAction {
 }
 
 /// The application replaces these display strings after actual state changes.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, PartialEq, Eq)]
 pub struct TaskUiStatus {
     pub task: String,
     pub profile: String,

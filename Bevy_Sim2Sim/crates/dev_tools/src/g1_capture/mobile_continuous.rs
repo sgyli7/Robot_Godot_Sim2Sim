@@ -407,7 +407,6 @@ impl ContinuousMobileRoute {
         let observation: ObservationStamp =
             serde_json::from_value(input["stamp"].clone()).map_err(|e| e.to_string())?;
         let directory = runtime
-            .options
             .output
             .join(format!("continuous_{:?}_{:02}", self.stage, self.images).to_lowercase());
         fs::create_dir(&directory).map_err(|e| e.to_string())?;

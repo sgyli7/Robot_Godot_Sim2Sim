@@ -122,10 +122,7 @@ impl StaticTransferRoute {
                     .unwrap()
                     .submit_capture(&frame)?;
                 fs::write(
-                    runtime
-                        .options
-                        .output
-                        .join("static_transfer_grasp_stamp.json"),
+                    runtime.output.join("static_transfer_grasp_stamp.json"),
                     serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
@@ -441,10 +438,7 @@ impl StaticTransferRoute {
         )
         .map_err(|e| e.to_string())?;
         fs::write(
-            runtime
-                .options
-                .output
-                .join("static_memory_current_stamp.json"),
+            runtime.output.join("static_memory_current_stamp.json"),
             serde_json::to_vec_pretty(&frame.stamp).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
@@ -558,10 +552,7 @@ impl StaticTransferRoute {
         let bytes = serde_json::to_vec_pretty(&input).map_err(|e| e.to_string())?;
         let input_hash = format!("{:x}", Sha256::digest(&bytes));
         fs::write(
-            runtime
-                .options
-                .output
-                .join("static_memory_self_and_rgb_input.json"),
+            runtime.output.join("static_memory_self_and_rgb_input.json"),
             bytes,
         )
         .map_err(|e| e.to_string())?;
