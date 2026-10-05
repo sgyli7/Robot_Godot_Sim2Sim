@@ -37,6 +37,8 @@ mod mobile_height_recovery;
 mod mobile_held_feedback;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_pickup;
+#[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_pregrasp_geometry;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
@@ -208,6 +210,10 @@ struct MobileScanCaptureConfiguration {
     /// before any station scan/turn. Original source VLA remains unchanged.
     #[serde(default)]
     verified_station_pickup: bool,
+    /// Stop at the first200Tick boundary and measure actual pairedRGB/self.
+    /// No hold, insertion, close or transport command is admitted in this mode.
+    #[serde(default)]
+    pregrasp_geometry_only: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -2202,6 +2208,22 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
+        c.pregrasp_geometry_only
+            && (!cfg!(feature = "g1_constraint_diagnostic")
+                || mode != CaptureMode::StationMobileRelease
+                || diagnostic_qwen_dispatch.is_some()
+                || c.verified_station_pickup
+                || c.current_rgb_height_recovery
+                || c.vision.as_ref().is_none_or(|v| {
+                    !v.same_tick_box_pair || v.same_tick_box_only || v.task_geometry.is_none()
+                }))
+    }) {
+        return Err(
+            "pregrasp geometry is only a paired station diagnostic before hold/Qwen/transport"
+                .into(),
+        );
+    }
+    if mobile_scan.as_ref().is_some_and(|c| {
         (c.current_rgb_height_recovery || c.verified_station_pickup)
             && (mode != CaptureMode::StationMobileRelease
                 || c.vision.as_ref().is_none_or(|v| !v.same_tick_box_pair))
@@ -3453,6 +3475,9 @@ fn drive_mobile_assist(
         .ok_or("missing bounded assist configuration")?;
     if assist.completed {
         return Ok(true);
+    }
+    if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.pregrasp_geometry_only) {
+        return mobile_pregrasp_geometry::drive(runtime, outcome, port);
     }
     if assist.station_motion && assist.station_hold_submitted && !assist.submitted {
         if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.verified_station_pickup)
@@ -4810,6 +4835,7 @@ fn allowed_mobile_box_pair_stage(stage: &str) -> bool {
         || stage == "visual_release_alignment"
         || stage == "visual_release_alignment_after_thumb"
         || matches!(stage, "station_pickup_before" | "station_pickup_after")
+        || stage == "pregrasp_geometry"
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -4846,6 +4872,12 @@ fn start_marker_job(
         return Ok(());
     };
     let directory = runtime.options.output.join(stage_directory);
+    if stage_directory == "pregrasp_geometry" {
+        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(
+            MarkerVisionJob::start_with_held_contact_geometry(config, directory, observation)?,
+        );
+        return Ok(());
+    }
     if matches!(
         stage_directory,
         "station_pickup_before" | "station_pickup_after"
