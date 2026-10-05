@@ -5,24 +5,29 @@ only supplies the robot task and the existing65/18 interface. GPU physics and
 game qualifications are separate from this bounded native source pilot.
 """
 from pathlib import Path
+import json
 
 import gymnasium as gym
 import mujoco
 import numpy as np
 
 from .speculative_contact import NATIVE_CPU_CANDIDATES, make_source_runtime
+from .rigid_native import CANDIDATE as RIGID_CANDIDATE, make_source_runtime as make_rigid_runtime
 
 REVISION = "goose_native_cpu_front_recovery_pilot_v1"
 
 
 class NativeGooseRecoveryEnv(gym.Env):
     metadata = {"render_modes": []}
+    contact_limit_terminates_episode = False
 
     def __init__(self, model_path, contract_path, initial_qpos, *,
                  episode_ticks=700, trajectory_directory=None):
-        self.runtime = make_source_runtime(Path(model_path), Path(contract_path))
+        candidate = json.loads(Path(contract_path).read_text())["candidate"]
+        factory = make_rigid_runtime if candidate == RIGID_CANDIDATE else make_source_runtime
+        self.runtime = factory(Path(model_path), Path(contract_path))
         rt = self.runtime
-        if rt.contract["candidate"] not in NATIVE_CPU_CANDIDATES:
+        if rt.contract["candidate"] not in (*NATIVE_CPU_CANDIDATES, RIGID_CANDIDATE):
             raise ValueError("Native CPU pilot requires its named native contact source")
         self.initial_qpos = np.asarray(initial_qpos, dtype=float).copy()
         if self.initial_qpos.shape != (rt.model.nq,) or not np.isfinite(self.initial_qpos).all():
@@ -91,14 +96,17 @@ class NativeGooseRecoveryEnv(gym.Env):
             observation=observations.copy(), min_collision_z=z, time=rt.data.time,
             upright=up, height_ratio=height, reward=reward)
         self.records.append(row)
-        if (abs(rt.data.time-before-.02) > 1e-10 or not np.isfinite(z).all() or -z.min() > .005):
+        depth_failed = bool(-z.min() > .005)
+        if (abs(rt.data.time-before-.02) > 1e-10 or not np.isfinite(z).all()
+                or depth_failed and not self.contact_limit_terminates_episode):
             self._save_episode(failed=True)
             raise RuntimeError("Native CPU pilot failed the frozen20ms/5mm physical guard")
         timeout = rt.physics_integrations >= self.episode_ticks
         return observations.astype(np.float32), float(reward), False, timeout, {
             "actual_integrations": 1, "total_integrations": self.total_integrations,
             "max_penetration_m": float(max(0., -z.min())), "upright": up,
-            "height_ratio": height, "episode_tick": rt.physics_integrations}
+            "height_ratio": height, "episode_tick": rt.physics_integrations,
+            "contact_limit_failure": depth_failed}
 
     def _save_episode(self, *, failed=False):
         if self.directory and self.records:
@@ -112,6 +120,50 @@ class NativeGooseRecoveryEnv(gym.Env):
 
     def close(self):
         self._save_episode()
+
+
+class NativeGooseStandingEnv(NativeGooseRecoveryEnv):
+    """Standing/velocity task using the same rigid plant and original65 slots."""
+    contact_limit_terminates_episode = True
+
+    def __init__(self, *args, command=(0., 0., 0.), **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.runtime.contract["candidate"] != RIGID_CANDIDATE:
+            raise ValueError("Computer standing task requires its rigid native profile")
+        self.command = np.asarray(command, dtype=float)
+        if self.command.shape != (3,) or not np.isfinite(self.command).all():
+            raise ValueError("Three finite base-frame velocity commands required")
+        self.initial_xy = self.initial_qpos[:2].copy()
+
+    def reset(self, **kwargs):
+        _, info = super().reset(**kwargs)
+        self.runtime.commands[:] = self.command
+        return self.runtime.observations().astype(np.float32), info
+
+    def step(self, action):
+        previous = self.runtime.actions.copy()
+        obs, _, _, timeout, info = super().step(action)
+        rt = self.runtime
+        rotation = rt.data.xmat[rt.torso].reshape(3, 3)
+        velocity = rotation.T @ rt.data.qvel[:3]
+        angular = rotation.T @ rt.data.qvel[3:6]
+        tracking = np.exp(-np.square(velocity[:2]-self.command[:2]).sum()/.04)
+        turning = np.exp(-(angular[2]-self.command[2])**2/.25)
+        tilt = float(rotation[2, :2] @ rotation[2, :2])
+        height = info["height_ratio"]
+        rate = float(np.square(np.asarray(action)-previous).mean())
+        power = float(np.maximum(rt.last_tau*rt.data.qvel[self.motor_vids], 0).sum())
+        reward = .02*(2.*tracking + turning + 2.*np.clip(height, 0, 1)
+            - 2.*tilt - .1*rate - .001*power)
+        terminated = bool(info["upright"] < .65 or height < .65
+            or info["contact_limit_failure"])
+        if terminated:
+            reward -= 1.
+        self.records[-1]["reward"] = reward
+        self.records[-1]["terminated"] = terminated
+        if terminated:
+            self._save_episode(failed=True)
+        return obs, float(reward), terminated, timeout, info
 
 
 class NativeGooseRslEnv:

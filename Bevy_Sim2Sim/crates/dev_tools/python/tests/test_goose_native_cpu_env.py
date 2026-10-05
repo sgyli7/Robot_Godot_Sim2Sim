@@ -94,3 +94,89 @@ def test_tilted_discovery_preserves_upright_source_and_rejects_gpu(source, tmp_p
     native.pair_solimp[pair, 0] += .01
     with pytest.raises(ValueError, match="priority1 sole material"):
         validate_prediction(native, frozen)
+
+
+@pytest.fixture
+def rigid_source(tmp_path, monkeypatch):
+    from bevy_microduck_tools.goose.rigid_native import build_reference, make_source_runtime
+    package = os.environ.get("GOOSE_FROZEN_TASK_PROXY_PACKAGE")
+    if not package:
+        pytest.skip("Verified external004 package required")
+    monkeypatch.chdir(tmp_path)
+    package = Path(package).resolve(strict=True)
+    model, contract = build_reference(
+        package / "robots/Goose_V0.1/models/task_proxy_11_v1/robot.xml",
+        package / "robots/Goose_V0.1/configs/task_proxy_11_v1_contract.json",
+        package, tmp_path / "rigid")
+    return model, contract, make_source_runtime(model, contract)
+
+
+def test_rigid_native_preserves_si_and_actual_beak_rotor(rigid_source):
+    import json
+    _, path, rt = rigid_source
+    contract = json.loads(path.read_text())
+    parent = mujoco.MjModel.from_xml_path(contract["rigid_native"]["parent_model"])
+    for name in ("body_mass", "body_inertia", "body_ipos", "body_iquat",
+                 "jnt_pos", "jnt_axis", "jnt_range", "dof_armature", "dof_damping",
+                 "mesh_vert", "geom_bodyid", "exclude_signature", "eq_data"):
+        np.testing.assert_array_equal(getattr(rt.model, name), getattr(parent, name))
+    assert rt.model.nbody == 22 and rt.model.ngeom == 12 and rt.model.nu == 18
+    assert rt.model.npair == 0 and rt.model.neq == 1
+    assert rt.model.joint(int(rt.model.actuator_trnid[5, 0])).name == "beak_input_rotor"
+    assert rt.qidx[5] == rt.model.joint("beak_hinge").qposadr[0]
+    for index in range(18):
+        if index != 5:
+            assert rt.model.actuator_biasprm[index, 2] == -rt.kd[index]
+    assert contract["contact_mapping"] == {
+        "method": "native_rigid_contact", "custom_callbacks": False}
+
+
+def test_rigid_actual_one_tick_force_limits_and_observations(rigid_source):
+    _, _, rt = rigid_source
+    for tick in range(30):
+        action = np.zeros(18)
+        action[5] = .15
+        before, target = rt.data.time, rt.target.copy()
+        observations, info = rt.step(action)
+        assert observations.shape == (65,) and np.isfinite(observations).all()
+        assert rt.data.time == pytest.approx(before+.02)
+        assert rt.physics_integrations == tick+1 == rt.controller_updates
+        assert np.all(np.abs(rt.last_tau) <= rt.peak+1e-9)
+        assert np.all(np.abs(rt.target-target) <= rt.speed*.02+1e-12)
+        assert not info["auto_reset"]
+
+
+def test_rigid_contact_violation_is_retained_failed_episode(rigid_source, tmp_path):
+    from bevy_microduck_tools.goose.native_cpu_env import NativeGooseStandingEnv
+    model, contract, rt = rigid_source
+    env = NativeGooseStandingEnv(model, contract, rt.data.qpos.copy(),
+        trajectory_directory=tmp_path / "episodes")
+    env.reset()
+    action = np.zeros(18)
+    action[10] = .5
+    action[16] = -.5
+    _, reward, done, timeout, info = env.step(action)
+    assert info["actual_integrations"] == 1 and env.total_integrations == 1
+    assert info["contact_limit_failure"] and done and not timeout and reward < 0
+    files = list((tmp_path / "episodes").glob("*_failed.npz"))
+    assert len(files) == 1
+    with np.load(files[0]) as saved:
+        assert saved["time"].tolist() == [.02]
+        assert saved["terminated"].tolist() == [True]
+        np.testing.assert_array_equal(saved["action"][0], action)
+    env.reset()
+    assert env.runtime.data.time == 0 and env.total_integrations == 1
+    env.close()
+
+
+def test_rigid_recovery_still_aborts_on_unadmitted_contact(rigid_source):
+    model, contract, rt = rigid_source
+    env = NativeGooseRecoveryEnv(model, contract, rt.data.qpos.copy())
+    env.reset()
+    action = np.zeros(18)
+    action[10] = .5
+    action[16] = -.5
+    with pytest.raises(RuntimeError, match="physical guard"):
+        env.step(action)
+    assert env.total_integrations == 1 and env.runtime.data.time == .02
+    env.close()
