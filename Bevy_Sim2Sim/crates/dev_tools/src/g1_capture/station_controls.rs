@@ -56,6 +56,7 @@ pub(super) struct State {
     configuration: Configuration,
     root: PathBuf,
     initial_receipt: G1CaptureReceipt,
+    initial_fiducial_gate: Option<bool>,
     initial_episode: u64,
     profile: TaskProfile,
     decision_admission: bool,
@@ -118,6 +119,14 @@ pub(super) fn install(
         .lock()
         .map_err(|_| "controls receipt poisoned")?
         .clone();
+    // Mobile's legacy gate starts enabled and its Tick minimum hides labels
+    // from the original grasp. Static/continuous routes start logically closed.
+    // Reset must restore that actual installed state, rather than infer it from
+    // the task profile or force the mobile gate closed forever.
+    let initial_fiducial_gate = app
+        .world()
+        .get_resource::<G1TaskFiducialGate>()
+        .map(|gate| gate.enabled);
     let runtime = &mut *app.world_mut().resource_mut::<CaptureRuntime>();
     let profile = runtime
         .live_policy
@@ -133,6 +142,7 @@ pub(super) fn install(
         configuration,
         root: root.into(),
         initial_receipt: baseline,
+        initial_fiducial_gate,
         initial_episode: runtime.episode_id,
         profile,
         decision_admission: runtime.qwen_dispatch.is_some(),
@@ -411,7 +421,9 @@ fn apply_actions(
                     port.reset(actual)?;
                     mount.0 = G1CameraMountProfile::ArenaEgo;
                     if let Some(gate) = &mut gate {
-                        gate.enabled = false;
+                        gate.enabled = state
+                            .initial_fiducial_gate
+                            .ok_or("reset fiducial gate was absent from the initial world")?;
                     }
                     robot.0 = None;
                     task.0 = None;
@@ -421,7 +433,8 @@ fn apply_actions(
                     state.phase = Phase::Waiting;
                     state.failure = None;
                     state.stop_integrations = None;
-                    state.event(serde_json::json!({"action":"reset","new_episode":actual,"old_requests_actions_and_history_cleared":true,"fresh_artifact_directory":runtime.output,"old_decision_transport":old_decision_transport}))?;
+                    state.event(serde_json::json!({"action":"reset","new_episode":actual,"old_requests_actions_and_history_cleared":true,"fresh_artifact_directory":runtime.output,"old_decision_transport":old_decision_transport,
+                        "fiducial_gate_restored_to_initial":state.initial_fiducial_gate}))?;
                 }
                 TaskUiAction::Overview | TaskUiAction::GraspDetail => {
                     for (target, mut transform) in &mut cameras {
