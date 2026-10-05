@@ -1,7 +1,11 @@
 //! One actual paused observation before any calibrated grip command.
 
 use super::*;
-use simulation_minigame::g1::mobile_assist::MobileAssistExecution;
+use simulation_minigame::g1::{
+    mobile_assist::{MobileAssistCommand, MobileAssistExecution},
+    mobile_open::MobileOpenGoal,
+    worker::TimedCommand,
+};
 
 fn validate_predecessor(execution: &MobileAssistExecution, tick: u64) -> Result<(), String> {
     if !matches!(execution, MobileAssistExecution::OriginalVla(previous)
@@ -27,6 +31,15 @@ pub(super) fn drive(
         .as_ref()
         .ok_or("pregrasp owner absent")?
         .clone();
+    if runtime
+        .mobile_assist
+        .as_ref()
+        .unwrap()
+        .pregrasp_open_goal
+        .is_some()
+    {
+        return after_opening(runtime, outcome, port);
+    }
     if latest.timing.episode_integrations > 200 {
         return Err("pregrasp diagnostic advanced beyond its200Tick observation budget".into());
     }
@@ -78,6 +91,109 @@ pub(super) fn drive(
     )
     .map_err(|e| e.to_string())?;
     outcome.0.lock().unwrap().mobile_assist_handoff = Some(receipt);
+    let assist = runtime.mobile_assist.as_mut().unwrap();
+    assist.vision_job = None;
+    if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.pregrasp_open_once) {
+        let goal = MobileOpenGoal { observation: stamp };
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("pregrasp opening lost its sole owner".into());
+        };
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: 5_000_000_000,
+                valid_until_wall: Instant::now() + Duration::from_secs(4),
+                command: MobileAssistCommand::ClassicalGraspOpen(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        assist.pregrasp_open_goal = Some(goal);
+        runtime.requested = false;
+        return Ok(false);
+    }
+    assist.completed = true;
+    Ok(true)
+}
+
+fn after_opening(
+    runtime: &mut CaptureRuntime,
+    outcome: &CaptureOutcome,
+    port: &G1CameraPort,
+) -> Result<bool, String> {
+    let latest = runtime
+        .latest
+        .as_ref()
+        .ok_or("opened owner absent")?
+        .clone();
+    let goal = runtime
+        .mobile_assist
+        .as_ref()
+        .unwrap()
+        .pregrasp_open_goal
+        .as_ref()
+        .unwrap()
+        .clone();
+    if latest.timing.episode_integrations > 250 {
+        return Err("pregrasp opening exceeded its250Tick budget".into());
+    }
+    if latest.phase != G1WorkerPhase::Paused {
+        return Ok(false);
+    }
+    if !latest.assist_step.as_ref().is_some_and(|s| {
+        matches!(&s.execution,
+        MobileAssistExecution::ClassicalGraspOpen {goal:executed,opening}
+            if executed==&goal && opening.completed && opening.opening_ticks==50
+                && opening.settling_ticks==0 && latest.timing.episode_integrations==250)
+    }) {
+        return Err("post-opening RGB lacks its own completed50Tick opening".into());
+    }
+    if runtime.mobile_assist.as_ref().unwrap().vision_job.is_none() {
+        start_marker_job(runtime, port, "pregrasp_opened_geometry")?;
+        return Ok(false);
+    }
+    let job = runtime
+        .mobile_assist
+        .as_ref()
+        .unwrap()
+        .vision_job
+        .as_ref()
+        .unwrap();
+    let Some(reply) = job.try_take() else {
+        return Ok(false);
+    };
+    let reply = reply?;
+    let stamp = crate::g1_marker_vision::mobile_held::paired_stamp(&reply)?;
+    if stamp != job.observation
+        || stamp.episode_id != goal.observation.episode_id
+        || stamp.sim_time_ns != 5_000_000_000
+        || stamp.frame_id <= goal.observation.frame_id
+        || stamp.captured_at_unix_ms <= goal.observation.captured_at_unix_ms
+    {
+        return Err("post-opening report is foreign or lacks fresh250Tick RGB".into());
+    }
+    let receipt = serde_json::json!({
+        "mode":"actual_opened_pregrasp_paired_RGB_geometry_diagnostic","origin_observation":goal.observation,
+        "observation":stamp,"actual_integrations":250,"original_vla_chunks":4,
+        "original_release_horizontal_opening_ticks":50,"target_palm_gap_m":0.30,
+        "settling_insertion_close_hold_or_transport_submitted":false,
+        "owner_paused_at_same_tick_during_both_views":true,"Qwen_results":0,
+        "task_qualified":false,"holding_proven":false,"insertion_execution_admitted":false,
+        "geometry":reply["held_contact_geometry"],
+    });
+    fs::write(
+        runtime
+            .options
+            .output
+            .join("pregrasp_opened_geometry_receipt.json"),
+        serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    outcome
+        .0
+        .lock()
+        .unwrap()
+        .mobile_assist_handoff
+        .as_mut()
+        .unwrap()["post_opening"] = receipt;
     let assist = runtime.mobile_assist.as_mut().unwrap();
     assist.vision_job = None;
     assist.completed = true;

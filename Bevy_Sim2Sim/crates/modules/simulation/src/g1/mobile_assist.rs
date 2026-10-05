@@ -20,6 +20,7 @@ use super::{
         MobileCarryGoal, MobileCarryNavigator, MobileNavigationStep, MobileScanGoal,
         MobileScanNavigator,
     },
+    mobile_open::{MobileGraspOpening, MobileOpenGoal},
     mobile_raise::{MobileGripRaising, MobileRaiseGoal, MobileRaiseStep},
     mobile_release::{MobileGripRelease, MobileReleaseGoal, MobileReleaseStep},
     mobile_restore::{MobileGripRestoring, MobileRestoreGoal, MobileRestoreStep},
@@ -56,6 +57,7 @@ pub enum MobileAssistCommand {
     ClassicalRestore(MobileRestoreGoal),
     ClassicalGripSettle(MobileHoldGoal),
     ClassicalGraspCenter(MobileCenterGoal),
+    ClassicalGraspOpen(MobileOpenGoal),
     ClassicalHold(MobileHoldGoal),
     ClassicalThumbClearance(MobileThumbGoal),
     ClassicalModelWait(MobileWaitGoal),
@@ -121,6 +123,7 @@ impl MobileAssistCommand {
             Self::ClassicalRestore(goal) => goal.validate(),
             Self::ClassicalGripSettle(goal) => goal.validate(),
             Self::ClassicalGraspCenter(goal) => goal.validate(),
+            Self::ClassicalGraspOpen(goal) => goal.validate(),
             Self::ClassicalHold(goal) => goal.validate(),
             Self::ClassicalThumbClearance(goal) => goal.validate(),
             Self::ClassicalModelWait(goal) => goal.validate(),
@@ -132,6 +135,10 @@ impl MobileAssistCommand {
 #[serde(rename_all = "snake_case")]
 pub enum MobileAssistExecution {
     OriginalVla(ArenaTaskExecution),
+    ClassicalGraspOpen {
+        goal: MobileOpenGoal,
+        opening: MobileReleaseStep,
+    },
     ClassicalGraspCenter {
         goal: MobileCenterGoal,
         centering: MobileCenterStep,
@@ -222,6 +229,7 @@ pub struct MobileAssistRunner {
     restore: Option<MobileGripRestoring>,
     grip_settle: Option<GripSettleState>,
     centering: Option<MobileGripCentering>,
+    grasp_opening: Option<MobileGraspOpening>,
     hold: Option<MobileGripHolding>,
     thumb: Option<MobileThumbPreparation>,
     original_transport_command: Option<G1Command>,
@@ -302,6 +310,7 @@ impl MobileAssistRunner {
             restore: None,
             grip_settle: None,
             centering: None,
+            grasp_opening: None,
             hold: None,
             thumb: None,
             original_transport_command: None,
@@ -354,6 +363,8 @@ impl MobileAssistRunner {
             thumb.completed()
         } else if let Some(hold) = &self.hold {
             hold.completed()
+        } else if let Some(opening) = &self.grasp_opening {
+            opening.completed()
         } else if let Some(centering) = self
             .centering
             .as_ref()
@@ -518,6 +529,11 @@ impl MobileAssistRunner {
             .last_vla_command
             .as_ref()
             .ok_or_else(|| invalid("classical handoff lost original upper command"))?;
+        if self.grasp_opening.is_some() {
+            return Err(invalid(
+                "opened pregrasp requires fresh250Tick RGB and verified insertion/source-close before hold or transport",
+            ));
+        }
         if let Some(center) = &self.centering {
             if !center.completed()
                 || observation.frame_id <= center.goal().observation.frame_id
@@ -566,6 +582,9 @@ impl MobileAssistRunner {
                 }
                 MobileAssistExecution::ClassicalGraspCenter { centering, .. } => {
                     centering.command.clone()
+                }
+                MobileAssistExecution::ClassicalGraspOpen { opening, .. } => {
+                    opening.command.clone()
                 }
                 MobileAssistExecution::ClassicalCarry { command, .. }
                 | MobileAssistExecution::ClassicalScan { command, .. }
@@ -836,6 +855,7 @@ impl MobileAssistRunner {
                     || self.restore.as_ref().is_some_and(|r| !r.completed())
                     || self.hold.as_ref().is_some_and(|h| !h.completed())
                     || self.centering.as_ref().is_some_and(|c| !c.completed())
+                    || self.grasp_opening.is_some()
                     || self
                         .grip_settle
                         .as_ref()
@@ -860,6 +880,7 @@ impl MobileAssistRunner {
                 self.hold = None;
                 self.grip_settle = None;
                 self.centering = None;
+                self.grasp_opening = None;
                 self.waiting = None;
                 self.original_transport_command = None;
                 Ok(MobileAssistStep {
@@ -1082,12 +1103,70 @@ impl MobileAssistRunner {
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
             }
+            MobileAssistCommand::ClassicalGraspOpen(goal) => {
+                if !self.station_fixture
+                    || self.carry.is_some()
+                    || self.scan.is_some()
+                    || self.grip_settle.is_some()
+                    || self.pickup_raise.is_some()
+                    || self.centering.is_some()
+                {
+                    return Err(invalid(
+                        "pregrasp opening belongs only before the first station grip close",
+                    ));
+                }
+                let state = self.owner.measurement()?;
+                if self.grasp_opening.is_none() {
+                    let previous = self
+                        .last_vla_execution
+                        .as_ref()
+                        .ok_or_else(|| invalid("opening lacks original grasp predecessor"))?;
+                    if previous.profile != TaskProfile::MobileBox
+                        || previous.sequence_id != 4
+                        || previous.frame_index != 49
+                        || previous.admitted_chunks != 4
+                        || previous.execution_start_sim_ns != 3_000_000_000
+                    {
+                        return Err(invalid(
+                            "opening requires exactly four completed original grasp chunks",
+                        ));
+                    }
+                    self.classical_admission(goal.observation, &state)?;
+                    let original = self
+                        .last_vla_command
+                        .clone()
+                        .ok_or_else(|| invalid("opening lost original upper targets"))?;
+                    self.grasp_opening = Some(MobileGraspOpening::new(
+                        goal.clone(),
+                        &state,
+                        original,
+                        &self.calibration,
+                    )?);
+                }
+                let opening = self.grasp_opening.as_mut().unwrap();
+                if opening.goal() != goal {
+                    return Err(invalid("pregrasp opening goal changed during execution"));
+                }
+                let step = opening.update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&step.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalGraspOpen {
+                        goal: goal.clone(),
+                        opening: step,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
             MobileAssistCommand::ClassicalGraspCenter(goal) => {
                 if !self.station_fixture
                     || self.carry.is_some()
                     || self.scan.is_some()
                     || self.grip_settle.is_some()
                     || self.pickup_raise.is_some()
+                    || self.grasp_opening.is_some()
                 {
                     return Err(invalid(
                         "centering belongs only before the first station grip close",
@@ -2647,6 +2726,7 @@ mod tests {
                         ("traditional_model_wait", None)
                     }
                     MobileAssistExecution::ClassicalGraspCenter { .. }
+                    | MobileAssistExecution::ClassicalGraspOpen { .. }
                     | MobileAssistExecution::ClassicalScan { .. }
                     | MobileAssistExecution::ClassicalReobserve { .. }
                     | MobileAssistExecution::ClassicalRestore { .. }
@@ -2784,6 +2864,7 @@ mod worker_diagnostic {
                             ("traditional_model_wait", None)
                         }
                         MobileAssistExecution::ClassicalGraspCenter { .. }
+                        | MobileAssistExecution::ClassicalGraspOpen { .. }
                         | MobileAssistExecution::ClassicalScan { .. }
                         | MobileAssistExecution::ClassicalReobserve { .. }
                         | MobileAssistExecution::ClassicalRestore { .. }

@@ -15,6 +15,7 @@ pub mod mobile_hold;
 pub mod mobile_lowering;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_navigation;
+pub mod mobile_open;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_raise;
 #[cfg(feature = "g1_constraint_diagnostic")]
