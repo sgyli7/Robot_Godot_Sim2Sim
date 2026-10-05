@@ -17,10 +17,12 @@ import numpy as np
 from .artifacts import DT, JOINT_ORDER, sha256, write_json
 
 CANDIDATE = "goose_task_proxy_11_rigid_native_v1"
+MJLAB_CANDIDATE = "goose_task_proxy_11_rigid_mjlab_v1"
+CANDIDATES = (CANDIDATE, MJLAB_CANDIDATE)
 REVISION = "goose_rigid_native_implicit_drive_v1"
 
 
-def build_reference(parent_model, parent_contract, source_root, destination):
+def build_reference(parent_model, parent_contract, source_root, destination, *, upstream=False):
     parent_model, parent_contract, source_root, destination = map(
         Path, (parent_model, parent_contract, source_root, destination))
     contract = json.loads(parent_contract.read_text())
@@ -32,13 +34,17 @@ def build_reference(parent_model, parent_contract, source_root, destination):
         raise FileExistsError("Preserve existing rigid candidate")
     tree = ET.parse(parent_model)
     root = tree.getroot()
-    root.set("model", CANDIDATE)
+    candidate = MJLAB_CANDIDATE if upstream else CANDIDATE
+    root.set("model", candidate)
     option = root.find("option")
     option.set("integrator", "implicitfast")
     flags = option.find("flag")
     flags.set("eulerdamp", "enable")
     flags.set("multiccd", "disable")
-    flags.set("autoreset", "disable")
+    if upstream:
+        flags.attrib.pop("autoreset", None)  # Unsupported C-only flag in Warp.
+    else:
+        flags.set("autoreset", "disable")
     # Use the same ordinary rigid contact material as the body envelopes.
     # No positive discovery/rest margins, foundation springs or replacement
     # contact points. Geometry, friction, SI and self filters stay inherited.
@@ -72,13 +78,19 @@ def build_reference(parent_model, parent_contract, source_root, destination):
     model_path = destination / "robot.xml"
     tree.write(model_path, encoding="unicode")
     contract = copy.deepcopy(contract)
-    contract.update(candidate=CANDIDATE, candidate_id=CANDIDATE,
+    contract.update(candidate=candidate, candidate_id=candidate,
         runtime_revision=REVISION, controller_revision=REVISION,
         source_runtime="bevy_microduck_tools.goose.rigid_native.make_source_runtime",
         integrator="implicitfast", model_sha256=sha256(model_path),
         status="COMPUTER_RIGID_NATIVE_DEVELOPMENT", training_release=False,
+        source_checkpoint={"source_root": str(source_root.resolve()),
+            "source_module_sha256": {"src/sai_agent/goose/stage_one_gravity.py":
+                sha256(source_root / "src/sai_agent/goose/stage_one_gravity.py")}},
         contact_mapping={"method": "native_rigid_contact", "custom_callbacks": False},
         rigid_native={"revision": REVISION, "module_sha256": sha256(Path(__file__)),
+            "foot_sensor_sites": [{"body": p["body"], "geom": p["geom"],
+                "center_body_m": np.asarray(p["bottom_corners_body_m"], dtype=float).mean(0).tolist()}
+                for p in contract["contact_mapping"]["ground_contact_quadrature"]],
             "source_root": str(source_root.resolve()),
             "parent_model": str(parent_model.resolve()),
             "parent_contract": str(parent_contract.resolve()),
@@ -87,6 +99,7 @@ def build_reference(parent_model, parent_contract, source_root, destination):
             "parent_runtime": contract["source_runtime"],
             "position_actuators": 17, "beak_input_effort_actuators": 1,
             "native_contact_only": True, "integrations_per_tick": 1,
+            "C_only_autoreset_flag_omitted_for_Warp": upstream,
             "hardware_qualification": False, "soft_sole_qualification": False})
     contract_path = destination / "contract.json"
     write_json(contract_path, contract)
@@ -97,7 +110,7 @@ def make_source_runtime(model_path, contract_path):
     model_path, contract_path = Path(model_path), Path(contract_path)
     contract = json.loads(contract_path.read_text())
     cfg = contract["rigid_native"]
-    if (contract["candidate"] != CANDIDATE or cfg["revision"] != REVISION
+    if (contract["candidate"] not in CANDIDATES or cfg["revision"] != REVISION
             or cfg["module_sha256"] != sha256(Path(__file__))
             or contract["model_sha256"] != sha256(model_path)
             or sha256(Path(cfg["parent_model"])) != cfg["parent_model_sha256"]
@@ -121,6 +134,8 @@ def make_source_runtime(model_path, contract_path):
     # conventions, reset, gravity and observations.
     base = TaskProxyRuntime(Path(cfg["parent_model"]), Path(cfg["parent_contract"]))
     model = mujoco.MjModel.from_xml_path(str(model_path))
+    # C evaluation must preserve failed states. Warp has no implicit reset.
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
     if (model.opt.timestep != DT or model.nu != 18 or model.nbody != 22
             or model.opt.integrator != mujoco.mjtIntegrator.mjINT_IMPLICITFAST
             or model.npair != 0):

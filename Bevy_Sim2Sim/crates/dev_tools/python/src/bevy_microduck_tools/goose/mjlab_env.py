@@ -24,7 +24,7 @@ from mjlab.scene import SceneCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 
 from .artifacts import DT, JOINT_ORDER, sha256
-from .batch_drive import BatchedGooseDrive
+from .batch_drive import BatchedGooseDrive, BatchedRigidNativeDrive
 from .mjlab_baseline import (
     TASK_PROXY_CANDIDATE, _read_native_contract, make_entity_cfg, require_upstream_stack)
 
@@ -45,6 +45,12 @@ class GooseActionCfg(ActionTermCfg):
 
     def build(self, env):
         return GooseAction(self, env)
+
+
+@dataclass(kw_only=True)
+class RigidGooseActionCfg(GooseActionCfg):
+    def build(self, env):
+        return RigidGooseAction(self, env)
 
 
 class GooseAction(ActionTerm):
@@ -133,6 +139,68 @@ class GooseAction(ActionTerm):
         self._raw[ids] = 0
         self._effort[ids] = 0
         self.commands[ids] = 0
+
+
+class RigidGooseAction(GooseAction):
+    """Native XML position feedback plus the real beak effort transmission."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        contract = json.loads(cfg.contract_path.read_text())
+        self.drive = BatchedRigidNativeDrive(contract, self.num_envs, device=self.device)
+        model = env.sim.mj_model
+        names = [model.joint(int(model.actuator_trnid[i, 0])).name
+            for i in range(model.nu)]
+        if model.nu != 18 or names != [cfg.entity_name+"/"+n for n in cfg.motor_joint_names]:
+            raise ValueError("Rigid native actuator declaration order changed")
+        self.motor_vids = torch.tensor(model.jnt_dofadr[model.actuator_trnid[:, 0]],
+            device=self.device, dtype=torch.long)
+        self.position_axes = torch.tensor([i for i in range(18) if i != 5], device=self.device)
+        self._solver_force = torch.zeros_like(self._raw)
+        self._forces_captured = False
+        if "actuator_forcerange" not in env.sim.expanded_fields:
+            env.sim.expand_model_fields(("actuator_forcerange",))
+
+    @torch.no_grad()
+    def process_actions(self, actions):
+        _require_development_timing(self._env.cfg)
+        d = self._env.sim.data
+        self._effort.copy_(self.drive.prepare(actions, d.qpos[:, self.qids], d.qvel[:, self.vids],
+            d.qpos[:, self.root_q+3:self.root_q+7], motor_velocity=d.qvel[:, self.motor_vids]))
+        self._raw.copy_(actions)
+        self._before_time = d.time.clone()
+        self._applied = self._forces_captured = False
+
+    def apply_actions(self):
+        if self._before_time is None or self._applied:
+            raise RuntimeError("Exactly one rigid command batch per Tick")
+        self._env.sim.model.actuator_forcerange.copy_(torch.stack(
+            (-self.drive.cap, self.drive.cap), dim=-1).to(torch.float32))
+        self._entity.set_joint_position_target(self._effort[:, self.position_axes].float(),
+            joint_ids=self.motor_ids[self.position_axes])
+        self._entity.set_joint_effort_target(self._effort[:, 5:6].float(),
+            joint_ids=self.motor_ids[5:6])
+        self._applied = True
+
+    def verify_actual_step(self):
+        result = super().verify_actual_step()
+        if not self._forces_captured:
+            self._solver_force.copy_(self._env.sim.data.actuator_force)
+            self._forces_captured = True
+        return result
+
+    def commit_after_step(self):
+        self.verify_actual_step()
+        self.drive.commit(self._solver_force)
+        self._before_time = None
+
+    def reset(self, env_ids=None):
+        super().reset(env_ids)
+        ids = slice(None) if env_ids is None else env_ids
+        self._solver_force[ids] = 0
+        limits = self.drive.peak.expand(self.num_envs, -1)
+        self._env.sim.model.actuator_forcerange[ids] = torch.stack(
+            (-limits[ids], limits[ids]), dim=-1).float()
 
 
 def commit_history(env, env_ids=None):
@@ -274,9 +342,11 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
             if name.startswith("mjDSBL_") and int(opt.disableflags) & int(getattr(mujoco.mjtDisableBit, name))),
         enableflags=tuple(name.removeprefix("mjENBL_").lower() for name in dir(mujoco.mjtEnableBit)
             if name.startswith("mjENBL_") and int(opt.enableflags) & int(getattr(mujoco.mjtEnableBit, name))))
+    from .rigid_native import CANDIDATES as RIGID_CANDIDATES
+    action_type = RigidGooseActionCfg if contract["candidate"] in RIGID_CANDIDATES else GooseActionCfg
     return ManagerBasedRlEnvCfg(scene=SceneCfg(num_envs=num_envs, entities={"robot": entity},
         terrain=None, spec_fn=add_native_ground),
-        actions={"goose": GooseActionCfg(entity_name="robot", model_path=model_path, contract_path=contract_path,
+        actions={"goose": action_type(entity_name="robot", model_path=model_path, contract_path=contract_path,
             contract_sha256=sha256(contract_path), motor_joint_names=motors)},
         observations={"actor": ObservationGroupCfg(terms={"base": ObservationTermCfg(func=actor_observation)},
             enable_corruption=False, concatenate_terms=True)},

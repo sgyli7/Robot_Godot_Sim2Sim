@@ -161,15 +161,22 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
     contract = _read_native_contract(model_path, contract_path)
+    from .rigid_native import (CANDIDATES as RIGID_CANDIDATES, MJLAB_CANDIDATE,
+        make_source_runtime as make_rigid_runtime)
+    is_rigid = contract["candidate"] in RIGID_CANDIDATES
     from .speculative_contact import PREDICTION_CANDIDATES, REVISION as PREDICTION_REVISION, validate_prediction
     is_prediction = contract["candidate"] in PREDICTION_CANDIDATES
     is_proxy = contract["candidate"] == TASK_PROXY_CANDIDATE or is_prediction
     is_euler = contract["candidate"] == EULER_CANDIDATE or is_proxy
     expected_integrator = "Euler" if is_euler else "implicitfast"
-    if (not is_euler and contract["candidate"] not in NATIVE_PARENTS.values()
+    if (not is_euler and not is_rigid and contract["candidate"] not in NATIVE_PARENTS.values()
             or contract["integrator"] != expected_integrator):
         raise ValueError("Explicit native mjlab reference required")
     model = mujoco.MjModel.from_xml_path(str(model_path))
+    if is_rigid:
+        if contract["candidate"] != MJLAB_CANDIDATE:
+            raise ValueError("Explicit rigid mjlab candidate without C-only flags required")
+        make_rigid_runtime(model_path, contract_path)  # Full identity,0 integrals.
     if model.nu != 18 or model.opt.timestep != DT:
         raise ValueError("Native model does not expose the Goose 18 motors at 50 Hz")
     expected_enum = (mujoco.mjtIntegrator.mjINT_EULER if is_euler
@@ -219,9 +226,14 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     root_pos[2] += .002  # Existing declared cold-birth clearance, initial state only.
     motor_targets = tuple(model.joint(int(model.actuator_trnid[i, 0])).name
                           for i in range(model.nu))
+    actuator_groups = (XmlActuatorCfg(target_names_expr=motor_targets, command_field="effort"),)
+    if is_rigid:
+        actuator_groups = (
+            XmlActuatorCfg(target_names_expr=tuple(n for i, n in enumerate(motor_targets) if i != 5),
+                command_field="position"),
+            XmlActuatorCfg(target_names_expr=(motor_targets[5],), command_field="effort"))
     return EntityCfg(spec_fn=robot_spec,
         init_state=EntityCfg.InitialStateCfg(pos=tuple(root_pos), rot=tuple(model.qpos0[3:7]),
                                             joint_pos=positions),
-        articulation=EntityArticulationInfoCfg(actuators=(
-            XmlActuatorCfg(target_names_expr=motor_targets, command_field="effort"),)),
+        articulation=EntityArticulationInfoCfg(actuators=actuator_groups),
         sort_actuators=False, collisions=())

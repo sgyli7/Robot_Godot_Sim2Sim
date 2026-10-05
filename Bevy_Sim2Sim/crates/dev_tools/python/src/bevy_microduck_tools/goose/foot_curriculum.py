@@ -16,9 +16,11 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg, ObjRef
 from mjlab.sensor import RingPatternCfg, TerrainHeightSensorCfg
 from mjlab.tasks.velocity.mdp import rewards
 
-from .source_training import make_sole_bounded_forward_cfg
+from .source_training import make_sole_bounded_forward_cfg, make_smooth_forward_cfg
 
 REVISION = "goose_flat_native_foot_course_v1"
+RIGID_POSTURE_REVISION = "goose_rigid_native_posture_course_v1"
+RIGID_MOTION_REVISION = "goose_rigid_native_motion_course_v1"
 CONTACT_SENSOR = "goose_feet_ground"
 HEIGHT_SENSOR = "goose_feet_height"
 SITE_NAMES = ("right_sole_center", "left_sole_center")
@@ -33,7 +35,8 @@ def add_foot_sensors(cfg, contract_path: Path):
     Native step sensors/rewards retain upstream's one-step derived-data lag.
     """
     contract = json.loads(contract_path.read_text())
-    patches = contract["contact_mapping"]["ground_contact_quadrature"]
+    patches = (contract["rigid_native"]["foot_sensor_sites"] if "rigid_native" in contract
+        else contract["contact_mapping"]["ground_contact_quadrature"])
     if [p["geom"] for p in patches] != [
             "right_flexible_sole", "left_flexible_sole"]:
         raise ValueError("Native foot course requires the frozen right/left sole order")
@@ -45,7 +48,9 @@ def add_foot_sensors(cfg, contract_path: Path):
     def sensed_spec():
         spec = original_spec()
         for name, patch in zip(SITE_NAMES, patches, strict=True):
-            center = np.asarray(patch["bottom_corners_body_m"], dtype=float).mean(axis=0)
+            center = (np.asarray(patch["center_body_m"], dtype=float)
+                if "center_body_m" in patch
+                else np.asarray(patch["bottom_corners_body_m"], dtype=float).mean(axis=0))
             spec.body(patch["body"]).add_site(name=name, pos=center,
                 type=mujoco.mjtGeom.mjGEOM_SPHERE, size=(.001, .001, .001),
                 rgba=(0., 1., 0., 0.), group=5)
@@ -76,8 +81,15 @@ def make_foot_course_cfg(model_path: Path, contract_path: Path, **kwargs):
     stops rewarding a permanently raised foot. Qualification independently
     requires actual alternating steps and useful travel, beyond these rewards.
     """
-    cfg = add_foot_sensors(make_sole_bounded_forward_cfg(
+    contract = json.loads(contract_path.read_text())
+    rigid = "rigid_native" in contract
+    base = make_smooth_forward_cfg if rigid else make_sole_bounded_forward_cfg
+    cfg = add_foot_sensors(base(
         model_path, contract_path, **kwargs), contract_path)
+    if rigid:
+        from mjlab.managers.termination_manager import TerminationTermCfg
+        cfg.terminations["rigid_contact_limit"] = TerminationTermCfg(
+            func=rigid_contact_limit_exceeded, params={"max_depth_m": .005})
     cfg.rewards["feet_air_time"] = RewardTermCfg(func=rewards.feet_air_time,
         weight=1., params={"sensor_name": CONTACT_SENSOR, "threshold_min": .05,
             "threshold_max": .5, "command_name": "velocity", "command_threshold": .01})
@@ -85,4 +97,74 @@ def make_foot_course_cfg(model_path: Path, contract_path: Path, **kwargs):
         weight=-2., params={"target_height": .02, "height_sensor_name": HEIGHT_SENSOR,
             "command_name": "velocity", "command_threshold": .01,
             "asset_cfg": SceneEntityCfg("robot", site_names=SITE_NAMES, preserve_order=True)})
+    return cfg
+
+
+def rigid_collision_depth(env):
+    """Completed rigid mesh/plane depth; FK query only, never an integration."""
+    import torch
+    import warp as wp
+    import mujoco_warp as mjw
+    from .native_geometry import collision_mesh_vertices
+
+    if not hasattr(env, "_goose_rigid_support"):
+        model = env.sim.mj_model
+        env._goose_rigid_support = [(g, torch.as_tensor(
+            collision_mesh_vertices(model, int(model.geom_dataid[g]))[0],
+            dtype=env.sim.data.geom_xpos.dtype, device=env.device))
+            for g in range(model.ngeom) if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH]
+        if len(env._goose_rigid_support) != 11 or env.contact_adapter is not None:
+            raise ValueError("Rigid course requires11 original convex leaves,native contact")
+    with wp.ScopedDevice(env.sim.wp_device):
+        mjw.kinematics(env.sim.wp_model, env.sim.wp_data)
+    depths = []
+    for geom, vertices in env._goose_rigid_support:
+        rotation = env.sim.data.geom_xmat[:, geom].reshape(env.num_envs, 3, 3)
+        z = vertices@rotation[:, 2, :].T+env.sim.data.geom_xpos[:, geom, 2]
+        depths.append(-z.min(dim=0).values)
+    return torch.stack(depths).max(dim=0).values.clamp_min(0)
+
+
+def rigid_contact_limit_exceeded(env, max_depth_m=.005):
+    return rigid_collision_depth(env) > max_depth_m
+
+
+def make_rigid_posture_course_cfg(model_path: Path, contract_path: Path, **kwargs):
+    """Bounded follow-up to the recorded short-episode rigid course failure.
+
+    Use upstream posture and termination rewards, leaving the plant, action
+    limits, Actor, command sampling and failure thresholds unchanged. This is
+    a separate task, not a silent revision of existing training receipts.
+    """
+    from mjlab.envs.mdp import is_terminated
+    from .artifacts import JOINT_ORDER
+
+    if "rigid_native" not in json.loads(contract_path.read_text()):
+        raise ValueError("Rigid posture course requires computer-only rigid feet")
+    cfg = make_foot_course_cfg(model_path, contract_path, **kwargs)
+    cfg.rewards["pose"] = RewardTermCfg(func=rewards.variable_posture,
+        weight=1., params={"asset_cfg": SceneEntityCfg("robot",
+            joint_names=JOINT_ORDER, preserve_order=True), "command_name": "velocity",
+            "std_standing": {".*": .15}, "std_walking": {".*": .35},
+            "std_running": {".*": .35}, "walking_threshold": .01,
+            "running_threshold": 1.5})
+    # RewardManager multiplies by .02s: each failed episode receives -4,
+    # whereas a regular timeout remains eligible for value bootstrapping.
+    cfg.rewards["failed_episode"] = RewardTermCfg(func=is_terminated, weight=-200.)
+    return cfg
+
+
+def make_rigid_motion_course_cfg(model_path: Path, contract_path: Path, **kwargs):
+    """Learn through finite contact transients; keep depth as an acceptance metric.
+
+    Recorded legal-action cases exceed 5mm yet remain upright and settle with
+    zero commands. End learning episodes on actual falls or timeout, rather
+    than equating that transient with falling. Independent depth acceptance
+    remains 5mm; this task does not confer physics or movement qualification.
+    """
+    from mjlab.managers.metrics_manager import MetricsTermCfg
+
+    cfg = make_rigid_posture_course_cfg(model_path, contract_path, **kwargs)
+    del cfg.terminations["rigid_contact_limit"]
+    cfg.metrics["rigid_contact_depth_m"] = MetricsTermCfg(func=rigid_collision_depth)
     return cfg
