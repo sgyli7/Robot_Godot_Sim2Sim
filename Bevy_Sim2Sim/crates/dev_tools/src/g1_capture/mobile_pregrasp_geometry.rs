@@ -114,7 +114,7 @@ pub(super) fn drive(
         owner
             .submit(TimedCommand {
                 episode_id: runtime.episode_id,
-                valid_until_sim_ns: 5_980_000_000,
+                valid_until_sim_ns: super::mobile_pregrasp_close::SOURCE_CLOSE_END_SIM_NS,
                 valid_until_wall: submitted_at + Duration::from_secs(4),
                 command: MobileAssistCommand::ClassicalGripSettle(goal.clone()),
             })

@@ -3,6 +3,9 @@
 use super::*;
 use simulation_minigame::g1::{mobile_assist::MobileAssistExecution, mobile_hold::MobileHoldGoal};
 
+// The owner validates the completed integration time, including the last Tick.
+pub(super) const SOURCE_CLOSE_END_SIM_NS: u64 = 6_000_000_000;
+
 fn completed_boundary(
     execution: &MobileAssistExecution,
     tick: u64,
@@ -116,6 +119,13 @@ pub(super) fn drive(
 mod tests {
     use super::*;
     use simulation_minigame::g1::task_runner::ArenaTaskExecution;
+
+    #[test]
+    fn source_close_deadline_covers_the_last_integration_but_not_an_extra_tick() {
+        // Worker::check_command compares the completed integration time.
+        assert!(5_980_000_000 + 20_000_000 <= SOURCE_CLOSE_END_SIM_NS);
+        assert!(6_000_000_000 + 20_000_000 > SOURCE_CLOSE_END_SIM_NS);
+    }
 
     #[test]
     fn queued_source_close_cannot_consume_foreign_or_later_original_snapshot() {

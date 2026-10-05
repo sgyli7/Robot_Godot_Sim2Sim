@@ -212,8 +212,8 @@ struct MobileScanCaptureConfiguration {
     /// before any station scan/turn. Original source VLA remains unchanged.
     #[serde(default)]
     verified_station_pickup: bool,
-    /// Stop at the first200Tick boundary and measure actual pairedRGB/self.
-    /// No hold, insertion, close or transport command is admitted in this mode.
+    /// Measure actual pairedRGB/self at200Tick, then stop by default.
+    /// Separate finite opening/closing flags cannot admit insertion or carry.
     #[serde(default)]
     pregrasp_geometry_only: bool,
     /// One original-target50Tick opening and fresh250Tick geometry, then stop.
