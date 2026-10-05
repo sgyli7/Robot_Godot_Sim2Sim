@@ -4,6 +4,7 @@ use super::digest;
 use rendering_minigame::g1_camera::{CameraPoseSource, G1CameraMountProfile, G1CapturedRgb};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -40,14 +41,24 @@ fn original_static_calibration_version() -> u32 {
 }
 impl StaticMarkerVisionConfiguration {
     pub(crate) fn validate(&self) -> Result<(), String> {
-        let calibration_hash = match self.calibration_version {
-            2 => "1718b8c54289b5dcbb6e3674edc176f03b1f40bdc1e507f62538ae13f336fb74",
-            3 => "66e79f02053884a1d8d70c5af2a6f6924e48cd4cb4d3e28de5ada53eb1d9a735",
+        let calibration_identity_matches = match self.calibration_version {
+            2 => {
+                self.fiducial_sha256
+                    == "1718b8c54289b5dcbb6e3674edc176f03b1f40bdc1e507f62538ae13f336fb74"
+            }
+            3 => {
+                if digest(&self.fiducial_path, 16 * 1024)? != self.fiducial_sha256 {
+                    return Err("static CPU calibration path/hash mismatch".into());
+                }
+                same_multiface_calibration(
+                    &fs::read(&self.fiducial_path).map_err(|e| e.to_string())?,
+                )?
+            }
             _ => return Err("unknown static public calibration version".into()),
         };
         if self.definition_sha256
             != "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8f13bd"
-            || self.fiducial_sha256 != calibration_hash
+            || !calibration_identity_matches
             || self.worker_path.parent() != self.localizer_path.parent()
             || self.worker_path.file_name().and_then(|n| n.to_str())
                 != Some("unitree_g1_static_vision_worker.py")
@@ -75,6 +86,31 @@ impl StaticMarkerVisionConfiguration {
         }
         Ok(())
     }
+}
+
+/// Permit asset relocation while retaining every printed byte and mount value.
+/// The configured file hash and each image hash are still checked separately.
+fn same_multiface_calibration(bytes: &[u8]) -> Result<bool, String> {
+    let mut calibration: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    let object = calibration
+        .as_object_mut()
+        .ok_or("static calibration object absent")?;
+    object
+        .remove("png_paths")
+        .ok_or("static printed paths absent")?;
+    let sides = object
+        .get_mut("static_apple_side_markers")
+        .and_then(Value::as_array_mut)
+        .ok_or("static side markers absent")?;
+    for side in sides {
+        side.as_object_mut()
+            .ok_or("static side marker object absent")?
+            .remove("png_path")
+            .ok_or("static side printed path absent")?;
+    }
+    let normalized = serde_json::to_vec(&calibration).map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(normalized))
+        == "f75eddda00d1dc417a27ad1bbcd5de93025d103945cf0342e9b4a1533685263e")
 }
 
 struct Pending {
@@ -543,6 +579,20 @@ impl Drop for StaticMarkerWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiface_identity_allows_relocated_paths_but_rejects_changed_geometry_or_pixels() {
+        let mut fixture: Value = serde_json::from_str(r#"{"schema":"g1_task_fiducials_v1","dictionary":"DICT_4X4_50","layout_profile":"static_apple_plate_multi_face","png_paths":["/relocated/apple.png","/relocated/plate.png"],"png_sha256":["65c943d2f0451cea07075a225f67918595f83c03a9186a156f6c882b63d2b452","6af80263729f8403e935580cc7421129c3d95d86f2a32a964604f5e83e5cb58a"],"calibration_version":3,"marker_mounts_source_m":[[0.002,0.0,0.046],[0.0,0.0,0.0255]],"static_apple_side_markers":[{"marker_id":33,"png_path":"/relocated/side.png","png_sha256":"65a76b9ac9c51f4d65e151c6ec9c22748118b65990dc310912e2d097bab85f39","center_source_m":[-0.03,0,0.014],"rotation_wxyz":[0.7071067811865476,0,-0.7071067811865476,0]},{"marker_id":34,"png_path":"/relocated/side.png","png_sha256":"d40cbac791886b014f0e8afd1a6f7a2905b1ea4cf8cb2b8ef3de5490ad72d071","center_source_m":[0.002,-0.031,0.014],"rotation_wxyz":[0.7071067811865476,0.7071067811865476,0,0]},{"marker_id":35,"png_path":"/relocated/side.png","png_sha256":"1c65c384eee99eb1cdb2396a104b370eb94492ac442e4eed1c4891ea85234ccb","center_source_m":[0.033,0,0.014],"rotation_wxyz":[0.7071067811865476,0,0.7071067811865476,0]},{"marker_id":36,"png_path":"/relocated/side.png","png_sha256":"f30a9401853ccd819f615efbff6ed546b953a4846faa1fdfe835ffea66abf6af","center_source_m":[0.002,0.031,0.014],"rotation_wxyz":[0.7071067811865476,-0.7071067811865476,0,0]},{"marker_id":37,"png_path":"/relocated/side.png","png_sha256":"e4291b7443773bd7a37d1ed34d6c341b469883fadd3c03be242f146c185dffd2","center_source_m":[0.002,0,-0.017],"rotation_wxyz":[0,1,0,0]}]}"#).unwrap();
+        assert!(same_multiface_calibration(&serde_json::to_vec(&fixture).unwrap()).unwrap());
+        fixture["png_paths"][0] = "/another/apple.png".into();
+        fixture["static_apple_side_markers"][0]["png_path"] = "/another/side.png".into();
+        assert!(same_multiface_calibration(&serde_json::to_vec(&fixture).unwrap()).unwrap());
+        let mut foreign = fixture.clone();
+        foreign["static_apple_side_markers"][0]["center_source_m"][0] = (-0.02).into();
+        assert!(!same_multiface_calibration(&serde_json::to_vec(&foreign).unwrap()).unwrap());
+        fixture["png_sha256"][0] = "0".repeat(64).into();
+        assert!(!same_multiface_calibration(&serde_json::to_vec(&fixture).unwrap()).unwrap());
+    }
 
     fn fixture() -> (StaticMarkerVisionConfiguration, Pending, Value) {
         let config = StaticMarkerVisionConfiguration {
