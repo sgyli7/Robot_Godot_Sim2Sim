@@ -43,6 +43,8 @@ mod mobile_pregrasp_close;
 mod mobile_pregrasp_geometry;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_regrasp;
+#[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_observed_grasp;
@@ -213,7 +215,8 @@ struct MobileScanCaptureConfiguration {
     #[serde(default)]
     verified_station_pickup: bool,
     /// Measure actual pairedRGB/self at200Tick, then stop by default.
-    /// Separate finite opening/closing flags cannot admit insertion or carry.
+    /// Separate finite opening/closing flags stop unless explicit closed-RGB
+    /// reacquisition is selected; none of these diagnostics admits carry.
     #[serde(default)]
     pregrasp_geometry_only: bool,
     /// One original-target50Tick opening and fresh250Tick geometry, then stop.
@@ -222,6 +225,9 @@ struct MobileScanCaptureConfiguration {
     /// Original100Tick source-gap settle and fresh300Tick geometry, then stop.
     #[serde(default)]
     pregrasp_source_close_once: bool,
+    /// At most two current closed-RGB reacquisitions, each with fresh phase views.
+    #[serde(default)]
+    current_closed_regrasp: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -283,6 +289,8 @@ struct MobileAssistCaptureRuntime {
     pregrasp_close_goal: Option<simulation_minigame::g1::mobile_hold::MobileHoldGoal>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     pregrasp_close_submitted_at: Option<Instant>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    regrasp: Option<mobile_regrasp::Recovery>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -401,6 +409,8 @@ impl MobileAssistCaptureRuntime {
             pregrasp_close_goal: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             pregrasp_close_submitted_at: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            regrasp: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2237,7 +2247,8 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        ((c.pregrasp_open_once || c.pregrasp_source_close_once) && !c.pregrasp_geometry_only)
+        (c.current_closed_regrasp && !c.pregrasp_source_close_once)
+            || ((c.pregrasp_open_once || c.pregrasp_source_close_once) && !c.pregrasp_geometry_only)
             || (c.pregrasp_open_once && c.pregrasp_source_close_once)
             || c.pregrasp_geometry_only
                 && (!cfg!(feature = "g1_constraint_diagnostic")
@@ -4864,7 +4875,8 @@ fn capture_current_marker_pair(
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 fn allowed_mobile_box_pair_stage(stage: &str) -> bool {
-    stage == "visual_approach"
+    stage.starts_with("regrasp_")
+        || stage == "visual_approach"
         || stage.starts_with("visual_fine_approach")
         || stage == "visual_release_alignment"
         || stage == "visual_release_alignment_after_thumb"
@@ -4909,13 +4921,20 @@ fn start_marker_job(
         return Ok(());
     };
     let directory = runtime.options.output.join(stage_directory);
-    if matches!(
-        stage_directory,
-        "pregrasp_geometry" | "pregrasp_opened_geometry" | "pregrasp_source_closed_geometry"
-    ) {
-        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(
-            MarkerVisionJob::start_with_held_contact_geometry(config, directory, observation)?,
-        );
+    if stage_directory.starts_with("regrasp_")
+        || matches!(
+            stage_directory,
+            "pregrasp_geometry" | "pregrasp_opened_geometry" | "pregrasp_source_closed_geometry"
+        )
+    {
+        let regrasp_closed = stage_directory.ends_with("_held")
+            || (stage_directory == "pregrasp_source_closed_geometry"
+                && matches!(&runtime.mobile_assist.as_ref().unwrap().configuration,MobileAssistStage::Scan(c) if c.current_closed_regrasp));
+        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(if regrasp_closed {
+            MarkerVisionJob::start_with_closed_regrasp_geometry(config, directory, observation)?
+        } else {
+            MarkerVisionJob::start_with_held_contact_geometry(config, directory, observation)?
+        });
         return Ok(());
     }
     if matches!(

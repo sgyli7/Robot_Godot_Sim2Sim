@@ -34,6 +34,9 @@ pub(super) fn drive(
         .as_ref()
         .ok_or("pregrasp owner absent")?
         .clone();
+    if runtime.mobile_assist.as_ref().unwrap().regrasp.is_some() {
+        return super::mobile_regrasp::drive(runtime, outcome, port);
+    }
     if runtime
         .mobile_assist
         .as_ref()

@@ -48,7 +48,7 @@ def minimum_common_insertion(planes, direction):
     return shift, witnesses
 
 
-def propose(definition, observation, root_from_box, geometry):
+def propose(definition, observation, root_from_box, geometry, *, closed_regrasp=False):
     """Use measured self FK and a current paired-RGB pose, never world truth."""
     from unitree_g1_mobile_vision import (DEFINITION_SHA256, TASK_GEOMETRY_SHA256,
                                          original_self_body_frames, rotation)
@@ -57,8 +57,10 @@ def propose(definition, observation, root_from_box, geometry):
     if (set(stamp) != {"episode_id", "frame_id", "sim_time_ns", "captured_at_unix_ms"}
             or any(type(stamp[k]) is not int or stamp[k] <= 0 for k in stamp)
             or stamp["sim_time_ns"] % 20_000_000
-            or not 200 <= stamp["sim_time_ns"]//20_000_000 <= 300):
-        raise ValueError("grasp depth requires a current pre-lift200..300Tick observation")
+            or (stamp["sim_time_ns"]//20_000_000 not in (300, 550, 800) if closed_regrasp
+                else not 200 <= stamp["sim_time_ns"]//20_000_000 <= 300)):
+        raise ValueError("grasp depth requires current closed300/550/800Tick RGB" if closed_regrasp
+                         else "grasp depth requires a current pre-lift200..300Tick observation")
     pose = np.asarray(root_from_box, dtype=float)
     if (pose.shape != (4, 4) or not np.isfinite(pose).all()
             or not np.array_equal(pose[3], [0., 0., 0., 1.])
@@ -108,6 +110,8 @@ def propose(definition, observation, root_from_box, geometry):
               "geometry_candidate_found": proposed is not None,
               "world_or_contact_truth_input": False, "physical_contact_forces_proven": False,
               "approach_path_proven": False, "owner_execution_admitted": False, "task_qualified": False}
+    if closed_regrasp:
+        result["closed_regrasp_only"] = True
     result["requires_owner_reacquisition_if_grip_already_closed"] = True
     if proposed is not None:
         shift, witnesses = proposed

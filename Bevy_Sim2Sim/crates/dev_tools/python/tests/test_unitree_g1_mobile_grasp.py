@@ -40,6 +40,20 @@ class OriginalThumbInsertionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 minimum_common_insertion(planes, direction)
 
+    def test_closed_recovery_cannot_use_unpaired_or_navigation_ingress(self):
+        with self.assertRaisesRegex(ValueError, "closed regrasp requires current paired"):
+            localize(Path("a"), Path("b"), Path("d"), closed_regrasp=True)
+
+    def test_closed_recovery_cannot_relabel_an_open_or_lifted_frame(self):
+        from unitree_g1_mobile_grasp import propose
+        for tick in [200, 250, 350, 450, 501, 801, 1000]:
+            observation = {"stamp": {"episode_id":7,"frame_id":9,"sim_time_ns":tick*20_000_000,"captured_at_unix_ms":123}}
+            with self.assertRaisesRegex(ValueError, "closed300/550/800Tick"):
+                propose({}, observation, None, {}, closed_regrasp=True)
+        observation = {"stamp": {"episode_id":7,"frame_id":9,"sim_time_ns":550*20_000_000,"captured_at_unix_ms":123}}
+        with self.assertRaisesRegex(ValueError, "pre-lift200..300Tick"):
+            propose({}, observation, None, {})
+
     def test_unpaired_or_memory_grasp_mode_fails_before_loading_files(self):
         for kwargs in [{}, {"secondary_image_path": Path("b"), "secondary_observation_path": Path("c"),
                             "geometry_path": Path("g"), "memory_path": Path("m")}]:

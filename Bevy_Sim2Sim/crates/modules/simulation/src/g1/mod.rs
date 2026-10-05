@@ -18,6 +18,7 @@ pub mod mobile_navigation;
 pub mod mobile_open;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_raise;
+pub mod mobile_regrasp;
 #[cfg(feature = "g1_constraint_diagnostic")]
 pub mod mobile_release;
 #[cfg(feature = "g1_constraint_diagnostic")]

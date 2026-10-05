@@ -161,3 +161,40 @@ pub(super) fn reject_unrequested(reply: &Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests;
+
+const GRASP_HELPER: &[u8] = include_bytes!("../../python/scripts/unitree_g1_mobile_grasp.py");
+pub(super) fn grasp_helper_hash() -> String {
+    format!("{:x}", Sha256::digest(GRASP_HELPER))
+}
+pub(super) fn validate_closed_regrasp(
+    reply: &Value,
+    observation: ObservationStamp,
+    requested: bool,
+) -> Result<(), String> {
+    let p = &reply["closed_regrasp_proposal"];
+    if !requested {
+        return if p.is_null() {
+            Ok(())
+        } else {
+            Err("unrequested closed regrasp proposal".into())
+        };
+    }
+    let stamp: ObservationStamp =
+        serde_json::from_value(p["observation"].clone()).map_err(|e| e.to_string())?;
+    if stamp != observation
+        || ![300, 550, 800].contains(&(stamp.sim_time_ns / 20_000_000))
+        || p["schema"] != "g1_current_rgb_original_hand_grasp_centering_v1"
+        || p["closed_regrasp_only"] != true
+        || p["planner_source_sha256"] != grasp_helper_hash()
+        || p["uses_measured_hands_not_commanded_targets"] != true
+        || p["world_or_contact_truth_input"] != false
+        || p["physical_contact_forces_proven"] != false
+        || p["owner_execution_admitted"] != false
+        || p["task_qualified"] != false
+        || p["robot_definition_sha256"] != reply["robot_definition_sha256"]
+        || p["task_geometry_sha256"] != reply["held_contact_geometry"]["task_geometry_sha256"]
+    {
+        return Err("closed regrasp proposal changed current identity or authority".into());
+    }
+    Ok(())
+}

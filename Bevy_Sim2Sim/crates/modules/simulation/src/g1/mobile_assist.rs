@@ -22,6 +22,7 @@ use super::{
     },
     mobile_open::{MobileGraspOpening, MobileOpenGoal},
     mobile_raise::{MobileGripRaising, MobileRaiseGoal, MobileRaiseStep},
+    mobile_regrasp::{MobileRegrasp, MobileRegraspGoal, MobileRegraspPhase, MobileRegraspStep},
     mobile_release::{MobileGripRelease, MobileReleaseGoal, MobileReleaseStep},
     mobile_restore::{MobileGripRestoring, MobileRestoreGoal, MobileRestoreStep},
     mobile_thumb::{MobileThumbGoal, MobileThumbPreparation, MobileThumbStep},
@@ -58,6 +59,7 @@ pub enum MobileAssistCommand {
     ClassicalGripSettle(MobileHoldGoal),
     ClassicalGraspCenter(MobileCenterGoal),
     ClassicalGraspOpen(MobileOpenGoal),
+    ClassicalRegrasp(MobileRegraspGoal),
     ClassicalHold(MobileHoldGoal),
     ClassicalThumbClearance(MobileThumbGoal),
     ClassicalModelWait(MobileWaitGoal),
@@ -124,6 +126,7 @@ impl MobileAssistCommand {
             Self::ClassicalGripSettle(goal) => goal.validate(),
             Self::ClassicalGraspCenter(goal) => goal.validate(),
             Self::ClassicalGraspOpen(goal) => goal.validate(),
+            Self::ClassicalRegrasp(goal) => goal.validate(),
             Self::ClassicalHold(goal) => goal.validate(),
             Self::ClassicalThumbClearance(goal) => goal.validate(),
             Self::ClassicalModelWait(goal) => goal.validate(),
@@ -135,6 +138,10 @@ impl MobileAssistCommand {
 #[serde(rename_all = "snake_case")]
 pub enum MobileAssistExecution {
     OriginalVla(ArenaTaskExecution),
+    ClassicalRegrasp {
+        goal: MobileRegraspGoal,
+        regrasp: MobileRegraspStep,
+    },
     ClassicalGraspOpen {
         goal: MobileOpenGoal,
         opening: MobileReleaseStep,
@@ -230,6 +237,7 @@ pub struct MobileAssistRunner {
     grip_settle: Option<GripSettleState>,
     centering: Option<MobileGripCentering>,
     grasp_opening: Option<MobileGraspOpening>,
+    regrasp: Option<MobileRegrasp>,
     hold: Option<MobileGripHolding>,
     thumb: Option<MobileThumbPreparation>,
     original_transport_command: Option<G1Command>,
@@ -311,6 +319,7 @@ impl MobileAssistRunner {
             grip_settle: None,
             centering: None,
             grasp_opening: None,
+            regrasp: None,
             hold: None,
             thumb: None,
             original_transport_command: None,
@@ -347,6 +356,9 @@ impl MobileAssistRunner {
         self.completed_native_skill()
     }
     fn completed_native_skill(&self) -> bool {
+        if let Some(regrasp) = &self.regrasp {
+            return regrasp.completed();
+        }
         if let Some(waiting) = &self.waiting {
             waiting.completed()
         } else if let Some(release) = &self.release {
@@ -427,6 +439,11 @@ impl MobileAssistRunner {
         observation: &task_minigame::types::ObservationStamp,
         state: &G1Measurement,
     ) -> Result<(G1Command, MobileGripReceipt), RobotError> {
+        if self.regrasp.is_some() {
+            return Err(invalid(
+                "regrasp needs explicit fresh measured completion before lift/carry",
+            ));
+        }
         if self
             .grip_settle
             .as_ref()
@@ -580,6 +597,7 @@ impl MobileAssistRunner {
                 MobileAssistExecution::OriginalVla(_) => {
                     self.last_vla_command.as_ref().unwrap().clone()
                 }
+                MobileAssistExecution::ClassicalRegrasp { regrasp, .. } => regrasp.command.clone(),
                 MobileAssistExecution::ClassicalGraspCenter { centering, .. } => {
                     centering.command.clone()
                 }
@@ -856,6 +874,7 @@ impl MobileAssistRunner {
                     || self.hold.as_ref().is_some_and(|h| !h.completed())
                     || self.centering.as_ref().is_some_and(|c| !c.completed())
                     || self.grasp_opening.is_some()
+                    || self.regrasp.is_some()
                     || self
                         .grip_settle
                         .as_ref()
@@ -881,6 +900,7 @@ impl MobileAssistRunner {
                 self.grip_settle = None;
                 self.centering = None;
                 self.grasp_opening = None;
+                self.regrasp = None;
                 self.waiting = None;
                 self.original_transport_command = None;
                 Ok(MobileAssistStep {
@@ -1099,6 +1119,83 @@ impl MobileAssistRunner {
                     execution: MobileAssistExecution::ClassicalRestore {
                         goal: goal.clone(),
                         restoring,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalRegrasp(goal) => {
+                if !self.station_fixture
+                    || self.carry.is_some()
+                    || self.scan.is_some()
+                    || self.pickup_raise.is_some()
+                    || self.grasp_opening.is_some()
+                    || self.centering.is_some()
+                    || self.waiting.is_some()
+                    || self.hold.is_some()
+                    || self.release.is_some()
+                {
+                    return Err(invalid(
+                        "regrasp belongs only after the original stationary station grip",
+                    ));
+                }
+                let state = self.owner.measurement()?;
+                if self.regrasp.as_ref().is_none_or(|r| r.goal() != goal) {
+                    self.classical_admission(goal.observation, &state)?;
+                    if !self.last_vla_execution.as_ref().is_some_and(|p| {
+                        p.profile == TaskProfile::MobileBox
+                            && p.sequence_id == 4
+                            && p.frame_index == 49
+                            && p.admitted_chunks == 4
+                            && p.execution_start_sim_ns == 3_000_000_000
+                    }) {
+                        return Err(invalid(
+                            "regrasp requires exactly four completed original chunks",
+                        ));
+                    }
+                    let command = if let Some(previous) = &self.regrasp {
+                        if !previous.completed() || !goal.follows(previous.goal()) {
+                            return Err(invalid(
+                                "regrasp requires its own completed predecessor and fresh next image",
+                            ));
+                        }
+                        previous.command().clone()
+                    } else {
+                        let settle = self
+                            .grip_settle
+                            .as_ref()
+                            .ok_or_else(|| invalid("regrasp lost source close predecessor"))?;
+                        if goal.attempt != 1
+                            || goal.phase != MobileRegraspPhase::Open
+                            || state.source_tick != 300
+                            || !settle.holding.completed()
+                            || settle.holding.goal().observation.sim_time_ns != 4_000_000_000
+                        {
+                            return Err(invalid(
+                                "first regrasp requires completed original200..300 source hold",
+                            ));
+                        }
+                        settle.holding.command().clone()
+                    };
+                    self.regrasp = Some(MobileRegrasp::new(
+                        goal.clone(),
+                        &state,
+                        command,
+                        &self.calibration,
+                    )?);
+                }
+                let regrasp = self
+                    .regrasp
+                    .as_mut()
+                    .unwrap()
+                    .update(&state, &self.calibration)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&regrasp.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalRegrasp {
+                        goal: goal.clone(),
+                        regrasp,
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })
@@ -2725,7 +2822,8 @@ mod tests {
                     MobileAssistExecution::ClassicalModelWait { .. } => {
                         ("traditional_model_wait", None)
                     }
-                    MobileAssistExecution::ClassicalGraspCenter { .. }
+                    MobileAssistExecution::ClassicalRegrasp { .. }
+                    | MobileAssistExecution::ClassicalGraspCenter { .. }
                     | MobileAssistExecution::ClassicalGraspOpen { .. }
                     | MobileAssistExecution::ClassicalScan { .. }
                     | MobileAssistExecution::ClassicalReobserve { .. }
@@ -2863,7 +2961,8 @@ mod worker_diagnostic {
                         MobileAssistExecution::ClassicalModelWait { .. } => {
                             ("traditional_model_wait", None)
                         }
-                        MobileAssistExecution::ClassicalGraspCenter { .. }
+                        MobileAssistExecution::ClassicalRegrasp { .. }
+                        | MobileAssistExecution::ClassicalGraspCenter { .. }
                         | MobileAssistExecution::ClassicalGraspOpen { .. }
                         | MobileAssistExecution::ClassicalScan { .. }
                         | MobileAssistExecution::ClassicalReobserve { .. }

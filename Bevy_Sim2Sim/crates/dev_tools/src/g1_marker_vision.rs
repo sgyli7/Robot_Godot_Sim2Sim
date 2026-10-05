@@ -367,6 +367,7 @@ mod worker {
                 false,
                 false,
                 false,
+                false,
             )
         }
 
@@ -390,6 +391,7 @@ mod worker {
                 false,
                 false,
                 true,
+                false,
                 false,
             )
         }
@@ -425,6 +427,7 @@ mod worker {
                 false,
                 true,
                 true,
+                false,
             )
         }
 
@@ -445,6 +448,7 @@ mod worker {
                 observation,
                 None,
                 true,
+                false,
                 false,
                 false,
                 false,
@@ -470,9 +474,47 @@ mod worker {
                 true,
                 false,
                 false,
+                false,
             )
         }
 
+        pub(crate) fn start_with_closed_regrasp_geometry(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+        ) -> Result<Self, String> {
+            if !config.same_tick_box_pair
+                || config.same_tick_box_only
+                || config.task_geometry.is_none()
+                || config.persistent_worker.is_some()
+            {
+                return Err("closed regrasp requires current finite paired geometry".into());
+            }
+            let parent = config
+                .script_path
+                .parent()
+                .ok_or("grasp script lacks parent")?;
+            if digest(&parent.join("unitree_g1_mobile_grasp.py"), 128 * 1024)?
+                != super::mobile_geometry::grasp_helper_hash()
+                || digest(
+                    &parent.join("unitree_g1_mobile_hand_geometry.py"),
+                    128 * 1024,
+                )? != super::mobile_geometry::helper_hash()
+            {
+                return Err("closed regrasp helpers differ from compiled source".into());
+            }
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                false,
+                false,
+                true,
+                true,
+                true,
+            )
+        }
         fn start_internal(
             config: MarkerVisionConfiguration,
             directory: PathBuf,
@@ -482,6 +524,7 @@ mod worker {
             placement_view_only: bool,
             held_box_feedback: bool,
             held_contact_geometry: bool,
+            closed_regrasp: bool,
         ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
@@ -574,6 +617,7 @@ mod worker {
                         if held_contact_geometry {
                             command.arg("--held-contact-geometry");
                         }
+                        if closed_regrasp { command.arg("--closed-regrasp"); }
                         if let Some(calibration) = &config.fiducial_calibration {
                             command.arg("--fiducials").arg(&calibration.path);
                         }
@@ -640,6 +684,7 @@ mod worker {
                             placement_view_only,
                             )?;
                         }
+                        super::mobile_geometry::validate_closed_regrasp(&reply,observation,closed_regrasp)?;
                         super::mobile_pair::validate_reply(&reply, &input_document, pair.as_ref())?;
                         super::mobile_held::validate_requested_feedback(&reply, observation, held_box_feedback)?;
                         if config

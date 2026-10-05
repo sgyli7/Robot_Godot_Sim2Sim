@@ -109,6 +109,11 @@ pub(super) fn drive(
         .mobile_assist_handoff
         .as_mut()
         .unwrap()["post_source_closing"] = receipt;
+    if matches!(&runtime.mobile_assist.as_ref().unwrap().configuration,MobileAssistStage::Scan(c) if c.current_closed_regrasp)
+    {
+        super::mobile_regrasp::begin(runtime, &reply)?;
+        return Ok(false);
+    }
     let assist = runtime.mobile_assist.as_mut().unwrap();
     assist.vision_job = None;
     assist.completed = true;
