@@ -12,6 +12,9 @@ pub(super) struct Configuration {
     /// Exercise the same button message path with a finite native run.
     #[serde(default)]
     pub smoke_stop_reset: bool,
+    /// Separate fault test: reset while the actual initial Qwen HTTP is live.
+    #[serde(default)]
+    pub smoke_initial_inflight_reset: bool,
 }
 impl Configuration {
     pub(super) fn validate(&self, mode: CaptureMode, task_lab: bool) -> Result<(), String> {
@@ -21,6 +24,8 @@ impl Configuration {
                 CaptureMode::StaticObservedPlace | CaptureMode::StationMobileRelease
             )
             || task_lab
+            || (self.smoke_initial_inflight_reset
+                && (!self.smoke_stop_reset || mode != CaptureMode::StationMobileRelease))
         {
             return Err("station controls require a separate static observed-place or station mobile-release experiment and 2..=10 fresh episodes".into());
         }
@@ -93,6 +98,7 @@ impl State {
             "phase":self.phase,"instruction":self.instruction,"failure":self.failure,
             "maximum_episodes":self.configuration.maximum_episodes,"episodes":self.episodes,
             "smoke_required":self.configuration.smoke_stop_reset,"smoke_passed":self.smoke_passed,
+            "smoke_initial_inflight_reset":self.configuration.smoke_initial_inflight_reset,
             "stop_stable_render_frames":self.stop_stable_frames,
             "window_closed":window_closed,"session_owner_trace":self.root.join("owner_steps.jsonl"),
             "current_artifact_directory":runtime.output,"owner_counts":runtime.lab_counts(),"events":self.events,
@@ -187,6 +193,19 @@ fn ready(runtime: &CaptureRuntime) -> bool {
     }) && runtime.render_frames > 30
 }
 
+fn qwen_transport_state(runtime: &CaptureRuntime) -> Option<serde_json::Value> {
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    return runtime
+        .qwen_dispatch
+        .as_ref()
+        .and_then(|dispatch| dispatch.lock().ok().map(|value| value.transport_status()));
+    #[cfg(not(feature = "g1_constraint_diagnostic"))]
+    {
+        let _ = runtime;
+        None
+    }
+}
+
 fn smoke_actions(
     mut runtime: ResMut<CaptureRuntime>,
     mut actions: MessageWriter<TaskUiAction>,
@@ -215,7 +234,13 @@ fn smoke_actions(
             });
             state.smoke = Smoke::FirstStop;
         }
-        Smoke::FirstStop if tick >= 60 => {
+        Smoke::FirstStop
+            if if state.configuration.smoke_initial_inflight_reset {
+                qwen_transport_state(&runtime).is_some_and(|s| s["initial_http_in_flight"] == true)
+            } else {
+                tick >= 60
+            } =>
+        {
             actions.write(TaskUiAction::Stop);
             state.smoke = Smoke::Paused {
                 frame: runtime.render_frames,
@@ -225,16 +250,38 @@ fn smoke_actions(
         Smoke::Paused {
             frame,
             integrations,
-        } if runtime.render_frames >= frame + 30 => {
+        } if runtime.render_frames
+            >= frame
+                + if state.configuration.smoke_initial_inflight_reset {
+                    2
+                } else {
+                    30
+                } =>
+        {
             // A single already-running boundary may complete after button delivery.
             // Beyond that, stopped physics must stay fixed for thirty actual renders.
-            if state.stop_stable_frames < 20 || total > integrations + 1 {
+            let required_stable_frames = if state.configuration.smoke_initial_inflight_reset {
+                1
+            } else {
+                20
+            };
+            if state.stop_stable_frames < required_stable_frames || total > integrations + 1 {
                 state.fail(
                     "physical Stop continued integrating during paused render interval".into(),
                 );
                 exit.write(AppExit::error());
                 state.smoke = Smoke::Done;
             } else {
+                if state.configuration.smoke_initial_inflight_reset
+                    && !qwen_transport_state(&runtime)
+                        .is_some_and(|s| s["initial_http_in_flight"] == true)
+                {
+                    state.fail("fault test missed the actual in-flight Qwen reset boundary".into());
+                    state.smoke = Smoke::Done;
+                    exit.write(AppExit::error());
+                    runtime.controls = Some(state);
+                    return;
+                }
                 actions.write(TaskUiAction::Reset);
                 state.smoke = Smoke::FreshStart;
             }
@@ -318,7 +365,7 @@ fn apply_actions(
                     state.phase = Phase::Stopped;
                     state.stop_integrations = None;
                     state.stop_stable_frames = 0;
-                    state.event(serde_json::json!({"action":"stop","episode":runtime.episode_id,"counts":runtime.lab_counts(),"resume_requires_reset":true}))?;
+                    state.event(serde_json::json!({"action":"stop","episode":runtime.episode_id,"counts":runtime.lab_counts(),"resume_requires_reset":true,"decision_transport":qwen_transport_state(&runtime)}))?;
                 }
                 TaskUiAction::Reset => {
                     if state.episodes >= state.configuration.maximum_episodes {
@@ -343,6 +390,7 @@ fn apply_actions(
                         .static_marker_worker
                         .as_ref()
                         .map(StaticMarkerWorker::reset_configuration);
+                    let old_decision_transport = qwen_transport_state(&runtime);
                     let actual = runtime.lab_reset()?;
                     if actual != next {
                         return Err("reset generation mismatch".into());
@@ -365,7 +413,7 @@ fn apply_actions(
                     state.phase = Phase::Waiting;
                     state.failure = None;
                     state.stop_integrations = None;
-                    state.event(serde_json::json!({"action":"reset","new_episode":actual,"old_requests_actions_and_history_cleared":true,"fresh_artifact_directory":runtime.output}))?;
+                    state.event(serde_json::json!({"action":"reset","new_episode":actual,"old_requests_actions_and_history_cleared":true,"fresh_artifact_directory":runtime.output,"old_decision_transport":old_decision_transport}))?;
                 }
                 TaskUiAction::Overview | TaskUiAction::GraspDetail => {
                     for (target, mut transform) in &mut cameras {
@@ -393,7 +441,11 @@ fn apply_actions(
         }
         let mut next_status = status.clone();
         next_status.task = if state.instruction.is_empty() {
-            "把苹果放到盘子里".into()
+            match state.profile {
+                TaskProfile::StaticApple => "把苹果放到盘子里",
+                TaskProfile::MobileBox => "请把眼前的棕色箱子搬到蓝色容器里，放稳后松手。",
+            }
+            .into()
         } else {
             state.instruction.clone()
         };
@@ -423,6 +475,15 @@ fn apply_actions(
                 .as_ref()
                 .map_or(0, |s| s.timing.episode_integrations)
         );
+        #[cfg(feature = "g1_constraint_diagnostic")]
+        if let Some(dispatch) = runtime
+            .qwen_dispatch
+            .as_ref()
+            .and_then(|dispatch| dispatch.lock().ok())
+        {
+            next_status.last_decision.push_str("；");
+            next_status.last_decision.push_str(dispatch.status_text());
+        }
         next_status.failure = state.failure.clone();
         status.set_if_neq(next_status);
         if !state.running() {
@@ -476,6 +537,7 @@ mod tests {
         let config = Configuration {
             maximum_episodes: 2,
             smoke_stop_reset: false,
+            smoke_initial_inflight_reset: false,
         };
         assert!(
             config

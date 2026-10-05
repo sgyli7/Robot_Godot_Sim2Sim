@@ -296,6 +296,31 @@ fn current_rgb_targets(
 
 #[cfg(feature = "g1_constraint_diagnostic")]
 impl Dispatch {
+    pub(super) fn transport_status(&self) -> serde_json::Value {
+        let (attempts, results, discarded) = self.worker.transport_counts();
+        serde_json::json!({"http_attempts":attempts,"http_results":results,
+            "discarded_old_episode_results":discarded,"worker_busy":self.worker.is_busy(),
+            "initial_http_in_flight":self.initial_pending.is_some() && attempts > results})
+    }
+
+    pub(super) fn status_text(&self) -> &'static str {
+        if self.completed {
+            "Qwen 已返回新图像的结束反馈"
+        } else if self.feedback_pending {
+            "等待 Qwen 检查松手后的新图像"
+        } else if self.executed_decision.is_some() {
+            "Qwen 已准入棕箱到蓝容器的搬运"
+        } else if self.pending.is_some() {
+            "等待 Qwen 检查当前箱子与目标图像"
+        } else if self.initial_admitted {
+            "Qwen 已准入固定任务的原配抓取"
+        } else if self.initial_pending.is_some() {
+            "等待 Qwen 检查启动图像"
+        } else {
+            "尚未提交启动图像"
+        }
+    }
+
     pub(super) fn reset_episode(&mut self, episode_id: u64) -> Result<(), String> {
         self.worker
             .reset_episode(episode_id)
@@ -421,6 +446,12 @@ impl Dispatch {
             self.session = None;
             runtime.requested = false;
             return Ok(true);
+        }
+        // Reset discards an old generation's HTTP result without starting a
+        // second request alongside it. Keep the new zero-Tick world paused
+        // until that bounded call finishes; acquire a fresh image afterwards.
+        if self.worker.is_busy() {
+            return Ok(false);
         }
         if !runtime.requested {
             port.request_physics_frame(runtime.episode_id, 0)?;

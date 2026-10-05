@@ -60,6 +60,13 @@ class StationSessionTests(unittest.TestCase):
                 session.check_unused_port(port)
         session.check_unused_port(port)
 
+    def test_inflight_reset_requires_the_separate_mobile_smoke_route(self):
+        for profile, smoke in [("static", True), ("mobile", False)]:
+            with self.assertRaises(ValueError):
+                session.prepare_configuration(configuration(profile), profile, 5558, 2, smoke, True)
+        value = session.prepare_configuration(configuration("mobile"), "mobile", 5558, 2, True, True)
+        self.assertTrue(value["station_task_controls"]["smoke_initial_inflight_reset"])
+
     def test_docker_failure_still_reaps_model_and_never_claims_cleanup(self):
         model, app, recorder, starter = [object() for _ in range(4)]
         receipt = {}

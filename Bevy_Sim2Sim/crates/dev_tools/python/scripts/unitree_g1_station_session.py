@@ -34,7 +34,7 @@ def save(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
-def prepare_configuration(value, profile, port, maximum_episodes, smoke):
+def prepare_configuration(value, profile, port, maximum_episodes, smoke, inflight_reset=False):
     """Build a new configuration before Rust loads it; never edit a live asset."""
     value = json.loads(json.dumps(value))
     body = "static_agile" if profile == "static" else "mobile_homie_v2"
@@ -43,6 +43,8 @@ def prepare_configuration(value, profile, port, maximum_episodes, smoke):
     if (not 2 <= maximum_episodes <= 10 or value.get("task_lab") is not None
             or value.get("local_model_startup") is not None):
         raise ValueError("Use 2..=10 episodes and an externally prepared fixed task configuration")
+    if inflight_reset and (profile != "mobile" or not smoke):
+        raise ValueError("In-flight Qwen reset is a separate mobile smoke test")
     policy = value.get("policy", {})
     if policy.get("max_calls") != (1 if profile == "static" else 4):
         raise ValueError("Task action horizons/call budgets must retain their original profile")
@@ -56,7 +58,8 @@ def prepare_configuration(value, profile, port, maximum_episodes, smoke):
         raise ValueError("Static UI requires the disclosed observed-grasp/fixed-pair place route")
     value["policy"]["endpoint"] = f"http://127.0.0.1:{port}/infer"
     value["station_task_controls"] = {"maximum_episodes": maximum_episodes,
-                                      "smoke_stop_reset": smoke}
+                                      "smoke_stop_reset": smoke,
+                                      "smoke_initial_inflight_reset": inflight_reset}
     return value
 
 
@@ -127,7 +130,13 @@ def cleanup_session(receipt, model, app, recorder, qwen_start, started_qwen, ser
 
 def run(args):
     config = prepare_configuration(json.loads(args.config.read_text()), args.profile,
-                                   args.policy_port, args.maximum_episodes, args.smoke_stop_reset)
+                                   args.policy_port, args.maximum_episodes, args.smoke_stop_reset,
+                                   args.smoke_reset_during_qwen)
+    episode = args.episode_id if args.episode_id is not None else time.time_ns() // 1_000_000
+    if not 0 < episode < (1 << 64) - args.maximum_episodes:
+        raise ValueError("A positive episode identity with room for all resets is required")
+    body = "static_agile" if args.profile == "static" else "mobile_homie_v2"
+    config["runner"]["body"][body]["episode_id"] = episode
     if not args.binary.is_file() or not 1 <= args.session_timeout <= 7200:
         raise ValueError("An existing compiled app and a 1..=7200 second session budget are required")
     args.output.mkdir(parents=True, exist_ok=False)
@@ -136,8 +145,10 @@ def run(args):
                "source_config_sha256": digest(args.config), "configuration_sha256": digest(args.output / "config.json"),
                "binary_sha256": digest(args.binary), "maximum_episodes": args.maximum_episodes,
                "session_timeout_seconds": args.session_timeout, "task_qualified": False,
+               "initial_episode_id": episode,
                "prepared_only": args.prepare_only, "all_owned_handles_reaped": False,
                "N16_episode_rng_reset_enabled": False if args.profile == "mobile" else None}
+    receipt["smoke_reset_during_actual_qwen"] = args.smoke_reset_during_qwen
     save(args.output / "session_receipt.json", receipt)
     if args.prepare_only:
         receipt["all_owned_handles_reaped"] = True
@@ -235,11 +246,15 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--maximum-episodes", type=int, default=4)
     parser.add_argument("--smoke-stop-reset", action="store_true")
+    parser.add_argument("--smoke-reset-during-qwen", action="store_true",
+                        help="Reset at zero Tick while the real initial Qwen request is in flight")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--ffmpeg", type=Path, default=Path("/home/ethan/.local/bin/ffmpeg"))
     parser.add_argument("--session-timeout", type=int, default=1800)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--episode-id", type=int,
+                        help="Fresh initial identity; defaults to current Unix milliseconds")
     parser.add_argument("--policy-port", type=int)
     parser.add_argument("--policy-python", type=Path)
     parser.add_argument("--model-receipt", type=Path)
@@ -248,6 +263,7 @@ def main():
     parser.add_argument("--runtime-env", type=Path, default=DEFAULT_CACHE / "envs/policy_gr00t_n16_cu13")
     parser.add_argument("--qwen-service", type=Path, default=QWEN_SERVICE)
     args = parser.parse_args()
+    args.smoke_stop_reset |= args.smoke_reset_during_qwen
     args.policy_port = args.policy_port or (5557 if args.profile == "static" else 5558)
     args.policy_python = args.policy_python or DEFAULT_CACHE / "envs" / (
         "policy_onnx_cu13" if args.profile == "static" else "policy_gr00t_n16_cu13") / "bin/python"

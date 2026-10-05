@@ -1,6 +1,6 @@
 # G1 外部制品与许可清单
 
-核验日期：2026-10-01。范围为当前选择的 T1 StaticApple、T2 MobileBox、本地 Qwen、G1 本体与下层控制器。本文是可维护的依赖清单，不是任务能力验收或完整发行包 SBOM。没有下载重复权重、启动服务或执行新的物理试跑。
+许可文本核验日期：2026-10-01；2026-10-05 根据实际执行收据补正 T2 源端版本。范围为当前选择的 T1 StaticApple、T2 MobileBox、本地 Qwen、G1 本体与下层控制器。本文是依赖清单，不是任务能力验收或完整发行包 SBOM。
 
 本次直接读取固定 Git checkout、官方 Hugging Face revision API、模型卡及原始许可；现存下载 receipt 仅用于追溯下载来源。源码许可、模型许可、资产许可分项记录，不能互相替代。仓库中的用途声明（例如个人非商业研究）不是上游授予许可的依据。
 
@@ -11,12 +11,14 @@
 | 任务模型 | [GN1x-Tuned-Arena-G1-Static-PickNPlace][t1_card] | [GN1x-Tuned-Arena-G1-Loco-Manipulation][t2_card] |
 | 模型 revision | `7f78bebf1a90131e7304beacfcd47eb27bad16ab` | `dfe74af855007f26093f362cd2d7a2f404b64b93`，来自 `gn1_6` 分支 |
 | 实际模型接口 | 已发布的 N1.7 五阶段 ONNX；35 维解码动作，40 步 | 配置为 `Gr00tN1d6`；35 维解码动作，50 步 |
-| 源任务环境 | [Arena release/0.2.1][arena_t1]，`8b4a3a47fc53de23e8205089d71109a2e2348acd` | [Arena][arena_t2]，`7d75c95934c51a0318c957a8831e862ca43c53b5` |
-| Isaac Lab | `e57379c634b42db5a0fe9f754341be6e2a7c7c43` | `ae37b028ea415c91ea2bc32609efcd759ed2b974` |
+| 实际成功触发的源任务环境 | [Arena release/0.2.1][arena_t1]，`8b4a3a47fc53de23e8205089d71109a2e2348acd` | 同一 release/0.2.1；早期 [development 0.3][arena_t2] 另行保留 |
+| 实际成功触发的 Isaac Lab | `e57379c634b42db5a0fe9f754341be6e2a7c7c43` | 同一 `e57379c634b42db5a0fe9f754341be6e2a7c7c43` |
 | 原配下层控制器 | AGILE recurrent velocity-height policy，12 个腿部输出 | Homie v2 stand/walk，15 个下层输出 |
 | 工程边界 | 单独保存 AGILE 的关节映射、增益、armature、观测和状态 | 单独保存 Homie 的映射、增益、历史观测和状态 |
 
 两条链不因任务动作均为 35 维就可以交换本体控制配置。源配置入口为 [T1 静态评估文档][t1_eval]、[T1 G1 embodiment][g1_t1]、[T2 移动评估文档][t2_eval] 和 [T2 G1 embodiment][g1_t2]。T2 旧 `main` revision `629479fedb1cf97c2f11ddc49eed951c5b750139` 仅为历史缓存，不是这里的执行制品。T2 模型卡含 N1.5 等旧描述，执行型号以固定 `config.json`、processor 与权重接口为依据，不以模型卡段落推断。
+
+T2 实际源端 episode 20112 使用 `release_0_2_1`、SDK `6.0.0-rc.22+release.33481.407f3ea1.gl`、源端 Torch `2.10.0+cu128`；隔离的 N1.6 服务仍为 Torch `2.10.0+cu130`。收据核实 19 次真实推理、942 次控制、3,768 次源端积分及原任务 proximity success。它没有证明松手后支撑两秒：末个可观测箱速约 1.548 m/s，终帧会自动重置。源端 200 Hz／50 Hz 与 Bevy 正式 50 Hz 单次积分分开记录。早期 development 0.3／Lab `ae37b028`／SDK 6.1 的失败仍保留，不当作最终源端版本；具体版本差异的单一因果未隔离。
 
 ## 任务模型
 
@@ -72,7 +74,7 @@ Isaac Lab 固定源码中有 [Unitree BSD-3-Clause 文本][unitree_license]，�
 - 原始许可：[HF 固定 `LICENSE`][qwen_license] 是 Apache-2.0。本地平铺目录 `LICENSE` 与该官方文件在换行和首尾空白归一化后全文相同；原始字节哈希不同，见下表。模型目录自己的 Apache 许可不来自部署脚本许可。
 - 本地部署目录：`/home/ethan/LocalServices/Local_Qwen/qwen38-27b-fp8-dgx-spark/`；Git HEAD `969e52635a6a09b3e0ba8a1088158c001feeab41`，存在本机部署修改，不能把 HEAD 当全部运行配置的不可变快照。本地 `LICENSE` 为 MIT，只覆盖该部署仓库的相应内容。
 - 已检查的容器：`vllm/vllm-openai:v0.27.1-aarch64`；镜像 digest `sha256:1c8e60a0841b333c700488cb029d3664807249da0c071e862191b00fe34b228c`，image ID `sha256:2c211a1273b48e8929f893b267aeb1509e6b84654cdbde1bad56d79e3964224d`，build revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`。该 revision 的 [vLLM `LICENSE`][vllm_license] 为 Apache-2.0；这不代表镜像内所有 CUDA、库和驱动组件均为 Apache。
-- 用途边界：localhost OpenAI-compatible 图片/结构化技能决策，配置服务名 `qwen3.8-27b-fp8`、端口 `8002`。本清单不陈述服务当前在线，也不把已有照片测试当 Bevy 同步图像、自状态和闭环资格。服务生命周期由部署负责人管理。
+- 用途边界：localhost OpenAI-compatible 图片/结构化技能决策，配置服务名 `qwen3.8-27b-fp8`、端口 `8002`。本清单不陈述服务当前在线，也不把已有照片测试当 Bevy 同步图像、自状态和闭环资格。科学站运行使用既有 `g1-service.sh` 与 `local-qwen-g1-validation` owner 标签，生命周期由单个会话负责人管理，见 [运行入口](g1_station_session.md)。
 
 ## 源码依赖与精确许可入口
 
