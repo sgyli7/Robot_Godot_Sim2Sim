@@ -216,7 +216,12 @@ fn smoke_actions(
         {
             state.smoke_passed = true;
             state.smoke = Smoke::Done;
-            exit.write(AppExit::Success);
+            if let Err(reason) = state.save(&runtime, false) {
+                state.fail(reason);
+                exit.write(AppExit::error());
+            } else {
+                exit.write(AppExit::Success);
+            }
         }
         _ => {}
     }
@@ -382,11 +387,27 @@ fn apply_actions(
     runtime.controls = Some(state);
 }
 
-pub(super) fn finish(app: &mut App, _root: &Path) -> Result<(), String> {
-    let runtime = app.world().resource::<CaptureRuntime>();
-    let state = runtime.controls.as_ref().ok_or("control state absent")?;
-    state.save(runtime, true)?;
-    if state.configuration.smoke_stop_reset && !state.smoke_passed {
+pub(super) fn finish(_app: &mut App, root: &Path) -> Result<(), String> {
+    // App::run consumes its runner and world. Use the persisted bounded receipt,
+    // exactly as the native screenshot/owner evidence survives window shutdown.
+    let path = root.join("station_controls_receipt.json");
+    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 128 * 1024 {
+        return Err("station controls receipt is not an owned bounded file".into());
+    }
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    if value["schema"] != "g1_native_fixed_static_task_controls_v1" {
+        return Err("foreign controls receipt".into());
+    }
+    value["window_closed"] = true.into();
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    if value["smoke_required"] == true && value["smoke_passed"] != true {
         return Err("native UI stop/reset smoke did not finish".into());
     }
     Ok(())
