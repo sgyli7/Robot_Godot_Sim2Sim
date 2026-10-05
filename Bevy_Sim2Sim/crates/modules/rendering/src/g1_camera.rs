@@ -75,6 +75,9 @@ pub enum G1CameraMountProfile {
     #[default]
     ArenaEgo,
     AuxiliaryGripOverview,
+    /// Declared pregrasp sensor;150mm above original,+7degree optical pitch.
+    /// Shares the placement orientation and keeps its published80mm baseline.
+    AuxiliaryPregraspOverview,
     /// Declared T2 placement sensor;230mm above original,+7degree optical pitch.
     /// It clears a held box while retaining both printed placement targets.
     AuxiliaryBinPlacement,
@@ -253,6 +256,9 @@ pub fn native_head_camera(
         G1CameraMountProfile::ArenaEgo => (0., Quat::IDENTITY),
         G1CameraMountProfile::AuxiliaryGripOverview => {
             (0.15, Quat::from_rotation_x(std::f32::consts::PI / 12.))
+        }
+        G1CameraMountProfile::AuxiliaryPregraspOverview => {
+            (0.15, Quat::from_rotation_x(7_f32.to_radians()))
         }
         G1CameraMountProfile::AuxiliaryBinPlacement => {
             (0.23, Quat::from_rotation_x(7_f32.to_radians()))
@@ -1106,6 +1112,46 @@ mod tests {
                 .resource::<crate::g1_visual::G1VisualInput>()
                 .0
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn pregrasp_mount_preserves_native_identity_and_placement_baseline() {
+        let state = native(41, 250);
+        let mut pregrasp = native_head_camera(
+            &state.body_frame,
+            G1CameraMountProfile::AuxiliaryPregraspOverview,
+        )
+        .unwrap();
+        pregrasp.native_state = Some(state.clone());
+        pregrasp.validate().unwrap();
+        let secondary = native_head_camera(
+            &state.body_frame,
+            G1CameraMountProfile::AuxiliaryBinPlacement,
+        )
+        .unwrap();
+        assert_eq!(pregrasp.source_ticks, [250, 250]);
+        assert_eq!(pregrasp.episode_id, 41);
+        assert!(
+            ((pregrasp.world_from_camera.translation - secondary.world_from_camera.translation)
+                .length()
+                - 0.08)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            pregrasp
+                .world_from_camera
+                .rotation
+                .angle_between(secondary.world_from_camera.rotation)
+                < 1e-5
+        );
+        let mut mislabeled = pregrasp.clone();
+        mislabeled.mount_profile = G1CameraMountProfile::AuxiliaryGripOverview;
+        assert!(mislabeled.validate().is_err());
+        assert_eq!(
+            serde_json::to_value(pregrasp.mount_profile).unwrap(),
+            "auxiliary_pregrasp_overview"
         );
     }
 

@@ -177,12 +177,13 @@ def fit_current_box_camera_pair(pixels_by_view, intrinsics, cameras_in_root, mar
 def validate_mobile_box_pair_observations(first, second):
     """No tolerance on native f32 sensors, episode or simulation time."""
     allowed = {"schema", "stamp", "camera", "measured_joints", "camera_mount_profile"}
-    profiles = {"auxiliary_grip_overview", "auxiliary_bin_placement"}
+    profiles = [{"auxiliary_grip_overview", "auxiliary_bin_placement"},
+                {"auxiliary_pregrasp_overview", "auxiliary_bin_placement"}]
     keys = {"episode_id", "frame_id", "sim_time_ns", "captured_at_unix_ms"}
     if (set(first) != allowed or set(second) != allowed
             or first["schema"] != "g1_mobile_marker_observation_v1"
             or second["schema"] != first["schema"] or first["camera"] != second["camera"]
-            or {first["camera_mount_profile"], second["camera_mount_profile"]} != profiles
+            or {first["camera_mount_profile"], second["camera_mount_profile"]} not in profiles
             or set(first["stamp"]) != keys or set(second["stamp"]) != keys):
         raise ValueError("box pair requires only its two published camera/self schemas")
     a, b = first["stamp"], second["stamp"]
@@ -289,6 +290,9 @@ def root_from_camera(definition, positions, camera_profile="arena_ego"):
     if camera_profile == "auxiliary_grip_overview":
         mount[:3, 3] += np.array([0., 0., .15])
         mount[:3, :3] = mount[:3, :3] @ cv2.Rodrigues(np.array([np.pi/12, 0., 0.]))[0]
+    elif camera_profile == "auxiliary_pregrasp_overview":
+        mount[:3, 3] += np.array([0., 0., .15])
+        mount[:3, :3] = mount[:3, :3] @ cv2.Rodrigues(np.array([math.radians(7), 0., 0.]))[0]
     elif camera_profile == "auxiliary_bin_placement":
         mount[:3, 3] += np.array([0., 0., .23])
         mount[:3, :3] = mount[:3, :3] @ cv2.Rodrigues(np.array([math.radians(7), 0., 0.]))[0]
@@ -357,7 +361,7 @@ def fixed_marker_layout(path, camera_profile, public_assets=None):
             raise ValueError("bin board calibration cannot enter a different marker profile")
         digest = public_sha(path, public_assets)
     if layout in ("auxiliary_grip_targets", BIN_BOARD_PROFILE):
-        if camera_profile not in ("auxiliary_grip_overview", "auxiliary_bin_placement"):
+        if camera_profile not in ("auxiliary_grip_overview", "auxiliary_bin_placement", "auxiliary_pregrasp_overview"):
             raise ValueError("auxiliary labels require their explicitly declared sensor")
         sizes[22] = .06
         mounts[21] = transform({"position": [0., .18, .60], "rotation_wxyz": [2**-.5, 2**-.5, 0., 0.]})
@@ -715,6 +719,8 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         raise ValueError("original robot definition identity mismatch")
     definition = public_json(definition_path, public_assets)
     camera_profile = observation.get("camera_mount_profile", "arena_ego")
+    if camera_profile == "auxiliary_pregrasp_overview" and not (held_contact_geometry or grasp_centering):
+        raise ValueError("pregrasp camera requires its explicit geometry diagnostic")
     marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile, public_assets)
     if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE)):
         raise ValueError("placement view requires its bound auxiliary labels/public geometry and no other mode")
@@ -863,7 +869,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
             "rejected_marker_candidates":len(rejected), "navigation_proposal":proposal,
             "target_bin_detected":any(d["marker_id"] == 21 for d in detections), "carried_box_detected":22 in by_id,
             "task_qualified":False}
-    if box_view_only or camera_profile in ("auxiliary_grip_overview", "auxiliary_bin_placement"):
+    if box_view_only or camera_profile in ("auxiliary_grip_overview", "auxiliary_bin_placement", "auxiliary_pregrasp_overview"):
         if box_view_only:
             result["box_view_only"] = True
         if 22 in by_id:

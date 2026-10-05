@@ -318,6 +318,11 @@ impl MobileAssistCaptureRuntime {
         if self.station_placement_view_active {
             G1CameraMountProfile::AuxiliaryBinPlacement
         } else if self.auxiliary_view {
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            if matches!(&self.configuration, MobileAssistStage::Scan(c) if c.pregrasp_geometry_only)
+            {
+                return G1CameraMountProfile::AuxiliaryPregraspOverview;
+            }
             G1CameraMountProfile::AuxiliaryGripOverview
         } else {
             G1CameraMountProfile::ArenaEgo
@@ -4819,7 +4824,10 @@ fn capture_current_marker_pair(
     }
     let primary_mount = assist.camera_mount();
     let secondary_mount = match primary_mount {
-        G1CameraMountProfile::AuxiliaryGripOverview => G1CameraMountProfile::AuxiliaryBinPlacement,
+        G1CameraMountProfile::AuxiliaryGripOverview
+        | G1CameraMountProfile::AuxiliaryPregraspOverview => {
+            G1CameraMountProfile::AuxiliaryBinPlacement
+        }
         G1CameraMountProfile::AuxiliaryBinPlacement => G1CameraMountProfile::AuxiliaryGripOverview,
         G1CameraMountProfile::ArenaEgo | G1CameraMountProfile::StaticPlacementOverview => {
             return Err("box pair cannot change the learned camera or static task profile".into());
@@ -4985,6 +4993,9 @@ fn marker_observation(stamp: &G1CaptureStamp) -> Result<serde_json::Value, Strin
     match stamp.mount_profile {
         G1CameraMountProfile::AuxiliaryGripOverview => {
             observation["camera_mount_profile"] = "auxiliary_grip_overview".into();
+        }
+        G1CameraMountProfile::AuxiliaryPregraspOverview => {
+            observation["camera_mount_profile"] = "auxiliary_pregrasp_overview".into();
         }
         G1CameraMountProfile::AuxiliaryBinPlacement => {
             observation["camera_mount_profile"] = "auxiliary_bin_placement".into();
@@ -5873,7 +5884,7 @@ fn drive_capture(
                 .is_some_and(|p| p.submitted_chunks == 4)
             && camera_mount.0 == G1CameraMountProfile::ArenaEgo
         {
-            camera_mount.0 = G1CameraMountProfile::AuxiliaryGripOverview;
+            camera_mount.0 = runtime.mobile_assist.as_ref().unwrap().camera_mount();
             return Ok(());
         }
         #[cfg(feature = "g1_constraint_diagnostic")]

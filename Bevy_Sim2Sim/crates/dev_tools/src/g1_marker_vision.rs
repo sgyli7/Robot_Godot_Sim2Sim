@@ -149,7 +149,7 @@ mod worker {
     fn auxiliary_camera_profile(profile: &str) -> bool {
         matches!(
             profile,
-            "auxiliary_grip_overview" | "auxiliary_bin_placement"
+            "auxiliary_grip_overview" | "auxiliary_bin_placement" | "auxiliary_pregrasp_overview"
         )
     }
 
@@ -509,6 +509,9 @@ mod worker {
                         let camera_profile = input_document["camera_mount_profile"]
                             .as_str()
                             .unwrap_or("arena_ego");
+                        if camera_profile == "auxiliary_pregrasp_overview" && !held_contact_geometry {
+                            return Err("pregrasp camera is limited to its explicit geometry diagnostic".into());
+                        }
                         let pair = if config.same_tick_box_pair {
                             if memory.is_some() || box_view_only != config.same_tick_box_only {
                                 return Err("box pair has an unrequested memory or box-only mode".into());

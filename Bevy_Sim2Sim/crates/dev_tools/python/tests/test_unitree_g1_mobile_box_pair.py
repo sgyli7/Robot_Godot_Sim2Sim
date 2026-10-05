@@ -1,6 +1,7 @@
 """Geometry and episode isolation tests; synthetic pixels are not task evidence."""
 import importlib.util
 import copy
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -17,6 +18,20 @@ else:
 
 @unittest.skipIf(vision is None, "optional actual-RGB OpenCV runtime absent")
 class MobileBoxPairTests(unittest.TestCase):
+    def test_pregrasp_sensor_keeps_the_declared_baseline_and_legacy_position(self):
+        path = Path('/home/ethan/models/unitree_g1/homie_v2/g1_physics.json')
+        if not path.is_file():
+            self.skipTest('pinned original G1 definition absent')
+        definition = json.loads(path.read_text())
+        positions = [0.] * 43
+        pregrasp = vision.root_from_camera(definition, positions, 'auxiliary_pregrasp_overview')
+        secondary = vision.root_from_camera(definition, positions, 'auxiliary_bin_placement')
+        legacy = vision.root_from_camera(definition, positions, 'auxiliary_grip_overview')
+        self.assertAlmostEqual(np.linalg.norm(pregrasp[:3, 3]-secondary[:3, 3]), .08)
+        np.testing.assert_allclose(pregrasp[:3, :3], secondary[:3, :3], atol=1e-10, rtol=0)
+        np.testing.assert_array_equal(pregrasp[:3, 3], legacy[:3, 3])
+        self.assertGreater(np.max(np.abs(pregrasp[:3, :3]-legacy[:3, :3])), .05)
+
     def fixture(self):
         k = np.array([[458.1245526, 0., 320.], [0., 458.1245526, 240.], [0., 0., 1.]])
         cameras = [np.eye(4), np.eye(4)]
@@ -70,6 +85,13 @@ class MobileBoxPairTests(unittest.TestCase):
         second["camera_mount_profile"] = "auxiliary_bin_placement"
         second["stamp"].update(frame_id=12, captured_at_unix_ms=10020)
         vision.validate_mobile_box_pair_observations(first, second)
+        pregrasp = copy.deepcopy(first)
+        pregrasp['camera_mount_profile'] = 'auxiliary_pregrasp_overview'
+        vision.validate_mobile_box_pair_observations(pregrasp, second)
+        duplicate = copy.deepcopy(second)
+        duplicate['camera_mount_profile'] = pregrasp['camera_mount_profile']
+        with self.assertRaises(ValueError):
+            vision.validate_mobile_box_pair_observations(pregrasp, duplicate)
         for key, value in [("episode_id", 8), ("frame_id", 11), ("sim_time_ns", 40000000),
                            ("captured_at_unix_ms", 12001)]:
             changed = copy.deepcopy(second)

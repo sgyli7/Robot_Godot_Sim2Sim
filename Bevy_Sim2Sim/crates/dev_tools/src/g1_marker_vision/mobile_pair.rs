@@ -57,6 +57,12 @@ pub(crate) fn validate_mobile_pair_inputs(first: &Value, second: &Value) -> Resu
         ) | (
             Some("auxiliary_bin_placement"),
             Some("auxiliary_grip_overview")
+        ) | (
+            Some("auxiliary_pregrasp_overview"),
+            Some("auxiliary_bin_placement")
+        ) | (
+            Some("auxiliary_bin_placement"),
+            Some("auxiliary_pregrasp_overview")
         )
     ) || first["camera"] != second["camera"]
         || x.episode_id == 0
@@ -292,6 +298,12 @@ mod tests {
         b["stamp"]["frame_id"] = 4.into();
         b["stamp"]["captured_at_unix_ms"] = 10010.into();
         assert!(validate_mobile_pair_inputs(&a, &b).is_ok());
+        let mut pregrasp = a.clone();
+        pregrasp["camera_mount_profile"] = "auxiliary_pregrasp_overview".into();
+        assert!(validate_mobile_pair_inputs(&pregrasp, &b).is_ok());
+        let mut duplicate = b.clone();
+        duplicate["camera_mount_profile"] = "auxiliary_pregrasp_overview".into();
+        assert!(validate_mobile_pair_inputs(&pregrasp, &duplicate).is_err());
         for (key, v) in [
             ("episode_id", 8),
             ("frame_id", 3),
