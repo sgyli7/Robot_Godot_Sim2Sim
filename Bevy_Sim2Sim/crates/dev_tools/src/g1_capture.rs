@@ -38,6 +38,8 @@ mod mobile_held_feedback;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_pickup;
 #[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_pregrasp_close;
+#[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_pregrasp_geometry;
 mod mobile_qwen_dispatch;
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -217,6 +219,9 @@ struct MobileScanCaptureConfiguration {
     /// One original-target50Tick opening and fresh250Tick geometry, then stop.
     #[serde(default)]
     pregrasp_open_once: bool,
+    /// Original100Tick source-gap settle and fresh300Tick geometry, then stop.
+    #[serde(default)]
+    pregrasp_source_close_once: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -274,6 +279,10 @@ struct MobileAssistCaptureRuntime {
     pregrasp_open_goal: Option<simulation_minigame::g1::mobile_open::MobileOpenGoal>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     pregrasp_open_submitted_at: Option<Instant>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pregrasp_close_goal: Option<simulation_minigame::g1::mobile_hold::MobileHoldGoal>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    pregrasp_close_submitted_at: Option<Instant>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -388,6 +397,10 @@ impl MobileAssistCaptureRuntime {
             pregrasp_open_goal: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             pregrasp_open_submitted_at: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            pregrasp_close_goal: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            pregrasp_close_submitted_at: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2224,7 +2237,8 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        (c.pregrasp_open_once && !c.pregrasp_geometry_only)
+        ((c.pregrasp_open_once || c.pregrasp_source_close_once) && !c.pregrasp_geometry_only)
+            || (c.pregrasp_open_once && c.pregrasp_source_close_once)
             || c.pregrasp_geometry_only
                 && (!cfg!(feature = "g1_constraint_diagnostic")
                     || mode != CaptureMode::StationMobileRelease
@@ -4855,7 +4869,10 @@ fn allowed_mobile_box_pair_stage(stage: &str) -> bool {
         || stage == "visual_release_alignment"
         || stage == "visual_release_alignment_after_thumb"
         || matches!(stage, "station_pickup_before" | "station_pickup_after")
-        || matches!(stage, "pregrasp_geometry" | "pregrasp_opened_geometry")
+        || matches!(
+            stage,
+            "pregrasp_geometry" | "pregrasp_opened_geometry" | "pregrasp_source_closed_geometry"
+        )
 }
 
 #[cfg(feature = "g1_constraint_diagnostic")]
@@ -4894,7 +4911,7 @@ fn start_marker_job(
     let directory = runtime.options.output.join(stage_directory);
     if matches!(
         stage_directory,
-        "pregrasp_geometry" | "pregrasp_opened_geometry"
+        "pregrasp_geometry" | "pregrasp_opened_geometry" | "pregrasp_source_closed_geometry"
     ) {
         runtime.mobile_assist.as_mut().unwrap().vision_job = Some(
             MarkerVisionJob::start_with_held_contact_geometry(config, directory, observation)?,

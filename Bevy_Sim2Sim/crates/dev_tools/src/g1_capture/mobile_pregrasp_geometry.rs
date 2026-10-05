@@ -7,7 +7,10 @@ use simulation_minigame::g1::{
     worker::TimedCommand,
 };
 
-fn validate_predecessor(execution: &MobileAssistExecution, tick: u64) -> Result<(), String> {
+pub(super) fn validate_predecessor(
+    execution: &MobileAssistExecution,
+    tick: u64,
+) -> Result<(), String> {
     if !matches!(execution, MobileAssistExecution::OriginalVla(previous)
         if tick == 200 && previous.profile == TaskProfile::MobileBox
             && previous.sequence_id == 4 && previous.frame_index == 49
@@ -31,6 +34,15 @@ pub(super) fn drive(
         .as_ref()
         .ok_or("pregrasp owner absent")?
         .clone();
+    if runtime
+        .mobile_assist
+        .as_ref()
+        .unwrap()
+        .pregrasp_close_goal
+        .is_some()
+    {
+        return super::mobile_pregrasp_close::drive(runtime, outcome, port);
+    }
     if runtime
         .mobile_assist
         .as_ref()
@@ -93,6 +105,25 @@ pub(super) fn drive(
     outcome.0.lock().unwrap().mobile_assist_handoff = Some(receipt);
     let assist = runtime.mobile_assist.as_mut().unwrap();
     assist.vision_job = None;
+    if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.pregrasp_source_close_once) {
+        let goal = simulation_minigame::g1::mobile_hold::MobileHoldGoal { observation: stamp };
+        let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
+            return Err("source-close diagnostic lost its sole owner".into());
+        };
+        let submitted_at = Instant::now();
+        owner
+            .submit(TimedCommand {
+                episode_id: runtime.episode_id,
+                valid_until_sim_ns: 5_980_000_000,
+                valid_until_wall: submitted_at + Duration::from_secs(4),
+                command: MobileAssistCommand::ClassicalGripSettle(goal.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        assist.pregrasp_close_goal = Some(goal);
+        assist.pregrasp_close_submitted_at = Some(submitted_at);
+        runtime.requested = false;
+        return Ok(false);
+    }
     if matches!(&assist.configuration, MobileAssistStage::Scan(c) if c.pregrasp_open_once) {
         let goal = MobileOpenGoal { observation: stamp };
         let CaptureWorker::AssistedMobile(owner) = &runtime.worker else {
