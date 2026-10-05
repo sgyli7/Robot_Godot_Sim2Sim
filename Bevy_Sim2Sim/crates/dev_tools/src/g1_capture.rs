@@ -4930,7 +4930,27 @@ fn start_marker_job(
         let regrasp_closed = stage_directory.ends_with("_held")
             || (stage_directory == "pregrasp_source_closed_geometry"
                 && matches!(&runtime.mobile_assist.as_ref().unwrap().configuration,MobileAssistStage::Scan(c) if c.current_closed_regrasp));
-        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(if regrasp_closed {
+        let settled_forecast =
+            stage_directory.starts_with("regrasp_") && stage_directory.ends_with("_settled");
+        let reference = if stage_directory.starts_with("regrasp_1_") {
+            runtime
+                .options
+                .output
+                .join("pregrasp_source_closed_geometry/observation.json")
+        } else {
+            runtime
+                .options
+                .output
+                .join("regrasp_1_held/observation.json")
+        };
+        runtime.mobile_assist.as_mut().unwrap().vision_job = Some(if settled_forecast {
+            MarkerVisionJob::start_with_open_regrasp_forecast(
+                config,
+                directory,
+                observation,
+                reference,
+            )?
+        } else if regrasp_closed {
             MarkerVisionJob::start_with_closed_regrasp_geometry(config, directory, observation)?
         } else {
             MarkerVisionJob::start_with_held_contact_geometry(config, directory, observation)?

@@ -154,6 +154,7 @@ pub(super) fn drive(
         goal.attempt,
         match goal.phase {
             MobileRegraspPhase::Open => "opened",
+            MobileRegraspPhase::Settle => "settled",
             MobileRegraspPhase::Insert => "inserted",
             MobileRegraspPhase::Close => "closed",
             MobileRegraspPhase::Hold => "held",
@@ -179,7 +180,7 @@ pub(super) fn drive(
     }
     let receipt = serde_json::json!({"mode":"bounded_current_closed_RGB_reacquisition","goal":goal,"observation":stamp,
         "actual_integrations":tick,"execution":execution,"geometry":reply["held_contact_geometry"],
-        "depth_proposal":reply["closed_regrasp_proposal"],"task_qualified":false,"holding_proven":false,
+        "depth_proposal":reply["closed_regrasp_proposal"],"open_closed_reference_forecast":reply["open_regrasp_forecast"],"task_qualified":false,"holding_proven":false,
         "world_or_contact_truth_input":false,"lift_carry_release_submitted":false});
     fs::write(
         runtime
@@ -198,6 +199,22 @@ pub(super) fn drive(
         .unwrap()[&directory] = receipt;
     let phase = match goal.phase {
         MobileRegraspPhase::Open => {
+            // The box can resettle when released from a partial source grip.
+            // Keep the original opened target for100 real standing Ticks,
+            // then require fresh RGB and an explicitly disclosed forecast.
+            let current = marker_position(&reply)?;
+            submit(
+                runtime,
+                MobileRegraspGoal {
+                    phase: MobileRegraspPhase::Settle,
+                    observation: stamp,
+                    ..goal
+                },
+                current,
+            )?;
+            return Ok(false);
+        }
+        MobileRegraspPhase::Settle => {
             let current = marker_position(&reply)?;
             let motion = current
                 .iter()
@@ -206,11 +223,42 @@ pub(super) fn drive(
                 .sum::<f64>()
                 .sqrt();
             if motion > 0.02 {
-                return Err("reopening changed visible target/root relative position by over existing20mm bound; replan required".into());
+                return Err("opened target still moves over existing20mm bound after finite settling; pause required".into());
             }
-            MobileRegraspPhase::Insert
+            let forecast = &reply["open_regrasp_forecast"];
+            if forecast["geometry_candidate_found"] != true {
+                return Err("fresh settled box lacks bounded closed-reference forecast".into());
+            }
+            let offset: [f64; 3] =
+                serde_json::from_value(forecast["common_offset_root_source_m"].clone())
+                    .map_err(|e| e.to_string())?;
+            submit(
+                runtime,
+                MobileRegraspGoal {
+                    phase: MobileRegraspPhase::Insert,
+                    observation: stamp,
+                    common_offset_root_source_m: offset,
+                    ..goal
+                },
+                current,
+            )?;
+            return Ok(false);
         }
-        MobileRegraspPhase::Insert => MobileRegraspPhase::Close,
+        MobileRegraspPhase::Insert => {
+            let current = marker_position(&reply)?;
+            let motion = current
+                .iter()
+                .zip(marker)
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt();
+            if motion > 0.02 {
+                return Err(
+                    "open insertion moved visible target over20mm; source reclose rejected".into(),
+                );
+            }
+            MobileRegraspPhase::Close
+        }
         MobileRegraspPhase::Close => MobileRegraspPhase::Hold,
         MobileRegraspPhase::Hold => {
             let p = &reply["closed_regrasp_proposal"];

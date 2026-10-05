@@ -17,6 +17,7 @@ use super::{
 #[serde(rename_all = "snake_case")]
 pub enum MobileRegraspPhase {
     Open,
+    Settle,
     Insert,
     Close,
     Hold,
@@ -26,14 +27,15 @@ impl MobileRegraspPhase {
     pub fn offset_ticks(self) -> u64 {
         match self {
             Self::Open => 0,
-            Self::Insert => 50,
-            Self::Close => 100,
-            Self::Hold => 150,
+            Self::Settle => 50,
+            Self::Insert => 150,
+            Self::Close => 200,
+            Self::Hold => 250,
         }
     }
     pub fn duration_ticks(self) -> u32 {
         match self {
-            Self::Hold => 100,
+            Self::Hold | Self::Settle => 100,
             Self::Open | Self::Insert | Self::Close => 50,
         }
     }
@@ -51,7 +53,7 @@ pub struct MobileRegraspGoal {
 
 impl MobileRegraspGoal {
     pub fn start_tick(&self) -> u64 {
-        300 + u64::from(self.attempt.saturating_sub(1)) * 250 + self.phase.offset_ticks()
+        300 + u64::from(self.attempt.saturating_sub(1)) * 350 + self.phase.offset_ticks()
     }
     pub fn end_tick(&self) -> u64 {
         self.start_tick() + u64::from(self.phase.duration_ticks())
@@ -65,7 +67,7 @@ impl MobileRegraspGoal {
             || c.episode_id == 0
             || c.frame_id == 0
             || c.captured_at_unix_ms == 0
-            || c.sim_time_ns != (300 + u64::from(self.attempt.saturating_sub(1)) * 250) * 20_000_000
+            || c.sim_time_ns != (300 + u64::from(self.attempt.saturating_sub(1)) * 350) * 20_000_000
             || s.episode_id != c.episode_id
             || s.sim_time_ns != self.start_tick() * 20_000_000
             || (self.phase == MobileRegraspPhase::Open && s != c)
@@ -75,7 +77,7 @@ impl MobileRegraspGoal {
             || !(0.000_001..=0.05).contains(&length)
         {
             return Err(invalid(
-                "regrasp requires its current closed300/550 RGB, fresh phase image, <=5cm and at most two attempts",
+                "regrasp requires its current closed300/650 RGB, fresh phase image, <=5cm and at most two attempts",
             ));
         }
         Ok(())
@@ -95,10 +97,12 @@ impl MobileRegraspGoal {
         } else {
             self.attempt == previous.attempt
                 && self.closed_observation == previous.closed_observation
-                && self.common_offset_root_source_m == previous.common_offset_root_source_m
+                && (previous.phase == MobileRegraspPhase::Settle
+                    || self.common_offset_root_source_m == previous.common_offset_root_source_m)
                 && matches!(
                     (previous.phase, self.phase),
-                    (MobileRegraspPhase::Open, MobileRegraspPhase::Insert)
+                    (MobileRegraspPhase::Open, MobileRegraspPhase::Settle)
+                        | (MobileRegraspPhase::Settle, MobileRegraspPhase::Insert)
                         | (MobileRegraspPhase::Insert, MobileRegraspPhase::Close)
                         | (MobileRegraspPhase::Close, MobileRegraspPhase::Hold)
                 )
@@ -150,7 +154,10 @@ impl MobileRegrasp {
         } else {
             None
         };
-        let holding = if goal.phase == MobileRegraspPhase::Hold {
+        let holding = if matches!(
+            goal.phase,
+            MobileRegraspPhase::Hold | MobileRegraspPhase::Settle
+        ) {
             Some(MobileGripHolding::new(
                 MobileHoldGoal {
                     observation: goal.observation,
@@ -215,7 +222,7 @@ impl MobileRegrasp {
                 self.command = corrected.command;
                 Some(corrected.receipt)
             }
-            MobileRegraspPhase::Hold => {
+            MobileRegraspPhase::Hold | MobileRegraspPhase::Settle => {
                 let step = self.holding.as_mut().unwrap().update(state)?;
                 if self.ticks == 99 && !step.completed {
                     return Err(invalid(
@@ -247,7 +254,7 @@ fn invalid(message: &str) -> RobotError {
 mod tests {
     use super::*;
     fn goal(attempt: u32, phase: MobileRegraspPhase) -> MobileRegraspGoal {
-        let tick = 300 + u64::from(attempt - 1) * 250;
+        let tick = 300 + u64::from(attempt - 1) * 350;
         let closed = ObservationStamp {
             episode_id: 7,
             frame_id: tick,
@@ -271,8 +278,14 @@ mod tests {
     #[test]
     fn stale_reset_skipped_and_third_regrasp_cannot_reopen() {
         let open = goal(1, MobileRegraspPhase::Open);
+        let settle = goal(1, MobileRegraspPhase::Settle);
         let insert = goal(1, MobileRegraspPhase::Insert);
-        assert!(open.validate().is_ok() && insert.follows(&open));
+        assert!(open.validate().is_ok() && settle.follows(&open) && insert.follows(&settle));
+        let mut replanned = insert.clone();
+        replanned.common_offset_root_source_m = [0.024, 0., 0.];
+        assert!(replanned.follows(&settle));
+        assert!(!goal(1, MobileRegraspPhase::Close).follows(&replanned));
+
         assert!(!goal(1, MobileRegraspPhase::Close).follows(&open));
         assert!(goal(2, MobileRegraspPhase::Open).follows(&goal(1, MobileRegraspPhase::Hold)));
         assert!(goal(3, MobileRegraspPhase::Open).validate().is_err());

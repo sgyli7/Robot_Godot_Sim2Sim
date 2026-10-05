@@ -182,7 +182,7 @@ pub(super) fn validate_closed_regrasp(
     let stamp: ObservationStamp =
         serde_json::from_value(p["observation"].clone()).map_err(|e| e.to_string())?;
     if stamp != observation
-        || ![300, 550, 800].contains(&(stamp.sim_time_ns / 20_000_000))
+        || ![300, 650, 1000].contains(&(stamp.sim_time_ns / 20_000_000))
         || p["schema"] != "g1_current_rgb_original_hand_grasp_centering_v1"
         || p["closed_regrasp_only"] != true
         || p["planner_source_sha256"] != grasp_helper_hash()
@@ -195,6 +195,48 @@ pub(super) fn validate_closed_regrasp(
         || p["task_geometry_sha256"] != reply["held_contact_geometry"]["task_geometry_sha256"]
     {
         return Err("closed regrasp proposal changed current identity or authority".into());
+    }
+    Ok(())
+}
+
+pub(super) fn validate_open_regrasp(
+    reply: &Value,
+    observation: ObservationStamp,
+    reference: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let p = &reply["open_regrasp_forecast"];
+    let Some(reference) = reference else {
+        return if p.is_null() {
+            Ok(())
+        } else {
+            Err("unrequested measured closed-reference forecast".into())
+        };
+    };
+    let bytes = std::fs::read(reference).map_err(|e| e.to_string())?;
+    if bytes.len() > 128 * 1024 {
+        return Err("closed reference exceeds budget".into());
+    }
+    let source: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let source_stamp: ObservationStamp =
+        serde_json::from_value(source["stamp"].clone()).map_err(|e| e.to_string())?;
+    let stamp: ObservationStamp =
+        serde_json::from_value(p["observation"].clone()).map_err(|e| e.to_string())?;
+    if stamp != observation
+        || ![450, 800].contains(&(stamp.sim_time_ns / 20_000_000))
+        || source_stamp.episode_id != stamp.episode_id
+        || source_stamp.sim_time_ns + 3_000_000_000 != stamp.sim_time_ns
+        || p["closed_reference_observation"] != source["stamp"]
+        || p["closed_reference_input_sha256"] != format!("{:x}", Sha256::digest(&bytes))
+        || p["schema"] != "g1_current_open_rgb_measured_closed_reference_forecast_v1"
+        || p["planner_source_sha256"] != grasp_helper_hash()
+        || p["actual_current_closed_self"] != false
+        || p["uses_own_measured_closed_reference_for_forecast"] != true
+        || p["world_or_contact_truth_input"] != false
+        || p["physical_contact_forces_proven"] != false
+        || p["owner_execution_admitted"] != false
+        || p["task_qualified"] != false
+    {
+        return Err("opened forecast changed current image/reference identity or authority".into());
     }
     Ok(())
 }

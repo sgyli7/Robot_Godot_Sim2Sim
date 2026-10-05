@@ -48,18 +48,28 @@ def minimum_common_insertion(planes, direction):
     return shift, witnesses
 
 
-def propose(definition, observation, root_from_box, geometry, *, closed_regrasp=False):
+def propose(definition, observation, root_from_box, geometry, *, closed_regrasp=False, closed_reference=None):
     """Use measured self FK and a current paired-RGB pose, never world truth."""
     from unitree_g1_mobile_vision import (DEFINITION_SHA256, TASK_GEOMETRY_SHA256,
                                          original_self_body_frames, rotation)
 
     stamp = observation["stamp"]
+    reference_stamp = None
+    if closed_reference is not None:
+        reference_stamp = closed_reference["stamp"]
+        if (closed_regrasp or stamp["sim_time_ns"]//20_000_000 not in (450, 800)
+                or reference_stamp["episode_id"] != stamp["episode_id"]
+                or reference_stamp["sim_time_ns"]+150*20_000_000 != stamp["sim_time_ns"]
+                or reference_stamp["frame_id"] >= stamp["frame_id"]
+                or reference_stamp["captured_at_unix_ms"] >= stamp["captured_at_unix_ms"]):
+            raise ValueError("opened forecast requires current450/800 RGB and its own actual closed300/650 self reference")
+
     if (set(stamp) != {"episode_id", "frame_id", "sim_time_ns", "captured_at_unix_ms"}
             or any(type(stamp[k]) is not int or stamp[k] <= 0 for k in stamp)
             or stamp["sim_time_ns"] % 20_000_000
-            or (stamp["sim_time_ns"]//20_000_000 not in (300, 550, 800) if closed_regrasp
-                else not 200 <= stamp["sim_time_ns"]//20_000_000 <= 300)):
-        raise ValueError("grasp depth requires current closed300/550/800Tick RGB" if closed_regrasp
+            or (stamp["sim_time_ns"]//20_000_000 not in (300, 650, 1000) if closed_regrasp
+                else (not 200 <= stamp["sim_time_ns"]//20_000_000 <= 300 and closed_reference is None))):
+        raise ValueError("grasp depth requires current closed300/650/1000Tick RGB" if closed_regrasp
                          else "grasp depth requires a current pre-lift200..300Tick observation")
     pose = np.asarray(root_from_box, dtype=float)
     if (pose.shape != (4, 4) or not np.isfinite(pose).all()
@@ -75,7 +85,13 @@ def propose(definition, observation, root_from_box, geometry, *, closed_regrasp=
             or not np.array_equal(points.max(0), [.1]*3)):
         raise ValueError("grasp proposal requires the original20cm convex box")
     state = observation["measured_joints"]
-    frames = original_self_body_frames(definition, state["positions"])
+    positions = list(state["positions"])
+    if closed_reference is not None:
+        reference_positions = closed_reference["measured_joints"]["positions"]
+        if len(reference_positions)!=43 or not np.isfinite(reference_positions).all():
+            raise ValueError("closed reference lacks original measured43 joints")
+        positions[15:] = reference_positions[15:]
+    frames = original_self_body_frames(definition, positions)
     up = rotation(state["root_rotation_wxyz"]).T @ np.array([0., 0., 1.])
     left, right = frames[28][:3, 0], frames[45][:3, 0]
     if left @ right < .8:
@@ -112,6 +128,13 @@ def propose(definition, observation, root_from_box, geometry, *, closed_regrasp=
               "approach_path_proven": False, "owner_execution_admitted": False, "task_qualified": False}
     if closed_regrasp:
         result["closed_regrasp_only"] = True
+    if closed_reference is not None:
+        result.update(schema="g1_current_open_rgb_measured_closed_reference_forecast_v1",
+                      closed_reference_observation=reference_stamp,
+                      uses_measured_hands_not_commanded_targets=False,
+                      actual_current_closed_self=False,
+                      uses_own_measured_closed_reference_for_forecast=True,
+                      source="current_open_paired_RGB_and_current_lower_self_with_own_measured_closed_upper_reference")
     result["requires_owner_reacquisition_if_grip_already_closed"] = True
     if proposed is not None:
         shift, witnesses = proposed

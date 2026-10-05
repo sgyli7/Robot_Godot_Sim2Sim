@@ -686,7 +686,9 @@ def fine_from_visible_markers(detections, observation, geometry_path, mounts, he
             "heading_yaw_source_rad": heading, "relative_distance_m": .1}}
 
 
-def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None, held_box_feedback=False, grasp_centering=False, held_contact_geometry=False, closed_regrasp=False):
+def localize(image_path, observation_path, definition_path, geometry_path=None, memory_path=None, box_view_only=False, fiducial_path=None, placement_view_only=False, *, public_assets=None, secondary_image_path=None, secondary_observation_path=None, held_box_feedback=False, grasp_centering=False, held_contact_geometry=False, closed_regrasp=False, closed_reference_path=None):
+    if closed_reference_path is not None and (not held_contact_geometry or not held_box_feedback or closed_regrasp or grasp_centering):
+        raise ValueError("opened forecast requires explicit paired geometry and closed self reference")
     if closed_regrasp and (not held_contact_geometry or not held_box_feedback or grasp_centering):
         raise ValueError("closed regrasp requires current paired held-contact geometry")
     if held_contact_geometry and not held_box_feedback:
@@ -919,6 +921,19 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
         result["closed_regrasp_proposal"] = propose(
             definition, observation, by_id[22] @ np.linalg.inv(marker_mounts[22]),
             public_json(geometry_path, public_assets), closed_regrasp=True)
+    if closed_reference_path is not None:
+        if Path(closed_reference_path).stat().st_size>128*1024:
+            raise ValueError("closed self reference exceeds finite budget")
+        reference = json.loads(Path(closed_reference_path).read_text())
+        if set(reference) != set(observation) or reference["schema"] != observation["schema"]:
+            raise ValueError("closed reference contains foreign or oracle fields")
+        if box_pair is None or 22 not in by_id:
+            raise ValueError("opened forecast lost current paired visible box")
+        from unitree_g1_mobile_grasp import propose
+        forecast = propose(definition, observation, by_id[22] @ np.linalg.inv(marker_mounts[22]),
+                           public_json(geometry_path, public_assets), closed_reference=reference)
+        forecast["closed_reference_input_sha256"] = sha(closed_reference_path)
+        result["open_regrasp_forecast"] = forecast
     if memory_estimate is not None:
         result["target_memory_estimate"] = memory_estimate
         result["target_memory_used"] = used_memory
@@ -955,11 +970,12 @@ def main():
     parser.add_argument("--grasp-centering", action="store_true")
     parser.add_argument("--held-contact-geometry", action="store_true")
     parser.add_argument("--closed-regrasp", action="store_true")
+    parser.add_argument("--closed-reference", type=Path)
     args = parser.parse_args()
     result = localize(args.image, args.observation, args.definition, args.geometry, args.target_memory, args.box_view_only, args.fiducials, args.placement_view_only,
                       secondary_image_path=args.secondary_image, secondary_observation_path=args.secondary_observation,
                       held_box_feedback=args.held_box_feedback, grasp_centering=args.grasp_centering,
-                      held_contact_geometry=args.held_contact_geometry, closed_regrasp=args.closed_regrasp)
+                      held_contact_geometry=args.held_contact_geometry, closed_regrasp=args.closed_regrasp, closed_reference_path=args.closed_reference)
     with args.output.open("x") as stream:
         json.dump(result, stream, indent=2, allow_nan=False)
         stream.write("\n")

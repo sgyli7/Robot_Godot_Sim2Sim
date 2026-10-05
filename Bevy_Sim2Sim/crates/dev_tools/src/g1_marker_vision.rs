@@ -368,6 +368,7 @@ mod worker {
                 false,
                 false,
                 false,
+                None,
             )
         }
 
@@ -393,6 +394,7 @@ mod worker {
                 true,
                 false,
                 false,
+                None,
             )
         }
 
@@ -428,6 +430,7 @@ mod worker {
                 true,
                 true,
                 false,
+                None,
             )
         }
 
@@ -452,6 +455,7 @@ mod worker {
                 false,
                 false,
                 false,
+                None,
             )
         }
 
@@ -475,6 +479,7 @@ mod worker {
                 false,
                 false,
                 false,
+                None,
             )
         }
 
@@ -513,6 +518,43 @@ mod worker {
                 true,
                 true,
                 true,
+                None,
+            )
+        }
+        pub(crate) fn start_with_open_regrasp_forecast(
+            config: MarkerVisionConfiguration,
+            directory: PathBuf,
+            observation: ObservationStamp,
+            reference: PathBuf,
+        ) -> Result<Self, String> {
+            if !config.same_tick_box_pair
+                || config.same_tick_box_only
+                || config.task_geometry.is_none()
+                || config.persistent_worker.is_some()
+            {
+                return Err("opened forecast requires finite current paired geometry".into());
+            }
+            let parent = config
+                .script_path
+                .parent()
+                .ok_or("forecast script lacks parent")?;
+            if digest(&parent.join("unitree_g1_mobile_grasp.py"), 128 * 1024)?
+                != super::mobile_geometry::grasp_helper_hash()
+            {
+                return Err("forecast helper differs from compiled source".into());
+            }
+            digest(&reference, 128 * 1024)?;
+            Self::start_internal(
+                config,
+                directory,
+                observation,
+                None,
+                false,
+                false,
+                true,
+                true,
+                false,
+                Some(reference),
             )
         }
         fn start_internal(
@@ -525,6 +567,7 @@ mod worker {
             held_box_feedback: bool,
             held_contact_geometry: bool,
             closed_regrasp: bool,
+            closed_reference: Option<PathBuf>,
         ) -> Result<Self, String> {
             if let Some(memory) = &memory {
                 memory.validate(observation)?;
@@ -618,6 +661,7 @@ mod worker {
                             command.arg("--held-contact-geometry");
                         }
                         if closed_regrasp { command.arg("--closed-regrasp"); }
+                        if let Some(reference)=&closed_reference { command.arg("--closed-reference").arg(reference); }
                         if let Some(calibration) = &config.fiducial_calibration {
                             command.arg("--fiducials").arg(&calibration.path);
                         }
@@ -685,6 +729,7 @@ mod worker {
                             )?;
                         }
                         super::mobile_geometry::validate_closed_regrasp(&reply,observation,closed_regrasp)?;
+                        super::mobile_geometry::validate_open_regrasp(&reply,observation,closed_reference.as_deref())?;
                         super::mobile_pair::validate_reply(&reply, &input_document, pair.as_ref())?;
                         super::mobile_held::validate_requested_feedback(&reply, observation, held_box_feedback)?;
                         if config

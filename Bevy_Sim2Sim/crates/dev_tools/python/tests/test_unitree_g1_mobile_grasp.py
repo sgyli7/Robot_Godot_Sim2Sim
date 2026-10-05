@@ -46,13 +46,26 @@ class OriginalThumbInsertionTests(unittest.TestCase):
 
     def test_closed_recovery_cannot_relabel_an_open_or_lifted_frame(self):
         from unitree_g1_mobile_grasp import propose
-        for tick in [200, 250, 350, 450, 501, 801, 1000]:
+        for tick in [200, 250, 350, 450, 501, 801, 1001]:
             observation = {"stamp": {"episode_id":7,"frame_id":9,"sim_time_ns":tick*20_000_000,"captured_at_unix_ms":123}}
-            with self.assertRaisesRegex(ValueError, "closed300/550/800Tick"):
+            with self.assertRaisesRegex(ValueError, "closed300/650/1000Tick"):
                 propose({}, observation, None, {}, closed_regrasp=True)
         observation = {"stamp": {"episode_id":7,"frame_id":9,"sim_time_ns":550*20_000_000,"captured_at_unix_ms":123}}
         with self.assertRaisesRegex(ValueError, "pre-lift200..300Tick"):
             propose({}, observation, None, {})
+
+    def test_opened_forecast_cannot_consume_foreign_or_relabelled_closed_self(self):
+        from unitree_g1_mobile_grasp import propose
+        current = {"stamp": {"episode_id":7,"frame_id":20,"sim_time_ns":450*20_000_000,"captured_at_unix_ms":456}}
+        for episode, tick, frame, wall in [(8,300,10,123),(7,350,10,123),(7,300,20,123),(7,300,10,456)]:
+            reference={"stamp":{"episode_id":episode,"frame_id":frame,"sim_time_ns":tick*20_000_000,"captured_at_unix_ms":wall}}
+            with self.assertRaisesRegex(ValueError,"own actual closed300/650"):
+                propose({},current,None,{},closed_reference=reference)
+        reference={"stamp":{"episode_id":7,"frame_id":10,"sim_time_ns":300*20_000_000,"captured_at_unix_ms":123}}
+        before = json.dumps(current,sort_keys=True)
+        with self.assertRaisesRegex(ValueError,"nonrigid"):
+            propose({},current,None,{},closed_reference=reference)
+        self.assertEqual(json.dumps(current,sort_keys=True),before)
 
     def test_unpaired_or_memory_grasp_mode_fails_before_loading_files(self):
         for kwargs in [{}, {"secondary_image_path": Path("b"), "secondary_observation_path": Path("c"),
