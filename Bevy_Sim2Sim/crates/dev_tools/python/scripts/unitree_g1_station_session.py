@@ -34,6 +34,12 @@ def save(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
+def argument_path(name, path):
+    # CPython locates pyvenv.cfg from the invoked executable path. Resolving
+    # bin/python's symlink would silently leave the isolated model environment.
+    return path.absolute() if name == "policy_python" else path.resolve()
+
+
 def prepare_configuration(value, profile, port, maximum_episodes, smoke, inflight_reset=False):
     """Build a new configuration before Rust loads it; never edit a live asset."""
     value = json.loads(json.dumps(value))
@@ -270,7 +276,7 @@ def main():
     args.model_receipt = args.model_receipt or Path("/home/ethan/Projects/Sai_Lab/.scratch/unitree_g1/policy") / (
         "static_apple_files.json" if args.profile == "static" else "mobile_box_files.json")
     for name in ["config", "binary", "output", "policy_python", "model_receipt", "gr00t_source", "model_root", "runtime_env", "qwen_service", "ffmpeg"]:
-        setattr(args, name, getattr(args, name).resolve())
+        setattr(args, name, argument_path(name, getattr(args, name)))
     signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     return run(args)

@@ -4,6 +4,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -27,6 +28,18 @@ def configuration(profile):
 
 
 class StationSessionTests(unittest.TestCase):
+    def test_model_python_keeps_its_actual_virtual_environment_prefix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = Path(temporary) / "model_env"
+            (environment / "bin").mkdir(parents=True)
+            executable = environment / "bin/python"
+            executable.symlink_to(sys.executable)
+            (environment / "pyvenv.cfg").write_text(
+                f"home = {Path(sys.executable).resolve().parent}\ninclude-system-site-packages = true\n")
+            command = session.argument_path("policy_python", executable)
+            actual = subprocess.check_output([str(command), "-c", "import sys; print(sys.prefix)"], text=True).strip()
+            self.assertEqual(Path(actual), environment)
+
     def test_preparation_preserves_input_and_distinct_original_contract(self):
         for profile in ["static", "mobile"]:
             original = configuration(profile)
