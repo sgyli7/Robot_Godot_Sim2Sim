@@ -684,6 +684,23 @@ mod worker {
                             .open(directory.join("worker.log"))
                             .map_err(|e| e.to_string())?;
                         let mut command = Command::new(&config.python_path);
+                        // Small FK/convex geometry matrices otherwise create
+                        // many BLAS threads and can exceed the unchanged 3s
+                        // image budget. Limit only this owned CPU child; the
+                        // model services and physics owner are unaffected.
+                        command
+                            .env("OMP_NUM_THREADS", "1")
+                            .env("OPENBLAS_NUM_THREADS", "1")
+                            .env("MKL_NUM_THREADS", "1");
+                        fs::write(
+                            directory.join("worker_runtime.json"),
+                            serde_json::to_vec_pretty(&serde_json::json!({
+                                "schema":"g1_owned_cpu_localization_runtime_v1",
+                                "scope":"owned_localization_child_only",
+                                "OMP_NUM_THREADS":1,"OPENBLAS_NUM_THREADS":1,"MKL_NUM_THREADS":1,
+                                "maximum_elapsed_seconds":3,"physics_or_model_configuration_changed":false,
+                            })).map_err(|e|e.to_string())?,
+                        ).map_err(|e|e.to_string())?;
                         command
                             .arg(&config.script_path)
                             .args(["--image"])
