@@ -7,7 +7,9 @@
 在 `Bevy_Sim2Sim` 中构建。此共享主机使用已有构建锁与两项编译并发：
 
 ```bash
-flock /tmp/sai-g1-cargo.lock env CARGO_BUILD_JOBS=2 cargo build --locked \
+flock /tmp/sai-g1-cargo.lock env CARGO_BUILD_JOBS=2 \
+  CARGO_TARGET_DIR=/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/target \
+  cargo build --locked \
   --bin bevy_sim2sim --features \
   dev_tools,dev_tools_minigame/g1_constraint_diagnostic,dev_tools_minigame/g1_source_lighting
 export DISPLAY=:1 XDG_RUNTIME_DIR=/run/user/1000
