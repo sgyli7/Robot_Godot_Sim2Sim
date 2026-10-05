@@ -47,6 +47,8 @@ mod mobile_regrasp;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod mobile_regrasp_lift;
 #[cfg(feature = "g1_constraint_diagnostic")]
+mod mobile_regrasp_loaded;
+#[cfg(feature = "g1_constraint_diagnostic")]
 mod static_grip_check;
 #[cfg(feature = "g1_constraint_diagnostic")]
 mod static_observed_grasp;
@@ -233,6 +235,9 @@ struct MobileScanCaptureConfiguration {
     /// One finite original lift after the first current regrasp, no carry.
     #[serde(default)]
     current_regrasp_lift_probe: bool,
+    /// Two unchanged-target holds with fresh paired RGB after load transfer.
+    #[serde(default)]
+    current_regrasp_stability_probe: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -298,6 +303,8 @@ struct MobileAssistCaptureRuntime {
     regrasp: Option<mobile_regrasp::Recovery>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     regrasp_lift: Option<mobile_regrasp_lift::Probe>,
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    regrasp_loaded: Option<mobile_regrasp_loaded::Verification>,
     #[cfg(feature = "g1_constraint_diagnostic")]
     release_submitted: bool,
     #[cfg(feature = "g1_constraint_diagnostic")]
@@ -420,6 +427,8 @@ impl MobileAssistCaptureRuntime {
             regrasp: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             regrasp_lift: None,
+            #[cfg(feature = "g1_constraint_diagnostic")]
+            regrasp_loaded: None,
             #[cfg(feature = "g1_constraint_diagnostic")]
             release_submitted: false,
             #[cfg(feature = "g1_constraint_diagnostic")]
@@ -2256,7 +2265,8 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        (c.current_regrasp_lift_probe && !c.current_closed_regrasp)
+        (c.current_regrasp_stability_probe && !c.current_regrasp_lift_probe)
+            || (c.current_regrasp_lift_probe && !c.current_closed_regrasp)
             || (c.current_closed_regrasp && !c.pregrasp_source_close_once)
             || ((c.pregrasp_open_once || c.pregrasp_source_close_once) && !c.pregrasp_geometry_only)
             || (c.pregrasp_open_once && c.pregrasp_source_close_once)

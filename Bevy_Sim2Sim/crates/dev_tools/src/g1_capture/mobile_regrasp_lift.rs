@@ -15,7 +15,7 @@ pub(super) struct Probe {
     submitted_at: Option<Instant>,
 }
 
-fn bilateral_candidate(reply: &serde_json::Value) -> bool {
+pub(super) fn bilateral_candidate(reply: &serde_json::Value) -> bool {
     let Some(bodies) = reply["held_contact_geometry"]["bodies"].as_array() else {
         return false;
     };
@@ -165,6 +165,26 @@ pub(super) fn drive(
         .mobile_assist_handoff
         .as_mut()
         .unwrap()["regrasp_lift"] = receipt;
+    if matches!(&runtime.mobile_assist.as_ref().unwrap().configuration,
+        MobileAssistStage::Scan(c) if c.current_regrasp_stability_probe)
+    {
+        if verdict["box_source_center_lift_m"]
+            .as_f64()
+            .is_none_or(|h| h < 0.025)
+            || verdict["midpalm_source_lift_m"]
+                .as_f64()
+                .is_none_or(|h| h < 0.025)
+            || !bilateral_candidate(&reply)
+        {
+            return Err(
+                "postload observation lacks a lifted bilateral candidate; no hold admitted".into(),
+            );
+        }
+        // The failed entry verdict remains in the journal. Only two finite
+        // unchanged-target holds may distinguish settling from continuing slip.
+        super::mobile_regrasp_loaded::begin(runtime, reply)?;
+        return Ok(false);
+    }
     if verdict["accepted"] != true {
         return Err(
             "actual regrasp lift failed original pairedRGB25mm rise/20mm relative guard".into(),

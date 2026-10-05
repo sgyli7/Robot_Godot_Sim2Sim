@@ -38,6 +38,15 @@ pub(super) fn drive(
         .mobile_assist
         .as_ref()
         .unwrap()
+        .regrasp_loaded
+        .is_some()
+    {
+        return super::mobile_regrasp_loaded::drive(runtime, outcome, port);
+    }
+    if runtime
+        .mobile_assist
+        .as_ref()
+        .unwrap()
         .regrasp_lift
         .is_some()
     {

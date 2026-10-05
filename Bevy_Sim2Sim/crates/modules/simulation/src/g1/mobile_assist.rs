@@ -62,6 +62,8 @@ pub enum MobileAssistCommand {
     ClassicalRegrasp(MobileRegraspGoal),
     /// Finite lift test after a completed current-observation regrasp hold.
     ClassicalRegraspPickupRaise(MobileRaiseGoal),
+    /// Fresh stationary verification of the unchanged, completed pickup target.
+    ClassicalPickupHold(MobileHoldGoal),
     ClassicalHold(MobileHoldGoal),
     ClassicalThumbClearance(MobileThumbGoal),
     ClassicalModelWait(MobileWaitGoal),
@@ -129,7 +131,7 @@ impl MobileAssistCommand {
             Self::ClassicalGraspCenter(goal) => goal.validate(),
             Self::ClassicalGraspOpen(goal) => goal.validate(),
             Self::ClassicalRegrasp(goal) => goal.validate(),
-            Self::ClassicalHold(goal) => goal.validate(),
+            Self::ClassicalHold(goal) | Self::ClassicalPickupHold(goal) => goal.validate(),
             Self::ClassicalThumbClearance(goal) => goal.validate(),
             Self::ClassicalModelWait(goal) => goal.validate(),
         }
@@ -234,6 +236,7 @@ pub struct MobileAssistRunner {
     lower: Option<MobileGripLowering>,
     raise: Option<MobileGripRaising>,
     pickup_raise: Option<MobileGripRaising>,
+    pickup_hold: Option<MobileGripHolding>,
     release: Option<MobileGripRelease>,
     restore: Option<MobileGripRestoring>,
     grip_settle: Option<GripSettleState>,
@@ -316,6 +319,7 @@ impl MobileAssistRunner {
             lower: None,
             raise: None,
             pickup_raise: None,
+            pickup_hold: None,
             release: None,
             restore: None,
             grip_settle: None,
@@ -386,7 +390,9 @@ impl MobileAssistRunner {
         {
             centering.completed()
         } else if self.carry.is_none() && self.scan.is_none() {
-            if let Some(pickup) = &self.pickup_raise {
+            if let Some(hold) = &self.pickup_hold {
+                hold.completed()
+            } else if let Some(pickup) = &self.pickup_raise {
                 pickup.completed()
             } else {
                 self.grip_settle
@@ -455,6 +461,9 @@ impl MobileAssistRunner {
         }
         if self.hold.as_ref().is_some_and(|h| !h.completed()) {
             return Err(invalid("cannot replace an active stationary hold"));
+        }
+        if self.pickup_hold.as_ref().is_some_and(|h| !h.completed()) {
+            return Err(invalid("cannot replace active loaded-pickup verification"));
         }
         if self.thumb.as_ref().is_some_and(|t| !t.completed()) {
             return Err(invalid("cannot replace active thumb preparation"));
@@ -1354,6 +1363,51 @@ impl MobileAssistRunner {
                         goal: goal.clone(),
                         holding,
                         grip,
+                    },
+                    body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
+                })
+            }
+            MobileAssistCommand::ClassicalPickupHold(goal) => {
+                let state = self.owner.measurement()?;
+                let pickup = self.pickup_raise.as_ref().ok_or_else(|| {
+                    invalid("loaded pickup hold lacks its original completed lift")
+                })?;
+                if !self.station_fixture
+                    || !pickup.completed()
+                    || self.carry.is_some()
+                    || self.scan.is_some()
+                    || self.release.is_some()
+                    || goal.observation.frame_id <= pickup.goal().observation.frame_id
+                {
+                    return Err(invalid(
+                        "loaded pickup hold is not a fresh pre-transport boundary",
+                    ));
+                }
+                if self.pickup_hold.as_ref().is_none_or(|h| h.goal() != goal) {
+                    if self.pickup_hold.as_ref().is_some_and(|h| {
+                        !h.completed() || goal.observation.frame_id <= h.goal().observation.frame_id
+                    }) {
+                        return Err(invalid(
+                            "loaded pickup hold cannot replace active or newer goal",
+                        ));
+                    }
+                    let admission = self.classical_admission(goal.observation, &state)?;
+                    self.pickup_hold = Some(MobileGripHolding::new_with_admission(
+                        goal.clone(),
+                        &state,
+                        pickup.command().clone(),
+                        &admission,
+                    )?);
+                }
+                let holding = self.pickup_hold.as_mut().unwrap().update(&state)?;
+                let body = self
+                    .owner
+                    .step_mobile_assist_with_guard(&holding.command, guard)?;
+                Ok(MobileAssistStep {
+                    image_admission: None,
+                    execution: MobileAssistExecution::ClassicalHold {
+                        goal: goal.clone(),
+                        holding,
                     },
                     body: ArenaBodyStep::MobileHomieV2(Box::new(body)),
                 })

@@ -1,5 +1,13 @@
 # T2 original source diagnostic
 
+The opt-in native `current_regrasp_stability_probe` adds exactly two100-Tick
+stationary holds after the separately journaled regrasp lift. It requires
+`current_regrasp_lift_probe`; each hold preserves the completed lift's original
+joint targets and needs a fresh actual paired RGB at850,950and1050. The20mm
+bound applies both to the850postload reference and each consecutive interval.
+The earlier650-to850 failed pickup verdict remains unchanged. This diagnostic
+admits no carry/release and is not a task success or a continuous1× result.
+
 `crates/dev_tools/python/scripts/unitree_g1_t2_source_task.py` builds the frozen
 Arena brown-box-to-blue-bin task with its original Homie v2 controller. It uses
 the T2 Arena/Isaac Lab revisions and Isaac 6.1 assets checked by
