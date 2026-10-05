@@ -175,7 +175,7 @@ class RigidGooseAction(GooseAction):
         if self._before_time is None or self._applied:
             raise RuntimeError("Exactly one rigid command batch per Tick")
         self._env.sim.model.actuator_forcerange.copy_(torch.stack(
-            (-self.drive.cap, self.drive.cap), dim=-1).to(torch.float32))
+            (self.drive.force_lower, self.drive.force_upper), dim=-1).to(torch.float32))
         self._entity.set_joint_position_target(self._effort[:, self.position_axes].float(),
             joint_ids=self.motor_ids[self.position_axes])
         self._entity.set_joint_effort_target(self._effort[:, 5:6].float(),

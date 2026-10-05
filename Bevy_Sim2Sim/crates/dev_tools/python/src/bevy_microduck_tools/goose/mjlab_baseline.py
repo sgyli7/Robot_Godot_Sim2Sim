@@ -161,7 +161,7 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
     contract = _read_native_contract(model_path, contract_path)
-    from .rigid_native import (CANDIDATES as RIGID_CANDIDATES, MJLAB_CANDIDATE,
+    from .rigid_native import (CANDIDATES as RIGID_CANDIDATES, MJLAB_CANDIDATES,
         make_source_runtime as make_rigid_runtime)
     is_rigid = contract["candidate"] in RIGID_CANDIDATES
     from .speculative_contact import PREDICTION_CANDIDATES, REVISION as PREDICTION_REVISION, validate_prediction
@@ -174,7 +174,7 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
         raise ValueError("Explicit native mjlab reference required")
     model = mujoco.MjModel.from_xml_path(str(model_path))
     if is_rigid:
-        if contract["candidate"] != MJLAB_CANDIDATE:
+        if contract["candidate"] not in MJLAB_CANDIDATES:
             raise ValueError("Explicit rigid mjlab candidate without C-only flags required")
         make_rigid_runtime(model_path, contract_path)  # Full identity,0 integrals.
     if model.nu != 18 or model.opt.timestep != DT:

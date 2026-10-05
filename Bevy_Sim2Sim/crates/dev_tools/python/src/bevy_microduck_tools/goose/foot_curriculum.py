@@ -105,14 +105,15 @@ def rigid_collision_depth(env):
     import torch
     import warp as wp
     import mujoco_warp as mjw
-    from .native_geometry import collision_mesh_vertices
+    from .native_geometry import collision_geom_vertices
 
     if not hasattr(env, "_goose_rigid_support"):
         model = env.sim.mj_model
         env._goose_rigid_support = [(g, torch.as_tensor(
-            collision_mesh_vertices(model, int(model.geom_dataid[g]))[0],
+            collision_geom_vertices(model, g),
             dtype=env.sim.data.geom_xpos.dtype, device=env.device))
-            for g in range(model.ngeom) if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH]
+            for g in range(model.ngeom) if model.geom_type[g] in
+                (mujoco.mjtGeom.mjGEOM_MESH, mujoco.mjtGeom.mjGEOM_BOX)]
         if len(env._goose_rigid_support) != 11 or env.contact_adapter is not None:
             raise ValueError("Rigid course requires11 original convex leaves,native contact")
     with wp.ScopedDevice(env.sim.wp_device):

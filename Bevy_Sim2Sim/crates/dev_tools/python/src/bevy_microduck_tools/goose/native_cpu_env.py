@@ -12,9 +12,13 @@ import mujoco
 import numpy as np
 
 from .speculative_contact import NATIVE_CPU_CANDIDATES, make_source_runtime
-from .rigid_native import CANDIDATE as RIGID_CANDIDATE, make_source_runtime as make_rigid_runtime
+from .rigid_native import (
+    CANDIDATE as RIGID_CANDIDATE, MJLAB_CANDIDATES,
+    make_source_runtime as make_rigid_runtime)
+from .native_geometry import collision_geom_vertices
 
 REVISION = "goose_native_cpu_front_recovery_pilot_v1"
+RIGID_CPU_CANDIDATES = (RIGID_CANDIDATE, *MJLAB_CANDIDATES)
 
 
 class NativeGooseRecoveryEnv(gym.Env):
@@ -22,24 +26,27 @@ class NativeGooseRecoveryEnv(gym.Env):
     contact_limit_terminates_episode = False
 
     def __init__(self, model_path, contract_path, initial_qpos, *,
-                 episode_ticks=700, trajectory_directory=None):
+                 episode_ticks=700, trajectory_directory=None, contact_limit_m=.005):
         candidate = json.loads(Path(contract_path).read_text())["candidate"]
-        factory = make_rigid_runtime if candidate == RIGID_CANDIDATE else make_source_runtime
+        factory = make_rigid_runtime if candidate in RIGID_CPU_CANDIDATES else make_source_runtime
         self.runtime = factory(Path(model_path), Path(contract_path))
         rt = self.runtime
-        if rt.contract["candidate"] not in (*NATIVE_CPU_CANDIDATES, RIGID_CANDIDATE):
+        if rt.contract["candidate"] not in (*NATIVE_CPU_CANDIDATES, *RIGID_CPU_CANDIDATES):
             raise ValueError("Native CPU pilot requires its named native contact source")
         self.initial_qpos = np.asarray(initial_qpos, dtype=float).copy()
         if self.initial_qpos.shape != (rt.model.nq,) or not np.isfinite(self.initial_qpos).all():
             raise ValueError("Frozen recovery birth must match the native model")
         self.nominal_com_height = float(rt.data.subtree_com[rt.torso, 2])
-        from sai_agent.goose.convex_support import compiled_body_vertices
-        self.supports = {g: compiled_body_vertices(rt.model, g)
+        self.supports = {g: collision_geom_vertices(rt.model, g)
             for g in range(rt.model.ngeom)
-            if rt.model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH}
+            if rt.model.geom_type[g] in (mujoco.mjtGeom.mjGEOM_MESH,
+                mujoco.mjtGeom.mjGEOM_BOX)}
         if len(self.supports) != 11 or rt.model.opt.timestep != .02:
             raise ValueError("Native CPU physical identity changed")
         self.motor_vids = rt.model.jnt_dofadr[rt.model.actuator_trnid[:, 0]]
+        if not 0 < contact_limit_m <= .05:
+            raise ValueError("Native CPU episode contact limit must be in (0,50mm]")
+        self.contact_limit_m = float(contact_limit_m)
         self.episode_ticks = int(episode_ticks)
         if self.episode_ticks <= 0:
             raise ValueError("Finite positive episode length required")
@@ -54,8 +61,13 @@ class NativeGooseRecoveryEnv(gym.Env):
 
     def material_z(self):
         m, d = self.runtime.model, self.runtime.data
-        return np.array([(v @ d.xmat[int(m.geom_bodyid[g])].reshape(3, 3).T
-            + d.xpos[int(m.geom_bodyid[g])])[:, 2].min() for g, v in self.supports.items()])
+        return np.array([(v @ d.geom_xmat[g].reshape(3, 3).T
+            + d.geom_xpos[g])[:, 2].min() for g, v in self.supports.items()])
+
+    def critic_motion(self):
+        rt = self.runtime
+        rotation = rt.data.xmat[rt.torso].reshape(3, 3)
+        return np.r_[rotation.T @ rt.data.qvel[:3], rt.data.qpos[2]].astype(np.float32)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -69,7 +81,8 @@ class NativeGooseRecoveryEnv(gym.Env):
         self.records = []
         self.episodes += 1
         assert rt.physics_integrations == 0 and rt.data.time == 0.
-        return rt.observations().astype(np.float32), {"reset_integrations": 0}
+        return rt.observations().astype(np.float32), {
+            "reset_integrations": 0, "critic_motion": self.critic_motion()}
 
     def step(self, action):
         rt = self.runtime
@@ -96,7 +109,7 @@ class NativeGooseRecoveryEnv(gym.Env):
             observation=observations.copy(), min_collision_z=z, time=rt.data.time,
             upright=up, height_ratio=height, reward=reward)
         self.records.append(row)
-        depth_failed = bool(-z.min() > .005)
+        depth_failed = bool(-z.min() > self.contact_limit_m)
         if (abs(rt.data.time-before-.02) > 1e-10 or not np.isfinite(z).all()
                 or depth_failed and not self.contact_limit_terminates_episode):
             self._save_episode(failed=True)
@@ -106,7 +119,7 @@ class NativeGooseRecoveryEnv(gym.Env):
             "actual_integrations": 1, "total_integrations": self.total_integrations,
             "max_penetration_m": float(max(0., -z.min())), "upright": up,
             "height_ratio": height, "episode_tick": rt.physics_integrations,
-            "contact_limit_failure": depth_failed}
+            "contact_limit_failure": depth_failed, "critic_motion": self.critic_motion()}
 
     def _save_episode(self, *, failed=False):
         if self.directory and self.records:
@@ -128,7 +141,7 @@ class NativeGooseStandingEnv(NativeGooseRecoveryEnv):
 
     def __init__(self, *args, command=(0., 0., 0.), **kwargs):
         super().__init__(*args, **kwargs)
-        if self.runtime.contract["candidate"] != RIGID_CANDIDATE:
+        if self.runtime.contract["candidate"] not in RIGID_CPU_CANDIDATES:
             raise ValueError("Computer standing task requires its rigid native profile")
         self.command = np.asarray(command, dtype=float)
         if self.command.shape != (3,) or not np.isfinite(self.command).all():
@@ -146,7 +159,7 @@ class NativeGooseStandingEnv(NativeGooseRecoveryEnv):
         rt = self.runtime
         rotation = rt.data.xmat[rt.torso].reshape(3, 3)
         velocity = rotation.T @ rt.data.qvel[:3]
-        angular = rotation.T @ rt.data.qvel[3:6]
+        angular = rt.data.qvel[3:6]  # Native free-joint angular velocity is local.
         tracking = np.exp(-np.square(velocity[:2]-self.command[:2]).sum()/.04)
         turning = np.exp(-(angular[2]-self.command[2])**2/.25)
         tilt = float(rotation[2, :2] @ rotation[2, :2])
@@ -169,14 +182,17 @@ class NativeGooseStandingEnv(NativeGooseRecoveryEnv):
 class NativeGooseRslEnv:
     """Thin RSL tensor adapter for Gymnasium's standard AsyncVectorEnv."""
 
-    def __init__(self, env, *, device="cpu", seed=53):
+    def __init__(self, env, *, device="cpu", seed=53, privileged_critic=False):
         import torch
         from tensordict import TensorDict
         if env.autoreset_mode != gym.vector.AutoresetMode.SAME_STEP:
             raise ValueError("Same-step reset prevents a skipped integration nextTick")
         self.env, self.device = env, device
         self.num_envs, self.num_actions = env.num_envs, 18
-        self.max_episode_length = 700
+        lengths = env.call("episode_ticks")
+        if not lengths or len(set(lengths)) != 1:
+            raise ValueError("RSL requires a common declared native episode length")
+        self.max_episode_length = int(lengths[0])
         self.episode_length_buf = torch.zeros(self.num_envs, device=device, dtype=torch.long)
         self.cfg = {"task": REVISION, "physics_device": "cpu", "physics_dt_s": .02,
             "decimation": 1, "actor": 65, "actions": 18}
@@ -185,8 +201,22 @@ class NativeGooseRslEnv:
         self.real_integrations = 0
         self.common_step_counter = 0
         self.actor_batches = 0
-        obs, _ = env.reset(seed=seed)
-        self.obs = TensorDict({"actor": torch.tensor(obs, device=device)}, [self.num_envs])
+        self.privileged_critic = privileged_critic
+        obs, info = env.reset(seed=seed)
+        self.obs = self._observations(obs, info)
+
+    def _observations(self, obs, info):
+        import torch
+        from tensordict import TensorDict
+        actor = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+        groups = {"actor": actor}
+        if self.privileged_critic:
+            motion = torch.as_tensor(np.asarray(info["critic_motion"]),
+                dtype=torch.float32, device=self.device)
+            if motion.shape != (self.num_envs, 4) or not torch.isfinite(motion).all():
+                raise ValueError("Native privileged Critic requires four finite motion values")
+            groups["critic"] = torch.cat((actor, motion), dim=-1)
+        return TensorDict(groups, [self.num_envs])
 
     def get_observations(self):
         return self.obs
@@ -211,7 +241,7 @@ class NativeGooseRslEnv:
         self.actor_batches += 1
         self.episode_length_buf.add_(1)
         self.episode_length_buf[torch.tensor(ended, device=self.device)] = 0
-        self.obs = TensorDict({"actor": torch.tensor(obs, device=self.device)}, [self.num_envs])
+        self.obs = self._observations(obs, info)
         return self.obs, torch.tensor(reward, device=self.device, dtype=torch.float32), \
             torch.tensor(ended, device=self.device), {
                 "time_outs": torch.tensor(timeout, device=self.device), "log": {}}

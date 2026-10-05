@@ -76,6 +76,43 @@ def test_entity_keeps_native_si_actuator_order_and_real_beak(source):
     assert profile.sim.mujoco.integrator == "implicitfast"
 
 
+@pytest.mark.parametrize("direction", (-1, 1))
+def test_overspeed_keeps_bounded_braking_and_cpu_batch_actual_force_parity(
+        source, tmp_path, direction):
+    import json
+
+    _, parent_contract, original = source
+    cfg = json.loads(parent_contract.read_text())["rigid_native"]
+    model, contract = build_reference(cfg["parent_model"], cfg["parent_contract"],
+        cfg["source_root"], tmp_path / "braking", upstream=True,
+        primitive_feet=True, braking=True)
+    rt = make_source_runtime(model, contract)
+    rt.data.qvel[rt.vidx[1]] = direction*rt.speed[1]*1.5
+    drive = BatchedRigidNativeDrive(rt.contract, 1)
+    for tick in range(20):
+        velocity = rt.data.qvel[rt.motor_vids].copy()
+        control = drive.prepare(np.zeros((1, 18)),
+            rt.data.qpos[rt.qidx][None], rt.data.qvel[rt.vidx][None],
+            rt.data.qpos[3:7][None], motor_velocity=velocity[None])
+        if tick == 0:
+            assert float(drive.force_lower[0, 1]) == (-rt.peak[1] if direction > 0 else 0.)
+            assert float(drive.force_upper[0, 1]) == (0. if direction > 0 else rt.peak[1])
+        rt.step(np.zeros(18))
+        np.testing.assert_allclose(control[0], rt.data.ctrl, atol=1e-12)
+        limits = torch.stack((drive.force_lower, drive.force_upper), -1)
+        np.testing.assert_allclose(limits[0], rt.model.actuator_forcerange, atol=1e-12)
+        if tick == 0:
+            assert rt.last_tau[1]*direction < 0
+        drive.commit(rt.last_tau[None])
+        np.testing.assert_allclose(drive.thermal[0], rt.thermal, atol=1e-12)
+        assert float(np.maximum(rt.last_tau*velocity, 0).sum()) <= (
+            rt.contract["positive_mechanical_power_limit_w"]+1e-6)
+    for name in ("body_mass", "body_ipos", "body_inertia", "jnt_range",
+                 "actuator_gainprm", "actuator_biasprm", "eq_data"):
+        np.testing.assert_array_equal(getattr(original.model, name), getattr(rt.model, name))
+    assert rt.physics_integrations == 20 == int(drive.completed_ticks[0])
+
+
 def test_posture_course_reward_change_keeps_real_transitions_and_actor(source):
     from bevy_microduck_tools.goose.foot_curriculum import (
         make_foot_course_cfg, make_rigid_posture_course_cfg)
@@ -130,3 +167,134 @@ def test_motion_course_records_depth_and_retains_actual_fall_and_timeout(source)
     assert cfg.sim.mujoco.timestep == .02 and cfg.decimation == 1
     assert cfg.auto_reset is False
     assert cfg.rewards["failed_episode"].weight == -200.
+
+
+def test_native_gym_same_step_reset_critic_and_physics_identity(source):
+    import gymnasium as gym
+    from bevy_microduck_tools.goose.native_cpu_env import (
+        NativeGooseStandingEnv, NativeGooseRslEnv)
+
+    model, contract, direct = source
+    initial = direct.data.qpos.copy()
+    task = NativeGooseStandingEnv(model, contract, initial, episode_ticks=3,
+        contact_limit_m=.05)
+    task.reset()
+    direct.reset()
+    for tick in range(12):
+        action = .005*np.sin(np.arange(18)+tick*.1)
+        direct.step(action)
+        _, _, _, _, info = task.step(action)
+        for name in ("qpos", "qvel", "ctrl"):
+            np.testing.assert_array_equal(getattr(task.runtime.data, name),
+                getattr(direct.data, name))
+        for name in ("target", "thermal", "last_tau", "actions"):
+            np.testing.assert_array_equal(getattr(task.runtime, name), getattr(direct, name))
+        assert info["actual_integrations"] == 1
+        assert task.runtime.physics_integrations == tick+1
+    task.close()
+    vector = gym.vector.SyncVectorEnv([
+        lambda: NativeGooseStandingEnv(model, contract, initial,
+            episode_ticks=3, contact_limit_m=.05) for _ in range(2)],
+        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP)
+    adapter = NativeGooseRslEnv(vector, privileged_critic=True)
+    try:
+        assert adapter.max_episode_length == 3
+        for tick in range(5):
+            observations, _, _, _ = adapter.step(torch.zeros((2, 18)))
+            assert observations["actor"].shape == (2, 65)
+            assert observations["critic"].shape == (2, 69)
+            torch.testing.assert_close(observations["critic"][:, :65],
+                observations["actor"], atol=0, rtol=0)
+        assert adapter.real_integrations == 10
+        assert sum(vector.call("total_integrations")) == 10
+    finally:
+        adapter.close()
+
+
+def test_reference_reward_preserves_real_physics_and_actor(source, tmp_path):
+    import hashlib
+    from bevy_microduck_tools.goose.guided_training import (
+        make_guided_velocity_cfg, reference_action)
+    from bevy_microduck_tools.goose.mature_training import make_mature_velocity_cfg
+    from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv
+
+    model, contract, _ = source
+    reference = tmp_path / "reference.npz"
+    np.savez_compressed(reference, joint_pos=np.zeros((128, 12)))
+    digest = hashlib.sha256(reference.read_bytes()).hexdigest()
+    original = make_mature_velocity_cfg(model, contract, num_envs=2, seed=109)
+    guided = make_guided_velocity_cfg(model, contract, reference, digest,
+        num_envs=2, seed=109)
+    original.commands = guided.commands
+    environments = []
+    try:
+        for cfg in (original, guided):
+            env = GooseDevelopmentEnv(cfg, "cpu")
+            env.reset()
+            environments.append(env)
+        before, after = environments
+        for tick in range(8):
+            action = torch.full((2, 18), .005*np.sin(tick*.1))
+            first = before.step(action)[0]
+            second = after.step(action)[0]
+            for name in ("qpos", "qvel", "ctrl", "time"):
+                torch.testing.assert_close(getattr(before.sim.data, name),
+                    getattr(after.sim.data, name), atol=0, rtol=0)
+            for name in ("last_tau", "target", "thermal", "actions", "completed_ticks"):
+                torch.testing.assert_close(
+                    getattr(before.action_manager.get_term("goose").drive, name),
+                    getattr(after.action_manager.get_term("goose").drive, name), atol=0, rtol=0)
+            torch.testing.assert_close(first["actor"], second["actor"], atol=0, rtol=0)
+            assert first["actor"].shape == (2, 65)
+            clock = after.sim.data.time.clone()
+            reference_action(after, reference, digest)
+            torch.testing.assert_close(after.sim.data.time.clone(), clock, atol=0, rtol=0)
+        assert after.action_manager.get_term("goose").drive.completed_ticks.tolist() == [8, 8]
+    finally:
+        for env in environments:
+            env.close()
+
+
+def test_primitive_feet_fit_original_bottom_and_keep_si_and_real_controller(tmp_path, monkeypatch):
+    import json
+    from scipy.spatial import ConvexHull
+    from bevy_microduck_tools.goose.native_geometry import collision_geom_vertices
+
+    root = os.environ.get("GOOSE_FROZEN_TASK_PROXY_PACKAGE")
+    if not root:
+        pytest.skip("Verified original004 package required")
+    monkeypatch.chdir(tmp_path)
+    root = Path(root)
+    original_path = root / "robots/Goose_V0.1/models/task_proxy_11_v1/robot.xml"
+    model, contract = build_reference(original_path,
+        root / "robots/Goose_V0.1/configs/task_proxy_11_v1_contract.json",
+        root, tmp_path / "primitive", upstream=True, primitive_feet=True)
+    rt = make_source_runtime(model, contract)
+    parent = mujoco.MjModel.from_xml_path(str(original_path))
+    for name in ("body_mass", "body_ipos", "body_inertia", "body_iquat",
+                 "jnt_range", "dof_armature", "exclude_signature", "eq_data"):
+        np.testing.assert_array_equal(getattr(rt.model, name), getattr(parent, name))
+    wrapped = make_entity_cfg(model, contract).build().spec.compile()
+    assert wrapped.ngeom == 11 and wrapped.nu == 18 and wrapped.neq == 1
+    assert sum(wrapped.geom_type == mujoco.mjtGeom.mjGEOM_BOX) == 2
+    for fit in json.loads(contract.read_text())["rigid_native"]["primitive_foot"]["feet"]:
+        g = parent.geom(fit["geom"]).id
+        rotation = np.empty(9)
+        mujoco.mju_quat2Mat(rotation, parent.geom_quat[g])
+        original = collision_geom_vertices(parent, g)@rotation.reshape(3, 3).T+parent.geom_pos[g]
+        primitive = collision_geom_vertices(rt.model, rt.model.geom(fit["geom"]).id)
+        primitive += np.asarray(fit["center_body_m"])
+        planes = ConvexHull(original).equations
+        assert (primitive@planes[:, :3].T+planes[:, 3]).max() <= 1e-8
+        np.testing.assert_allclose(primitive[:, 2].min(), original[:, 2].min(), atol=1e-9)
+    drive = BatchedRigidNativeDrive(rt.contract, 1)
+    for tick in range(20):
+        action = .005*np.sin(np.arange(18)*.3+tick*.1)
+        control = drive.prepare(action[None], rt.data.qpos[rt.qidx][None],
+            rt.data.qvel[rt.vidx][None], rt.data.qpos[3:7][None],
+            motor_velocity=rt.data.qvel[rt.motor_vids][None])
+        rt.step(action)
+        np.testing.assert_allclose(control[0], rt.data.ctrl, atol=1e-12, rtol=1e-12)
+        drive.commit(rt.last_tau[None])
+        np.testing.assert_array_equal(drive.last_tau[0], rt.last_tau)
+    assert rt.physics_integrations == 20 and int(drive.completed_ticks[0]) == 20

@@ -18,11 +18,51 @@ from .artifacts import DT, JOINT_ORDER, sha256, write_json
 
 CANDIDATE = "goose_task_proxy_11_rigid_native_v1"
 MJLAB_CANDIDATE = "goose_task_proxy_11_rigid_mjlab_v1"
-CANDIDATES = (CANDIDATE, MJLAB_CANDIDATE)
+PRIMITIVE_CANDIDATE = "goose_task_proxy_11_rigid_primitive_foot_v1"
+BRAKING_CANDIDATE = "goose_task_proxy_11_rigid_braking_v1"
+MJLAB_CANDIDATES = (MJLAB_CANDIDATE, PRIMITIVE_CANDIDATE, BRAKING_CANDIDATE)
+CANDIDATES = (CANDIDATE, *MJLAB_CANDIDATES)
 REVISION = "goose_rigid_native_implicit_drive_v1"
 
 
-def build_reference(parent_model, parent_contract, source_root, destination, *, upstream=False):
+def _primitive_foot(model, geom):
+    """Inscribed box on the received flat bottom, with no support enlargement."""
+    from scipy.spatial import ConvexHull
+    from .native_geometry import collision_geom_vertices
+
+    rotation = np.empty(9)
+    mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+    vertices = (collision_geom_vertices(model, geom)@rotation.reshape(3, 3).T
+                +model.geom_pos[geom])
+    bottom_z = float(vertices[:, 2].min())
+    bottom = vertices[vertices[:, 2] < bottom_z+1e-8]
+    if len(bottom) != 4:
+        raise ValueError("Primitive foot requires the received four-corner flat bottom")
+    lo, hi = bottom[:, :2].min(0), bottom[:, :2].max(0)
+    corners = np.asarray([[x, y] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])])
+    hull = ConvexHull(vertices)
+    planes = hull.equations[hull.equations[:, 2] > 1e-8]
+    top = float((-(corners@planes[:, :2].T+planes[:, 3])/planes[:, 2]).min())
+    lower, upper = np.r_[lo, bottom_z], np.r_[hi, top]
+    box = np.asarray([[x, y, z] for x in (lo[0], hi[0])
+        for y in (lo[1], hi[1]) for z in (bottom_z, top)])
+    excess = float((box@hull.equations[:, :3].T+hull.equations[:, 3]).max())
+    if top <= bottom_z or excess > 1e-8:
+        raise ValueError("Primitive foot must fit inside the original convex material")
+    return {"geom": model.geom(geom).name,
+        "body": model.body(int(model.geom_bodyid[geom])).name,
+        "center_body_m": ((lower+upper)/2).tolist(),
+        "half_extent_m": ((upper-lower)/2).tolist(),
+        "bottom_center_body_m": [*(lo+hi)/2, bottom_z],
+        "maximum_hull_plane_excess_m": excess,
+        "bottom_plane_variation_m": float(np.ptp(bottom[:, 2])),
+        "source_convex_volume_m3": float(hull.volume),
+        "primitive_volume_m3": float(np.prod(upper-lower)),
+        "upper_foot_contact_simplified": True}
+
+
+def build_reference(parent_model, parent_contract, source_root, destination, *,
+                    upstream=False, primitive_feet=False, braking=False):
     parent_model, parent_contract, source_root, destination = map(
         Path, (parent_model, parent_contract, source_root, destination))
     contract = json.loads(parent_contract.read_text())
@@ -32,9 +72,14 @@ def build_reference(parent_model, parent_contract, source_root, destination, *, 
         raise ValueError("Verified original task proxy required")
     if destination.exists():
         raise FileExistsError("Preserve existing rigid candidate")
+    if primitive_feet and not upstream:
+        raise ValueError("Primitive foot is a separately named native mjlab candidate")
+    if braking and not (upstream and primitive_feet):
+        raise ValueError("Braking candidate requires admitted native primitive feet")
     tree = ET.parse(parent_model)
     root = tree.getroot()
-    candidate = MJLAB_CANDIDATE if upstream else CANDIDATE
+    candidate = (BRAKING_CANDIDATE if braking else PRIMITIVE_CANDIDATE if primitive_feet
+        else MJLAB_CANDIDATE if upstream else CANDIDATE)
     root.set("model", candidate)
     option = root.find("option")
     option.set("integrator", "implicitfast")
@@ -48,12 +93,22 @@ def build_reference(parent_model, parent_contract, source_root, destination, *, 
     # Use the same ordinary rigid contact material as the body envelopes.
     # No positive discovery/rest margins, foundation springs or replacement
     # contact points. Geometry, friction, SI and self filters stay inherited.
+    primitive = []
+    parent = mujoco.MjModel.from_xml_path(str(parent_model)) if primitive_feet else None
     for geom in root.findall(".//geom"):
         if geom.get("name") in ("right_flexible_sole", "left_flexible_sole"):
             geom.set("solref", ".005 1")
             geom.set("solimp", ".95 .99 .001")
             geom.set("margin", "0")
             geom.set("priority", "0")
+            if primitive_feet:
+                fit = _primitive_foot(parent, parent.geom(geom.get("name")).id)
+                primitive.append(fit)
+                geom.set("type", "box")
+                geom.set("pos", " ".join(map(str, fit["center_body_m"])))
+                geom.set("size", " ".join(map(str, fit["half_extent_m"])))
+                geom.set("quat", "1 0 0 0")
+                geom.attrib.pop("mesh")
     actuator = root.find("actuator")
     for index, old in enumerate(list(actuator)):
         joint = contract["joints"][index]
@@ -102,6 +157,19 @@ def build_reference(parent_model, parent_contract, source_root, destination, *, 
             "C_only_autoreset_flag_omitted_for_Warp": upstream,
             "hardware_qualification": False, "soft_sole_qualification": False})
     contract_path = destination / "contract.json"
+    if primitive_feet:
+        contract["rigid_native"]["primitive_foot"] = {
+            "rule": "original_flat_bottom_inscribed_native_box_v1", "feet": primitive,
+            "source_foot_mesh_equivalence": False, "collision_leaves": 11}
+        contract["rigid_native"]["foot_sensor_sites"] = [
+            {"body": p["body"], "geom": p["geom"],
+                "center_body_m": p["bottom_center_body_m"]} for p in primitive]
+    if braking:
+        contract["rigid_native"]["signed_braking"] = {
+            "revision": "motoring_speed_derating_with_bounded_braking_v1",
+            "speed_derating": "motoring_only",
+            "braking_limit": "original_peak_and_thermal",
+            "positive_power_budget": "original_pre_tick_motoring_bound"}
     write_json(contract_path, contract)
     return model_path, contract_path
 
@@ -140,6 +208,23 @@ def make_source_runtime(model_path, contract_path):
             or model.opt.integrator != mujoco.mjtIntegrator.mjINT_IMPLICITFAST
             or model.npair != 0):
         raise ValueError("Native rigid timing/topology changed")
+    if contract["candidate"] in (PRIMITIVE_CANDIDATE, BRAKING_CANDIDATE):
+        feet = cfg["primitive_foot"]["feet"]
+        if cfg["primitive_foot"]["rule"] != "original_flat_bottom_inscribed_native_box_v1" or len(feet) != 2:
+            raise ValueError("Primitive foot identity changed")
+        for foot in feet:
+            geom = model.geom(foot["geom"])
+            if (geom.type[0] != mujoco.mjtGeom.mjGEOM_BOX
+                    or not np.array_equal(geom.pos, foot["center_body_m"])
+                    or not np.array_equal(geom.size, foot["half_extent_m"])):
+                raise ValueError("Primitive foot shape differs from its contract")
+    braking = contract["candidate"] == BRAKING_CANDIDATE
+    if braking != ("signed_braking" in cfg) or (braking and cfg["signed_braking"] != {
+            "revision": "motoring_speed_derating_with_bounded_braking_v1",
+            "speed_derating": "motoring_only",
+            "braking_limit": "original_peak_and_thermal",
+            "positive_power_budget": "original_pre_tick_motoring_bound"}):
+        raise ValueError("Braking drive must have its own frozen candidate contract")
 
     class RigidRuntime(type(base)):
         def __init__(self):
@@ -168,10 +253,21 @@ def make_source_runtime(model_path, contract_path):
             limit = self.contract["positive_mechanical_power_limit_w"]
             if bound > limit:
                 cap *= limit / bound
-            self.model.actuator_forcerange[:] = np.stack((-cap, cap), axis=1)
+            lower, upper = -cap, cap
+            if braking:
+                velocity = self.data.qvel[self.motor_vids]
+                peak = np.minimum(self.peak*self.strength,
+                    np.where(self.thermal > (self.cont*self.strength)**2,
+                        self.cont, self.peak)*self.strength)
+                motoring = peak*np.clip(1-np.abs(velocity)/(self.speed*1.3), 0, 1)
+                bound = float(np.sum(motoring*np.abs(velocity)))
+                motoring *= min(1., limit/max(bound, 1e-12))
+                lower = -np.where(velocity < 0, motoring, peak)
+                upper = np.where(velocity > 0, motoring, peak)
+            self.model.actuator_forcerange[:] = np.stack((lower, upper), axis=1)
             self.data.ctrl[:] = self.target + feed/self.kp
             self.data.ctrl[5] = np.clip(self.kp[5]*(self.target[5]-q[5])-self.kd[5]*qd[5],
-                -cap[5], cap[5])
+                lower[5], upper[5])
             before = float(self.data.time)
             mujoco.mj_step(self.model, self.data)  # Exactly one native 20ms step.
             self.physics_integrations += 1
@@ -179,7 +275,8 @@ def make_source_runtime(model_path, contract_path):
             self.last_tau = self.data.actuator_force.copy()
             self.thermal += DT/2*(self.last_tau**2-self.thermal)
             if (abs(self.data.time-before-DT) > 1e-12
-                    or np.any(np.abs(self.last_tau) > cap+1e-9)
+                    or np.any(self.last_tau < lower-1e-9)
+                    or np.any(self.last_tau > upper+1e-9)
                     or not all(np.isfinite(getattr(self.data, n)).all()
                         for n in ("qpos", "qvel", "qacc", "ctrl", "actuator_force"))
                     or any(w.number for w in self.data.warning)):

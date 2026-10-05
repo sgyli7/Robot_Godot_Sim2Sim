@@ -47,3 +47,16 @@ def collision_mesh_vertices(model: mujoco.MjModel, mesh_id: int) -> tuple[np.nda
         raise ValueError("Invalid compiled collision support vertices")
     return vertices, {"source": source, "raw_vertex_count": count,
                       "support_vertex_count": len(vertices)}
+
+
+def collision_geom_vertices(model: mujoco.MjModel, geom_id: int) -> np.ndarray:
+    """Support vertices in geom-local coordinates for mesh or native box."""
+    require_supported_engine()
+    kind = model.geom_type[geom_id]
+    if kind == mujoco.mjtGeom.mjGEOM_MESH:
+        return collision_mesh_vertices(model, int(model.geom_dataid[geom_id]))[0]
+    if kind == mujoco.mjtGeom.mjGEOM_BOX:
+        size = model.geom_size[geom_id]
+        return np.asarray([[sx*size[0], sy*size[1], sz*size[2]]
+            for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    raise ValueError("Collision support export requires native mesh or box")

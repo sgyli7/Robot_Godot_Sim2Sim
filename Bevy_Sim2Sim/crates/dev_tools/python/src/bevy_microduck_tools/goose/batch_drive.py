@@ -207,6 +207,10 @@ class BatchedGooseDrive:
 class BatchedRigidNativeDrive(BatchedGooseDrive):
     """Ordered native position/motor commands, caps and actual-force history."""
 
+    def __init__(self, contract, num_envs, *, device="cpu"):
+        super().__init__(contract, num_envs, device=device)
+        self.contract_native = contract["rigid_native"]
+
     @torch.no_grad()
     def prepare(self, action, q, qd, imu_wxyz, *, motor_velocity):
         if self._pending_action is not None:
@@ -228,9 +232,19 @@ class BatchedRigidNativeDrive(BatchedGooseDrive):
             self.cont, self.peak)*strength)
         bound = (cap*motor_velocity.abs()).sum(dim=1, keepdim=True)
         self.cap = cap*(self.power_limit/bound.clamp(min=self.power_limit))
+        self.force_lower, self.force_upper = -self.cap, self.cap
+        if "signed_braking" in self.contract_native:
+            peak = torch.minimum(self.peak*strength,
+                torch.where(self.thermal > (self.cont*strength)**2,
+                    self.cont, self.peak)*strength)
+            motoring = peak*(1-motor_velocity.abs()/(self.speed*1.3)).clamp(0, 1)
+            bound = (motoring*motor_velocity.abs()).sum(dim=1, keepdim=True)
+            motoring *= self.power_limit/bound.clamp(min=self.power_limit)
+            self.force_lower = -torch.where(motor_velocity < 0, motoring, peak)
+            self.force_upper = torch.where(motor_velocity > 0, motoring, peak)
         control = self.target+feed/self.kp
         control[:, 5] = (self.kp[5]*(self.target[:, 5]-q[:, 5])-self.kd[5]*qd[:, 5]).clamp(
-            -self.cap[:, 5], self.cap[:, 5])
+            self.force_lower[:, 5], self.force_upper[:, 5])
         self.prepared_ticks += 1
         self._pending_action = action.clone()
         return control
@@ -238,7 +252,9 @@ class BatchedRigidNativeDrive(BatchedGooseDrive):
     @torch.no_grad()
     def commit(self, actual_force):
         actual_force = self._values(actual_force, (18,))
-        if self._pending_action is None or bool((actual_force.abs() > self.cap+2e-6).any()):
+        if (self._pending_action is None
+                or bool((actual_force < self.force_lower-2e-6).any())
+                or bool((actual_force > self.force_upper+2e-6).any())):
             raise RuntimeError("Native force commit must follow a bounded prepared Tick")
         self.last_tau.copy_(actual_force)
         self.thermal += DT/2*(actual_force.square()-self.thermal)
