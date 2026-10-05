@@ -149,7 +149,10 @@ mod worker {
     fn auxiliary_camera_profile(profile: &str) -> bool {
         matches!(
             profile,
-            "auxiliary_grip_overview" | "auxiliary_bin_placement" | "auxiliary_pregrasp_overview"
+            "auxiliary_grip_overview"
+                | "auxiliary_bin_placement"
+                | "auxiliary_pregrasp_overview"
+                | "auxiliary_bin_survey"
         )
     }
 
@@ -658,7 +661,7 @@ mod worker {
                         if !(camera_profile == "arena_ego" || auxiliary_camera_profile(camera_profile))
                             || (auxiliary_camera_profile(camera_profile)
                                 && config.fiducial_calibration.is_none())
-                            || (camera_profile == "auxiliary_bin_placement" && (memory.is_some() || box_view_only))
+                            || (matches!(camera_profile, "auxiliary_bin_placement" | "auxiliary_bin_survey") && (memory.is_some() || box_view_only))
                         {
                             return Err("unbound fixed observation camera profile".into());
                         }
@@ -1381,6 +1384,13 @@ mod worker {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn declared_loaded_survey_is_admitted_and_learned_camera_stays_separate() {
+            assert!(auxiliary_camera_profile("auxiliary_bin_survey"));
+            assert!(!auxiliary_camera_profile("arena_ego"));
+            assert!(!auxiliary_camera_profile("static_placement_overview"));
+            assert!(!auxiliary_camera_profile("invented_sensor"));
+        }
         #[test]
         fn rigid_bin_board_proof_cannot_be_missing_foreign_or_lower_quality() {
             let corner = [[100., 100.], [110., 100.], [110., 110.], [100., 110.]];

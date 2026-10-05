@@ -210,7 +210,10 @@ fn require_marker_roles(reply: &serde_json::Value) -> Result<(), String> {
     }
     if reply["world_or_contact_truth_input"] != false
         || reply["task_qualified"] != false
-        || reply["camera_mount_profile"] != "auxiliary_grip_overview"
+        || !matches!(
+            reply["camera_mount_profile"].as_str(),
+            Some("auxiliary_grip_overview" | "auxiliary_bin_placement" | "auxiliary_bin_survey")
+        )
     {
         return Err("Qwen source-task geometry has foreign provenance".into());
     }
@@ -1006,6 +1009,16 @@ mod tests {
     fn dispatch_requires_both_unique_current_geometry_roles_and_provenance() {
         let valid = serde_json::json!({"detections":[{"kind":"carried_box","marker_id":22},{"kind":"target_bin","marker_id":21}],"world_or_contact_truth_input":false,"task_qualified":false,"camera_mount_profile":"auxiliary_grip_overview"});
         assert!(require_marker_roles(&valid).is_ok());
+        for profile in ["auxiliary_bin_placement", "auxiliary_bin_survey"] {
+            let mut declared = valid.clone();
+            declared["camera_mount_profile"] = profile.into();
+            assert!(require_marker_roles(&declared).is_ok());
+        }
+        for profile in ["arena_ego", "static_placement_overview", "invented_sensor"] {
+            let mut foreign = valid.clone();
+            foreign["camera_mount_profile"] = profile.into();
+            assert!(require_marker_roles(&foreign).is_err());
+        }
         let mut absent = valid.clone();
         absent["detections"].as_array_mut().unwrap().pop();
         assert!(require_marker_roles(&absent).is_err());
