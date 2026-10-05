@@ -8,7 +8,10 @@ import pytest
 
 gym = pytest.importorskip("gymnasium")
 from bevy_microduck_tools.goose.native_cpu_env import NativeGooseRecoveryEnv, NativeGooseRslEnv
-from bevy_microduck_tools.goose.speculative_contact import build_reference, make_source_runtime
+from bevy_microduck_tools.goose.speculative_contact import (
+    build_reference, build_tilted_sole_reference, build_material_share_reference, make_source_runtime,
+    require_pair_margin_backend, validate_prediction,
+)
 
 
 @pytest.fixture
@@ -61,3 +64,33 @@ def test_gym_same_step_reset_does_not_skip_next_physics_tick(source):
         assert env.get_attr("episodes") == (3, 3)
     finally:
         wrapper.close()
+
+
+@pytest.mark.parametrize("material_share", (False, True))
+def test_tilted_discovery_preserves_upright_source_and_rejects_gpu(source, tmp_path, material_share):
+    import json
+    model, contract = build_tilted_sole_reference(source[0], source[1], tmp_path / "tilted")
+    if material_share:
+        model, contract = build_material_share_reference(model, contract, tmp_path / "material_share")
+    env = NativeGooseRecoveryEnv(model, contract, source[2])
+    env.reset()
+    old = make_source_runtime(source[0], source[1])
+    for tick in range(4):
+        expected, _ = old.step(np.zeros(18))
+        actual, _, _, _, info = env.step(np.zeros(18))
+        np.testing.assert_array_equal(env.runtime.data.qpos, old.data.qpos)
+        np.testing.assert_array_equal(env.runtime.data.qvel, old.data.qvel)
+        np.testing.assert_array_equal(env.runtime.last_tau, old.last_tau)
+        np.testing.assert_array_equal(actual, expected.astype(np.float32))
+        assert info["actual_integrations"] == 1
+    env.close()
+    frozen = json.loads(contract.read_text())
+    native = mujoco.MjModel.from_xml_path(str(model))
+    assert native.ngeom == 12 and native.npair == 11
+    with pytest.raises(ValueError, match="native CPU candidate only"):
+        require_pair_margin_backend(frozen, None)
+    gid = native.geom("right_flexible_sole").id
+    pair = next(i for i in range(native.npair) if gid in (native.pair_geom1[i], native.pair_geom2[i]))
+    native.pair_solimp[pair, 0] += .01
+    with pytest.raises(ValueError, match="priority1 sole material"):
+        validate_prediction(native, frozen)

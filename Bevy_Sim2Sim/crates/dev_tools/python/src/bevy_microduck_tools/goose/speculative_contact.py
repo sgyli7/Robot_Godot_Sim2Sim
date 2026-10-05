@@ -24,6 +24,9 @@ from .mjlab_baseline import build_task_proxy_reference, TASK_PROXY_CANDIDATE
 CANDIDATE = "goose_task_proxy_11_speculative_ground_v1"
 PAIR_MARGIN_CANDIDATE = "goose_task_proxy_11_speculative_ground_pair_margin_v1"
 PREDICTION_CANDIDATES = (CANDIDATE, PAIR_MARGIN_CANDIDATE)
+TILTED_SOLE_CANDIDATE = "goose_task_proxy_11_native_tilted_sole_discovery_v1"
+MATERIAL_SHARE_CANDIDATE = "goose_task_proxy_11_native_sole_material_share_v1"
+NATIVE_CPU_CANDIDATES = (CANDIDATE, TILTED_SOLE_CANDIDATE, MATERIAL_SHARE_CANDIDATE)
 REVISION = "goose_nonfoot_ground_velocity_constraint_v1"
 BAND = .08
 
@@ -31,7 +34,7 @@ BAND = .08
 def validate_prediction(model, contract, *, entity_prefix=""):
     """Reject a missing adapter, inflated rest surface or different pair set."""
     p = contract.get("ground_prediction", {})
-    if (contract.get("candidate") not in PREDICTION_CANDIDATES
+    if (contract.get("candidate") not in (*PREDICTION_CANDIDATES, *NATIVE_CPU_CANDIDATES)
             or p.get("revision") != REVISION
             or p.get("discovery_band_m") != BAND
             or p.get("material_surface_offset_m") != 0.
@@ -47,15 +50,45 @@ def validate_prediction(model, contract, *, entity_prefix=""):
     targets = {g for g in range(model.ngeom)
                if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH and g not in feet}
     declared = {model.geom(entity_prefix+n).id for n in p.get("nonfoot_geoms", ())}
+    predictive_geoms = targets
+    if contract["candidate"] in (TILTED_SOLE_CANDIDATE, MATERIAL_SHARE_CANDIDATE):
+        sole = contract.get("tilted_sole_discovery", {})
+        if sole != {"revision": "goose_native_tilted_sole_pair_discovery_v1",
+                "discovery_band_m": BAND, "material_surface_offset_m": 0.,
+                "upright_quadrature_rzz_threshold": .7,
+                "upright_quadrature_discovery_band_m": .01,
+                "sole_force_law_unchanged": True, "physics_backend": "native_cpu"}:
+            raise ValueError("Explicit native-only tilted-sole discovery contract required")
+        predictive_geoms = targets | feet
+        if contract["candidate"] == MATERIAL_SHARE_CANDIDATE and contract.get("tilted_sole_material_share") != {
+                "revision": "goose_tilted_sole_current_material_share_v1",
+                "counted_rows": "true_gap_lte_zero_with_minimum_one",
+                "upright_mapping_unchanged": True, "force_formula_unchanged": True,
+                "tilted_load_allocation_changed": True, "physics_backend": "native_cpu"}:
+            raise ValueError("Named tilted material-contact load allocation required")
     pairs = {tuple(sorted((int(a), int(b))))
              for a, b in zip(model.pair_geom1, model.pair_geom2)}
-    if (len(targets) != 9 or declared != targets or model.npair != 9
-            or pairs != {tuple(sorted((ground, g))) for g in targets}
+    if (len(targets) != 9 or declared != targets or model.npair != len(predictive_geoms)
+            or pairs != {tuple(sorted((ground, g))) for g in predictive_geoms}
             or np.any(model.pair_margin != BAND)
             or np.any(model.pair_gap != 0)
             or np.any(model.pair_dim != 3)):
-        raise ValueError("Only the nine original non-foot/ground pairs may predict")
+        raise ValueError("Prediction pair set differs from the named contract")
     for i, (a, b) in enumerate(zip(model.pair_geom1, model.pair_geom2)):
+        gid = int(b if a == ground else a)
+        if gid in feet:
+            # Original sole priority1 wins over ground priority0, including
+            # its negative-format solref. Do not blend these materials.
+            friction = model.geom_friction[gid]
+            expected = np.array([friction[0], friction[0], friction[1], friction[2], friction[2]])
+            if (model.geom_priority[gid] != 1 or model.geom_priority[ground] != 0
+                    or model.geom_condim[gid] != 3
+                    or not np.array_equal(model.pair_solref[i], model.geom_solref[gid])
+                    or not np.array_equal(model.pair_solimp[i], model.geom_solimp[gid])
+                    or not np.array_equal(model.pair_friction[i], expected)
+                    or np.any(model.pair_solreffriction[i])):
+                raise ValueError("Prediction changed the original priority1 sole material")
+            continue
         friction = np.maximum(model.geom_friction[a], model.geom_friction[b])
         expected_friction = np.array([friction[0], friction[0], friction[1], friction[2], friction[2]])
         if (model.geom_priority[a] != model.geom_priority[b]
@@ -71,6 +104,8 @@ def validate_prediction(model, contract, *, entity_prefix=""):
 
 def require_pair_margin_backend(contract, model):
     """Bind the isolated, named Warp discovery fix; never patch an import live."""
+    if contract.get("candidate") in (TILTED_SOLE_CANDIDATE, MATERIAL_SHARE_CANDIDATE):
+        raise ValueError("Tilted-sole discovery is a native CPU candidate only")
     if contract.get("candidate") != PAIR_MARGIN_CANDIDATE:
         return
     import importlib.metadata
@@ -169,6 +204,104 @@ def build_reference(parent_model: Path, parent_contract: Path, source_root: Path
     return model_path, path
 
 
+def build_material_share_reference(parent_model: Path, parent_contract: Path,
+                                   destination: Path):
+    """Freeze a separate tilted load-allocation experiment; no inherited gate."""
+    if destination.exists():
+        raise FileExistsError("Preserve the previous material-share candidate")
+    contract = json.loads(parent_contract.read_text())
+    if contract.get("candidate") != TILTED_SOLE_CANDIDATE or sha256(parent_model) != contract["model_sha256"]:
+        raise ValueError("Frozen tilted-sole discovery parent required")
+    native = mujoco.MjModel.from_xml_path(str(parent_model))
+    validate_prediction(native, contract)
+    tree = ET.parse(parent_model)
+    tree.getroot().set("model", MATERIAL_SHARE_CANDIDATE)
+    destination.mkdir(parents=True)
+    for relative, expected in contract["asset_sha256"].items():
+        source = parent_model.parent / relative
+        if sha256(source) != expected:
+            raise ValueError("Frozen native geometry identity changed")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    model_path = destination / "robot.xml"
+    tree.write(model_path, encoding="unicode")
+    contract.update(candidate=MATERIAL_SHARE_CANDIDATE, model_sha256=sha256(model_path),
+        status="NATIVE_SOLE_MATERIAL_SHARE_UNADMITTED", training_release=False,
+        tilted_sole_material_share={"revision": "goose_tilted_sole_current_material_share_v1",
+            "counted_rows": "true_gap_lte_zero_with_minimum_one",
+            "upright_mapping_unchanged": True, "force_formula_unchanged": True,
+            "tilted_load_allocation_changed": True, "physics_backend": "native_cpu"})
+    contract["upstream_baseline"].update(parent_candidate=TILTED_SOLE_CANDIDATE,
+        parent_model_sha256=sha256(parent_model), parent_contract_sha256=sha256(parent_contract),
+        source_qualified=False, target_qualified=False)
+    model = mujoco.MjModel.from_xml_path(str(model_path))
+    validate_prediction(model, contract)
+    _preserve_physical_arrays(native, model)
+    path = destination / "contract.json"
+    write_json(path, contract)
+    return model_path, path
+
+
+def build_tilted_sole_reference(parent_model: Path, parent_contract: Path,
+                               destination: Path):
+    """Extend native tilted-foot discovery, retaining upright four-point rows.
+
+    The pinned source replaces upright native foot contacts before applying
+    its existing load law. Tilted contacts keep their native witnesses and
+    receive that same law. This changes discovery eligibility and requires
+    independent admission; it does not inherit a parent physics gate.
+    """
+    if destination.exists():
+        raise FileExistsError("Preserve the previous tilted-sole candidate")
+    contract = json.loads(parent_contract.read_text())
+    if contract.get("candidate") != CANDIDATE or sha256(parent_model) != contract["model_sha256"]:
+        raise ValueError("Frozen native speculative-ground parent required")
+    native = mujoco.MjModel.from_xml_path(str(parent_model))
+    ground, _ = validate_prediction(native, contract)
+    tree = ET.parse(parent_model)
+    root = tree.getroot()
+    root.set("model", TILTED_SOLE_CANDIDATE)
+    contacts = root.find("contact")
+    for row in contract["contact_mapping"]["ground_contact_quadrature"]:
+        g = native.geom(row["geom"]).id
+        if not (native.geom_priority[g] == 1 and native.geom_priority[ground] == 0
+                and native.geom_condim[g] == 3):
+            raise ValueError("Unknown native sole material mixing")
+        friction = native.geom_friction[g]
+        ET.SubElement(contacts, "pair", name="prediction_"+row["geom"],
+            geom1="ground", geom2=row["geom"], condim="3", margin=str(BAND), gap="0",
+            friction=" ".join(map(str, (friction[0], friction[0], friction[1], friction[2], friction[2]))),
+            solref=" ".join(map(str, native.geom_solref[g])),
+            solimp=" ".join(map(str, native.geom_solimp[g])))
+    destination.mkdir(parents=True)
+    for relative, expected in contract["asset_sha256"].items():
+        source = parent_model.parent / relative
+        if sha256(source) != expected:
+            raise ValueError("Frozen native geometry identity changed")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    model_path = destination / "robot.xml"
+    tree.write(model_path, encoding="unicode")
+    contract.update(candidate=TILTED_SOLE_CANDIDATE, model_sha256=sha256(model_path),
+        status="NATIVE_TILTED_SOLE_DISCOVERY_UNADMITTED", training_release=False,
+        tilted_sole_discovery={"revision": "goose_native_tilted_sole_pair_discovery_v1",
+            "discovery_band_m": BAND, "material_surface_offset_m": 0.,
+            "upright_quadrature_rzz_threshold": .7,
+            "upright_quadrature_discovery_band_m": .01,
+            "sole_force_law_unchanged": True, "physics_backend": "native_cpu"})
+    contract["upstream_baseline"].update(parent_candidate=CANDIDATE,
+        parent_model_sha256=sha256(parent_model), parent_contract_sha256=sha256(parent_contract),
+        source_qualified=False, target_qualified=False)
+    model = mujoco.MjModel.from_xml_path(str(model_path))
+    validate_prediction(model, contract)
+    _preserve_physical_arrays(native, model)
+    path = destination / "contract.json"
+    write_json(path, contract)
+    return model_path, path
+
+
 def rebind_cpu_rows(model, data, contract):
     """Native soft unilateral constraint in one-step, zero-offset gap units."""
     ground, targets = validate_prediction(model, contract)
@@ -226,6 +359,13 @@ def make_source_runtime(model_path: Path, contract_path: Path, *, skill="recover
             self.contract = contract
             self.predictive_rows = []
             self.reset()
+
+        def _integrate(self):
+            if contract["candidate"] == MATERIAL_SHARE_CANDIDATE:
+                from .native_sole_contact import integrate_material_share
+                integrate_material_share(self)
+            else:
+                super()._integrate()
 
         def _planar_sole_quadrature(self):
             super()._planar_sole_quadrature()

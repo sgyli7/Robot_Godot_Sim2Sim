@@ -10,7 +10,7 @@ import gymnasium as gym
 import mujoco
 import numpy as np
 
-from .speculative_contact import CANDIDATE, make_source_runtime
+from .speculative_contact import NATIVE_CPU_CANDIDATES, make_source_runtime
 
 REVISION = "goose_native_cpu_front_recovery_pilot_v1"
 
@@ -22,8 +22,8 @@ class NativeGooseRecoveryEnv(gym.Env):
                  episode_ticks=700, trajectory_directory=None):
         self.runtime = make_source_runtime(Path(model_path), Path(contract_path))
         rt = self.runtime
-        if rt.contract["candidate"] != CANDIDATE:
-            raise ValueError("Native CPU pilot requires its explicitly admitted contact source")
+        if rt.contract["candidate"] not in NATIVE_CPU_CANDIDATES:
+            raise ValueError("Native CPU pilot requires its named native contact source")
         self.initial_qpos = np.asarray(initial_qpos, dtype=float).copy()
         if self.initial_qpos.shape != (rt.model.nq,) or not np.isfinite(self.initial_qpos).all():
             raise ValueError("Frozen recovery birth must match the native model")
@@ -85,7 +85,8 @@ class NativeGooseRecoveryEnv(gym.Env):
         power = float(np.maximum(rt.last_tau * rt.data.qvel[self.motor_vids], 0).sum())
         reward = .02*(4.*.5*(up+1.) + 2.*np.clip(height, 0., 1.) + 3.*stable
             - .01*np.square(action-previous).mean() - .001*power)
-        row = dict(qpos=rt.data.qpos.copy(), qvel=rt.data.qvel.copy(), torque=rt.last_tau.copy(),
+        row = dict(qpos=rt.data.qpos.copy(), qvel=rt.data.qvel.copy(),
+            qacc_warmstart=rt.data.qacc_warmstart.copy(), torque=rt.last_tau.copy(),
             target=rt.target.copy(), thermal=rt.thermal.copy(), action=action.copy(),
             observation=observations.copy(), min_collision_z=z, time=rt.data.time,
             upright=up, height_ratio=height, reward=reward)
