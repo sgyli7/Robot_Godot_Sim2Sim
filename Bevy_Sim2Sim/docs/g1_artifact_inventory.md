@@ -1,6 +1,6 @@
 # G1 外部制品与许可清单
 
-许可文本核验日期：2026-10-01；2026-10-05 根据实际执行收据补正 T2 源端版本。范围为当前选择的 T1 StaticApple、T2 MobileBox、本地 Qwen、G1 本体与下层控制器。本文是依赖清单，不是任务能力验收或完整发行包 SBOM。
+许可文本核验日期：2026-10-01；2026-10-05 根据实际执行收据补正 T2 源端版本，并核对 G1 STL 的官方来源身份。范围为当前选择的 T1 StaticApple、T2 MobileBox、本地 Qwen、G1 本体与下层控制器。本文是依赖清单，不是任务能力验收或完整发行包 SBOM。
 
 本次直接读取固定 Git checkout、官方 Hugging Face revision API、模型卡及原始许可；现存下载 receipt 仅用于追溯下载来源。源码许可、模型许可、资产许可分项记录，不能互相替代。仓库中的用途声明（例如个人非商业研究）不是上游授予许可的依据。
 
@@ -65,7 +65,11 @@ T2 实际源端 episode 20112 使用 `release_0_2_1`、SDK `6.0.0-rc.22+release.
 
 USD/URDF 本次重新计算哈希并匹配 receipt；两个派生 JSON 的来源和哈希由 `g1_physics.receipt.json` 记录。共享网格不代表 AGILE 与 Homie 的惯量、增益或控制历史可以合并。
 
-Isaac Lab 固定源码中有 [Unitree BSD-3-Clause 文本][unitree_license]，版权所有人为 Unitree Robotics；也有 [依赖/资产许可索引][lab_licenses]。**尚未建立该 Unitree 文本与本次 Groot sample USD、Arena WBC URDF/STL 的逐项授权对应关系**，因此本文不将所有下载资产统称为 BSD。也不把转换为 JSON 视为取得新的资产许可。Isaac Sim 资产许可页面的浏览工具读取因页面大小超限失败；这里保持未核，而不是用泛化的 Isaac Sim 代码许可补齐。
+2026-10-05 逐项核对上述缓存的 **50 个 STL**：其 Git blob SHA-1 和文件长度全部匹配 [Unitree 官方固定 commit 的 meshes 目录][unitree_meshes]（`5994d4faef0a9cadd3287f8de0199a67eeb2a259`），本地 SHA-256 同时匹配 `mesh_receipt.json`。该固定仓库的 [BSD-3-Clause 原文][unitree_ros_license] 因而有可核对的文件身份依据；结论仅覆盖这 50 个相同的 STL。
+
+**Groot sample USD 与 Arena WBC URDF 的许可适用关系仍未全部核实。** 本地 URDF Git blob 为 `e057336b6d0c6f25c8f0084664d28dc1885d0c7f`，不同于上述 Unitree commit 同名文件的 `19b770a9cc3cc1c92b093bacba75b9691c5dc1ae`；不从网格相同推断本体文件相同。以 `LoadNone` 读取实际 USD 本层的 215 个 prim 后，layer 自定义元数据为空，所读属性与元数据未见许可/版权字段；其来源说明指向 Unitree ROS 的 G1 描述文件，未标识源 revision。此说明可追溯来源，不能补齐授权或字节对应证据。
+
+Isaac Lab 固定源码仍有 [Unitree BSD-3-Clause 文本][unitree_license] 和 [依赖/资产许可索引][lab_licenses]。新版 [Isaac Sim 6.1 人形资产目录][isaac_g1_catalog] 明确给 `Isaac Sim/Robots/Unitree/G1/g1.usd` 标注 BSD-3，但这是不同于当前 `Isaac/Samples/Groot/Robots/` 缓存的路径，不能代替该缓存的逐项核验。[官方许可 FAQ][isaac_asset_faq] 也区分代码与附加资产条款。转换为 JSON 不产生新的上游授权；上述只读核对没有替换网格、本体或动力学参数。
 
 ## Qwen 与推理服务
 
@@ -132,6 +136,10 @@ GR00T 源码 `LICENSE` 与 T2 模型卡所链接的 2022 PDF **不是同一文�
 [g1_usd]: https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/6.1/Isaac/Samples/Groot/Robots/g1_29dof_with_hand_rev_1_0.usd
 [g1_urdf]: https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.1/Isaac/IsaacLab/Arena/wbc_policy/robot_model/g1/g1_29dof_with_hand.urdf
 [unitree_license]: https://github.com/isaac-sim/IsaacLab/blob/ae37b028ea415c91ea2bc32609efcd759ed2b974/docs/licenses/assets/unitree-license.txt
+[unitree_meshes]: https://github.com/unitreerobotics/unitree_ros/tree/5994d4faef0a9cadd3287f8de0199a67eeb2a259/robots/g1_description/meshes
+[unitree_ros_license]: https://github.com/unitreerobotics/unitree_ros/blob/5994d4faef0a9cadd3287f8de0199a67eeb2a259/LICENSE
+[isaac_g1_catalog]: https://docs.isaacsim.omniverse.nvidia.com/6.1.0/assets/usd_assets_robots_humanoid.html#unitree
+[isaac_asset_faq]: https://docs.isaacsim.omniverse.nvidia.com/6.1.0/common/license-faq.html
 [lab_licenses]: https://github.com/isaac-sim/IsaacLab/blob/ae37b028ea415c91ea2bc32609efcd759ed2b974/docs/source/refs/license.rst
 [lab_t1_license]: https://github.com/isaac-sim/IsaacLab/blob/e57379c634b42db5a0fe9f754341be6e2a7c7c43/LICENSE
 [lab_t2_license]: https://github.com/isaac-sim/IsaacLab/blob/ae37b028ea415c91ea2bc32609efcd759ed2b974/LICENSE
