@@ -2401,7 +2401,8 @@ fn run_capture_owner(
     if let Some(model) = &fiducial_model {
         let auxiliary_labels = matches!(model.receipt.layout_profile,
             rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryGripTargets
-            | rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryBinBoardTargets);
+            | rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+            | rendering_minigame::g1_task_fiducial::G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets);
         let static_profile = model.receipt.layout_profile.is_static();
         if auxiliary_labels != auxiliary_view || static_profile != static_labels {
             return Err(
@@ -4258,7 +4259,11 @@ fn drive_auxiliary_marker_view(
             || reply["camera_mount_profile"] != "auxiliary_grip_overview"
             || !matches!(
                 reply["marker_layout_profile"].as_str(),
-                Some("auxiliary_grip_targets" | "auxiliary_bin_board_targets")
+                Some(
+                    "auxiliary_grip_targets"
+                        | "auxiliary_bin_board_targets"
+                        | "auxiliary_bin_board_upper_box_targets"
+                )
             )
         {
             return Err("auxiliary view has a foreign camera/label/native boundary".into());

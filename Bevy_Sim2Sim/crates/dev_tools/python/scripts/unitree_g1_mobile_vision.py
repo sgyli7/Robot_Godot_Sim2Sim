@@ -29,6 +29,7 @@ DEFINITION_SHA256 = "571cb2558c137dccafa2d18adda5021f0885e0f10abf6d61edd62f1c6e8
 MARKER_SIZES = {21: 0.16, 22: 0.10}
 TASK_GEOMETRY_SHA256 = "19eb60783008e3f08d82a1cf402c590395df1e98c4c089fb1247f8ed7d9a88a0"
 BIN_BOARD_PROFILE = "auxiliary_bin_board_targets"
+UPPER_BOX_BOARD_PROFILE = "auxiliary_bin_board_upper_box_targets"
 
 
 def validate_public_bin_board(markers):
@@ -355,17 +356,17 @@ def fixed_marker_layout(path, camera_profile, public_assets=None):
         if set(doc) not in (fields, fields | {"layout_profile"}, fields | {"layout_profile", "mobile_bin_board_markers"}) or doc["schema"] != "g1_task_fiducials_v1" or doc["dictionary"] != "DICT_4X4_50":
             raise ValueError("foreign fixed public marker layout")
         layout = doc.get("layout_profile", "original_arena")
-        if layout == BIN_BOARD_PROFILE:
+        if layout in (BIN_BOARD_PROFILE, UPPER_BOX_BOARD_PROFILE):
             validate_public_bin_board(doc.get("mobile_bin_board_markers"))
         elif "mobile_bin_board_markers" in doc:
             raise ValueError("bin board calibration cannot enter a different marker profile")
         digest = public_sha(path, public_assets)
-    if layout in ("auxiliary_grip_targets", BIN_BOARD_PROFILE):
+    if layout in ("auxiliary_grip_targets", BIN_BOARD_PROFILE, UPPER_BOX_BOARD_PROFILE):
         if camera_profile not in ("auxiliary_grip_overview", "auxiliary_bin_placement", "auxiliary_pregrasp_overview"):
             raise ValueError("auxiliary labels require their explicitly declared sensor")
         sizes[22] = .06
         mounts[21] = transform({"position": [0., .18, .60], "rotation_wxyz": [2**-.5, 2**-.5, 0., 0.]})
-        mounts[22] = transform({"position": [.1005, 0., -.04], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})
+        mounts[22] = transform({"position": [.1005, 0., .05 if layout == UPPER_BOX_BOARD_PROFILE else -.04], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})
     elif layout != "original_arena" or camera_profile != "arena_ego":
         raise ValueError("unbound auxiliary sensor or unsupported marker layout")
     return sizes, mounts, layout, digest
@@ -728,7 +729,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     if camera_profile == "auxiliary_pregrasp_overview" and not (held_contact_geometry or grasp_centering):
         raise ValueError("pregrasp camera requires its explicit geometry diagnostic")
     marker_sizes, marker_mounts, layout_profile, fiducial_hash = fixed_marker_layout(fiducial_path, camera_profile, public_assets)
-    if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE)):
+    if placement_view_only and (box_view_only or memory_path is not None or geometry_path is None or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE, UPPER_BOX_BOARD_PROFILE)):
         raise ValueError("placement view requires its bound auxiliary labels/public geometry and no other mode")
     camera_in_root = root_from_camera(definition, state["positions"], camera_profile)
     root_rotation = rotation(state["root_rotation_wxyz"])
@@ -749,7 +750,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
     if secondary_image_path is not None or secondary_observation_path is not None:
         if (secondary_image_path is None or secondary_observation_path is None
                 or memory_path is not None or (geometry_path is None and not box_view_only)
-                or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE)):
+                or layout_profile not in ("auxiliary_grip_targets", BIN_BOARD_PROFILE, UPPER_BOX_BOARD_PROFILE)):
             raise ValueError("box pair requires its explicit auxiliary geometry mode")
         parent = Path(observation_path).resolve(strict=True).parent
         for path, expected, limit in ((secondary_image_path, parent/"secondary"/"ego.png", 16*1024*1024),
@@ -779,7 +780,7 @@ def localize(image_path, observation_path, definition_path, geometry_path=None, 
                          "input_sha256": [sha(observation_path), sha(secondary_observation_path)],
                          "camera_mount_profiles": [camera_profile, secondary["camera_mount_profile"]]})
     board = None
-    if layout_profile == BIN_BOARD_PROFILE and not box_view_only and not grasp_centering and not held_contact_geometry:
+    if layout_profile in (BIN_BOARD_PROFILE, UPPER_BOX_BOARD_PROFILE) and not box_view_only and not grasp_centering and not held_contact_geometry:
         board_pixels = {}
         for marker_corners, marker_id in zip(corners, [] if ids is None else ids.flatten()):
             marker_id = int(marker_id)

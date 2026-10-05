@@ -1,7 +1,9 @@
 """Public RGB board tests; synthetic geometry cannot qualify a physical task."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -16,6 +18,32 @@ else:
 
 @unittest.skipIf(vision is None, "optional actual-RGB OpenCV runtime absent")
 class MobileBinBoardTests(unittest.TestCase):
+    def test_upper_box_label_reconstructs_same_object_without_legacy_offset_bias(self):
+        markers = [dict(marker_id=identity, png_path=f"print_{identity}.png", png_sha256="0"*64,
+                        center_source_m=[x, .18, .45], rotation_wxyz=[2**-.5, 2**-.5, 0., 0.])
+                   for identity, x in [(23, -.25), (24, .25)]]
+        document = dict(schema="g1_task_fiducials_v1", dictionary="DICT_4X4_50",
+                        png_paths=["21.png", "22.png"], png_sha256=["0"*64, "0"*64],
+                        layout_profile=vision.BIN_BOARD_PROFILE, mobile_bin_board_markers=markers)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "public.json"
+            path.write_text(json.dumps(document))
+            _, old, _, old_hash = vision.fixed_marker_layout(path, "auxiliary_bin_placement")
+            document["layout_profile"] = vision.UPPER_BOX_BOARD_PROFILE
+            path.write_text(json.dumps(document))
+            sizes, new, profile, new_hash = vision.fixed_marker_layout(path, "auxiliary_bin_placement")
+        self.assertNotEqual(old_hash, new_hash)
+        self.assertEqual(profile, vision.UPPER_BOX_BOARD_PROFILE)
+        self.assertEqual(sizes[22], .06)
+        np.testing.assert_array_equal(old[21], new[21])
+        box_pose = np.eye(4)
+        box_pose[:3, 3] = [.6, .15, .9]
+        observed_marker_pose = box_pose @ new[22]
+        np.testing.assert_allclose(observed_marker_pose @ np.linalg.inv(new[22]), box_pose,
+                                   atol=1e-12, rtol=0)
+        legacy_bias = (observed_marker_pose @ np.linalg.inv(old[22]))[:3, 3] - box_pose[:3, 3]
+        self.assertAlmostEqual(np.linalg.norm(legacy_bias), .09)
+
     def test_public_mount_cannot_be_replaced_by_a_runtime_object_pose(self):
         markers = [dict(marker_id=identity, png_path=f"print_{identity}.png", png_sha256="0"*64,
                         center_source_m=[x, .18, .45], rotation_wxyz=[2**-.5, 2**-.5, 0., 0.])

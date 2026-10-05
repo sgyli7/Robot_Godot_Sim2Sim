@@ -46,6 +46,8 @@ pub enum G1FiducialLayoutProfile {
     /// Separate public rigid three-label T2 board. These extra observations
     /// remain hidden throughout the original learned grasp images.
     AuxiliaryBinBoardTargets,
+    /// Same public bin board, with the box label above the gripping fingers.
+    AuxiliaryBinBoardUpperBoxTargets,
     /// Public small labels for a static RGB localization diagnostic. This
     /// profile never silently enters original unmarked model observations.
     StaticApplePlate,
@@ -78,7 +80,11 @@ fn validate_bin_board_layout(
     profile: G1FiducialLayoutProfile,
     markers: &[MobileBinBoardMarker],
 ) -> Result<(), String> {
-    if profile != G1FiducialLayoutProfile::AuxiliaryBinBoardTargets {
+    if !matches!(
+        profile,
+        G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+            | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets
+    ) {
         return if markers.is_empty() {
             Ok(())
         } else {
@@ -249,6 +255,13 @@ mod tests {
         let profile = G1FiducialLayoutProfile::AuxiliaryBinBoardTargets;
         assert!(validate_bin_board_layout(profile, &markers).is_ok());
         assert!(
+            validate_bin_board_layout(
+                G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets,
+                &markers
+            )
+            .is_ok()
+        );
+        assert!(
             validate_bin_board_layout(G1FiducialLayoutProfile::AuxiliaryGripTargets, &markers)
                 .is_err()
         );
@@ -385,14 +398,16 @@ impl G1TaskFiducialModel {
                 printed_black_square_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.16, 0.10],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [0.16, 0.06],
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [0.16, 0.06],
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.02, 0.06],
                 },
                 white_margin_overall_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.20, 0.125],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [0.20, 0.075],
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [0.20, 0.075],
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.025, 0.075],
                 },
@@ -409,6 +424,9 @@ impl G1TaskFiducialModel {
                     | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => {
                         [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
                     }
+                    G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => {
+                        [[0., 0.18, 0.60], [0.1005, 0., 0.05]]
+                    }
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => {
                         document.marker_mounts_source_m.unwrap()
@@ -419,7 +437,8 @@ impl G1TaskFiducialModel {
                         [[1., 0., 0., 0.], [0.70710677, 0., 0.70710677, 0.]]
                     }
                     G1FiducialLayoutProfile::AuxiliaryGripTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [
                         [0.70710677, 0.70710677, 0., 0.],
                         [0.70710677, 0., 0.70710677, 0.],
                     ],
@@ -534,6 +553,7 @@ fn spawn(
                         model.receipt.layout_profile,
                         G1FiducialLayoutProfile::AuxiliaryGripTargets
                             | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
+                            | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets
                     ) {
                         Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
                     } else {

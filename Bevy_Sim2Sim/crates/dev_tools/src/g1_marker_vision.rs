@@ -164,7 +164,11 @@ mod worker {
         box_view_only: bool,
     ) -> Result<(), String> {
         let proof = &reply["public_bin_board_pose"];
-        if reply["marker_layout_profile"] != "auxiliary_bin_board_targets" || box_view_only {
+        if !matches!(
+            reply["marker_layout_profile"].as_str(),
+            Some("auxiliary_bin_board_targets" | "auxiliary_bin_board_upper_box_targets")
+        ) || box_view_only
+        {
             return if proof.is_null() {
                 Ok(())
             } else {
