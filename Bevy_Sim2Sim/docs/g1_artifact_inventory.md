@@ -70,7 +70,7 @@ Isaac Lab 固定源码中有 [Unitree BSD-3-Clause 文本][unitree_license]，�
 ## Qwen 与推理服务
 
 - 官方模型：[Qwen/Qwen3.8-27B-FP8][qwen_card]；官方 HF revision API 与本机 HF ref 均为 `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a`。HF metadata 的 `pipeline_tag` 为 `image-text-to-text`，许可标记为 `apache-2.0`。
-- 实际服务权重目录：`/home/ethan/models/Qwen3.8-27B-FP8/`，66 shards，来自既有 ModelScope 下载。HF snapshot 元数据位置：`/home/ethan/models/hf/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a/`。**不能把这个 HF revision 直接宣称为平铺 ModelScope 全部权重的已核 revision**；目前只有 config 等有限比对，未建立全 shards 与该 HF revision 的逐文件映射。
+- 实际服务权重目录：`/home/ethan/models/Qwen3.8-27B-FP8/`，66 shards，来自既有 ModelScope 下载。HF snapshot 元数据位置：`/home/ethan/models/hf/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a/`。2026-10-05 已对实际服务目录的 **66 个 safetensors 分片、共 30,866,866,928 bytes** 逐文件计算 SHA256 和长度，全部与[固定 revision 官方 API](https://huggingface.co/api/models/Qwen/Qwen3.8-27B-FP8/revision/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a?blobs=true) 的 LFS payload 一致。10 项运行期配置、模板、tokenizer／预处理文件也逐项匹配；LFS 文件比较 payload 哈希，不能比较其 Git 指针 blob。原始报告与修正后的 metadata 比较报告分别保存，未改缓存或重新下载权重。非运行期的 README、LICENSE、.gitattributes 字节有差异，许可文本的归一化核对见下一项。
 - 原始许可：[HF 固定 `LICENSE`][qwen_license] 是 Apache-2.0。本地平铺目录 `LICENSE` 与该官方文件在换行和首尾空白归一化后全文相同；原始字节哈希不同，见下表。模型目录自己的 Apache 许可不来自部署脚本许可。
 - 本地部署目录：`/home/ethan/LocalServices/Local_Qwen/qwen38-27b-fp8-dgx-spark/`；Git HEAD `969e52635a6a09b3e0ba8a1088158c001feeab41`，存在本机部署修改，不能把 HEAD 当全部运行配置的不可变快照。本地 `LICENSE` 为 MIT，只覆盖该部署仓库的相应内容。
 - 已检查的容器：`vllm/vllm-openai:v0.27.1-aarch64`；镜像 digest `sha256:1c8e60a0841b333c700488cb029d3664807249da0c071e862191b00fe34b228c`，image ID `sha256:2c211a1273b48e8929f893b267aeb1509e6b84654cdbde1bad56d79e3964224d`，build revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`。该 revision 的 [vLLM `LICENSE`][vllm_license] 为 Apache-2.0；这不代表镜像内所有 CUDA、库和驱动组件均为 Apache。
@@ -105,7 +105,7 @@ GR00T 源码 `LICENSE` 与 T2 模型卡所链接的 2022 PDF **不是同一文�
 | Isaac Lab Unitree 许可文本 | `2b794acf1e250f5545ae5a47d81e5685ea5488ce077d1087ed8be5f81e9ba5c0` | 两个固定 Lab checkout 中内容相同；资产适用关系仍待核 |
 | vLLM 固定 `LICENSE` | `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4` | 直接读取镜像 build revision 的 GitHub raw URL |
 
-本清单尚未闭合的来源问题是 T1 许可冲突、Homie 外部权重许可、下载的 USD/URDF/STL 与资产许可的对应关系、以及 Qwen 平铺 shards 的完整固定 revision 映射。它们保持独立状态；填写版本或许可清单不改变任务能力开关或物理验收状态。
+本清单尚未闭合的来源问题是 T1 许可冲突、Homie 外部权重许可、下载的 USD/URDF/STL 与资产许可的对应关系。Qwen 实际服务权重的固定 revision 字节映射已完成，不能据此补齐其他制品的许可。它们保持独立状态；填写版本或许可清单不改变任务能力开关或物理验收状态。
 
 [t1_card]: https://huggingface.co/nvidia/GN1x-Tuned-Arena-G1-Static-PickNPlace/blob/7f78bebf1a90131e7304beacfcd47eb27bad16ab/README.md
 [t1_license]: https://huggingface.co/nvidia/GN1x-Tuned-Arena-G1-Static-PickNPlace/blob/7f78bebf1a90131e7304beacfcd47eb27bad16ab/LICENCE
