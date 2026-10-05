@@ -48,6 +48,23 @@ impl Default for TaskUiStatus {
 #[derive(Resource, Default)]
 pub struct TaskUiFocus(pub bool);
 
+/// Entry-specific instructions, supplied before the UI is constructed.
+#[derive(Resource)]
+pub struct TaskUiPresentation {
+    pub title: String,
+    pub help: String,
+    pub initial_instruction: String,
+}
+impl Default for TaskUiPresentation {
+    fn default() -> Self {
+        Self {
+            title: "G1 · 本地视觉任务".into(),
+            help: "点击输入框可粘贴中文；启动会重置场景。Ctrl+Enter 启动，Esc 停止。".into(),
+            initial_instruction: "观察当前场景".into(),
+        }
+    }
+}
+
 #[derive(Component)]
 struct TaskUiRoot;
 #[derive(Component)]
@@ -71,6 +88,7 @@ impl Plugin for TaskUiPlugin {
             app.add_plugins(TabNavigationPlugin);
         }
         app.init_resource::<TaskUiStatus>()
+            .init_resource::<TaskUiPresentation>()
             .init_resource::<TaskUiFocus>()
             .add_message::<TaskUiAction>()
             .add_systems(Startup, setup_ui)
@@ -85,7 +103,11 @@ impl Plugin for TaskUiPlugin {
     }
 }
 
-fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
+fn setup_ui(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    presentation: Res<TaskUiPresentation>,
+) {
     let font: Handle<Font> = assets.load("third_party/fonts/noto_sans_cjk_regular.otf");
     let normal = TextFont {
         font: font.clone().into(),
@@ -110,7 +132,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
         .id();
     let title = commands
         .spawn((
-            Text::new("G1 · 本地视觉任务"),
+            Text::new(presentation.title.clone()),
             TextLayout {
                 linebreak: LineBreak::AnyCharacter,
                 ..default()
@@ -121,7 +143,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
         .id();
     let help = commands
         .spawn((
-            Text::new("点击输入框可粘贴中文；启动会重置场景。Ctrl+Enter 启动，Esc 停止。"),
+            Text::new(presentation.help.clone()),
             TextLayout {
                 linebreak: LineBreak::AnyCharacter,
                 ..default()
@@ -134,7 +156,7 @@ fn setup_ui(mut commands: Commands, assets: Res<AssetServer>) {
             TextColor(Color::srgb(0.72, 0.8, 0.85)),
         ))
         .id();
-    let mut editor = EditableText::new("观察当前场景");
+    let mut editor = EditableText::new(presentation.initial_instruction.clone());
     editor.max_characters = Some(1024);
     editor.allow_newlines = true;
     editor.visible_lines = Some(3.0);

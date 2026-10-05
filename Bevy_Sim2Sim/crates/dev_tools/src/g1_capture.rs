@@ -6314,11 +6314,11 @@ fn drive_capture(
         {
             latest.phase == G1WorkerPhase::Paused
         } else if runtime.options.ticks == 0 {
-            latest.phase == G1WorkerPhase::Paused && latest.timing.total_integrations == 0
+            latest.phase == G1WorkerPhase::Paused && latest.timing.episode_integrations == 0
         } else {
             latest.phase == G1WorkerPhase::Failed
                 || (latest.phase == G1WorkerPhase::Paused
-                    && latest.timing.total_integrations == u64::from(runtime.options.ticks))
+                    && latest.timing.episode_integrations == u64::from(runtime.options.ticks))
         };
         if capture_boundary && !runtime.requested {
             if runtime.static_visual_grasp
@@ -6326,7 +6326,7 @@ fn drive_capture(
                 && !runtime.static_observed_grasp
             {
                 if latest.phase != G1WorkerPhase::Paused
-                    || latest.timing.total_integrations
+                    || latest.timing.episode_integrations
                         != if runtime.static_pregrasp { 100 } else { 140 }
                 {
                     return Err(
@@ -6362,7 +6362,7 @@ fn drive_capture(
             {
                 return Ok(());
             }
-            if latest.timing.total_integrations > u64::from(runtime.options.ticks) {
+            if latest.timing.episode_integrations > u64::from(runtime.options.ticks) {
                 return Err("worker exceeded the capture integration budget".into());
             }
             port.request()?;

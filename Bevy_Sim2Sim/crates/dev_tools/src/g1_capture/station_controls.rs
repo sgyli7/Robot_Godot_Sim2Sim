@@ -2,7 +2,7 @@
 //! Stop invalidates owner commands; only reset can admit a subsequent run.
 use super::*;
 use bevy::camera::RenderTarget;
-use task_minigame::ui::{TaskUiAction, TaskUiPlugin, TaskUiStatus};
+use task_minigame::ui::{TaskUiAction, TaskUiPlugin, TaskUiPresentation, TaskUiStatus};
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,7 +127,13 @@ pub(super) fn install(
         smoke_passed: false,
     });
     runtime.controls.as_ref().unwrap().save(runtime, false)?;
-    app.add_plugins(TaskUiPlugin).add_systems(
+    app.insert_resource(TaskUiPresentation {
+        title: "G1 · 静态取放实验".into(),
+        help: "仅支持下方固定任务。Ctrl+Enter 启动，Esc 暂停；再次启动前请重置。".into(),
+        initial_instruction: "把苹果放到盘子里".into(),
+    })
+    .add_plugins(TaskUiPlugin)
+    .add_systems(
         Update,
         (smoke_actions, apply_actions)
             .chain()
