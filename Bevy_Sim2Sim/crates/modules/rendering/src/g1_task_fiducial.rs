@@ -46,7 +46,8 @@ pub enum G1FiducialLayoutProfile {
     /// Separate public rigid three-label T2 board. These extra observations
     /// remain hidden throughout the original learned grasp images.
     AuxiliaryBinBoardTargets,
-    /// Same public bin board, with the box label above the gripping fingers.
+    /// Same public bin board;5cm box label at the negative-Z face edge.
+    /// The original grasp inverts the box, placing this label above the fingers.
     AuxiliaryBinBoardUpperBoxTargets,
     /// Public small labels for a static RGB localization diagnostic. This
     /// profile never silently enters original unmarked model observations.
@@ -398,16 +399,16 @@ impl G1TaskFiducialModel {
                 printed_black_square_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.16, 0.10],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [0.16, 0.06],
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [0.16, 0.06],
+                    G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [0.16, 0.05],
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.02, 0.06],
                 },
                 white_margin_overall_size_m: match document.layout_profile {
                     G1FiducialLayoutProfile::OriginalArena => [0.20, 0.125],
                     G1FiducialLayoutProfile::AuxiliaryGripTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets
-                    | G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [0.20, 0.075],
+                    | G1FiducialLayoutProfile::AuxiliaryBinBoardTargets => [0.20, 0.075],
+                    G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => [0.20, 0.0625],
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => [0.025, 0.075],
                 },
@@ -425,7 +426,7 @@ impl G1TaskFiducialModel {
                         [[0., 0.18, 0.60], [0.1005, 0., -0.04]]
                     }
                     G1FiducialLayoutProfile::AuxiliaryBinBoardUpperBoxTargets => {
-                        [[0., 0.18, 0.60], [0.1005, 0., 0.05]]
+                        [[0., 0.18, 0.60], [0.1005, 0., -0.06875]]
                     }
                     G1FiducialLayoutProfile::StaticApplePlate
                     | G1FiducialLayoutProfile::StaticApplePlateMultiFace => {

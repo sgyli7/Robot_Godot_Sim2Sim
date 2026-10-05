@@ -34,15 +34,17 @@ class MobileBinBoardTests(unittest.TestCase):
             sizes, new, profile, new_hash = vision.fixed_marker_layout(path, "auxiliary_bin_placement")
         self.assertNotEqual(old_hash, new_hash)
         self.assertEqual(profile, vision.UPPER_BOX_BOARD_PROFILE)
-        self.assertEqual(sizes[22], .06)
+        self.assertEqual(sizes[22], .05)
         np.testing.assert_array_equal(old[21], new[21])
         box_pose = np.eye(4)
+        box_pose[:3, :3] = np.diag([1., -1., -1.])
         box_pose[:3, 3] = [.6, .15, .9]
         observed_marker_pose = box_pose @ new[22]
         np.testing.assert_allclose(observed_marker_pose @ np.linalg.inv(new[22]), box_pose,
                                    atol=1e-12, rtol=0)
         legacy_bias = (observed_marker_pose @ np.linalg.inv(old[22]))[:3, 3] - box_pose[:3, 3]
-        self.assertAlmostEqual(np.linalg.norm(legacy_bias), .09)
+        self.assertAlmostEqual(np.linalg.norm(legacy_bias), .02875)
+        self.assertGreater((observed_marker_pose[:3, 3] - box_pose[:3, 3])[2], 0.)
 
     def test_public_mount_cannot_be_replaced_by_a_runtime_object_pose(self):
         markers = [dict(marker_id=identity, png_path=f"print_{identity}.png", png_sha256="0"*64,

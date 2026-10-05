@@ -364,9 +364,9 @@ def fixed_marker_layout(path, camera_profile, public_assets=None):
     if layout in ("auxiliary_grip_targets", BIN_BOARD_PROFILE, UPPER_BOX_BOARD_PROFILE):
         if camera_profile not in ("auxiliary_grip_overview", "auxiliary_bin_placement", "auxiliary_pregrasp_overview"):
             raise ValueError("auxiliary labels require their explicitly declared sensor")
-        sizes[22] = .06
+        sizes[22] = .05 if layout == UPPER_BOX_BOARD_PROFILE else .06
         mounts[21] = transform({"position": [0., .18, .60], "rotation_wxyz": [2**-.5, 2**-.5, 0., 0.]})
-        mounts[22] = transform({"position": [.1005, 0., .05 if layout == UPPER_BOX_BOARD_PROFILE else -.04], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})
+        mounts[22] = transform({"position": [.1005, 0., -.06875 if layout == UPPER_BOX_BOARD_PROFILE else -.04], "rotation_wxyz": [2**-.5, 0., 2**-.5, 0.]})
     elif layout != "original_arena" or camera_profile != "arena_ego":
         raise ValueError("unbound auxiliary sensor or unsupported marker layout")
     return sizes, mounts, layout, digest
