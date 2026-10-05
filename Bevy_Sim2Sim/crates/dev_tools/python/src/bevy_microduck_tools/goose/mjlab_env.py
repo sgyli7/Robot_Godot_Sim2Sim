@@ -178,14 +178,18 @@ class GooseDevelopmentEnv(ManagerBasedRlEnv):
             raise ValueError("Goose development integration profile changed")
         self.contact_adapter = None
         super().__init__(cfg, device, **kwargs)
-        if contract["candidate"] == TASK_PROXY_CANDIDATE:
+        from .speculative_contact import PREDICTION_CANDIDATES
+        if contract["candidate"] == TASK_PROXY_CANDIDATE or contract["candidate"] in PREDICTION_CANDIDATES:
             from .task_proxy_contact import FrozenContactAdapter
+            from .speculative_contact_gpu import SpeculativeContactAdapter
             import warp as wp
 
             if self.sim.wp_model.callback.control is not None:
                 raise ValueError("Task-proxy contact seam already occupied")
             with wp.ScopedDevice(self.sim.wp_device):
-                self.contact_adapter = FrozenContactAdapter(self.sim.wp_model, self.sim.wp_data,
+                adapter_type = (SpeculativeContactAdapter if contract["candidate"] in PREDICTION_CANDIDATES
+                                else FrozenContactAdapter)
+                self.contact_adapter = adapter_type(self.sim.wp_model, self.sim.wp_data,
                     self.sim.mj_model, contract, entity_prefix=action.entity_name+"/")
                 self.sim.wp_model.callback.control = self._apply_task_proxy_contact
                 # Public mjlab graphs must capture the new public Warp callback.
@@ -244,6 +248,19 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
             solref=native.geom_solref[ground], solimp=native.geom_solimp[ground],
             margin=float(native.geom_margin[ground]), gap=float(native.geom_gap[ground]),
             priority=int(native.geom_priority[ground]), solmix=float(native.geom_solmix[ground]))
+        # Scene-owned ground pairs keep the frozen explicit material mixing.
+        # Entity attachment cannot retain references to the deleted child plane.
+        for i in range(native.npair):
+            a, b = int(native.pair_geom1[i]), int(native.pair_geom2[i])
+            if ground not in (a, b):
+                raise ValueError("Only explicit prediction ground pairs are supported")
+            gid = b if a == ground else a
+            spec.add_pair(name=native.pair(i).name, geomname1="ground",
+                geomname2="robot/"+native.geom(gid).name,
+                condim=int(native.pair_dim[i]), solref=native.pair_solref[i],
+                solreffriction=native.pair_solreffriction[i], solimp=native.pair_solimp[i],
+                margin=float(native.pair_margin[i]), gap=float(native.pair_gap[i]),
+                friction=native.pair_friction[i])
 
     opt = native.opt
     sim_options = MujocoCfg(timestep=DT, integrator=contract["integrator"].lower(), impratio=float(opt.impratio),

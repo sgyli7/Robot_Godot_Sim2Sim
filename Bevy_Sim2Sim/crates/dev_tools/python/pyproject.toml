@@ -18,6 +18,7 @@ goose_training = [
     "mujoco-warp==3.8.1",
     "warp-lang==1.12.0",
     "rsl-rl-lib==5.0.1",
+    "gymnasium==1.2.3",
     "torch==2.9.1",
     "scipy>=1.16",
 ]

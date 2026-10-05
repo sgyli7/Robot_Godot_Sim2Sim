@@ -161,7 +161,9 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
     contract = _read_native_contract(model_path, contract_path)
-    is_proxy = contract["candidate"] == TASK_PROXY_CANDIDATE
+    from .speculative_contact import PREDICTION_CANDIDATES, REVISION as PREDICTION_REVISION, validate_prediction
+    is_prediction = contract["candidate"] in PREDICTION_CANDIDATES
+    is_proxy = contract["candidate"] == TASK_PROXY_CANDIDATE or is_prediction
     is_euler = contract["candidate"] == EULER_CANDIDATE or is_proxy
     expected_integrator = "Euler" if is_euler else "implicitfast"
     if (not is_euler and contract["candidate"] not in NATIVE_PARENTS.values()
@@ -176,13 +178,16 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
         raise ValueError("Compiled native integration profile differs from its contract")
     if is_proxy:
         baseline = contract.get("upstream_baseline", {})
-        if (baseline.get("contact_adapter_revision") != TASK_PROXY_ADAPTER_REVISION
+        adapter_revision = PREDICTION_REVISION if is_prediction else TASK_PROXY_ADAPTER_REVISION
+        if (baseline.get("contact_adapter_revision") != adapter_revision
                 or baseline.get("contact_adapter_required") is not True
                 or contract.get("runtime_revision") != "goose_task_proxy_be_contact_v1"
                 or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
                 or not model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
                 or model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_DAMPER)):
             raise ValueError("Task-proxy contact adapter/integration profile changed")
+        if is_prediction:
+            validate_prediction(model, contract)
     elif is_euler:
         flow = contract.get("native_integration_flow", {})
         required = {"revision": "goose_native_euler_eulerdamp_disabled_v1",
@@ -204,6 +209,9 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
         _read_native_contract(model_path, contract_path)
         spec = mujoco.MjSpec.from_file(str(model_path))
         # The task scene owns its plane, as in the MicroDuck/industry workflow.
+        if is_prediction:
+            for pair in list(spec.pairs):
+                spec.delete(pair)
         spec.delete(spec.geom("ground"))
         return spec
 
