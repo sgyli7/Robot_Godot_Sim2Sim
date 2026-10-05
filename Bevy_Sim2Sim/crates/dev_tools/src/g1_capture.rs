@@ -241,6 +241,9 @@ struct MobileScanCaptureConfiguration {
     /// Hand off only the two-image-certified loaded grasp to the station route.
     #[serde(default)]
     verified_regrasp_pickup: bool,
+    /// Explicit loaded survey camera; learned images and release view unchanged.
+    #[serde(default)]
+    loaded_bin_survey_view: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -250,6 +253,7 @@ struct MobileLowerCaptureConfiguration {
     duration_ticks: u32,
 }
 
+#[derive(Clone)]
 enum MobileAssistStage {
     Carry(MobileAssistCaptureConfiguration),
     Scan(MobileScanCaptureConfiguration),
@@ -352,8 +356,8 @@ impl MobileAssistCaptureRuntime {
             return pair.secondary_mount;
         }
         #[cfg(feature = "g1_constraint_diagnostic")]
-        if self.regrasp_preparation_completed {
-            return G1CameraMountProfile::AuxiliaryBinPlacement;
+        if self.regrasp_preparation_completed && !self.station_placement_view_active {
+            return self.loaded_transport_camera_mount();
         }
         if self.station_placement_view_active {
             G1CameraMountProfile::AuxiliaryBinPlacement
@@ -373,6 +377,7 @@ impl MobileAssistCaptureRuntime {
     fn auxiliary_camera_name(&self) -> &'static str {
         match self.camera_mount() {
             G1CameraMountProfile::AuxiliaryBinPlacement => "auxiliary_bin_placement",
+            G1CameraMountProfile::AuxiliaryBinSurvey => "auxiliary_bin_survey",
             G1CameraMountProfile::AuxiliaryGripOverview => "auxiliary_grip_overview",
             G1CameraMountProfile::AuxiliaryPregraspOverview => "auxiliary_pregrasp_overview",
             G1CameraMountProfile::ArenaEgo => "arena_ego",
@@ -383,8 +388,34 @@ impl MobileAssistCaptureRuntime {
     #[cfg(feature = "g1_constraint_diagnostic")]
     fn request_loaded_transport_camera(&mut self) {
         self.regrasp_preparation_completed = true;
-        self.box_pair_restore_mount = Some(G1CameraMountProfile::AuxiliaryBinPlacement);
+        self.box_pair_restore_mount = Some(self.loaded_transport_camera_mount());
         self.box_pair_camera_activation_frame = None;
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn loaded_transport_camera_mount(&self) -> G1CameraMountProfile {
+        if matches!(&self.configuration, MobileAssistStage::Scan(c) if c.loaded_bin_survey_view) {
+            G1CameraMountProfile::AuxiliaryBinSurvey
+        } else {
+            G1CameraMountProfile::AuxiliaryBinPlacement
+        }
+    }
+
+    #[cfg(feature = "g1_constraint_diagnostic")]
+    fn reset_episode(&mut self) {
+        // Recreate mutable state from immutable configuration. Dropping the
+        // old vision job reaps its child before any new-episode capture.
+        *self = Self::new(
+            self.configuration.clone(),
+            self.raising_view,
+            self.memory_view,
+            self.restored_view,
+            self.auxiliary_view,
+            self.auxiliary_approach,
+            self.auxiliary_release,
+            self.station_motion,
+        );
+        self.box_pair_restore_mount = Some(self.camera_mount());
     }
 
     fn new(
@@ -1717,17 +1748,7 @@ impl CaptureRuntime {
         self.episode_id = episode_id;
         #[cfg(feature = "g1_constraint_diagnostic")]
         if let Some(assist) = &mut self.mobile_assist {
-            assist.height_recovery = mobile_height_recovery::Recovery::default();
-            assist.pickup = mobile_pickup::Pickup::default();
-            if let Some(pair) = assist.pending_box_pair.take() {
-                assist.box_pair_restore_mount = Some(pair.primary_mount);
-            }
-            assist.box_pair_camera_activation_frame = None;
-            if matches!(&assist.configuration, MobileAssistStage::Scan(c)
-                if c.vision.as_ref().is_some_and(|v| v.same_tick_box_pair))
-            {
-                assist.vision_job.take();
-            }
+            assist.reset_episode();
         }
         self.startup_submitted = false;
         self.latest = None;
@@ -2285,7 +2306,8 @@ fn run_capture_owner(
         vision.validate()?;
     }
     if mobile_scan.as_ref().is_some_and(|c| {
-        (c.verified_regrasp_pickup && !c.current_regrasp_stability_probe)
+        (c.loaded_bin_survey_view && !c.verified_regrasp_pickup)
+            || (c.verified_regrasp_pickup && !c.current_regrasp_stability_probe)
             || (c.current_regrasp_stability_probe && !c.current_regrasp_lift_probe)
             || (c.current_regrasp_lift_probe && !c.current_closed_regrasp)
             || (c.current_closed_regrasp && !c.pregrasp_source_close_once)
@@ -4904,6 +4926,7 @@ fn capture_current_marker_pair(
         G1CameraMountProfile::AuxiliaryBinPlacement if assist.regrasp_preparation_completed => {
             G1CameraMountProfile::AuxiliaryPregraspOverview
         }
+        G1CameraMountProfile::AuxiliaryBinSurvey => G1CameraMountProfile::AuxiliaryPregraspOverview,
         G1CameraMountProfile::AuxiliaryBinPlacement => G1CameraMountProfile::AuxiliaryGripOverview,
         G1CameraMountProfile::ArenaEgo | G1CameraMountProfile::StaticPlacementOverview => {
             return Err("box pair cannot change the learned camera or static task profile".into());
@@ -5109,6 +5132,9 @@ fn marker_observation(stamp: &G1CaptureStamp) -> Result<serde_json::Value, Strin
         }
         G1CameraMountProfile::AuxiliaryBinPlacement => {
             observation["camera_mount_profile"] = "auxiliary_bin_placement".into();
+        }
+        G1CameraMountProfile::AuxiliaryBinSurvey => {
+            observation["camera_mount_profile"] = "auxiliary_bin_survey".into();
         }
         G1CameraMountProfile::ArenaEgo | G1CameraMountProfile::StaticPlacementOverview => {}
     }

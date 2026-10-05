@@ -31,6 +31,10 @@ class MobileBoxPairTests(unittest.TestCase):
         np.testing.assert_allclose(pregrasp[:3, :3], secondary[:3, :3], atol=1e-10, rtol=0)
         np.testing.assert_array_equal(pregrasp[:3, 3], legacy[:3, 3])
         self.assertGreater(np.max(np.abs(pregrasp[:3, :3]-legacy[:3, :3])), .05)
+        survey = vision.root_from_camera(definition, positions, 'auxiliary_bin_survey')
+        np.testing.assert_array_equal(survey[:3, 3], secondary[:3, 3])
+        angle = np.arccos(np.clip((np.trace(survey[:3, :3] @ secondary[:3, :3].T)-1)/2, -1, 1))
+        self.assertAlmostEqual(angle, np.deg2rad(8))
 
     def fixture(self, marker_size=.06):
         k = np.array([[458.1245526, 0., 320.], [0., 458.1245526, 240.], [0., 0., 1.]])
@@ -100,6 +104,9 @@ class MobileBoxPairTests(unittest.TestCase):
         pregrasp = copy.deepcopy(first)
         pregrasp['camera_mount_profile'] = 'auxiliary_pregrasp_overview'
         vision.validate_mobile_box_pair_observations(pregrasp, second)
+        survey = copy.deepcopy(second)
+        survey['camera_mount_profile'] = 'auxiliary_bin_survey'
+        vision.validate_mobile_box_pair_observations(pregrasp, survey)
         duplicate = copy.deepcopy(second)
         duplicate['camera_mount_profile'] = pregrasp['camera_mount_profile']
         with self.assertRaises(ValueError):

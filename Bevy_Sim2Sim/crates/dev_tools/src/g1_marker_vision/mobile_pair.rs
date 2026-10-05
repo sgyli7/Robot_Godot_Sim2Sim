@@ -63,6 +63,12 @@ pub(crate) fn validate_mobile_pair_inputs(first: &Value, second: &Value) -> Resu
         ) | (
             Some("auxiliary_bin_placement"),
             Some("auxiliary_pregrasp_overview")
+        ) | (
+            Some("auxiliary_bin_survey"),
+            Some("auxiliary_pregrasp_overview")
+        ) | (
+            Some("auxiliary_pregrasp_overview"),
+            Some("auxiliary_bin_survey")
         )
     ) || first["camera"] != second["camera"]
         || x.episode_id == 0

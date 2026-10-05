@@ -81,6 +81,9 @@ pub enum G1CameraMountProfile {
     /// Declared T2 placement sensor;230mm above original,+7degree optical pitch.
     /// It clears a held box while retaining both printed placement targets.
     AuxiliaryBinPlacement,
+    /// Declared loaded-bin survey sensor;230mm above Arena,+15degree upward view.
+    /// Same center as placement; keeps the public board inside the loaded view.
+    AuxiliaryBinSurvey,
     /// Declared near-table T1 sensor;150mm above original,+25degree downward view.
     StaticPlacementOverview,
 }
@@ -262,6 +265,9 @@ pub fn native_head_camera(
         }
         G1CameraMountProfile::AuxiliaryBinPlacement => {
             (0.23, Quat::from_rotation_x(7_f32.to_radians()))
+        }
+        G1CameraMountProfile::AuxiliaryBinSurvey => {
+            (0.23, Quat::from_rotation_x(15_f32.to_radians()))
         }
         G1CameraMountProfile::StaticPlacementOverview => {
             (0.15, Quat::from_rotation_x(-25_f32.to_radians()))
@@ -1153,6 +1159,37 @@ mod tests {
             serde_json::to_value(pregrasp.mount_profile).unwrap(),
             "auxiliary_pregrasp_overview"
         );
+    }
+
+    #[test]
+    fn bin_survey_rotates_only_the_declared_passive_sensor() {
+        let state = native(41, 250);
+        let placement = native_head_camera(
+            &state.body_frame,
+            G1CameraMountProfile::AuxiliaryBinPlacement,
+        )
+        .unwrap();
+        let mut survey =
+            native_head_camera(&state.body_frame, G1CameraMountProfile::AuxiliaryBinSurvey)
+                .unwrap();
+        survey.native_state = Some(state);
+        survey.validate().unwrap();
+        assert_eq!(
+            survey.world_from_camera.translation,
+            placement.world_from_camera.translation
+        );
+        assert!(
+            (survey
+                .world_from_camera
+                .rotation
+                .angle_between(placement.world_from_camera.rotation)
+                - 8_f32.to_radians())
+            .abs()
+                < 1e-5
+        );
+        assert_eq!(survey.source_ticks, placement.source_ticks);
+        survey.mount_profile = G1CameraMountProfile::AuxiliaryBinPlacement;
+        assert!(survey.validate().is_err());
     }
 
     #[test]

@@ -259,6 +259,54 @@ pub(super) fn drive(
 mod tests {
     use super::*;
     #[test]
+    fn reset_discards_loaded_admission_and_pending_old_sensor_state() {
+        let mut assist = super::super::MobileAssistCaptureRuntime::new(
+            MobileAssistStage::Carry(super::super::MobileAssistCaptureConfiguration {
+                heading_yaw_source_rad: 0.,
+                relative_distance_m: 2.,
+            }),
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            true,
+        );
+        assist.request_loaded_transport_camera();
+        assist.submitted = true;
+        assist.completed = true;
+        assist.station_hold_submitted = true;
+        assist.station_placement_view_active = true;
+        assist.release_submitted = true;
+        assist.hold_submitted = true;
+        assist.raise_submitted = true;
+        assist.fine_alignment_confirmed = true;
+        assist.fine_goals_submitted = 3;
+        assist.reset_episode();
+        assert!(!assist.regrasp_preparation_completed);
+        assert!(!assist.submitted && !assist.completed && !assist.station_hold_submitted);
+        assert!(!assist.station_placement_view_active && !assist.release_submitted);
+        assert!(
+            !assist.hold_submitted && !assist.raise_submitted && !assist.fine_alignment_confirmed
+        );
+        assert_eq!(assist.fine_goals_submitted, 0);
+        assert!(
+            assist.regrasp.is_none()
+                && assist.regrasp_lift.is_none()
+                && assist.regrasp_loaded.is_none()
+        );
+        assert!(assist.pending_box_pair.is_none() && assist.submitted_carry_observation.is_none());
+        assert_eq!(
+            assist.box_pair_restore_mount,
+            Some(G1CameraMountProfile::AuxiliaryGripOverview)
+        );
+        assert!(
+            matches!(assist.configuration, MobileAssistStage::Carry(ref c) if c.relative_distance_m == 2.)
+        );
+    }
+
+    #[test]
     fn loaded_handoff_requests_render_switch_and_names_the_same_camera() {
         let mut assist = super::super::MobileAssistCaptureRuntime::new(
             MobileAssistStage::Carry(super::super::MobileAssistCaptureConfiguration {
