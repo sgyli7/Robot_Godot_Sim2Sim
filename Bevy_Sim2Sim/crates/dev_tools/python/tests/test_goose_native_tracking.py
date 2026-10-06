@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from mjlab.managers.command_manager import CommandTerm
 
 from bevy_microduck_tools.goose.native_tracking import (
     AdmittedColdMotionCommand, GooseDevelopmentEnv, NativeTrackingColdResetEnv,
@@ -25,11 +26,35 @@ def command_fixture():
 def test_cold_subset_reset_does_not_advance_running_reference():
     term, _ = command_fixture()
     term._resample_command(torch.tensor([0]))
-    term.compute(0.)
+    term.compute(0., env_ids=torch.tensor([0]))
     assert term.time_steps.tolist() == [1, 13]
     with pytest.raises(RuntimeError, match="genuine cold"):
         term._resample_command(torch.tensor([1]))
     assert term.time_steps.tolist() == [1, 13]
+
+
+def test_current_command_api_accepts_scoped_reset_without_double_lookahead():
+    term, _ = command_fixture()
+    CommandTerm._check_update_command_signature(term)
+    term._resample_command(torch.tensor([0]))
+    term._update_command(torch.tensor([0]))
+    assert term.time_steps.tolist() == [1, 13]
+    term._update_command()
+    assert term.time_steps.tolist() == [2, 14]
+
+
+def test_scoped_reset_does_not_decay_adaptive_failure_history():
+    term, _ = admitted_fixture()
+    term.bin_failed_count = torch.tensor([2., 3.])
+    term._current_bin_failed = torch.tensor([4., 5.])
+    term._update_command(torch.tensor([0]))
+    assert term.time_steps.tolist() == [0, 13]
+    assert term.bin_failed_count.tolist() == [2., 3.]
+    assert term._current_bin_failed.tolist() == [4., 5.]
+    term._update_command()
+    assert term.time_steps.tolist() == [1, 14]
+    torch.testing.assert_close(term.bin_failed_count, torch.tensor([2.002, 3.002]))
+    assert term._current_bin_failed.tolist() == [0., 0.]
 
 
 def test_end_of_clip_holds_without_resampling_or_state_write():

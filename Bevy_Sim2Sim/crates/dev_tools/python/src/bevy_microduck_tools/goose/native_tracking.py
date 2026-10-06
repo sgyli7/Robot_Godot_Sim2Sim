@@ -81,16 +81,19 @@ class ReadOnlyMotionCommand(MotionCommand):
             raise RuntimeError("Reference restart requires a genuine cold episode reset")
         self.time_steps[env_ids] = min(1, self.motion.time_step_total-1)
 
-    def compute(self, dt):
+    def compute(self, dt, env_ids=None):
         if dt == 0.:
             self.update_relative_body_poses()
-        elif abs(dt-DT) <= 1e-12:
+        elif env_ids is None and abs(dt-DT) <= 1e-12:
             super().compute(dt)
         else:
             raise ValueError("Reference clock requires a genuine20ms Tick or cold reset")
 
-    def _update_command(self):
-        self.time_steps.add_(1).clamp_(max=self.motion.time_step_total-1)
+    def _update_command(self, env_ids=None):
+        # The cold sampler already supplies the one-frame lookahead. A scoped
+        # native reset refresh must not advance it again or advance other worlds.
+        if env_ids is None:
+            self.time_steps.add_(1).clamp_(max=self.motion.time_step_total-1)
         self.update_relative_body_poses()
 
     def _write_reference_state_to_sim(self, *args, **kwargs):
@@ -185,12 +188,13 @@ class AdmittedColdMotionCommand(ReadOnlyMotionCommand):
             :, action.qids].double()
         action.ground_forces[env_ids] = 0
 
-    def _update_command(self):
-        super()._update_command()
+    def _update_command(self, env_ids=None):
+        super()._update_command(env_ids)
         # Native adaptive failure-bin update; no stock clip-end state overwrite.
-        self.bin_failed_count = (self.cfg.adaptive_alpha*self._current_bin_failed
-            +(1-self.cfg.adaptive_alpha)*self.bin_failed_count)
-        self._current_bin_failed.zero_()
+        if env_ids is None:
+            self.bin_failed_count = (self.cfg.adaptive_alpha*self._current_bin_failed
+                +(1-self.cfg.adaptive_alpha)*self.bin_failed_count)
+            self._current_bin_failed.zero_()
 
 
 @dataclass(kw_only=True)
@@ -233,8 +237,8 @@ def make_native_tracking_teacher_cfg(model_path, contract_path, motion_file, *,
         ContactSensorCfg(name=GROUND_SENSOR,
             primary=ContactMatch(mode="geom", entity="robot", pattern=tuple(
                 native.geom(i).name for i in range(native.ngeom)
-                if native.geom_type[i] in (mujoco.mjtGeom.mjGEOM_BOX,
-                                          mujoco.mjtGeom.mjGEOM_MESH))),
+                if int(native.geom_type[i]) in (mujoco.mjtGeom.mjGEOM_BOX,
+                                               mujoco.mjtGeom.mjGEOM_MESH))),
             secondary=ContactMatch(mode="geom", pattern="ground"),
             fields=("force",), reduce="netforce", num_slots=1, global_frame=True))
     cfg.rewards = copy.deepcopy(stock.rewards)

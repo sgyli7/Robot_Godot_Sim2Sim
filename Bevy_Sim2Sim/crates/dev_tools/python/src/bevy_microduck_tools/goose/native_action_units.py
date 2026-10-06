@@ -7,6 +7,7 @@ from torch.distributions import Normal
 from .mature_training import native_physical_action_std
 
 REVISION = "goose_native_physical_actor_coordinates_v1"
+TRACKING_REVISION = "goose_native_tracking_physical_actor_coordinates_v1"
 
 
 class PublicActionScale(torch.nn.Module):
@@ -24,10 +25,12 @@ class PublicUnitsGaussian(GaussianDistribution):
     """Native sigma parameters/bounds; probability density in public units."""
 
     def __init__(self, original, scale):
+        parameter_name = "std_param" if original.std_type == "scalar" else "log_std_param"
+        parameter = getattr(original, parameter_name)
         super().__init__(18, init_std=1., std_range=tuple(original.std_range),
-            std_type="log", learn_std=original.log_std_param.requires_grad)
+            std_type=original.std_type, learn_std=parameter.requires_grad)
         # Preserve the native Parameter object already registered with Adam.
-        self.log_std_param = original.log_std_param
+        setattr(self, parameter_name, parameter)
         self.register_buffer("public_action_scale", scale.detach().clone())
 
     def update(self, mlp_output: torch.Tensor) -> None:
@@ -49,6 +52,19 @@ def initialize_native_action_units(runner, contract):
     exploration after slew/contact/thermal limits. Install on a fresh runner,
     including before full resume; never reinitialize a trained Actor.
     """
+    return _initialize_native_units(runner, contract, 65, "log", REVISION)
+
+
+def initialize_native_tracking_action_units(runner, contract):
+    """Explicit private113 teacher, retaining the native scalar Gaussian.
+
+    The18 public motor actions retain the same units and limits. Reference
+    observations remain private teacher inputs, separate from Actor65.
+    """
+    return _initialize_native_units(runner, contract, 113, "scalar", TRACKING_REVISION)
+
+
+def _initialize_native_units(runner, contract, observation_dim, std_type, revision):
     actor = runner.alg.actor
     if runner.alg.optimizer.state or getattr(runner, "current_learning_iteration", 0):
         raise ValueError("Physical action initialization requires a fresh runner")
@@ -61,18 +77,21 @@ def initialize_native_action_units(runner, contract):
             or not torch.equal(normalizer._std, torch.ones_like(normalizer._std))):
         raise ValueError("Physical action initialization requires fresh statistics")
     distribution = getattr(actor, "distribution", None)
-    log_std = getattr(distribution, "log_std_param", None)
-    if (actor.obs_dim != 65 or type(distribution) is not GaussianDistribution
-            or not isinstance(log_std, torch.nn.Parameter)
-            or log_std.shape != (18,)):
-        raise ValueError("Physical action initialization requires a native65 to18 Actor")
-    if not torch.equal(log_std.detach(), torch.zeros_like(log_std)):
+    parameter_name = "std_param" if std_type == "scalar" else "log_std_param"
+    parameter = getattr(distribution, parameter_name, None)
+    if (actor.obs_dim != observation_dim or type(distribution) is not GaussianDistribution
+            or distribution.std_type != std_type
+            or not isinstance(parameter, torch.nn.Parameter)
+            or parameter.shape != (18,)):
+        raise ValueError(f"Physical action initialization requires a native{observation_dim} to18 Actor with {std_type} sigma")
+    expected = torch.ones_like(parameter) if std_type == "scalar" else torch.zeros_like(parameter)
+    if not torch.equal(parameter.detach(), expected):
         raise ValueError("Physical action initialization requires a fresh unit Gaussian")
     output = actor.mlp[-1]
     if (not isinstance(output, torch.nn.Linear) or output.out_features != 18
             or output.bias is None):
         raise ValueError("Physical action initialization requires a native18-axis mean")
-    factors = log_std.new_tensor(native_physical_action_std(contract))
+    factors = parameter.new_tensor(native_physical_action_std(contract))
     if not bool(torch.isfinite(factors).all()) or not bool((factors > 0).all()):
         raise ValueError("Physical action factors must be finite and positive")
 
@@ -81,4 +100,4 @@ def initialize_native_action_units(runner, contract):
     scaled_distribution = PublicUnitsGaussian(distribution, factors)
     actor.mlp.append(PublicActionScale(factors))
     actor.distribution = scaled_distribution
-    return REVISION
+    return revision

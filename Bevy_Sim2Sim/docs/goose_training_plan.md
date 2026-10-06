@@ -2,7 +2,17 @@
 
 版本：2026-10-07。实施分支：`codex/goose50_training`。
 
-**2026-10-07 唯一现行入口：Goose 自身支撑路径已实际执行，取得两步证据，完整能力仍未交付。** 学习MD指复用成熟的训练组织、任务/课程、物理接线与独立验收方法；不使用MD的ONNX、权重、normalizer、角度表或专家动作。本批连Goose父Actor也没有加载。保留`goose_task_proxy_11_discrete_mjlab160_v1`原21体/18主动轴/11叶/刚性足底/真实四杆/65→18/50Hz；root亲自推进移动与恢复，不联系硬件/G1、不派或唤醒agent。本批新增5267真实CPU积分（含650步独立重放），GPU物理/PPO/Adam/ONNX0；不是把规划查询算成能力训练。
+**2026-10-07 唯一现行入口：Goose 自身参考已接入原生 tracking PPO，实际候选失败，不晋升。** 学习MD是复用训练组织、任务/课程、控制接线与独立验收；不加载MD的ONNX、权重、normalizer、角度表或专家动作。本批fresh Actor只用Goose自己的真实两步参考和mjlab/BeyondMimic原9奖励/原PPO配置，没有MD或Goose父权重。root亲自完成移动训练、独立ONNX与起身对照，不联系硬件/G1、不派或唤醒agent。原21体/18主动轴/11叶/刚性足底/真实四杆/公共65→18、50Hz和decimation1保持；113教师/302 Critic是显式私有训练入口，不授公共策略资格。
+
+**实际证据：** 原公共动作在GPU完成650真实Tick，两步COM前进54.20mm；原2.083mrad踝超限保留。原生1.6的空传感器枚举比较与scoped reset API已修复；12单位/Adam/KL/ONNX＋9时钟/出生保护＋2真实配置回归通过，4世界实际部分冷重置也通过。fresh小准入1＋主128 PPO共393312训练GPU样本/2580Adam，主约69.83秒；独立Actor/Critic/Adam逐位复载、clock3072、ONNX输出差0。650Tick独立教师闭环仍失败：COM−68.08mm/侧移108.78mm，稳定最多3Tick，地穿5.507mm、关节超限20.206mrad；持续转体从第4Tick开始，而非只看高度/直立授成功。已看实际2.5/12.5秒图像，未得到稳定两步跟踪。
+
+**起身同步结论：** 固定前倒躯干收脚的私有IK地穿41.54mm，拒绝实际播放；解析必要reach条件没有证明现膝范围不可达，不据此加DOF/改硬件。旧Goose自身真实起身动作在当前discrete本体独立626CPU积分，最高COM199.15mm、末端up.12737、保持0，地穿11.72mm/self5.445mm、右hip pitch超限13.378mrad。旧版本成功片段不继承迁移资格，单路径失败也不证明全局机械不可能。原5e−6单独GPU逐程比较在102Tick失败；完整诊断采集的差7.774e−6另报，不能冒充逐位回放通过。所有失败保留，物理/控制/CAD合同未改。
+
+**下一共享问题：可执行自身路径为何在教师第4Tick已转体。** 移动先核对原生参考坐标对全局前进/朝向的约束和首段真实target/努力/持久drive状态，再选择成熟的自身参考初始化/课程；不追加同一奖励/LR/std/seed/轮数网格。起身继续身体/腿支撑到脚承接COM的连续接触路径验证，两线都推进，GPU有界串行。完整移动.4/.7、转向/Shift/启停与四向/扰动起身3秒/继续1m仍未通过；M0-S完整准入前不长训，M0-T前不目标训练/Bevy。没有硬件或agent等待，goal保持active、未完成。
+
+本批全部作业结束，新增CPU626/GPU395373、129PPO/2580训练Adam/910非单测ONNX样本；已含设置/102Tick比较/1Tick API失败，不重复上批和历史样本。规划/FK/显示/单测不当物理训练。[本批报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_contact_sequence_tracking_001/report.md) · [实际自身控制/自身PPO/起身三路录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_contact_sequence_tracking_001/actual_own_training_results.mp4) · [唯一资源账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_contact_sequence_tracking_001/resource_ledger.json) · [复现](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_contact_sequence_tracking_001/reproduction.md)。下列检查点均为历史，不能代替本顶部派工。
+
+**历史上一入口（自身支撑路径准入）：Goose 自身支撑路径已实际执行，取得两步证据，完整能力仍未交付。** 学习MD指复用成熟的训练组织、任务/课程、物理接线与独立验收方法；不使用MD的ONNX、权重、normalizer、角度表或专家动作。本批连Goose父Actor也没有加载。保留`goose_task_proxy_11_discrete_mjlab160_v1`原21体/18主动轴/11叶/刚性足底/真实四杆/65→18/50Hz；root亲自推进移动与恢复，不联系硬件/G1、不派或唤醒agent。本批新增5267真实CPU积分（含650步独立重放），GPU物理/PPO/Adam/ONNX0；不是把规划查询算成能力训练。
 
 **两条能力的实际依据：** 原生Mink作者COM/足/姿态任务生成Goose自己的路径，HiGHS作必要的准静态支撑审核，项目已有努力→公共目标换算接原驱动，未加腿部前馈或改变物理。相同慢步路径由仅IK角度侧倒变为实际左右换脚，COM前进54.198mm，末端含角速度门站稳176Tick＝3.52秒，最大地穿3.293mm；独立原出生/原驱动重放qpos/qvel/目标/真实努力/热/65观测逐位一致。但左踝roll超限2.083mrad，静态连续努力/姿态/目标审核只有552/650帧通过，命令仍零且控制器使用私有计划，不晋升为合法参考或公共Actor。前倒直接慢抬升仍保持0；第100Tick参考仅脚支撑时COM超出支撑前缘245mm，第225Tick仍109mm，末端静态可行不弥补中间脱离支撑。它否定该慢速接触序列，不证明全局DOF/结构无法起身。
 
