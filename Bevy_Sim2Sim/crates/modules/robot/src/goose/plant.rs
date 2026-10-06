@@ -36,6 +36,8 @@ pub struct GoosePlant {
     pub native_initialization: Option<GooseNativeInitialization>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_joint_friction: Option<GooseNativeJointFriction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_position_drive_mode: Option<String>,
 }
 
 /// Independent target numerical contract; source peak friction stays in SI.
@@ -416,6 +418,17 @@ impl GoosePlant {
                     ));
                 }
             }
+        }
+        if self
+            .native_position_drive_mode
+            .as_ref()
+            .is_some_and(|mode| {
+                !self.is_rigid_native() || mode != "pre_position_implicit_velocity_v1"
+            })
+        {
+            return Err(invalid(
+                "Unknown Goose native position-drive discretization",
+            ));
         }
         match (&self.native_initialization, self.is_rigid_native()) {
             (Some(initial), true) => {

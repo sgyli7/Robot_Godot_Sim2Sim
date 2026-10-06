@@ -169,6 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "effort_measurement":"final Rapier internal motor generalized impulse / real full-step dt plus external bias; axis5 true rotor effort; not interchangeable with source reported actuator_force",
         "source_driver_revision":contract.runtime_revision,"model_sha256":plant.model_sha256,
         "native_joint_friction_contract":plant.native_joint_friction,
+        "native_position_drive_mode":plant.native_position_drive_mode,
         "contract_sha256":plant.derived_contract_sha256,"plant_sha256":plant_hash,"actor_sha256":input.actor_sha256,
         "input_sha256":digest(&input_bytes),"runtime_code_sha256":hashes,"executable_sha256":digest(&fs::read(env::current_exe()?)?),
         "native_onnx_runtime":actor.runtime_identity(),"inference_calls":actor.inference_count(),

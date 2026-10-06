@@ -60,6 +60,8 @@ pub struct GooseAssembly {
     jaw: RigidBodyHandle,
     #[cfg(feature = "goose_native_drive")]
     rigid_native_model_sha256: Option<String>,
+    #[cfg(feature = "goose_native_drive")]
+    pre_position_implicit_velocity: bool,
 }
 
 /// Only the source's explicit exclusions are added to native adjacent filtering.
@@ -357,6 +359,9 @@ impl GooseAssembly {
             jaw,
             #[cfg(feature = "goose_native_drive")]
             rigid_native_model_sha256: plant.is_rigid_native().then(|| plant.model_sha256.clone()),
+            #[cfg(feature = "goose_native_drive")]
+            pre_position_implicit_velocity: plant.native_position_drive_mode.as_deref()
+                == Some("pre_position_implicit_velocity_v1"),
         })
     }
 
@@ -494,6 +499,30 @@ impl GooseAssembly {
                 .into());
             }
         }
+        let velocity_targets = if self.pre_position_implicit_velocity {
+            let current = self.state(simulation)?;
+            let mut targets = [0.0_f32; 18];
+            for (axis, target) in targets.iter_mut().enumerate() {
+                if axis == 5 {
+                    continue;
+                }
+                let joint = &contract.joints[axis];
+                if joint.kd_nm_s_rad <= 0.0 {
+                    return Err(
+                        invalid("Implicit velocity position drive needs positive damping").into(),
+                    );
+                }
+                *target = (joint.kp_nm_rad / joint.kd_nm_s_rad
+                    * (command.motor_target_rad[axis] - current.joint_position_rad[axis]))
+                    as f32;
+                if !target.is_finite() {
+                    return Err(invalid("Implicit velocity position target is not finite").into());
+                }
+            }
+            Some(targets)
+        } else {
+            None
+        };
         for mapping in &self.joints {
             let Some(axis) = mapping.active_axis else {
                 continue;
@@ -516,12 +545,19 @@ impl GooseAssembly {
                 .joint
                 .data;
             data.set_motor_model(JointAxis::AngX, MotorModel::ForceBased);
-            data.set_motor_position(
-                JointAxis::AngX,
-                (command.motor_target_rad[axis] - mapping.source_coordinate_offset) as f32,
-                joint.kp_nm_rad as f32,
-                joint.kd_nm_s_rad as f32,
-            );
+            if let Some(targets) = &velocity_targets {
+                // Evaluate P at the real pre-Tick coordinate; upstream D remains
+                // implicit. This is a named target discretization, not an exact
+                // MuJoCo force identity, especially at saturation/joint stops.
+                data.set_motor_velocity(JointAxis::AngX, targets[axis], joint.kd_nm_s_rad as f32);
+            } else {
+                data.set_motor_position(
+                    JointAxis::AngX,
+                    (command.motor_target_rad[axis] - mapping.source_coordinate_offset) as f32,
+                    joint.kp_nm_rad as f32,
+                    joint.kd_nm_s_rad as f32,
+                );
+            }
             data.set_motor_max_force(JointAxis::AngX, command.symmetric_limit_nm[axis] as f32);
         }
         let snapshot = self.step(simulation, command.external_effort_nm)?;

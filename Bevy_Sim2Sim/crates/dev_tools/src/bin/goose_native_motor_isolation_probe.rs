@@ -166,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receipt = json!({"schema":"goose_native_motor_isolation_receipt_v1",
         "model_sha256":plant.model_sha256,"contract_sha256":plant.derived_contract_sha256,
         "plant_sha256":plant_hash,"input_sha256":digest(&bytes),"code_sha256":hashes,
+        "native_position_drive_mode":plant.native_position_drive_mode,
         "executable_sha256":digest(&fs::read(env::current_exe()?)?),"configuration":simulation.configuration(),
         "world_gravity_engine":simulation.world.gravity.to_array(),"floor_present":false,
         "joint_friction_disabled_for_diagnosis":input.disable_joint_friction_for_diagnosis,
