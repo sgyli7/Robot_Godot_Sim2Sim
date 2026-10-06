@@ -214,24 +214,25 @@ class GooseSoleWalkRunCommand(UniformVelocityCommand):
         ids[standing] = 0
         self.bucket_ids[env_ids] = ids
         self.sampled_commands[env_ids] = templates[ids]
-        self._apply_sampled_commands()
+        self._apply_sampled_commands(env_ids)
 
-    def _apply_sampled_commands(self):
-        self.warm_prefix_active.copy_(self._env.episode_length_buf < self.cfg.standing_ticks)
-        self.vel_command_b.copy_(self.sampled_commands)
-        self.vel_command_b[self.warm_prefix_active] = 0.
-        self.vel_command_w.copy_(self.vel_command_b)
-        self.is_standing_env.copy_((self.bucket_ids == 0) | self.warm_prefix_active)
-        self.is_heading_env.zero_()
-        self.is_world_env.zero_()
-        self.is_forward_env.zero_()
+    def _apply_sampled_commands(self, env_ids=None):
+        ids = slice(None) if env_ids is None else env_ids
+        self.warm_prefix_active[ids] = self._env.episode_length_buf[ids] < self.cfg.standing_ticks
+        self.vel_command_b[ids] = torch.where(self.warm_prefix_active[ids, None],
+            torch.zeros_like(self.sampled_commands[ids]), self.sampled_commands[ids])
+        self.vel_command_w[ids] = self.vel_command_b[ids]
+        self.is_standing_env[ids] = (self.bucket_ids[ids] == 0) | self.warm_prefix_active[ids]
+        self.is_heading_env[ids] = False
+        self.is_world_env[ids] = False
+        self.is_forward_env[ids] = False
 
-    def _update_command(self):
+    def _update_command(self, env_ids=None):
         stage = self.course_stage
-        if stage != self._last_stage:
+        if env_ids is None and stage != self._last_stage:
             self._resample(torch.arange(self.num_envs, device=self.device))
             self._last_stage = stage
-        self._apply_sampled_commands()
+        self._apply_sampled_commands(env_ids)
 
 
 @dataclass(kw_only=True)

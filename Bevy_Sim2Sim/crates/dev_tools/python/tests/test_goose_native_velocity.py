@@ -141,6 +141,15 @@ def test_sole_command_real_prefix_reset_and_restored_stage_boundaries():
     term.reset(torch.tensor([1]))
     assert torch.count_nonzero(term.command[1]) == 0
     torch.testing.assert_close(term.command[[0, 2, 3]], sampled[[0, 2, 3]], atol=0, rtol=0)
+    # New upstream reset calls _update_command(ids). Preserve the other
+    # worlds' timers and command state on that scoped path as well.
+    timers = term.time_left.clone()
+    commands = term.command.clone()
+    flags = term.warm_prefix_active.clone()
+    term._update_command(torch.tensor([1]))
+    torch.testing.assert_close(term.time_left, timers, atol=0, rtol=0)
+    torch.testing.assert_close(term.command[[0, 2, 3]], commands[[0, 2, 3]], atol=0, rtol=0)
+    torch.testing.assert_close(term.warm_prefix_active[[0, 2, 3]], flags[[0, 2, 3]], atol=0, rtol=0)
     # All-stage transitions use the restored absolute clock, not runner iter.
     for clock, stage, maximum in ((13055, 0, .06), (13056, 1, .4),
                                   (13823, 1, .4), (13824, 2, .7)):

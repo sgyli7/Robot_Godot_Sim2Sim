@@ -213,7 +213,7 @@ def make_goal_recovery_cfg(model_path: Path, contract_path: Path, *, poses,
         "self_collisions": RewardTermCfg(func=native_rewards.self_collision_cost,
             weight=-1., params={"sensor_name": SELF_SENSOR})})
     joints = tuple(model.joint(i).name for i in range(model.njnt)
-        if model.jnt_type[i] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE))
+        if int(model.jnt_type[i]) in (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE)))
     cfg.events["goal_birth"] = EventTermCfg(func=reset_goal_birth, mode="reset",
         params={"poses": poses, "joint_names": joints, "frontier_step": frontier_step})
     cfg.events["goal_hold"] = EventTermCfg(func=record_goal_hold, mode="step",

@@ -86,10 +86,29 @@ def test_actor_transfer_keeps_requested_fresh_optimizer_and_rate(tmp_path):
     assert not runner.alg.optimizer.state
 
 
-def test_fixed_schedule_keeps_unused_config_scalar(tmp_path):
+def test_actor_only_transfer_preserves_new_task_clock_and_fresh_critic(tmp_path):
+    original, runner, _, path = saved_case(tmp_path)
+    runner.env.unwrapped.common_step_counter = 48
+    critic = {key: value.clone() for key, value in runner.alg.critic.state_dict().items()}
+    load(runner, path, load_cfg={"actor": True, "critic": False,
+        "optimizer": False, "iteration": False})
+    assert runner.env.unwrapped.common_step_counter == 48
+    assert runner.current_learning_iteration == 0
+    assert not runner.alg.optimizer.state
+    for key, value in original.actor.state_dict().items():
+        assert torch.equal(runner.alg.actor.state_dict()[key], value)
+    for key, value in critic.items():
+        assert torch.equal(runner.alg.critic.state_dict()[key], value)
+
+
+def test_fixed_schedule_retains_native_load_behavior(tmp_path):
     original, runner, _, path = saved_case(tmp_path, "fixed")
+    native, _ = make_algorithm("fixed")
+    native.load(torch.load(path, weights_only=False), None, strict=True)
     load(runner, path)
-    assert runner.alg.learning_rate == .001
+    # RSL5.4 restores this scalar itself; RSL5.0 leaves its default. The
+    # compatibility helper must not impose adaptive behavior on either.
+    assert runner.alg.learning_rate == native.learning_rate
     assert runner.alg.optimizer.param_groups[0]["lr"] == original.learning_rate
 
 

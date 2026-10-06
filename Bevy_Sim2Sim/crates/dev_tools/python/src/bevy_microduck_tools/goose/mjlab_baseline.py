@@ -36,6 +36,16 @@ def require_upstream_stack():
             raise ValueError(f"Goose baseline requires {distribution}=={version}")
 
 
+def require_candidate_stack(contract):
+    """Dispatch an explicit named plant; never relax the original baseline."""
+    from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
+    if contract["candidate"] == DISCRETE_CANDIDATE:
+        from .upstream_discrete_mjlab import require_upstream_stack as require_discrete_stack
+        require_discrete_stack()
+    else:
+        require_upstream_stack()
+
+
 def _read_native_contract(model_path: Path, contract_path: Path):
     contract = json.loads(contract_path.read_text())
     if (contract.get("native_discrete") is not None
@@ -155,31 +165,37 @@ def build_task_proxy_reference(parent_model: Path, parent_contract: Path, source
 
 def make_entity_cfg(model_path: Path, contract_path: Path):
     """Wrap native XML motors as efforts; the Goose target controller is separate."""
-    require_upstream_stack()
+    contract = _read_native_contract(model_path, contract_path)
+    require_candidate_stack(contract)
     import mujoco
     from mjlab.actuator import XmlActuatorCfg
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
-    contract = _read_native_contract(model_path, contract_path)
     from .rigid_native import (CANDIDATES as RIGID_CANDIDATES, MJLAB_CANDIDATES,
         make_source_runtime as make_rigid_runtime)
-    is_rigid = contract["candidate"] in RIGID_CANDIDATES
+    from .upstream_discrete_mjlab import (CANDIDATE as DISCRETE_CANDIDATE,
+        make_source_runtime as make_discrete_runtime)
+    is_discrete = contract["candidate"] == DISCRETE_CANDIDATE
+    is_rigid = contract["candidate"] in RIGID_CANDIDATES or is_discrete
     from .speculative_contact import PREDICTION_CANDIDATES, REVISION as PREDICTION_REVISION, validate_prediction
     is_prediction = contract["candidate"] in PREDICTION_CANDIDATES
     is_proxy = contract["candidate"] == TASK_PROXY_CANDIDATE or is_prediction
     is_euler = contract["candidate"] == EULER_CANDIDATE or is_proxy
-    expected_integrator = "Euler" if is_euler else "implicitfast"
+    expected_integrator = "discrete" if is_discrete else "Euler" if is_euler else "implicitfast"
     if (not is_euler and not is_rigid and contract["candidate"] not in NATIVE_PARENTS.values()
             or contract["integrator"] != expected_integrator):
         raise ValueError("Explicit native mjlab reference required")
     model = mujoco.MjModel.from_xml_path(str(model_path))
-    if is_rigid:
+    if is_discrete:
+        make_discrete_runtime(model_path, contract_path)  # Full identity,0 integrals.
+    elif is_rigid:
         if contract["candidate"] not in MJLAB_CANDIDATES:
             raise ValueError("Explicit rigid mjlab candidate without C-only flags required")
         make_rigid_runtime(model_path, contract_path)  # Full identity,0 integrals.
     if model.nu != 18 or model.opt.timestep != DT:
         raise ValueError("Native model does not expose the Goose 18 motors at 50 Hz")
-    expected_enum = (mujoco.mjtIntegrator.mjINT_EULER if is_euler
+    expected_enum = (mujoco.mjtIntegrator.mjINT_DISCRETE if is_discrete
+                     else mujoco.mjtIntegrator.mjINT_EULER if is_euler
                      else mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
     if model.opt.integrator != expected_enum:
         raise ValueError("Compiled native integration profile differs from its contract")

@@ -26,7 +26,7 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 from .artifacts import DT, JOINT_ORDER, sha256
 from .batch_drive import BatchedGooseDrive, BatchedRigidNativeDrive
 from .mjlab_baseline import (
-    TASK_PROXY_CANDIDATE, _read_native_contract, make_entity_cfg, require_upstream_stack)
+    TASK_PROXY_CANDIDATE, _read_native_contract, make_entity_cfg, require_candidate_stack)
 
 REVISION = "goose_mjlab_development_env_v1"
 
@@ -227,7 +227,6 @@ class GooseDevelopmentEnv(ManagerBasedRlEnv):
     """Use the upstream loop, guarding failed-state reset before mutation."""
 
     def __init__(self, cfg, device, **kwargs):
-        require_upstream_stack()
         _require_development_timing(cfg)
         action = cfg.actions.get("goose")
         if not isinstance(action, GooseActionCfg) or sha256(action.contract_path) != action.contract_sha256:
@@ -239,6 +238,12 @@ class GooseDevelopmentEnv(ManagerBasedRlEnv):
                 or event.func is not commit_history or event.mode != "step"):
             raise ValueError("Goose requires its pre-forward guard and post-step commit")
         contract = _read_native_contract(action.model_path, action.contract_path)
+        require_candidate_stack(contract)
+        from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
+        if contract["candidate"] == DISCRETE_CANDIDATE:
+            from .upstream_discrete_mjlab import DiscreteMujocoCfg
+            if not isinstance(cfg.sim.mujoco, DiscreteMujocoCfg):
+                raise ValueError("Named discrete plant requires its explicit mjlab bridge")
         if (cfg.sim.mujoco.integrator != contract["integrator"].lower()
                 or contract["integrator"] == "Euler" and (
                     "eulerdamp" not in cfg.sim.mujoco.disableflags
@@ -284,8 +289,8 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
     qpos initializes the entity only, and never replaces its qualification.
     No reward or PPO configuration is attached to this integration profile.
     """
-    require_upstream_stack()
     contract = _read_native_contract(model_path, contract_path)
+    require_candidate_stack(contract)
     native = mujoco.MjModel.from_xml_path(str(model_path))
     entity = make_entity_cfg(model_path, contract_path)
     if development_initial_qpos is not None:
@@ -331,7 +336,13 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
                 friction=native.pair_friction[i])
 
     opt = native.opt
-    sim_options = MujocoCfg(timestep=DT, integrator=contract["integrator"].lower(), impratio=float(opt.impratio),
+    from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
+    is_discrete = contract["candidate"] == DISCRETE_CANDIDATE
+    option_type = MujocoCfg
+    if is_discrete:
+        from .upstream_discrete_mjlab import DiscreteMujocoCfg
+        option_type = DiscreteMujocoCfg
+    sim_options = option_type(timestep=DT, integrator=contract["integrator"].lower(), impratio=float(opt.impratio),
         cone="elliptic" if int(opt.cone) else "pyramidal",
         jacobian={0: "dense", 1: "sparse", 2: "auto"}[int(opt.jacobian)],
         solver={0: "pgs", 1: "cg", 2: "newton"}[int(opt.solver)],
@@ -343,7 +354,7 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
         enableflags=tuple(name.removeprefix("mjENBL_").lower() for name in dir(mujoco.mjtEnableBit)
             if name.startswith("mjENBL_") and int(opt.enableflags) & int(getattr(mujoco.mjtEnableBit, name))))
     from .rigid_native import CANDIDATES as RIGID_CANDIDATES
-    action_type = RigidGooseActionCfg if contract["candidate"] in RIGID_CANDIDATES else GooseActionCfg
+    action_type = RigidGooseActionCfg if is_discrete or contract["candidate"] in RIGID_CANDIDATES else GooseActionCfg
     return ManagerBasedRlEnvCfg(scene=SceneCfg(num_envs=num_envs, entities={"robot": entity},
         terrain=None, spec_fn=add_native_ground),
         actions={"goose": action_type(entity_name="robot", model_path=model_path, contract_path=contract_path,

@@ -47,14 +47,25 @@ def native_physical_action_std(contract):
 def load_mature_checkpoint(runner, checkpoint_path, **load_kwargs):
     """Resume native PPO, including its adaptive learning-rate scalar.
 
-    RSL-RL5 restores Adam's group rates but leaves PPO.learning_rate at the
+    RSL-RL5.0 restores Adam's group rates but leaves PPO.learning_rate at the
     constructor value. Its next KL adaptation overwrites the restored group
     rate from that stale scalar. Recover the scalar from the same restored
     optimizer; preserve weights, normalization, moments and environment state.
-    Actor-only transfers retain the requested fresh optimizer and schedule.
+    Transfers without iteration restore retain the new task's curriculum
+    clock. Upstream mjlab otherwise restores that clock even for Actor-only
+    loads. This only preserves training metadata, never a physical state.
     """
-    infos = runner.load(checkpoint_path, **load_kwargs)
     load_cfg = load_kwargs.get("load_cfg")
+    environment = getattr(getattr(runner, "env", None), "unwrapped", None)
+    preserve_clock = load_cfg is not None and not load_cfg.get("iteration", False)
+    clock = None
+    if preserve_clock and environment is not None:
+        clock = environment.common_step_counter
+        if type(clock) is not int or clock < 0:
+            raise ValueError("New task curriculum requires a nonnegative integer clock")
+    infos = runner.load(checkpoint_path, **load_kwargs)
+    if clock is not None:
+        environment.common_step_counter = clock
     optimizer_loaded = load_cfg is None or load_cfg.get("optimizer", False)
     algorithm = runner.alg
     if optimizer_loaded and algorithm.schedule == "adaptive":
