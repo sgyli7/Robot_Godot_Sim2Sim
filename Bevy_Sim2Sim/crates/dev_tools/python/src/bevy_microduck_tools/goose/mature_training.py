@@ -97,6 +97,23 @@ def make_mature_runner_cfg(*, seed, recovery=False):
     return asdict(cfg)
 
 
+def make_mature_recovery_memory_runner_cfg(*, seed):
+    """Named upstream GRU comparison, using only the public65-value stream.
+
+    Keep the original PPO, Critic and action semantics. RSL-RL owns recurrent
+    storage, episode resets and export. ONNX adds explicit h_in/h_out policy
+    state (1x1x256); these are derived memory, not physical observations.
+    A deployment must carry that state once per20ms Tick, zero it at a declared
+    policy activation/cold reset and never reset the physical drive with it.
+    This diagnostic profile does not claim to implement HumanUP's RMA/CNN.
+    """
+    cfg = make_mature_runner_cfg(seed=seed, recovery=True)
+    cfg["actor"].update(class_name="RNNModel", rnn_type="gru",
+        rnn_hidden_dim=256, rnn_num_layers=1)
+    cfg["run_name"] = "goose_recovery_gru65_v1"
+    return cfg
+
+
 def initialize_mature_actor(runner, *, recovery=False):
     """Fresh policy: exact zero mean and useful, declared joint exploration.
 
