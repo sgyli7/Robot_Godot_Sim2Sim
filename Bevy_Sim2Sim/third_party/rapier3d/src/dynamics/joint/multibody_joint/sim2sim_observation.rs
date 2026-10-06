@@ -221,6 +221,11 @@ pub struct MultibodyObservation {
     pub generic_joint_impulse: Vec<Real>,
     /// Subset of generic_joint_impulse from native articulation dry-friction rows.
     pub own_dry_friction_impulse: Vec<Real>,
+    /// Subset from native internal motor rows, signed generalized impulse.
+    /// Divide by full_step_dt for average native effort; not sampled PD.
+    pub own_motor_impulse: Vec<Real>,
+    /// Number of collected internal motor rows per generalized coordinate.
+    pub own_motor_row_count: Vec<usize>,
     /// Number of recorded generic-joint row sides for this articulation.
     pub generic_joint_row_side_count: usize,
     /// Stage-specific internal limit rows, only when the separate trace feature is enabled.
@@ -305,6 +310,10 @@ impl MultibodyObservation {
         self.generic_joint_impulse.fill(0.0);
         self.own_dry_friction_impulse.resize(ndofs, 0.0);
         self.own_dry_friction_impulse.fill(0.0);
+        self.own_motor_impulse.resize(ndofs, 0.0);
+        self.own_motor_impulse.fill(0.0);
+        self.own_motor_row_count.resize(ndofs, 0);
+        self.own_motor_row_count.fill(0);
         self.contact_normal_impulse.resize(ndofs, 0.0);
         self.contact_normal_impulse.fill(0.0);
         self.contact_tangent_impulse.resize(ndofs, 0.0);
@@ -329,6 +338,7 @@ impl MultibodyObservation {
                 .chain(&self.user_force_projection)
                 .chain(&self.generic_joint_impulse)
                 .chain(&self.own_dry_friction_impulse)
+                .chain(&self.own_motor_impulse)
                 .all(|value| value.is_finite());
         self.contact_coverage = self.valid
             && self.contact_collector_completed
@@ -469,11 +479,6 @@ impl MultibodyJointSet {
             if constraint.joint_id != usize::MAX || constraint.is_rigid_body2 {
                 continue;
             }
-            // Internal motor rows currently carry a Limit writeback tag too;
-            // their symmetric bounds distinguish them from a one-sided limit.
-            if constraint.impulse_bounds[0] < 0.0 && constraint.impulse_bounds[1] > 0.0 {
-                continue;
-            }
             let Some(root) = roots.iter().find(|root| {
                 let multibody = &self.multibodies[root.multibody.0];
                 multibody.solver_id == constraint.solver_vel2
@@ -600,6 +605,8 @@ impl MultibodyJointSet {
         for constraint in constraints {
             let own_friction = constraint.joint_id == usize::MAX
                 && matches!(constraint.writeback_id, WritebackId::Friction(_));
+            let own_motor = constraint.joint_id == usize::MAX
+                && matches!(constraint.writeback_id, WritebackId::Motor(_));
             for (is_rigid, offset, ndofs, j_id, sign) in [
                 (
                     constraint.is_rigid_body1,
@@ -642,6 +649,12 @@ impl MultibodyJointSet {
                     observation.generic_joint_impulse[index] += signed_impulse;
                     if own_friction {
                         observation.own_dry_friction_impulse[index] += signed_impulse;
+                    }
+                    if own_motor {
+                        observation.own_motor_impulse[index] += signed_impulse;
+                        if *value != 0.0 {
+                            observation.own_motor_row_count[index] += 1;
+                        }
                     }
                 }
                 observation.generic_joint_row_side_count += 1;

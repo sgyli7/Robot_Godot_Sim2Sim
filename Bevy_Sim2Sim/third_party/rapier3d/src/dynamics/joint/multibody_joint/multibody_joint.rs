@@ -46,6 +46,7 @@ pub struct MultibodyJoint {
     sim2sim_source_limit_probe: Option<joint::SourceLimitProbe>,
 }
 
+
 impl MultibodyJoint {
     /// Creates a new multibody joint from its description.
     pub fn new(data: GenericJoint, kinematic: bool) -> Self {
@@ -249,7 +250,11 @@ impl MultibodyJoint {
             3 => {
                 let angvel = Vector::from_slice(&vels[curr_free_dof..curr_free_dof + 3]);
                 let disp = Rotation::from_scaled_axis(angvel * dt);
-                self.joint_rot = disp * self.joint_rot;
+                // Rotation is a unit quaternion. glam multiplication does not
+                // renormalize; repeated f32 products otherwise drift off SO(3).
+                // Keep the invariant inside the existing integration, without
+                // adding a step or an external pose/velocity overwrite.
+                self.joint_rot = (disp * self.joint_rot).normalize();
                 self.coords[3] += angvel[0] * dt;
                 self.coords[4] += angvel[1] * dt;
                 self.coords[5] += angvel[2] * dt;

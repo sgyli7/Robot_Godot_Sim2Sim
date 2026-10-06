@@ -368,7 +368,9 @@ pub fn unit_joint_motor_constraint(
         inv_lhs: crate::utils::inv(lhs + cfm_gain),
         rhs: rhs_wo_bias,
         rhs_wo_bias,
-        writeback_id: WritebackId::Limit(dof_id),
+        // Internal rows still have no warmstart/writeback. This tag only lets
+        // the read-only collector distinguish a motor from a joint limit.
+        writeback_id: WritebackId::Motor(dof_id),
     };
 
     constraints[*insert_at] = constraint;

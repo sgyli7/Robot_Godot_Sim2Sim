@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 sim2sim_observation = ["simulation_minigame/sim2sim_observation"]
+goose_native_drive = ["sim2sim_observation", "simulation_minigame/goose_native_drive"]
 sim2sim_limit_row_trace = ["sim2sim_observation", "simulation_minigame/sim2sim_limit_row_trace"]
 sim2sim_plain_mass_probe = ["sim2sim_observation", "simulation_minigame/sim2sim_plain_mass_probe"]
 sim2sim_source_limit_probe = ["sim2sim_limit_row_trace", "simulation_minigame/sim2sim_source_limit_probe"]
@@ -32,6 +33,16 @@ tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2", optional = true }
+
+[[bin]]
+name = "native_motor_feedback_probe"
+path = "src/bin/native_motor_feedback_probe.rs"
+required-features = ["sim2sim_observation"]
+
+[[bin]]
+name = "goose_native_actor_probe"
+path = "src/bin/goose_native_actor_probe.rs"
+required-features = ["goose_native_drive"]
 
 [[bin]]
 name = "robot_initialization_preview"

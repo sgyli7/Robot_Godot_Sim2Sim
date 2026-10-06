@@ -212,3 +212,5 @@ pub fn verify_foundation(output: &Path) -> Result<FoundationReport, Verification
     )?;
     Ok(report)
 }
+
+pub mod goose_rigid_diagnostic;

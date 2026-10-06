@@ -58,6 +58,8 @@ pub struct GooseAssembly {
     pin_local_jaw: Vector,
     coupler: RigidBodyHandle,
     jaw: RigidBodyHandle,
+    #[cfg(feature = "goose_native_drive")]
+    rigid_native_model_sha256: Option<String>,
 }
 
 /// Only the source's explicit exclusions are added to native adjacent filtering.
@@ -339,6 +341,8 @@ impl GooseAssembly {
             pin_local_jaw: frame2.translation,
             coupler,
             jaw,
+            #[cfg(feature = "goose_native_drive")]
+            rigid_native_model_sha256: plant.is_rigid_native().then(|| plant.model_sha256.clone()),
         })
     }
 
@@ -401,6 +405,139 @@ impl GooseAssembly {
             root_position_world_m: to_source(torso.translation()),
             root_rotation_world_wxyz: rotation,
         })
+    }
+
+    /// True motor encoders, including the input rotor rather than jaw feedback.
+    pub fn motor_velocity_rad_s(
+        &self,
+        simulation: &SimulationWorld,
+    ) -> Result<[f64; 18], RobotError> {
+        let mut velocity = [0.0; 18];
+        for mapping in &self.joints {
+            if let Some(axis) = mapping.active_axis {
+                let (mb, id) = simulation
+                    .world
+                    .multibody_joints
+                    .get(mapping.handle)
+                    .ok_or_else(|| invalid("Stale Goose motor handle"))?;
+                let link = mb
+                    .link(id)
+                    .ok_or_else(|| invalid("Goose motor link absent"))?;
+                velocity[axis] = mb.generalized_velocity()[link.assembly_id()] as f64;
+            }
+        }
+        if velocity.iter().any(|v| !v.is_finite()) {
+            return Err(RobotError::NonFinite("Goose motor velocity"));
+        }
+        Ok(velocity)
+    }
+
+    /// Configure upstream SI motors, queue bias/rotor torques, and step once.
+    /// Solver feedback is read-only and never writes a coordinate or warmstart.
+    #[cfg(feature = "goose_native_drive")]
+    pub fn step_native_motors(
+        &self,
+        simulation: &mut SimulationWorld,
+        contract: &robot_minigame::goose::contract::GooseControlContract,
+        command: &robot_minigame::goose::native_drive::GooseNativeMotorCommand,
+    ) -> Result<(StepSnapshot, [f64; 18]), Box<dyn std::error::Error>> {
+        contract.validate()?;
+        if self.rigid_native_model_sha256.as_deref() != Some(contract.model_sha256.as_str())
+            || contract.candidate != "goose_task_proxy_11_rigid_braking_v1"
+            || command.update != simulation.snapshot().torque_update_count + 1
+            || command
+                .motor_target_rad
+                .iter()
+                .chain(&command.symmetric_limit_nm)
+                .chain(&command.external_effort_nm)
+                .chain(&command.lower_limit_nm)
+                .chain(&command.upper_limit_nm)
+                .any(|v| !v.is_finite())
+            || command.symmetric_limit_nm.iter().any(|v| *v < 0.0)
+        {
+            return Err(
+                invalid("Native motor source identity, update or finite limits mismatch").into(),
+            );
+        }
+        for axis in 0..18 {
+            let lo = command.lower_limit_nm[axis];
+            let hi = command.upper_limit_nm[axis];
+            let peak = contract.joints[axis].torque_peak_limit_nm;
+            let bias = command.external_effort_nm[axis];
+            let radius = command.symmetric_limit_nm[axis];
+            if lo > hi
+                || lo < -peak - 1e-9
+                || hi > peak + 1e-9
+                || bias < lo - 1e-9
+                || bias > hi + 1e-9
+                || (axis != 5
+                    && ((bias - radius - lo).abs() > 1e-9 || (bias + radius - hi).abs() > 1e-9))
+                || (axis == 5 && radius != 0.0)
+            {
+                return Err(invalid(
+                    "Native motor signed interval is inconsistent or exceeds original peak",
+                )
+                .into());
+            }
+        }
+        for mapping in &self.joints {
+            let Some(axis) = mapping.active_axis else {
+                continue;
+            };
+            if axis == 5 {
+                continue;
+            }
+            if mapping.coordinate != 3 {
+                return Err(invalid("Native Goose motor must be a hinge").into());
+            }
+            let joint = &contract.joints[axis];
+            let (mb, id) = simulation
+                .world
+                .multibody_joints
+                .get_mut(mapping.handle)
+                .ok_or_else(|| invalid("Stale Goose motor handle"))?;
+            let data = &mut mb
+                .link_mut(id)
+                .ok_or_else(|| invalid("Goose motor link absent"))?
+                .joint
+                .data;
+            data.set_motor_model(JointAxis::AngX, MotorModel::ForceBased);
+            data.set_motor_position(
+                JointAxis::AngX,
+                (command.motor_target_rad[axis] - mapping.source_coordinate_offset) as f32,
+                joint.kp_nm_rad as f32,
+                joint.kd_nm_s_rad as f32,
+            );
+            data.set_motor_max_force(JointAxis::AngX, command.symmetric_limit_nm[axis] as f32);
+        }
+        let snapshot = self.step(simulation, command.external_effort_nm)?;
+        let mut effort = command.external_effort_nm;
+        for mapping in &self.joints {
+            let Some(axis) = mapping.active_axis else {
+                continue;
+            };
+            let (mb, id) = simulation
+                .world
+                .multibody_joints
+                .get(mapping.handle)
+                .ok_or_else(|| invalid("Stale Goose motor handle"))?;
+            let link = mb
+                .link(id)
+                .ok_or_else(|| invalid("Goose motor link absent"))?;
+            let observation = mb
+                .sim2sim_observation()
+                .ok_or_else(|| invalid("Completed native motor observation unavailable"))?;
+            let slot = link.assembly_id();
+            let expected = usize::from(axis != 5);
+            if observation.own_motor_row_count[slot] != expected
+                || observation.full_step_dt() != 0.02_f32
+            {
+                return Err(invalid("Native motor row coverage or real timestep mismatch").into());
+            }
+            effort[axis] +=
+                observation.own_motor_impulse[slot] as f64 / observation.full_step_dt() as f64;
+        }
+        Ok((snapshot, effort))
     }
 
     /// Geometric loop error comes from the two actual native link transforms.

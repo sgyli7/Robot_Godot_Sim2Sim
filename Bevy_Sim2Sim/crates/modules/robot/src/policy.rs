@@ -64,7 +64,10 @@ fn initialize_runtime(library_path: &Path) -> Result<CpuRuntimeIdentity, RobotEr
     Ok(identity)
 }
 
-pub struct CpuPolicy {
+pub struct CpuPolicy<
+    const OBSERVATIONS: usize = OBSERVATION_DIMENSION,
+    const ACTIONS: usize = ACTION_DIMENSION,
+> {
     session: Session,
     input_name: String,
     output_name: String,
@@ -80,9 +83,21 @@ impl CpuPolicy {
         contract: &PolicyContract,
     ) -> Result<Self, RobotError> {
         contract.validate()?;
+        Self::load_checked_actor(library_path, model_path, &contract.model_sha256)
+    }
+}
+
+impl<const OBSERVATIONS: usize, const ACTIONS: usize> CpuPolicy<OBSERVATIONS, ACTIONS> {
+    /// Load a hash-frozen actor with independently checked tensor dimensions.
+    /// Robot-specific callers still bind their complete control contract.
+    pub fn load_checked_actor(
+        library_path: &Path,
+        model_path: &Path,
+        model_sha256: &str,
+    ) -> Result<Self, RobotError> {
         let bytes = fs::read(model_path).map_err(|error| RobotError::Policy(error.to_string()))?;
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        if hash != contract.model_sha256 {
+        if hash != model_sha256 {
             return Err(RobotError::Contract("ONNX SHA256 mismatch".into()));
         }
         let runtime_identity = initialize_runtime(library_path)?;
@@ -105,8 +120,8 @@ impl CpuPolicy {
                 "expected exactly one actor input and output".into(),
             ));
         }
-        validate_tensor(session.inputs()[0].dtype(), OBSERVATION_DIMENSION)?;
-        validate_tensor(session.outputs()[0].dtype(), ACTION_DIMENSION)?;
+        validate_tensor(session.inputs()[0].dtype(), OBSERVATIONS)?;
+        validate_tensor(session.outputs()[0].dtype(), ACTIONS)?;
         let input_name = session.inputs()[0].name().to_owned();
         let output_name = session.outputs()[0].name().to_owned();
         Ok(Self {
@@ -121,12 +136,11 @@ impl CpuPolicy {
 
     pub fn infer(
         &mut self,
-        observation: &[f32; OBSERVATION_DIMENSION],
-    ) -> Result<[f32; ACTION_DIMENSION], RobotError> {
+        observation: &[f32; OBSERVATIONS],
+    ) -> Result<[f32; ACTIONS], RobotError> {
         finite(observation, "policy input")?;
-        let input =
-            TensorRef::from_array_view(([1_usize, OBSERVATION_DIMENSION], observation.as_slice()))
-                .map_err(policy_error)?;
+        let input = TensorRef::from_array_view(([1_usize, OBSERVATIONS], observation.as_slice()))
+            .map_err(policy_error)?;
         self.inference_count += 1;
         let outputs = self
             .session
@@ -136,12 +150,12 @@ impl CpuPolicy {
             .try_extract_tensor::<f32>()
             .map_err(policy_error)?;
         let dimensions: &[i64] = shape.as_ref();
-        if dimensions != [1_i64, ACTION_DIMENSION as i64] || values.len() != ACTION_DIMENSION {
-            return Err(RobotError::Contract(
-                "expected actor output [1,14] float32".into(),
-            ));
+        if dimensions != [1_i64, ACTIONS as i64] || values.len() != ACTIONS {
+            return Err(RobotError::Contract(format!(
+                "expected actor output [1,{ACTIONS}] float32"
+            )));
         }
-        let mut action = [0.0; ACTION_DIMENSION];
+        let mut action = [0.0; ACTIONS];
         action.copy_from_slice(values);
         finite(&action, "policy output")?;
         self.successful_inference_count += 1;
