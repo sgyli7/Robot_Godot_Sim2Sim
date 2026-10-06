@@ -1,8 +1,9 @@
 """Native mjlab humanoid velocity rewards on the frozen Goose plant.
 
-The upstream task owns all reward functions and numeric coefficients. Goose
-adapts names, six upper-body joints and the velocity measurement point only.
-This profile is distinct from the older partly handwritten mature profile.
+The base profile retains all upstream reward functions and coefficients.
+Goose adapts names, upper-body joints and the velocity measurement point.
+The named low-speed comparison additionally tests a dimensional tolerance
+mapping, without changing reward functions or weights.
 """
 import copy
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from .mjlab_env import make_development_env_cfg
 from .source_training import commanded_observation, critic_motion_state
 
 REVISION = "goose_native_velocity_resume_v1"
+FORWARD_SCALE_REVISION = "goose_native_forward_tolerance_scale_v1"
 
 
 def track_root_com_linear_velocity(env, **kwargs):
@@ -94,4 +96,33 @@ def make_native_velocity_cfg(model_path, contract_path, *, num_envs=256,
     cfg.terminations["contact_domain_failure"] = TerminationTermCfg(
         func=rigid_contact_limit_exceeded, params={"max_depth_m": .05})
     cfg.metrics["rigid_contact_depth_m"] = MetricsTermCfg(func=rigid_collision_depth)
+    return cfg
+
+
+def make_native_forward_scale_cfg(model_path, contract_path, *, num_envs=256,
+                                  seed=127, development_initial_qpos=None,
+                                  scale_linear_tolerance=False):
+    """Paired first-forward course; only linear tolerance differs between arms.
+
+    Preserve the upstream dimensionless ratio std / characteristic command
+    speed when mapping its initial 1m/s domain to the fixed .06m/s course.
+    This is an explicit hypothesis for Goose, not a source qualification.
+    Both arms use the original guided course's standing fraction and command
+    resampling, without guidance, new weights or a modified control contract.
+    """
+    cfg = make_native_velocity_cfg(model_path, contract_path, num_envs=num_envs,
+        seed=seed, development_initial_qpos=development_initial_qpos)
+    command = cfg.commands["velocity"]
+    command.ranges.lin_vel_x = (.06, .06)
+    command.ranges.lin_vel_y = (0., 0.)
+    command.ranges.ang_vel_z = (0., 0.)
+    command.rel_standing_envs = .2
+    command.resampling_time_range = (6., 10.)
+    if scale_linear_tolerance:
+        stock = unitree_g1_flat_env_cfg()
+        source_speed = max(abs(value) for value in
+            stock.commands["twist"].ranges.lin_vel_x)
+        if source_speed != 1.:
+            raise ValueError("Frozen upstream characteristic command speed changed")
+        cfg.rewards["track_linear_velocity"].params["std"] *= .06/source_speed
     return cfg
