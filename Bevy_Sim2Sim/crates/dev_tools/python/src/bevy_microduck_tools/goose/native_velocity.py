@@ -6,9 +6,13 @@ The named low-speed comparison additionally tests a dimensional tolerance
 mapping, without changing reward functions or weights.
 """
 import copy
+from dataclasses import dataclass
 from types import SimpleNamespace
 
+import torch
+
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -17,7 +21,8 @@ from mjlab.sensor import BuiltinSensorCfg, ContactMatch, ContactSensorCfg, ObjRe
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity
 from mjlab.tasks.velocity.mdp.curriculums import commands_vel
-from mjlab.tasks.velocity.mdp.velocity_command import UniformVelocityCommandCfg
+from mjlab.tasks.velocity.mdp.velocity_command import (
+    UniformVelocityCommand, UniformVelocityCommandCfg)
 
 from .artifacts import JOINT_ORDER
 from .foot_curriculum import (
@@ -29,6 +34,7 @@ from .source_training import commanded_observation, critic_motion_state
 REVISION = "goose_native_velocity_resume_v1"
 FORWARD_SCALE_REVISION = "goose_native_forward_tolerance_scale_v1"
 WALK_RUN_REVISION = "goose_native_walk_run_commands_v2"
+SOLE_WALK_RUN_REVISION = "goose_sole_walk_run_task_v1"
 
 
 def track_root_com_linear_velocity(env, **kwargs):
@@ -160,4 +166,126 @@ def make_native_walk_run_cfg(model_path, contract_path, *, course_start_step,
             {"step": course_start_step+192*24, "lin_vel_x": (-.15, .7), "lin_vel_y": (-.1, .1),
              "ang_vel_z": (-.6, .6)},
         ]})}
+    return cfg
+
+
+class GooseSoleWalkRunCommand(UniformVelocityCommand):
+    """Goose task commands, with real episode standing and explicit coverage.
+
+    The native manager owns command timing. No root/joint/velocity writer or
+    predecessor action table is used. Stage changes only resample commands;
+    every episode's first 50 completed physics Ticks retain a zero command.
+    """
+    BUCKET_NAMES = ("stop", "walk", "backward", "left", "right", "yaw_left",
+        "yaw_right", "walk_turn_left", "walk_turn_right", "run",
+        "run_turn_left", "run_turn_right")
+
+    def __init__(self, cfg, env):
+        if (cfg.init_velocity_prob != 0. or cfg.heading_command
+                or any((cfg.rel_heading_envs, cfg.rel_world_envs, cfg.rel_forward_envs))):
+            raise ValueError("Goose task commands cannot write physical state")
+        super().__init__(cfg, env)
+        self.sampled_commands = torch.zeros_like(self.vel_command_b)
+        self.bucket_ids = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self.warm_prefix_active = torch.ones(self.num_envs, device=self.device, dtype=torch.bool)
+        self._last_stage = 0
+
+    @property
+    def course_stage(self):
+        clock = self._env.common_step_counter - self.cfg.course_start_step
+        return int(clock >= 32*24) + int(clock >= 64*24)
+
+    def _templates(self):
+        stage = self.course_stage
+        vx, vy, yaw = (.06, .03, .3) if stage == 0 else (.4, .1, .6)
+        backward = -.06 if stage == 0 else -.15
+        turn = yaw/2
+        values = [[0., 0., 0.], [vx, 0., 0.], [backward, 0., 0.],
+            [0., vy, 0.], [0., -vy, 0.], [0., 0., yaw], [0., 0., -yaw],
+            [vx, 0., turn], [vx, 0., -turn]]
+        if stage == 2:
+            values.extend([[.7, 0., 0.], [.7, 0., .3], [.7, 0., -.3]])
+        return torch.tensor(values, device=self.device, dtype=self.vel_command_b.dtype)
+
+    def _resample_command(self, env_ids):
+        templates = self._templates()
+        ids = torch.randint(1, len(templates), (len(env_ids),), device=self.device)
+        standing = torch.rand(len(env_ids), device=self.device) < self.cfg.rel_standing_envs
+        ids[standing] = 0
+        self.bucket_ids[env_ids] = ids
+        self.sampled_commands[env_ids] = templates[ids]
+        self._apply_sampled_commands()
+
+    def _apply_sampled_commands(self):
+        self.warm_prefix_active.copy_(self._env.episode_length_buf < self.cfg.standing_ticks)
+        self.vel_command_b.copy_(self.sampled_commands)
+        self.vel_command_b[self.warm_prefix_active] = 0.
+        self.vel_command_w.copy_(self.vel_command_b)
+        self.is_standing_env.copy_((self.bucket_ids == 0) | self.warm_prefix_active)
+        self.is_heading_env.zero_()
+        self.is_world_env.zero_()
+        self.is_forward_env.zero_()
+
+    def _update_command(self):
+        stage = self.course_stage
+        if stage != self._last_stage:
+            self._resample(torch.arange(self.num_envs, device=self.device))
+            self._last_stage = stage
+        self._apply_sampled_commands()
+
+
+@dataclass(kw_only=True)
+class GooseSoleWalkRunCommandCfg(UniformVelocityCommandCfg):
+    course_start_step: int = 0
+    standing_ticks: int = 50
+
+    def build(self, env):
+        return GooseSoleWalkRunCommand(self, env)
+
+
+def reset_sole_landing_history(env, env_ids):
+    """Reset native reward memory for reset worlds, without a physics write.
+
+    The installed native landing reward has no reset method. Its peak-height
+    history belongs to one episode and must not survive a genuine cold reset.
+    The reward's original call and numeric parameters remain untouched.
+    """
+    landing = env.reward_manager.get_term_cfg("foot_swing_height").func
+    landing.peak_heights[env_ids] = 0.
+
+
+def make_sole_walk_run_task_cfg(model_path, contract_path, *, course_start_step,
+                              num_envs=256, seed=127,
+                              development_initial_qpos=None):
+    """One Goose-owned foot, posture, command and termination task.
+
+    Uses the existing native reward functions and Goose foot-course scales.
+    It is a new learning task, not unchanged G1 reward inheritance or a claim
+    that a scheduled speed command is already achieved.
+    """
+    if (isinstance(course_start_step, bool)
+            or not isinstance(course_start_step, int) or course_start_step < 0):
+        raise ValueError("Course start must match the restored nonnegative clock")
+    cfg = make_native_velocity_cfg(model_path, contract_path, num_envs=num_envs,
+        seed=seed, development_initial_qpos=development_initial_qpos)
+    cfg.commands = {"velocity": GooseSoleWalkRunCommandCfg(
+        course_start_step=course_start_step, standing_ticks=50,
+        entity_name="robot", resampling_time_range=(3., 8.), rel_standing_envs=.2,
+        heading_command=False, rel_heading_envs=0., rel_world_envs=0.,
+        rel_forward_envs=0., init_velocity_prob=0.,
+        ranges=UniformVelocityCommandCfg.Ranges(lin_vel_x=(-.15, .7),
+            lin_vel_y=(-.1, .1), ang_vel_z=(-.6, .6)))}
+    cfg.curriculum = {}
+    cfg.events["sole_landing_history"] = EventTermCfg(
+        func=reset_sole_landing_history, mode="reset")
+    cfg.rewards["air_time"].weight = 1.
+    cfg.rewards["air_time"].params.update(threshold_min=.05, threshold_max=.5,
+        command_threshold=.01)
+    for name in ("foot_clearance", "foot_swing_height"):
+        cfg.rewards[name].params.update(target_height=.02, command_threshold=.01)
+    moving_widths = {".*hip_.*|.*knee_.*|.*ankle_.*": .35,
+        "neck_.*|head_.*|beak_.*": .15}
+    cfg.rewards["pose"].params.update(std_standing={".*": .15},
+        std_walking=moving_widths.copy(), std_running=moving_widths.copy(),
+        walking_threshold=.01, running_threshold=.55)
     return cfg
