@@ -2,21 +2,23 @@
 
 版本：2026-10-06。实施分支：`codex/goose50_training`。
 
-**现行人类指令（2026-10-06）：先查清起身失败，再继续能力训练。** PPO已停止／GPU释放；主实施独立负责，不联系、读取或监控硬件／暂停G1，不新建聊天／PM，不派或唤醒agent。此前十小时窗口已过，完整移动与恢复未交付；目标不缩小。临时代码、模型、依赖、轨迹、日志、收据、录像和快照均落项目备份目录，生产只落对应crate，本文为用户指定唯一计划入口。
+**现行人类指令：先查清起身失败，再继续能力训练。** PPO已停止／GPU释放；主实施独立负责，不联系、读取或监控硬件／暂停G1，不新建聊天／PM，不派或唤醒agent。十小时窗口已过，完整移动与恢复未交付，目标不缩小。临时代码、模型、依赖、轨迹、日志、收据、录像、构建和快照落项目备份目录，生产只落对应crate，本文是用户指定唯一计划入口。
 
-**当前输入与范围：** 冻结 goose_task_proxy_11_rigid_braking_v1，21机器人刚体／18实际电机／2被动轴／11碰撞叶／10.430690821kg，公共65→18（拾物82→18）；模型和合同位于 /home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_humanup_discovery_001/candidate/。刚性足为原底面内接158×60×30.987mm box，遗漏原上部约44.76%鞋体体积，不继承完整脚套或硬件资格。原质量／COM／惯量／轴位／嘴四杆／自碰撞过滤、原限速／力矩／热／350W保持，50Hz每Tick一次真实20ms物理／驱动／策略更新，decimation1，无隐藏子步、出生后实际状态或历史写入。旧软底不阻挡电脑训练。
+**现行输入：** 冻结 `goose_task_proxy_11_rigid_braking_v1`，21机器人刚体／18实际电机／2被动轴／11碰撞叶／10.430690821kg，公共65→18（拾物82→18）；模型与合同在 /home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_humanup_discovery_001/candidate/。刚性足为原底面内接158×60×30.987mm box，遗漏约44.76%上部鞋体体积，不继承完整脚套／硬件资格。原质量／COM／惯量／轴位／嘴四杆／过滤／限速／力矩／热／350W保持，50Hz每Tick一次真实20ms驱动／积分／当前Actor更新，decimation1，无隐藏子步或出生后实际状态／历史写入。旧软底不阻挡电脑训练。
 
-**现行归因与本轮验证：** 现有恢复Actor四方向失败、旧奖励查询／带载映射问题由Lab负责；PPO算法不适用、原结构全局不能起身均未证明。本轮两份预先限定适配：真实承托／动量事件门控＋作者Stand原COM速度项仅40实际Tick／.8秒；只加门控、沿原评分66Tick／1.32秒，均无承托入口／站稳。正式最大穿入分别4.790／4.780mm、自碰撞0。前50Tick全部12,576边与原对照逐值同一；两份27,200原生边及实际历史／逐脚力／阶段／评分全经新进程逐值复核。**补速度项或补门控不足以解锁起身；静态目标及即时路径选择不是已合格动态控制。** 原1秒“脚力37.86N”实际右0／左37.86N，头35.55N，不能当双脚承托。
+**当前归因：** 具名434更新恢复Actor原四方向各650Tick全部0稳定保持；旧脚力奖励接受错误脚面、查询副作用及带载映射等问题由Lab负责。PPO根本不适用或结构全局不允许起身均未证明。最新原模型／驱动路线从原case28前倒连续执行626Tick、整段self0、末150Tick正确双脚承托／稳定，最低up .999870／COM280.864mm；目标限速与实际力矩限额逐Tick通过，实际正功率峰值70.54W。但前段地面峰值10.098mm＞固定5mm，**尚未完成合法动态可行性或全局不可能证明，不称结构已定死，不晋升教师／策略，不恢复PPO。** 未证明必须改硬件，本轮模型／硬件／生产均未改。
 
-**当前实际阻断：** 两份末端各256采样下一步均代理自碰撞：速度项组主要右脚↔左胫部1.511–16.752mm；门控组全部下嘴↔躯干2.161–25.047mm。正式5mm／self0也各0合法，不是仅保守4.8mm门槛挡住。已执行路径无自碰撞，私人失败边未执行；有限采样与凸代理交叉不证明整机全局不可达或实际CAD交叉。没有必要性证据，不改硬件。
+**实际剩余阻断：** 最佳路线第8–64Tick地面违规，第43Tick（.86秒）右脚10.098mm；此后全程≤5mm／self0、末150Tick严格稳定。第41Tick右脚最低点在平面上方2.589mm，第42Tick真实右脚反力0、完成后低于平面6.448mm；第43Tick反力58.40N仍至10.098mm。该Tick COM速率.506m/s／角速率2.218rad/s，早期左右脚承托交替。原路径第11Tick头部上方.176mm，第12Tick全部地面反力0、头部完成后低于19.593mm。接近地面的运动与单20ms离散接触时序参与这些尖峰；不能因此直接宣布solver错误或全局结构不可达，也不能归为未开convex。最低位置净位移不冒充瞬时材料点速度；实际力来自该Tick原生求解，不用FK重求解替换。18电机已有正armature，缺失转子惯量假设被XML否定，没有据此改模型。
 
-**收口与成本：** 两份静态标记／事件／速度适配关闭，不追8／32、seed、噪声、权重、阶段阈值、horizon、solver、margin或积分器网格；旧裸IK／偏置／投影／冻结导数等已收口族不重开。共54,822CPU（20,834含核对105及导出作废105＋33,988），前轮56,236另计；GPU／PPO／Adam／ONNX0，无教师／策略晋升，原模型／驱动／碰撞／solver／硬件／共享环境／生产未改。
+**有界整体轨迹结果：** 原626动作／状态／65观测／目标／力矩／热身份逐值通过。普通作者MPPI逐Tick独立扰动3150变量、32×2完整样本中44末150稳定，但最低违规候选15.075mm地面／self3.882mm；无新互撞稳定样本仅原路径重复。第二轮人工旧零先验扰动代价−183.94176使权重1、输出退回21.427mm，已由同语料去先验对照坐实；对照实际19.009mm／self3.863mm仍失败。这个本地组合缺陷未用于旧PPO，不是作者算法错误。改用未改作者KMPPI固定6×18=108连续控制点、无人工先验、32×2完整样本，47末150稳定，16整段self0；最优10.098mm／self0仍不合格。两份所有完整原生样本、加权输出、选中执行全部经新进程逐值复核。离线优化器身份记账state不冒充物理预测；每份fitness确实进行626个分别计数的20ms原生积分。没有新PPO奖励／控制框架／求解器。
 
-**唯一下一问题：** 转为完整接触转换轨迹的原生可执行性：冻结已提取原626Tick起身／保持真实18维动作（来自995Tick开发回放、穿入21.427mm／self0、未合格），先核整段原生驱动身份，再复用已接线成熟轨迹组件做一份有界整体约束验证。整段起身及150Tick保持不可省略，所有候选失败也须保留违规量／未来互撞信息；不再扩静态参考、即时评分或新增PPO奖励／控制框架／接触求解器。结果前冻结协议，失败不派参数网格。完整合法动态证据及源GPU同合同物理准入前，PPO停止。
+**收口与成本：** 静态标记／即时可行边／事件／速度、逐Tick白噪声／人工先验组合及本次固定核两轮试验均关闭，不追加seed／噪声／权重／kernel／horizon／solver／margin／积分器网格。旧已收口族不重开。本轮171,524CPU＝普通整段包87,014＋核整段包84,510，之前54,822及56,236另计；GPU／PPO／Adam／ONNX0。所有主、独立、渲染已退出。核包最后收据统计漏import的NameError原样保留；626实际积分和逐值断言已完成，以已有轨迹0积分修复统计，再独立全量核对，未重复优化或覆盖失败。
 
-**资格保持：** 结构起身证据不依赖旧移动Actor先会走1m；最终恢复后1m、完整移动、四方向／自然跌倒／Bevy仍必须全部验收。原21.427mm开发成功路径、局部合法边、接口／优化器返回成功不算完整物理或硬件资格，十小时目标未完成。源／目标／最终资格分别报告，M0-T未过不目标训练或授予Bevy能力。
+**唯一下一判断：** 在原20ms合同内控制足端接近速度／承托转换，能否使整个早期1.28秒≤5mm／self0并继续完整起身／150Tick稳定。以已定位的同步真实接触与运动事件为依据，复用成熟受约束轨迹／运动跟踪流程，结果前冻结一个方案和失败出口；不回到泛泛加PPO／新奖励／参数网格。若证据表明必要运动在现单步接触合同中不可表达，先给同期法向运动／接触／驱动反力的受控证明，再决定具名模型增量，不能静默改合同。全程合法动态证据及源GPU同合同物理准入前PPO停止。
 
-[最新完整归因与复现](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/diagnosis.md) · [实际失败回放](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/support_task_failures.mp4) · [自碰撞阻断](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/self_contact_frontier_audit.json)。前轮完整计划原样归档至[本次修改前计划](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/training_plan_before_checkpoint.md)，历史“下一项”不覆盖当前派工；[前轮诊断](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/diagnosis.md)、[早期策略／训练归因](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_recovery_cause_audit_001/diagnosis.md)、[原超标开发回放](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_wholebody_pitch_transition_001/diagnosis.md)均保留证据身份。下文基础计划不覆盖顶部现行决定。
+**资格保持：** 原21.427mm、15.075mm或10.098mm开发路线均不是教师／策略资格。结构可行性证明不依赖旧移动Actor先会走1m，但最终恢复后1m、完整前后／横移／转向／启停、四方向／自然跌倒／GPU／Bevy全部必须验收。源／目标／最终资格分别报告，M0-T未过不目标训练或授予Bevy能力。
+
+[最新统一归因与复现](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_kernel_native_trajectory_001/diagnosis.md) · [实际原生回放](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_kernel_native_trajectory_001/native_getup_comparison.mp4) · [全量独立核对](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_kernel_native_trajectory_001/independent_receipt.json) · [同期接触跨越](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_kernel_native_trajectory_001/saved_contact_crossing_receipt.json) · [修改前计划](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_kernel_native_trajectory_001/training_plan_before_checkpoint.md)。[上一阶段报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/diagnosis.md)及全部旧失败证据保留，历史“下一项”不覆盖现行判断。下文基础计划不覆盖顶部现行决定。
 
 ## 1. 目标与当前基线
 
