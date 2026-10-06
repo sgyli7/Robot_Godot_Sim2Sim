@@ -6,7 +6,7 @@
 
 **冻结输入：** `goose_task_proxy_11_rigid_braking_v1`，MJCF SHA `3dd030f0475efd101ab129288e7f04f5694067757d85e0429933cecb9c5268e4`、合同SHA `d3fd7ba668678e1e1237d00bd7fac77e5d0625d77cc65bea85d3579ffb17061c`。21机器人刚体／18真实电机／2被动轴／11叶／10.430690821kg。每腿6主动轴；公共65→18、拾物82→18。9凸mesh＋2刚性足box；原鞋上部遗漏44.76%不继承实物资格。质量/完整惯量/轴位/嘴四杆/过滤/限速/力矩/热/350W保留；50Hz、每Tick一次20ms实际驱动/积分/当前Actor更新、decimation1，无隐藏子步/出生后实际root/q/qd/drive/history写入。电脑训练不考虑软底。
 
-**最新定责：已经大量训练，也有低速双足运动证据，尚无完整合格能力。现有证据不支持“DOF不足/大壳把正常走路卡死”。Lab任务/观测/参考适配已有明确错误，责任由Lab承担；不能把3.52亿不同实验样本当一条成熟配置持续训练，也不能因此判PPO或硬件绝对不可能。**
+**最新定责：已经大量训练，也有低速双足运动证据，尚无完整合格能力。现有证据不支持“DOF不足/大壳把正常走路卡死”。Lab任务/观测/参考适配已有明确错误，责任由Lab承担；不能把3.52亿不同实验样本当一条成熟配置持续训练，也不能因此判PPO或硬件绝对不可能。** 本轮又完成两组真实GPU续训/独立回放，开发组20秒前进1.883m但地穿9.712mm，严接触组1.84秒跌倒。新发现并修复原生PPO续训的学习率元状态遗漏；其代码回归通过，不等于能力通过。
 
 | 检查 | 事实与适用边界 |
 |---|---|
@@ -22,13 +22,19 @@
 | 起身是否结构全局不可能 | 同原公共18动作626Tick可末150Tick真实正确站稳，但全路径10.0978mm地穿/jaw.08258rad越界；未合格。头高参考来自真实FK，投影joint目标播放不能代替原控制提前量/反馈或证明RL不可能 |
 | 接管诊断 | 原前175Tick保全历史并逐元素等于基线：双脚49.53/52.93N、self0、地穿1.395mm、轴越界0、但up.121/COM166mm并未站稳。只换冻结300Actor451次ONNX后保持0、9Tick后self。冷起与该入口都失败，该配置收口，不仅靠取消头高终止或无限续训 |
 
-**唯一下一问题：** 以冻结guided512的同初态/同18公共动作低速回放为入口，读真实支撑力、COM移重、足部卸载/落脚与驱动力矩的相位关系，判断原步态是未移重就抬脚、落脚冲击/50Hz接触，还是驱动余量不足；不先改参数、不开新GPU超参网格。最多1000CPU积分，原解算力与完成状态的时间标签分别记录，不能用private FK重新求力冒充实际力；通过同原轨迹一致性后再解释因果。移动/转向复用具名已有候选，恢复300Actor/该投影参考配置已收口；不重新派无界静态/MPPI/KMPPI/kernel/SLSQP/solver/margin/噪声/seed/权重搜索。证实问题后只选择一个成熟接口/课程修正做小对照与有界GPU pilot，独立物体/接触/动作验收仍固定；不能只调门槛或以隐藏参考输入帮助Actor。
+**最新支撑与GPU证据（已收口）：** 原guided512同公共动作1000CPU回放，q/qvel/力矩/观测逐位相同；39段持续离地时另一脚平均载荷中位数95.85%体重，self/nonfoot0。71步/30入口超过5mm；最大11.822mm来自支撑再接触，Tick956最低点+0.0222mm/预速度向上、实际该脚力0，20ms后−8.2919mm，当时腿力矩/转速未近上限。39次首次落地只有2次立即超5mm，不能全归因抬脚前没移重或首次下降速度。动态COM投影不当静稳失败证书。
+
+同原512检查点、现有private-FK修正、原奖励/物理/驱动的两组各256世界×24×128PPO，只改普通训练终止50mm/5mm：50mm组1280回合平均597.55Tick；5mm组61524回合平均12.724Tick/0.254秒、最长105，无完整超时。后者破坏已有步态，分支收口，不继续门槛/seed/噪声/权重搜索。开发组独立站立60秒COM漂5.16mm/地穿2.653mm、停止速度.01536m/s/漂2.70mm；走路20秒前1.883m/横.285m/yaw.426rad/地穿9.712mm，移动未过。嘴闭环软范围另报；1e−6是本短实验预声明诊断标志，不当用户新增站立门槛。严格组移动1.84秒跌倒，站漂15.10cm，未晋升。
+
+**唯一下一问题：** 修复真实续训入口后，用同原512检查点/50mm开发任务做一次最多128更新的GPU对照，检验学习率恢复是否改善独立真实移动/接触。必须使用生产 `mature_training.load_mature_checkpoint`，与本轮冻结未修50mm组比较，其余奖励/命令/Actor/物理不变，先小链路、失败保留；不开长训，不重启5mm训练终止组。RSL5.0.1原load恢复optimizer lr7.59375e−5，却留下adaptive标量1e−3、差13.17倍；修复从同已恢复optimizer恢复标量，真实512的Actor/Critic/normalizer/Adam逐位相同、策略输出差0、7回归过。该缺陷不解释全部历史fresh-optimizer训练，不以代码修复授予能力；若有界复测无改善，转成熟动作单位/状态课程适配，禁止追加学习率/奖励网格。恢复300Actor/投影参考和静态/MPPI/KMPPI/kernel/SLSQP/solver/margin旧家族仍收口，完整移动/四方向恢复/Bevy目标不缩小。
 
 **机械修改规则：** 现行无新CAD或合同改动，也无硬件交付等待。若实际指定动作被几何/力矩阻断，才起具名最小增量，记录质量/惯量/轴位/范围/来源差分并同初态/动作验证；不主动找原硬件聊天，最终一次汇总给工程。现有低速运动不授予流畅/快走/硬件资格。
 
 **成熟链路和门槛：** 统一MJCF、原生MuJoCo、mjlab/Warp/RSL-RL与MicroDuck组织。名义源数值/真实小GPU/PPO链路已过不是完整接触域M0-S；不在对应源门未过时长训。M0-T未过不目标训练/Bevy资格。训练与独立评估分开，200全指令移动、四方向/自然跌倒、3秒保持/恢复后1m/游戏集成未通过仍未完成。原函数来源验证不能冒充完整成熟工作流。
 
-**本轮资源：** 前倒两模式1252CPU；固定接管诊断第一175CPU记录字段错误/0ONNX保留，修复记录再626CPU/451ONNX，总2053CPU/451ONNX。新GPU/PPO/Adam0；主2400保存状态COM FK、子审查7708参考FK/有界机构查询、公式/统计/解码/渲染均0积分。历史3.52亿与上一轮2612CPU/463884GPU/302PPO/6104Adam/3520ONNX/1Distillation不重复。全部本轮运行退出，其他GPU进程未动。
+**本轮资源：** 新GPU1,573,264（训练1,572,864＋检查400含漏冷重置的200失败步），256PPO/5120训练Adam；CPU8784（支撑1000＋独立7784），7784ONNX。单元红/绿回归另5次Adam仅生成小测试状态；真实检查点64条Torch前向/绘图/400录像FK均0积分。脚本缺冷reset、归档cfg缺class和fixture绕过构造器等失败均保留，不伪装物理失败，临时日志已按规范归备份。历史2053CPU/451ONNX、3.52亿训练及其他历史不重复。全部本轮进程结束，其他GPU进程未动。
+
+[支撑相位报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_walking_support_phase_001/diagnosis.md)（manifest `7371e389d408ccd82c1f4a95942302a645069471d6658b61611c66d4b688a47a`） · [GPU对照与恢复修复](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_guided_contact_domain_pilot_001/diagnosis.md)（manifest `a1dd581de3310a713960eaa7a1a9e1b14845ecfddb05d8b20d93bb77677c89b1`） · [新实际失败对照录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_guided_contact_domain_pilot_001/actual_contact_domain_comparison.mp4)。13/481份冻结payload哈希核验，历史下一批不覆盖本顶部。
 
 [完整移动/机构定责报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_locomotion_method_hardware_audit_001/diagnosis.md) · [历史训练账本](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_locomotion_method_hardware_audit_001/historical_training_ledger.json) · [腿部独立审查](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_leg_clearance_audit_001/README.md) · [真实旧低速移动录像](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_gpu_guided_velocity_001/learned_walk20s_update512_labeled.mp4) · [接管实际收据](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_handoff_diagnosis_001/receipt.json) · [原300恢复四方向失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_termination_admission_001/four_direction_failure.mp4)。历史下一批不覆盖本顶部。
 

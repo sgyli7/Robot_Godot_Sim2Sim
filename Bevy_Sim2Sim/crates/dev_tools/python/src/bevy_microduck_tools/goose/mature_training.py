@@ -18,6 +18,29 @@ from .source_training import commanded_observation, critic_motion_state
 REVISION = "goose_mature_humanoid_ppo_v1"
 
 
+def load_mature_checkpoint(runner, checkpoint_path, **load_kwargs):
+    """Resume native PPO, including its adaptive learning-rate scalar.
+
+    RSL-RL5 restores Adam's group rates but leaves PPO.learning_rate at the
+    constructor value. Its next KL adaptation overwrites the restored group
+    rate from that stale scalar. Recover the scalar from the same restored
+    optimizer; preserve weights, normalization, moments and environment state.
+    Actor-only transfers retain the requested fresh optimizer and schedule.
+    """
+    infos = runner.load(checkpoint_path, **load_kwargs)
+    load_cfg = load_kwargs.get("load_cfg")
+    optimizer_loaded = load_cfg is None or load_cfg.get("optimizer", False)
+    algorithm = runner.alg
+    if optimizer_loaded and algorithm.schedule == "adaptive":
+        rates = [float(group["lr"]) for group in algorithm.optimizer.param_groups]
+        if not rates or any(not isfinite(rate) or rate <= 0 for rate in rates):
+            raise ValueError("Adaptive PPO resume requires finite positive optimizer rates")
+        if any(rate != rates[0] for rate in rates[1:]):
+            raise ValueError("Adaptive PPO resume requires one shared optimizer rate")
+        algorithm.learning_rate = rates[0]
+    return infos
+
+
 def initialize_unused_lateral_yaw(runner, command_cfg):
     """Initialize unused command columns while retaining learned forward gait.
 
