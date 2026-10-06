@@ -45,6 +45,11 @@ path = "src/bin/goose_native_actor_probe.rs"
 required-features = ["goose_native_drive"]
 
 [[bin]]
+name = "goose_native_motor_isolation_probe"
+path = "src/bin/goose_native_motor_isolation_probe.rs"
+required-features = ["goose_native_drive"]
+
+[[bin]]
 name = "robot_initialization_preview"
 path = "src/bin/robot_initialization_preview.rs"
 required-features = ["rendering_preview"]
