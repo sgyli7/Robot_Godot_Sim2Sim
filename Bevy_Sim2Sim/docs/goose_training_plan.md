@@ -6,7 +6,7 @@
 
 **冻结输入：** `goose_task_proxy_11_rigid_braking_v1`，MJCF SHA `3dd030f0475efd101ab129288e7f04f5694067757d85e0429933cecb9c5268e4`、合同SHA `d3fd7ba668678e1e1237d00bd7fac77e5d0625d77cc65bea85d3579ffb17061c`。21机器人刚体／18真实电机／2被动轴／11叶／10.430690821kg。每腿6主动轴；公共65→18、拾物82→18。9凸mesh＋2刚性足box；原鞋上部遗漏44.76%不继承实物资格。质量/完整惯量/轴位/嘴四杆/过滤/限速/力矩/热/350W保留；50Hz、每Tick一次20ms实际驱动/积分/当前Actor更新、decimation1，无隐藏子步/出生后实际root/q/qd/drive/history写入。电脑训练不考虑软底。
 
-**最新定责：已经大量训练，也有低速双足运动证据，尚无完整合格能力。现有证据不支持“DOF不足/大壳把正常走路卡死”。Lab任务/观测/参考适配已有明确错误，责任由Lab承担；不能把3.52亿不同实验样本当一条成熟配置持续训练，也不能因此判PPO或硬件绝对不可能。** 本轮尾段/原生Critic预热两组真实GPU训练和源CPU/GPU独立回放均失败，薄恢复适配已收口，原稳定候选保留。完整移动、恢复尚未通过；下述历史续训与LR代码修复仍保留，不重复计入本轮。
+**最新定责：已经大量训练，也有低速双足运动证据，尚无完整合格能力。现有证据不支持“DOF不足/大壳把正常走路卡死”。Lab任务/观测/参考适配已有明确错误，责任由Lab承担；不能把3.52亿不同实验样本当一条成熟配置持续训练，也不能因此判PPO或硬件绝对不可能。** 尾段/原生Critic预热两组真实GPU与独立CPU/GPU回放均失败，薄恢复适配已收口；最新完整检查点native速度转接亦变成近静止，移动/转向均失败；原稳定候选保留。完整移动、恢复尚未通过；下述历史续训与LR代码修复仍保留，不重复计入本轮。
 
 | 检查 | 事实与适用边界 |
 |---|---|
@@ -40,7 +40,13 @@
 
 **本轮资源与失败透明：** 两个真实256world×24×128pilot共1572864训练GPU、256PPO／5120Adam，其中32／640为Critic-only，joint224／4480；桥接5120、独立GPU3900、失败时间断言143，GPU合计1582027；CPU13000、robot ONNX17143＋合成3，离线/录像均无积分。GPU评估首稿误将float32累计时钟与十进制理想时间绝对比较，143步计入成本且traceback保留；当时内存轨迹未保存，不能用于资格。修复保持逐Tick真20ms和独立float32累加检查，另报十进制累计偏差，不改物理/门槛。两个setup错误亦归档；所有作业已结束，未唤醒agent或联系硬件/G1。历史样本不重复入账。
 
-**现行唯一下一问题：** 返回已存在的上游**全指令移动／左右转向／停止**工作流：`make_mature_velocity_cfg(forward_only=False)`、RSL native PPO和原512的65/69模型及完整优化器状态，显式恢复正确adaptive LR；复用现有受保护的`initialize_unused_lateral_yaw`初始化原零方差/未学过的command列。先证明零command/原forward输出逐项不变，cold/真实GPU两更新与ONNX一致，再一份有界全指令pilot；不再把恢复Critic92 fresh transfer拿来冒充移动训练，也不新增奖励函数/借改出生授资格。原移动接触域仍未合格，所以不长训/不接Bevy资格。恢复路线暂时收口这组薄HumanUP tail适配，后续按完整成熟工作流与合法运动先验接回；当前不等待硬件。完整移动、左右转向/原地掉头、四方向＋自然恢复＋继续1m仍未完成，目标不缩小。
+**最新全指令native续训已收口（2026-10-06）：** 先核历史账本，command expansion21,086,208GPU和native14/COM-point全指令训练确已做过，没有把它们说成未训。新具名`goose_native_velocity_resume_v1`改用原guided512完整65/69/Adam＋已有adaptive LR修复＋受保护unusedY/yaw初始化，接安装mjlab1.3原生14奖励；原数字/函数、50Hz及本体不变，Goose名字/上部原standing .05/足传感器和已有torso rigid-body COM测点适配显式冻结。与旧mean-Markov1024/fresh Critic/Adam分支不是单变量因果比较，不称完整G1工作流。1000个原实际65观测的zero/forward输出初始化前后逐位一致，完整Adam逐位保留；回收LR7.59375e−5。两次和最终128次真实PPO/ONNX检查通过；256×24×128=786432GPU、128PPO/2560Adam、115.20秒，全部完成rollout保留，没有长训。
+
+**本批独立结果：** 原/新60秒站立漂2.29/14.95mm且5mm/self门通过；同.06m/s20秒原前1.373m但横−.801/yaw−.974/地穿11.822mm，新仅前.01216m。新.3m/s前.2883m/地穿14.837mm；后退−.00774m；双横移都约+.01m；双yaw实际−.0755/−.08945rad，±π原地掉头均未完成。只站立通过开发项；单独停止速度通过不替代失败的移动→停止完整链。10个固定完整指令案例＋原低速同command对照均保存，无重置拼接，无晋升；200移动/四类恢复/自然扰动/继续1m/Bevy仍未过。已看实际6panel录像3.52/15.92秒，确认新策略主要静稳，未凭reward上涨授能力。
+
+**本批验证与错误透明：** 2profile×2world×20Tick=80CPU，同原实际18动作下质量/完整惯量/几何/轴/材料/过滤/四杆/电机/options、q/qvel/qacc/warmstart/ctrl/clock、target/thermal/tau/history、contact/efc合力和65观测逐位一致；9项奖励来源/实际native分档/command transfer/复载检查通过。中途把native函数默认walking_threshold .5误当实际任务配置的口头判断已撤回：实际显式.05，实际native类回归确认0与前/后/侧/yaw用不同分档，未据该错误改参数。initial RSL API setup失败0积分/更新与synthetic fixture首次错误均归档；初稿native日志误落Sai_Lab根已确认归属后完整移到备份，后续cwd备份。合计本轮CPU15680、GPU786432、128PPO/2560Adam、robot ONNX15600＋3导出API/189实际样本；私有FK/录像不作积分，旧资源不重复。全部作业完成，未联系硬件/G1、唤醒agent或改硬件。完整协议、未通过清单、已看录像、原失败及资源澄清在[本批报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_velocity_resume_001/report.md)。不追加同族父策略/LR/seed/噪声/奖励参数网格或同配置长训。
+
+**现行唯一下一问题：** 接收现行21体/18轴/11叶刚性本体到Rapier，做具名SI/驱动接入和同初态、同实际18动作的动态接触对照，以区分源端20ms接触与策略任务的影响。现有Rust仍只支持旧full50/task_proxy候选，旧task_proxy明确拒绝刚性contact，不能只增加白名单字符串或套旧sampled-PD合同。先核完整质量/惯量/COM/轴位/四杆/过滤/65顺序、隐式驱动与目标实际力矩差异、50Hz真实积分；保存可复现接收/回归和实际失败，不据模型接回自动授能力。此阶段不目标训练，不授Bevy资格，不联系硬件/暂停G1、不等待其修改；源端完整M0-S未过仍不长训。主线成熟MuJoCo源策略→目标迁移及完整移动/转向/恢复目标保留，上一轮native续训分支收口。
 
 [尾段完整报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/diagnosis.md) · [Critic预热报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_value_warmup_001/diagnosis.md) · [实际尾段/四方向失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/actual_tail_course_comparison.mp4) · [预热实际录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_value_warmup_001/actual_valuewarm_comparison.mp4) · [联合唯一账本](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/resource_ledger.json)。冻结payload/manifest见两目录；完整资格均未通过。
 
