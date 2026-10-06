@@ -2,17 +2,28 @@
 
 版本：2026-10-07。实施分支：`codex/goose50_training`。
 
+
+**2026-10-07 唯一现行入口：完整原生 Actor 动作坐标已采用，移动/恢复候选均拒绝。** 学习 MD 的完整方法，Goose 不使用 MD 的 ONNX、权重、normalizer、角度表或专家动作。本周期 root 亲自执行两条能力；不联系硬件/G1、不派新聊天或唤醒 agent。保留源本体 `goose_task_proxy_11_discrete_mjlab160_v1`：21体/18主动轴/11叶/刚性足底/65→18/真实四杆/50Hz。新增 `goose_native_physical_actor_coordinates_v1` 保留原生可训练参数、Gaussian边界和Adam坐标，将固定公共动作换算写入均值、概率密度及ONNX。上游G1 `.25*effort/stiffness` 按 Goose SI换算；不是拿MD策略，也不是只复制PPO配置。原生3次Adam/KL/边界/ONNX与两类非fresh拒绝，共6回归通过。旧“仅初始均值/方差换算”3项回归失败，冻结证据后关闭，不保留为生产接法。
+
+**实际结果与边界：** 完整接法的移动、恢复各8＋128真实GPU PPO，各835584物理样本/2720Adam；自己checkpoint完整复载，clock192→3264，独立新进程Actor/Critic/Adam逐位相同、ONNX动作差0。移动真实曝光.4/.7、后退、横移、yaw及组合指令；恢复续批有521984真实前倒样本，前倒hold0，overall hold2来自站立出生。独立11移动＋4原倒地冷例17900Tick，走.4实际均速.00008362、跑.7实际.00013905m/s，仍主要静站；四向恢复hold0。已看2.50/12.50秒实际录像，足未持续迈步、躯干未转入站立足支撑。正式200例移动、四向/真实扰动/继续1m及Bevy资格仍未完成；完整M0-S/M0-T未过，不开源/目标长训、不缩小.4/.7目标。
+
+**两项诊断已收口：** 原实际103Tick窗口源端逐位重放，离地后一步无接触再跨入8.157mm；2.5mm sole margin主要抬高站立面，仍超过固定5mm，未采纳。完整原生接法后，两条任务的已保存首24Tick在冻结参数下仅更新已知23次normalizer，KL均值.00455/.00441、无样本超过原生降LR门槛.02，未复现“大normalizer漂移”的假设，不据此改流程。已完成的单位/源码/首段接线不等于学会能力，不能将这批失败唯一归给机械或PPO某一项。
+
+**下一唯一共享问题：冻结本体能否执行合法、有支撑的运动路径。** 从低信号重复PPO退回成熟的运动/接触规划与mjlab原生tracking/reference工作流，以Goose自己的数据分别验证一条交替足前进路径和原前倒起身路径，移动与恢复共同推进。只施公共18轴真实目标/力矩，实际50Hz积分；原出生、物理、限制和脚底保持冻结，逐程核对接触/穿透/限位/COM/支持。先取得可执行路径依据，再用于基础训练；不能通过投影/搬姿态/隐藏子步或MD动作凑参考资格。找到一条合法路径支持可行性，单路径失败不证明全局机械不可能。停止本两份候选继续PPO与LR/std/seed/奖励网格；原父/原文件与全部失败保留，源与目标资格独立。
+
+[本周期方法与实际失败报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/report.md) · [Goose实际移动/四向失败录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/actual_own_physical_units_endpoints.mp4) · [复现](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/reproduction.md) · [本周期唯一C＋D资源合并](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/cycle_ledger.json)。新增GPU3440640、CPU36100、560PPO/11200训练Adam、37848真实ONNX；小单测/离线观察重放/FK/显示另列，旧B/MD/历史样本不重复。任务已结束并释放GPU，goal保持未完成。
+
 **最新移动目标（2026-10-06）：** 前进走路 **0.4 m/s**、跑步 **0.7 m/s**，PC按住Shift＋前进加速，松Shift回走路，松前进停止；Shift单独不移动。学习Godot真实输入顺序、转弯中松Shift、反复切换、失焦和暂停恢复的回归经验，不能只给训练速度上限而漏掉游戏切换。优先由同一公共65→18移动Actor通过现有三维速度指令覆盖两档，不新增私有模式观测、不重置物理/驱动/历史。后退0.15、横移0.1m/s、yaw0.6rad/s及左右±π掉头保留。旧0.3及+.06只属历史/中间课程，不是最终目标；两档持续实际COM速度、路径、步态、启停及切换分别验收，不能以请求值或瞬时峰值授能力。自然鹅论文与Cassie官方成绩只作生物/成熟工作流参考，不当Goose速度可达证明。
 
 **现行人类指令：继续推进，同时先把“训练方法还是机械设计阻断移动/起身”定清楚。** 不主动联系、读取或监控硬件／暂停G1，不新聊天/PM。移动、恢复、转向由本聊天持续推进，GPU有界串行；“转板”已明确为左右转向/原地掉头，不新增板上运动。既有agent本批均闲置；root亲自完成新源端两条任务接线、PPO、独立复载与失败评价，不以子agent为等待理由。十小时目标已超期，完整移动与恢复仍未交付，目标不缩小。临时产物严格ProjectBackups，生产仅对应crate，本文为唯一入口。
 
 **当前执行入口（2026-10-07最新人类纠正）：学习MD的训练方法，不移植MD策略。** MD自己的恢复/移动对照已收口，不追加其评估、训练或录像。Goose禁用MD权重、normalizer、动作输出、角度表或专家动作；只用自己H本体、公共65→18、真实18轴驱动。root亲自完成具名固定COM目标任务，两种自己的初始化均实际失败并关闭：自己standing父Actor transfer128/786432 GPU，fresh原生RSL随机Actor/normalizer/defaultGaussian512/12582912 GPU；fresh训练hold0、独立站/四向各650实际Tick也hold0，不追加此族PPO/seed/std/reward网格。移动`goose_sole_walk_run_task_v1`真实feet＋站/走.4/跑.7＋turn/Shift已执行，独立21例0/21、走.11031m/s绕圈、跑未达速后倒，批次关闭、原父保留。既有`bevy_feasibility`本批语义/失败审查已完成并闲置，不追加配置/训练。该原生50Hz驱动/限位/接触问题已有下述原生3.15实际接棒，按最新具名接线入口继续；不因Actor失败判硬件不可行，不切壳/加DOF，不关闭安全标志或扩自定义求解器网格。移动和恢复共用这份物理问题结论，各自证据与后续任务仍分开。十小时目标已超期，完整移动与四向恢复未交付；不缩小目标，不以agent或外部硬件等待为理由。
 
-**2026-10-07现行入口：`goose_task_proxy_11_discrete_mjlab160_v1`接线完成，端点不晋升。** root采用原生mjlab1.6/RSL5.4.2、MuJoCo/Warp3.15的新具名依赖入口`upstream_discrete_mjlab.py`，只在上传模型前接入上游新discrete枚举；本体/option相对上一discrete源参考逐位不变，21体/18真实电机/11叶/刚性足底/65→18/真实嘴四杆、限速/热/350W保留。旧mjlab1.3的已移除`ls_parallel`写入在0积分失败，已关闭，没有改安装库或旧守卫；新组合超出mjlab元数据的`~=3.11`声明，属于显式冻结的实测开发采用，不宣称上游已保证兼容。两世界两Tick和局部reset通过；随后移动/恢复各16×24×1真实PPO、各20Adam，Actor参数确实改变。独立新进程复载Actor/Critic/Adam逐位相同，导出动作误差0，MD policy/normalizer/专家动作使用0。
+**历史 B 源端接线（已由顶部现行接法接棒）：`goose_task_proxy_11_discrete_mjlab160_v1`接线完成，端点不晋升。** root采用原生mjlab1.6/RSL5.4.2、MuJoCo/Warp3.15的新具名依赖入口`upstream_discrete_mjlab.py`，只在上传模型前接入上游新discrete枚举；本体/option相对上一discrete源参考逐位不变，21体/18真实电机/11叶/刚性足底/65→18/真实嘴四杆、限速/热/350W保留。旧mjlab1.3的已移除`ls_parallel`写入在0积分失败，已关闭，没有改安装库或旧守卫；新组合超出mjlab元数据的`~=3.11`声明，属于显式冻结的实测开发采用，不宣称上游已保证兼容。两世界两Tick和局部reset通过；随后移动/恢复各16×24×1真实PPO、各20Adam，Actor参数确实改变。独立新进程复载Actor/Critic/Adam逐位相同，导出动作误差0，MD policy/normalizer/专家动作使用0。
 
-**本批范围与缺陷：** 移动一次更新的24Tick全在原50Tick零速站立前缀，没有曝光走跑，不能把它说成完整移动训练。恢复真实前倒96worldTick、hold最高2；当时Actor-onlyload意外带入旧课程clock12288，已修复并用4个真实GPU世界证明新clock0→1、Actor导入/物理和驱动历史不变，未冒充重跑过PPO或认定此前失败的单一原因。独立CPU/自身ONNX共9冷例10000Tick：站60秒最大COM漂1.709mm/floor.705mm，走.4/跑.7和右转跌倒，左转速度不足，四向hold0；动态floor峰16.34–40.29mm、恢复self峰7.96–28.77mm。实际失败录像2.50/12.50秒已亲自检查。71旧栈＋18新栈相关测试通过、1旧输入依赖skip；全部设置/复载/单测初稿失败和成本保留。
+**历史 B 批范围与缺陷：** 移动一次更新的24Tick全在原50Tick零速站立前缀，没有曝光走跑，不能把它说成完整移动训练。恢复真实前倒96worldTick、hold最高2；当时Actor-onlyload意外带入旧课程clock12288，已修复并用4个真实GPU世界证明新clock0→1、Actor导入/物理和驱动历史不变，未冒充重跑过PPO或认定此前失败的单一原因。独立CPU/自身ONNX共9冷例10000Tick：站60秒最大COM漂1.709mm/floor.705mm，走.4/跑.7和右转跌倒，左转速度不足，四向hold0；动态floor峰16.34–40.29mm、恢复self峰7.96–28.77mm。实际失败录像2.50/12.50秒已亲自检查。71旧栈＋18新栈相关测试通过、1旧输入依赖skip；全部设置/复载/单测初稿失败和成本保留。
 
-**下一共享解锁问题：新原生源端真实运动与倒地过程的动态接触/支持准入。** 固定新候选和已保存实际动作失败窗口，核验合法目标、真实努力、限位、接触与支持；移动必须越过站立前缀，恢复使用已修复的新任务时钟，随后分别选择一个有界课程。短PPO接线不替代能力训练，不据单次失败判机械不能行走/起身，不切壳/加DOF、搬MD策略或重启旧奖励/std/seed网格。完整M0-S动态门未过不开源端长训，M0-T/Bevy独立不继承；完整.4/.7、转向/停止/Shift与四向恢复/继续移动仍未交付。两条能力保持并行，原父原文件保留。
+**B 批历史下一问题（现已在 C/D 执行并收口）：新原生源端真实运动与倒地过程的动态接触/支持准入。** 固定新候选和已保存实际动作失败窗口，核验合法目标、真实努力、限位、接触与支持；移动必须越过站立前缀，恢复使用已修复的新任务时钟，随后分别选择一个有界课程。短PPO接线不替代能力训练，不据单次失败判机械不能行走/起身，不切壳/加DOF、搬MD策略或重启旧奖励/std/seed网格。完整M0-S动态门未过不开源端长训，M0-T/Bevy独立不继承；完整.4/.7、转向/停止/Shift与四向恢复/继续移动仍未交付。两条能力保持并行，原父原文件保留。
 
 [当前接线与失败报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_discrete_mjlab_admission_001/report.md) · [自身实际端点录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_discrete_mjlab_admission_001/actual_own_admission_endpoints.mp4) · [复现入口](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_discrete_mjlab_admission_001/reproduction.md) · [本批唯一资源账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_discrete_mjlab_admission_001/resource_ledger.json)。本批新增CPU10030/GPU776、2PPO/40训练Adam，15小单测Adam另列、显式自身ONNX10080；前批/历史/MD样本不重复。
 
