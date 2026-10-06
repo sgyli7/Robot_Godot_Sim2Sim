@@ -6,7 +6,7 @@
 
 **冻结输入：** `goose_task_proxy_11_rigid_braking_v1`，MJCF SHA `3dd030f0475efd101ab129288e7f04f5694067757d85e0429933cecb9c5268e4`、合同SHA `d3fd7ba668678e1e1237d00bd7fac77e5d0625d77cc65bea85d3579ffb17061c`。21机器人刚体／18真实电机／2被动轴／11叶／10.430690821kg。每腿6主动轴；公共65→18、拾物82→18。9凸mesh＋2刚性足box；原鞋上部遗漏44.76%不继承实物资格。质量/完整惯量/轴位/嘴四杆/过滤/限速/力矩/热/350W保留；50Hz、每Tick一次20ms实际驱动/积分/当前Actor更新、decimation1，无隐藏子步/出生后实际root/q/qd/drive/history写入。电脑训练不考虑软底。
 
-**最新定责：已经大量训练，也有低速双足运动证据，尚无完整合格能力。现有证据不支持“DOF不足/大壳把正常走路卡死”。Lab任务/观测/参考适配已有明确错误，责任由Lab承担；不能把3.52亿不同实验样本当一条成熟配置持续训练，也不能因此判PPO或硬件绝对不可能。** 本轮又完成两组真实GPU续训/独立回放，开发组20秒前进1.883m但地穿9.712mm，严接触组1.84秒跌倒。新发现并修复原生PPO续训的学习率元状态遗漏；其代码回归通过，不等于能力通过。
+**最新定责：已经大量训练，也有低速双足运动证据，尚无完整合格能力。现有证据不支持“DOF不足/大壳把正常走路卡死”。Lab任务/观测/参考适配已有明确错误，责任由Lab承担；不能把3.52亿不同实验样本当一条成熟配置持续训练，也不能因此判PPO或硬件绝对不可能。** 本轮尾段/原生Critic预热两组真实GPU训练和源CPU/GPU独立回放均失败，薄恢复适配已收口，原稳定候选保留。完整移动、恢复尚未通过；下述历史续训与LR代码修复仍保留，不重复计入本轮。
 
 | 检查 | 事实与适用边界 |
 |---|---|
@@ -34,7 +34,15 @@
 
 **力矩绑定核对：** 五条原真实pre-state/target/thermal/tau重构误差≤1.97e−14Nm，0实际积分/网络/优化器、仅私有构造forward2。旧300在175–259段85Tick有slew，其中72Tick实际当前tau会被它改变，81Tick热限额绑定；纯代数去slew反事实最大差20.259Nm，不当合法轨迹/换电机依据。新GRU同episode段slew0/85/力矩差0却仍不起身，且轨迹不同，不能把slew认作唯一根因；walking全20秒无slew，不能把其穿入继续归咎这个过滤器。原公共动作相应只有2Tick受slew、热0；原成功终点也不是完整路径资格。
 
-**现行唯一下一问题：** 采用成熟参考状态初始化（RSI）课程，在**具名、独立筛查的站稳锚点/近站稳训练初态及正确参考尾段索引**，同原控制与作者reward能否形成真实3秒保持。优先复用已有站立Actor/原生RSL/mjlab reset组织与已保存实际轨迹，先0积分筛选和有界冷运行，后≤128更新小pilot；不新奖励/求解器框架。训练初态允许显式另命名，正式四倒原出生、5mm/self、10秒+3秒+继续1m不改；CPU模型可读不继承其GPU准入。RSI出处是DeepMimic参考状态初始化，不把Goose的尾段先行课程或原50Hz单步当作者完整工作流；原HumanUP reward AST仍是薄适配。锚点本身不通过就回模型/控制问题，不投入大规模PPO。尾段真实保持解锁后才往更早倒地状态扩展，同时完整移动/转向继续作为交付主线，目标不缩小。
+**参考状态尾段课程与Critic预热已收口：** 名义E/near426合法筛查后，原512独立CPU保持648/637Tick，地穿2.114/2.277mm；纯零目标E亦可稳住。lean351嘴轴越界.000255478rad被排除，没有投影/改门槛/搜索替代出生。原author参考尾段477/426索引已冻结，名义COM采用真实reference/runtime .284075930m；旧Q使用.279758m，其最高约.198m仍失败，两者不改旧资格。直接尾段128PPO覆盖参考终点525132worldTicks，但训练hold最大2；原生Critic-only32＋joint96覆盖237414、最大1。两份独立ONNX在合法锚点保持6/9和0/0，四原出生28–31均0，均拒绝。不能只补晚段采样后继续加训；不展开更早倒地初态或warmup/LR/noise/seed/奖励网格。Critic预热Actor/normalizer/std全状态逐位未变、Actor Adam状态0，链路确实工作；96与128joint更新不同，因此失败不证明Critic是/不是唯一根因。
+
+**失败位置已进一步限定：** GPU确定性ONNX也复现原策略648/637、新策略6/9、预热0/0保持，不只是CPU迁移。原20Tick/256world接线q误差8.38µm、tau.000954Nm、脚力.0768N；长不稳轨迹有接触分歧，逐项保留实际误差。原source21体/18轴/11叶/驱动/50Hz未改，近站立试验不能判定缺DOF或要求CAD改动。作者原AST/权重在同实际near426轨迹离线评分129.2695原／113.6332新，没有发现这组的奖励排序逆转，亦不证明奖励完整。相同65观测上整体动作RMS变.083641，仅替换normalizer变.004705，主要变动在网络更新；不是反事实物理轨迹。后1秒新策略angular-speed不合格412/600Tick，feet-normal不合格0，持续摆动已由实际录像检查。此前“更晚状态没采到”仍是事实，但不足以解释全部失败。
+
+**本轮资源与失败透明：** 两个真实256world×24×128pilot共1572864训练GPU、256PPO／5120Adam，其中32／640为Critic-only，joint224／4480；桥接5120、独立GPU3900、失败时间断言143，GPU合计1582027；CPU13000、robot ONNX17143＋合成3，离线/录像均无积分。GPU评估首稿误将float32累计时钟与十进制理想时间绝对比较，143步计入成本且traceback保留；当时内存轨迹未保存，不能用于资格。修复保持逐Tick真20ms和独立float32累加检查，另报十进制累计偏差，不改物理/门槛。两个setup错误亦归档；所有作业已结束，未唤醒agent或联系硬件/G1。历史样本不重复入账。
+
+**现行唯一下一问题：** 返回已存在的上游**全指令移动／左右转向／停止**工作流：`make_mature_velocity_cfg(forward_only=False)`、RSL native PPO和原512的65/69模型及完整优化器状态，显式恢复正确adaptive LR；复用现有受保护的`initialize_unused_lateral_yaw`初始化原零方差/未学过的command列。先证明零command/原forward输出逐项不变，cold/真实GPU两更新与ONNX一致，再一份有界全指令pilot；不再把恢复Critic92 fresh transfer拿来冒充移动训练，也不新增奖励函数/借改出生授资格。原移动接触域仍未合格，所以不长训/不接Bevy资格。恢复路线暂时收口这组薄HumanUP tail适配，后续按完整成熟工作流与合法运动先验接回；当前不等待硬件。完整移动、左右转向/原地掉头、四方向＋自然恢复＋继续1m仍未完成，目标不缩小。
+
+[尾段完整报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/diagnosis.md) · [Critic预热报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_value_warmup_001/diagnosis.md) · [实际尾段/四方向失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/actual_tail_course_comparison.mp4) · [预热实际录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_value_warmup_001/actual_valuewarm_comparison.mp4) · [联合唯一账本](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/resource_ledger.json)。冻结payload/manifest见两目录；完整资格均未通过。
 
 **成熟工作流核对：** HumanUP本身没有Actor参考clock，却有10帧卷积history+RMA/DAgger；当前只复用奖励函数/权重与mjlab PPO，不能叫完整HumanUP。Goose持久target slew/thermal未在65 Actor或92 Critic中，上一请求动作不是已实现target；原公共626动作15Tick限速，而失败300Actor644/650Tick限速。实际抬升阶段175–259原动作2/85 vs坏Actor85/85有滞后。这是待验证关联，坏动作也会造成滞后；不据此宣布必须RNN、改限速或归罪机械。此次GRU属于原生RSL策略记忆受控试验，明确不冒充作者的CNN/RMA。
 
