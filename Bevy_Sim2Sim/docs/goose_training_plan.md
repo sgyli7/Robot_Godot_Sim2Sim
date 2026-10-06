@@ -6,15 +6,17 @@
 
 **当前输入与范围：** 冻结 goose_task_proxy_11_rigid_braking_v1，21机器人刚体／18实际电机／2被动轴／11碰撞叶／10.430690821kg，公共65→18（拾物82→18）；模型和合同位于 /home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_humanup_discovery_001/candidate/。刚性足为原底面内接158×60×30.987mm box，遗漏原上部约44.76%鞋体体积，不继承完整脚套或硬件资格。原质量／COM／惯量／轴位／嘴四杆／自碰撞过滤、原限速／力矩／热／350W保持，50Hz每Tick一次真实20ms物理／驱动／策略更新，decimation1，无隐藏子步、出生后实际状态或历史写入。旧软底不阻挡电脑训练。
 
-**现行归因：** 已证实现有恢复Actor四方向失败、旧奖励时刻查询和带载控制映射错误由Lab负责；前轮规划输出／评分脱钩已修正。本轮顺序保留合法动作边仍失败：固定69Tick前缀只能延续5Tick；取消前缀，从同一原倒地出生实际走出105Tick／2.1秒合法动作，最大穿入4.780mm、代理自碰撞0，COM最高174.18mm、直立度最高.3957，仍未形成仅脚承托／站稳，随后倒回。全部27,904规划边和实际历史已在新进程逐值复核。**这否决了“只需保留分支”或“只需删除前缀”的修复解释，不证明整机结构全局不能起身。** 原21.427mm超标起身／保持／1m开发路径也不是合格教师；目前没有必要性证据要求改硬件。
+**现行归因与本轮验证：** 现有恢复Actor四方向失败、旧奖励查询／带载映射问题由Lab负责；PPO算法不适用、原结构全局不能起身均未证明。本轮两份预先限定适配：真实承托／动量事件门控＋作者Stand原COM速度项仅40实际Tick／.8秒；只加门控、沿原评分66Tick／1.32秒，均无承托入口／站稳。正式最大穿入分别4.790／4.780mm、自碰撞0。前50Tick全部12,576边与原对照逐值同一；两份27,200原生边及实际历史／逐脚力／阶段／评分全经新进程逐值复核。**补速度项或补门控不足以解锁起身；静态目标及即时路径选择不是已合格动态控制。** 原1秒“脚力37.86N”实际右0／左37.86N，头35.55N，不能当双脚承托。
 
-**任务适配的实质缺口与本轮收口：** 同实际姿态、关节速度，机身vx改变±.5m/s，现标记评分仍10.106192；作者Stand另有质心速度／平衡项。参考还在第50Tick按时切到伸展，实际脚力37.86N／头力35.55N、COM速度.2303m/s／角速度2.4167rad/s，声明的承托入口未满足。阶段缺口只针对本参考的声明顺序，门控本身尚非成功修复。静态几何／力矩参考缺少有效动态承托与速度安排，不能把成熟损失函数当成完整成熟控制器。这个新规划器未用于旧PPO，不嫁接为旧Actor全部原因，也不声称只补速度权重即可起身。当前标记参考＋小型可行边路线两次失败收口，不扩8／32、seed／噪声／深度／horizon／奖励／标记／solver／margin／积分器网格。共56,236CPU（2,458固定前缀含作废70＋53,778原倒地），GPU／PPO／Adam／ONNX0；无策略／教师晋升，原模型、共享环境和生产未改。
+**当前实际阻断：** 两份末端各256采样下一步均代理自碰撞：速度项组主要右脚↔左胫部1.511–16.752mm；门控组全部下嘴↔躯干2.161–25.047mm。正式5mm／self0也各0合法，不是仅保守4.8mm门槛挡住。已执行路径无自碰撞，私人失败边未执行；有限采样与凸代理交叉不证明整机全局不可达或实际CAD交叉。没有必要性证据，不改硬件。
 
-**唯一下一问题：** 纠正本参考“固定50Tick即切段”的承托／动量阶段出口语义，核验成熟控制的质心速度／平衡组织及Goose任务映射，检查滑动、头部单独升高、仅总脚力等假成功反例，分脚记录原生接触力，再冻结一份原倒地→脚承托→起身→150Tick稳定的原生动态验证。不得把humanoid头高度、0.2秒常量、15ms步长或扭矩ctrl直接照搬到Goose，不增加Actor观测，不重开裸IK／偏置／固定导数／局部投影等已收口路线。没有合法动态证据，PPO保持停止。
+**收口与成本：** 两份静态标记／事件／速度适配关闭，不追8／32、seed、噪声、权重、阶段阈值、horizon、solver、margin或积分器网格；旧裸IK／偏置／投影／冻结导数等已收口族不重开。共54,822CPU（20,834含核对105及导出作废105＋33,988），前轮56,236另计；GPU／PPO／Adam／ONNX0，无教师／策略晋升，原模型／驱动／碰撞／solver／硬件／共享环境／生产未改。
 
-**依赖纠正：** 起身结构可达性判定不应依赖旧移动Actor是否已会走1m；先证明原倒地连续起身并保持150Tick，再核源GPU同合同准入，之后才可接回有界能力学习。最终恢复后1m、完整移动、四方向／自然跌倒／Bevy的验收范围全部保持；局部合法动作、前倒单例或接口准入均不算最终目标完成。源／目标／最终资格分别报告，M0-T未过不目标训练或授予Bevy资格。
+**唯一下一问题：** 转为完整接触转换轨迹的原生可执行性：冻结已提取原626Tick起身／保持真实18维动作（来自995Tick开发回放、穿入21.427mm／self0、未合格），先核整段原生驱动身份，再复用已接线成熟轨迹组件做一份有界整体约束验证。整段起身及150Tick保持不可省略，所有候选失败也须保留违规量／未来互撞信息；不再扩静态参考、即时评分或新增PPO奖励／控制框架／接触求解器。结果前冻结协议，失败不派参数网格。完整合法动态证据及源GPU同合同物理准入前，PPO停止。
 
-[当前归因／资源／复现入口](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/diagnosis.md) · [实际失败回放](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/actual_feasible_path_failures.mp4) · [动量反例](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/momentum_score_audit.json) · [阶段反例](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/phase_transition_audit.json)。为避免历史“下一项”重复派工，原完整执行历史已原样归档至[本次修改前计划](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/training_plan_before_checkpoint.md)；[早期策略与训练归因](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_recovery_cause_audit_001/diagnosis.md)、[原超标开发闭环](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_wholebody_pitch_transition_001/diagnosis.md)、[完整前向接线准入](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_mppi_admission_001/diagnosis.md)、[姿态／采样研究](/home/ethan/Projects/Sai_Lab/Bevy_Sim2Sim/docs/goose_recovery_planning_research.md)保留证据身份。下文基础计划的历史基线不覆盖顶部现行决定。
+**资格保持：** 结构起身证据不依赖旧移动Actor先会走1m；最终恢复后1m、完整移动、四方向／自然跌倒／Bevy仍必须全部验收。原21.427mm开发成功路径、局部合法边、接口／优化器返回成功不算完整物理或硬件资格，十小时目标未完成。源／目标／最终资格分别报告，M0-T未过不目标训练或授予Bevy能力。
+
+[最新完整归因与复现](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/diagnosis.md) · [实际失败回放](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/support_task_failures.mp4) · [自碰撞阻断](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/self_contact_frontier_audit.json)。前轮完整计划原样归档至[本次修改前计划](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_event_support_only_001/training_plan_before_checkpoint.md)，历史“下一项”不覆盖当前派工；[前轮诊断](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_cold_birth_path_001/diagnosis.md)、[早期策略／训练归因](/home/ethan/ProjectBackups/2026-10-05/Sai_Lab/goose_recovery_cause_audit_001/diagnosis.md)、[原超标开发回放](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_wholebody_pitch_transition_001/diagnosis.md)均保留证据身份。下文基础计划不覆盖顶部现行决定。
 
 ## 1. 目标与当前基线
 
