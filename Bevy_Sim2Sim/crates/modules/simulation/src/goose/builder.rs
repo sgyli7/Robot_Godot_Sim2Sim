@@ -40,6 +40,7 @@ struct JointMapping {
     axis_parent: Vector,
     active_axis: Option<usize>,
     feedback_axis: Option<usize>,
+    source_coordinate_offset: f64,
 }
 
 /// Handles remain bound to the caller's world; no second world or FK controller.
@@ -95,7 +96,13 @@ impl GooseAssembly {
             ));
         }
         let world = &mut simulation.world;
-        let lift = Vector::Y * 0.002;
+        // The native cold pose is already grounded. Legacy fixtures keep their
+        // original lift; importing a new pose must not silently translate it.
+        let lift = if plant.is_rigid_native() {
+            Vector::ZERO
+        } else {
+            Vector::Y * 0.002
+        };
         let mut poses = HashMap::new();
         let mut shape_groups: BTreeMap<
             (String, u32, u32, u64),
@@ -138,12 +145,15 @@ impl GooseAssembly {
         }
         let mut collider_source_groups = Vec::new();
         for ((owner, contype, affinity, friction), (children, source_names)) in shape_groups {
-            let shape = ColliderBuilder::compound(children)
+            let mut shape = ColliderBuilder::compound(children)
                 .density(0.0)
                 .friction(f64::from_bits(friction) as f32)
                 .restitution(0.0)
                 .collision_groups(groups(contype, affinity))
                 .active_hooks(ActiveHooks::FILTER_CONTACT_PAIRS);
+            if plant.is_rigid_native() {
+                shape = shape.friction_combine_rule(CoefficientCombineRule::Max);
+            }
             world
                 .colliders
                 .insert_with_parent(shape, body_handles[&owner], &mut world.bodies);
@@ -186,6 +196,10 @@ impl GooseAssembly {
         }
         let mut mappings = Vec::new();
         for joint in &plant.joints {
+            let offset = plant
+                .native_initialization
+                .as_ref()
+                .map_or(0.0, |initial| initial.joint_position_rad[&joint.name]);
             let parent_pose = poses[&joint.parent];
             let child_pose = poses[&joint.child];
             let axis = engine_vector(joint.axis_world)?;
@@ -201,7 +215,7 @@ impl GooseAssembly {
             let description = GenericJointBuilder::new(mask)
                 .local_frame1(parent_pose.inverse() * world_frame)
                 .local_frame2(child_pose.inverse() * world_frame)
-                .limits(axis_kind, joint.range.map(|value| value as f32))
+                .limits(axis_kind, joint.range.map(|value| (value - offset) as f32))
                 .contacts_enabled(false);
             let parent = body_handles[&joint.parent];
             let child = body_handles[&joint.child];
@@ -217,6 +231,7 @@ impl GooseAssembly {
                 axis_parent: parent_pose.rotation.inverse() * axis,
                 active_axis: joint.active_axis,
                 feedback_axis: joint.feedback_axis,
+                source_coordinate_offset: offset,
             });
         }
         let first = mappings
@@ -264,7 +279,7 @@ impl GooseAssembly {
                 multibody.link_mut(link_id).unwrap().joint.set_spring(
                     mapping.coordinate,
                     joint.stiffness_n_m as f32,
-                    0.0,
+                    -mapping.source_coordinate_offset as f32,
                 );
                 passive_spring_count += 1;
             }
@@ -293,9 +308,15 @@ impl GooseAssembly {
             Rotation::from_rotation_arc(Vector::Z, axis)
         };
         let frame = Pose::from_parts(pin, pin_rotation);
-        let frame1 = poses[&plant.jaw_loop.coupler_body].inverse() * frame;
-        let frame2 = poses[&plant.jaw_loop.jaw_body].inverse() * frame;
-        let loop_joint = GenericJointBuilder::new(JointAxesMask::LIN_X | JointAxesMask::LIN_Y)
+        let mut frame1 = poses[&plant.jaw_loop.coupler_body].inverse() * frame;
+        let mut frame2 = poses[&plant.jaw_loop.jaw_body].inverse() * frame;
+        let mut loop_mask = JointAxesMask::LIN_X | JointAxesMask::LIN_Y;
+        if let Some(initial) = &plant.native_initialization {
+            frame1.translation = engine_vector(initial.coupler_pin_local_m)?;
+            frame2.translation = engine_vector(initial.jaw_pin_local_m)?;
+            loop_mask |= JointAxesMask::LIN_Z;
+        }
+        let loop_joint = GenericJointBuilder::new(loop_mask)
             .local_frame1(frame1)
             .local_frame2(frame2)
             .contacts_enabled(false);
@@ -363,7 +384,8 @@ impl GooseAssembly {
                 let link = multibody
                     .link(link_id)
                     .ok_or_else(|| invalid("Goose joint link absent"))?;
-                q[axis] = link.joint.coords()[mapping.coordinate] as f64;
+                q[axis] = link.joint.coords()[mapping.coordinate] as f64
+                    + mapping.source_coordinate_offset;
                 qd[axis] = multibody.generalized_velocity()[link.assembly_id()] as f64;
             }
         }

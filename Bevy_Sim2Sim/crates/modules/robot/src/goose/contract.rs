@@ -81,6 +81,10 @@ impl GooseControlContract {
                     | "goose_task_collision_v1_condensed50"
             ) | ("goose_50hz_experimental_si_v2", "goose_460_full50_be_v2")
                 | ("goose_task_proxy_si_v1", "goose_task_proxy_11_v1")
+                | (
+                    "goose_task_proxy_si_v1",
+                    "goose_task_proxy_11_rigid_braking_v1"
+                )
         );
         let task_proxy = self.schema == "goose_task_proxy_si_v1";
         let revision_valid = match (
@@ -89,11 +93,16 @@ impl GooseControlContract {
             task_proxy,
         ) {
             (
+                Some("goose_rigid_native_implicit_drive_v1"),
+                Some("goose_rigid_native_implicit_drive_v1"),
+                true,
+            ) if self.candidate == "goose_task_proxy_11_rigid_braking_v1" => true,
+            (
                 Some("goose_task_proxy_be_contact_v1"),
                 Some("sampled_pd_kp_parent_kd_quarter_v1"),
                 true,
-            )
-            | (_, _, false) => true,
+            ) if self.candidate == "goose_task_proxy_11_v1" => true,
+            (_, _, false) => true,
             _ => false,
         };
         if self.robot != "Goose_V0.1"
@@ -321,6 +330,7 @@ pub struct GooseEffort {
 impl GooseActuatorState {
     pub fn new(contract: &GooseControlContract) -> Result<Self, RobotError> {
         contract.validate()?;
+        reject_native_drive(contract)?;
         Ok(Self {
             target_rad: std::array::from_fn(|i| contract.joints[i].q_neutral_rad),
             squared_torque_ewma: [0.0; 18],
@@ -344,6 +354,7 @@ impl GooseActuatorState {
         delay_one_policy_step: bool,
     ) -> Result<GooseEffort, RobotError> {
         contract.validate()?;
+        reject_native_drive(contract)?;
         finite(&action)?;
         finite(&q)?;
         finite(&qd)?;
@@ -407,6 +418,16 @@ impl GooseActuatorState {
             positive_mechanical_power_w: (0..18).map(|i| (torque[i] * qd[i]).max(0.0)).sum(),
             saturated_axes: saturated,
         })
+    }
+}
+
+fn reject_native_drive(contract: &GooseControlContract) -> Result<(), RobotError> {
+    if contract.candidate == "goose_task_proxy_11_rigid_braking_v1" {
+        Err(RobotError::Contract(
+            "Rigid Goose uses native implicit drive; legacy sampled PD cannot substitute it".into(),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -495,6 +516,29 @@ mod tests {
         assert!(candidate.validate().is_err());
         candidate.controller_revision = Some("sampled_pd_kp_parent_kd_quarter_v1".into());
         candidate.schema = "goose_50hz_candidate_si_v1".into();
+        assert!(candidate.validate().is_err());
+    }
+
+    #[test]
+    fn rigid_contract_cannot_run_the_legacy_sampled_pd() {
+        let mut candidate = contract();
+        candidate.schema = "goose_task_proxy_si_v1".into();
+        candidate.candidate = "goose_task_proxy_11_rigid_braking_v1".into();
+        candidate.runtime_revision = Some("goose_rigid_native_implicit_drive_v1".into());
+        candidate.controller_revision = candidate.runtime_revision.clone();
+        candidate.validate().unwrap();
+        assert!(GooseActuatorState::new(&candidate).is_err());
+        let mut legacy = GooseActuatorState::new(&contract()).unwrap();
+        assert!(
+            legacy
+                .update(
+                    &candidate, [0.0; 18], [0.0; 18], [0.0; 18], [0.0; 5], 1.0, false
+                )
+                .is_err()
+        );
+        assert_eq!(legacy.control_count, 0);
+        candidate.runtime_revision = Some("goose_task_proxy_be_contact_v1".into());
+        candidate.controller_revision = Some("sampled_pd_kp_parent_kd_quarter_v1".into());
         assert!(candidate.validate().is_err());
     }
 

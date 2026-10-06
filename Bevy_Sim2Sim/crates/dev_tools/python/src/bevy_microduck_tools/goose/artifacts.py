@@ -192,7 +192,7 @@ def _condense_pads(root: ET.Element, contract: dict) -> None:
                                 "parameters_fitted_to_probe": False}
 
 
-def export_rapier_plant(bundle: dict, destination: Path) -> dict:
+def export_rapier_plant(bundle: dict, destination: Path, *, initial_state_path: Path | None = None) -> dict:
     """Export compiled collision frames and complete rigid tensors, never visuals."""
     import mujoco
     from .native_geometry import (
@@ -200,6 +200,17 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
     require_supported_engine()
     contract_path = Path(bundle["contract_path"])
     contract = json.loads(contract_path.read_text())
+    rigid = contract.get("candidate") == "goose_task_proxy_11_rigid_braking_v1"
+    if rigid:
+        if (contract.get("schema") != "goose_task_proxy_si_v1"
+                or contract.get("runtime_revision") != "goose_rigid_native_implicit_drive_v1"
+                or contract.get("controller_revision") != "goose_rigid_native_implicit_drive_v1"
+                or initial_state_path is None
+                or sha256(Path(bundle["model_path"])) != contract["model_sha256"]
+                or bundle["candidate"] != contract["candidate"]):
+            raise ValueError("Rigid native export requires its exact model, drive identity and cold state")
+    elif initial_state_path is not None:
+        raise ValueError("Cold-state coordinate offsets are versioned for the rigid candidate only")
     experimental = contract.get("candidate") == "goose_460_full50_be_v2"
     physical_joint_ledger = {}
     if experimental:
@@ -210,7 +221,20 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
         physical_joint_ledger = {j["joint"]: j for j in contract["numerical_metric"]["joints"]}
     model = mujoco.MjModel.from_xml_path(bundle["model_path"])
     data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
+    initial_coordinates = {}
+    if rigid:
+        with np.load(initial_state_path, allow_pickle=False) as initial:
+            qpos = initial["qpos"]
+            if qpos.shape != (model.nq,) or not np.isfinite(qpos).all():
+                raise ValueError("Invalid rigid cold qpos")
+            if "qvel" in initial and (initial["qvel"].shape != (model.nv,)
+                                      or np.any(initial["qvel"] != 0)):
+                raise ValueError("Rigid intake currently requires a zero-velocity cold birth")
+            data.qpos[:] = qpos
+        # Private kinematics only: this export performs zero physical integrals.
+        mujoco.mj_fwdPosition(model, data)
+    else:
+        mujoco.mj_forward(model, data)
     bodies = []
     for entry in contract["bodies"]:
         bid = model.body(entry["name"]).id
@@ -226,6 +250,8 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
         if kind == int(mujoco.mjtJoint.mjJNT_FREE):
             continue
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+        if rigid:
+            initial_coordinates[name] = float(data.qpos[model.jnt_qposadr[jid]])
         bid = int(model.jnt_bodyid[jid])
         parent = int(model.body_parentid[bid])
         did = int(model.jnt_dofadr[jid])
@@ -321,6 +347,27 @@ def export_rapier_plant(bundle: dict, destination: Path) -> dict:
                      numerical_experiment={"source_method": contract["numerical_metric"]["revision"],
                                            "predictive_scalar_stops": True, "jaw_pin_basis": "coupler_axis"},
                      source_numerical_metric=contract["numerical_metric"], qualified=False)
+    if rigid:
+        eqid = model.equality("beak_distal_pin").id
+        jaw = model.body("beak_hinge").id
+        coupler = model.body("beak_coupler_link").id
+        if (model.neq != 1 or model.eq_type[eqid] != mujoco.mjtEq.mjEQ_CONNECT
+                or model.eq_obj1id[eqid] != jaw or model.eq_obj2id[eqid] != coupler
+                or not model.eq_active0[eqid]):
+            raise ValueError("Rigid intake requires the original active jaw/coupler CONNECT")
+        jaw_pin, coupler_pin = model.eq_data[eqid, :3], model.eq_data[eqid, 3:6]
+        jaw_world = data.xpos[jaw] + data.xmat[jaw].reshape(3, 3) @ jaw_pin
+        coupler_world = data.xpos[coupler] + data.xmat[coupler].reshape(3, 3) @ coupler_pin
+        plant.update(schema="goose_rigid_native_plant_v1", qualified=False,
+                     native_initialization={"initial_state_sha256": sha256(initial_state_path),
+                                            "joint_position_rad": initial_coordinates,
+                                            "coupler_pin_local_m": coupler_pin.tolist(),
+                                            "jaw_pin_local_m": jaw_pin.tolist()},
+                     intake_scope="cold mechanical intake; recorded efforts only; target implicit drive not qualified")
+        plant["jaw_loop"].update(output_pin_world_m=jaw_world.tolist(),
+                                 rotation_axis_world=data.xaxis[model.joint("beak_hinge").id].tolist())
+        plant["geometry_export"].update(cold_pose_private_fk_calls=1, actual_integrals=0,
+                                        initial_pin_residual_m=float(np.linalg.norm(jaw_world-coupler_world)))
     write_json(destination, plant)
     return {"plant_path": str(destination), "plant_sha256": sha256(destination), "collider_count": len(colliders),
             "world_bounds_m": plant["geometry_export"]["world_bounds_m"]}

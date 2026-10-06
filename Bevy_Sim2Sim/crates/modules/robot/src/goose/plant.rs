@@ -1,6 +1,10 @@
 //! SI mechanical data exported from a frozen Goose candidate.
 
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs,
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,6 +32,17 @@ pub struct GoosePlant {
     pub jaw_loop: GooseJawLoop,
     #[serde(default)]
     pub numerical_experiment: Option<GooseNumericalExperiment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_initialization: Option<GooseNativeInitialization>,
+}
+
+/// Cold-pose coordinates and both original CONNECT anchors, without pin snapping.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GooseNativeInitialization {
+    pub initial_state_sha256: String,
+    pub joint_position_rad: BTreeMap<String, f64>,
+    pub coupler_pin_local_m: [f64; 3],
+    pub jaw_pin_local_m: [f64; 3],
 }
 
 /// Explicit experimental numerical selection; never mixed into physical inertia.
@@ -111,7 +126,7 @@ impl GoosePlant {
                 "Goose control/model identity differs from its plant",
             ));
         }
-        if self.is_task_proxy() {
+        if self.is_task_proxy() || self.is_rigid_native() {
             let value: serde_json::Value = serde_json::from_slice(bytes)
                 .map_err(|error| invalid(format!("Goose collision contract JSON: {error}")))?;
             let rows = value["collision_exclusions"]
@@ -174,6 +189,10 @@ impl GoosePlant {
                     | "goose_task_collision_v1_condensed50"
             ) | ("goose_plant50_experimental_v2", "goose_460_full50_be_v2")
                 | ("goose_task_proxy_plant_v1", "goose_task_proxy_11_v1")
+                | (
+                    "goose_rigid_native_plant_v1",
+                    "goose_task_proxy_11_rigid_braking_v1"
+                )
         );
         if !identity_valid
             || self.physics_hz != 50
@@ -213,11 +232,12 @@ impl GoosePlant {
                 return Err(invalid("Goose mechanical identity needs lowercase SHA256"));
             }
         }
-        let expected_bodies = if self.is_condensed() || self.is_task_proxy() {
-            21
-        } else {
-            33
-        };
+        let expected_bodies =
+            if self.is_condensed() || self.is_task_proxy() || self.is_rigid_native() {
+                21
+            } else {
+                33
+            };
         if self.bodies.len() != expected_bodies || self.joints.len() + 1 != self.bodies.len() {
             return Err(invalid("Goose candidate body/coordinate counts mismatch"));
         }
@@ -230,6 +250,27 @@ impl GoosePlant {
         {
             return Err(invalid(
                 "Goose task proxy requires its eleven actual convex leaves",
+            ));
+        }
+        if self.is_rigid_native()
+            && (self.colliders.len() != 11
+                || self
+                    .colliders
+                    .iter()
+                    .filter(|c| c.kind == "convex_mesh")
+                    .count()
+                    != 9
+                || self.colliders.iter().filter(|c| c.kind == "box").count() != 2
+                || self.colliders.iter().any(|c| {
+                    c.kind == "box"
+                        && !matches!(
+                            c.name.as_str(),
+                            "right_flexible_sole" | "left_flexible_sole"
+                        )
+                }))
+        {
+            return Err(invalid(
+                "Rigid Goose requires nine original convex leaves and two named foot boxes",
             ));
         }
         let names: HashSet<_> = self.bodies.iter().map(|body| body.name.as_str()).collect();
@@ -323,6 +364,40 @@ impl GoosePlant {
         if !drives.into_iter().all(|value| value) || !feedback.into_iter().all(|value| value) {
             return Err(invalid("Goose drive/feedback mapping is incomplete"));
         }
+        match (&self.native_initialization, self.is_rigid_native()) {
+            (Some(initial), true) => {
+                let hash = &initial.initial_state_sha256;
+                if hash.len() != 64
+                    || !hash
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                    || initial.joint_position_rad.len() != self.joints.len()
+                {
+                    return Err(invalid(
+                        "Rigid Goose needs a hashed, complete cold-pose coordinate map",
+                    ));
+                }
+                for joint in &self.joints {
+                    let q = initial
+                        .joint_position_rad
+                        .get(&joint.name)
+                        .ok_or_else(|| invalid("Rigid Goose cold joint coordinate absent"))?;
+                    if !q.is_finite() || !(joint.range[0]..=joint.range[1]).contains(q) {
+                        return Err(invalid(
+                            "Rigid Goose cold joint coordinate is outside its source range",
+                        ));
+                    }
+                }
+                finite(&initial.coupler_pin_local_m)?;
+                finite(&initial.jaw_pin_local_m)?;
+            }
+            (None, false) => {}
+            _ => {
+                return Err(invalid(
+                    "Goose cold initialization must match its rigid candidate version",
+                ));
+            }
+        }
         let mut collider_names = HashSet::new();
         for collider in &self.colliders {
             if !collider_names.insert(&collider.name) || !names.contains(collider.body.as_str()) {
@@ -383,6 +458,12 @@ impl GoosePlant {
     /// This version uses the explicitly declared task-proxy contact runtime.
     pub fn is_task_proxy(&self) -> bool {
         self.schema == "goose_task_proxy_plant_v1" && self.candidate_id == "goose_task_proxy_11_v1"
+    }
+
+    /// Rigid source geometry intake; this does not qualify a target controller.
+    pub fn is_rigid_native(&self) -> bool {
+        self.schema == "goose_rigid_native_plant_v1"
+            && self.candidate_id == "goose_task_proxy_11_rigid_braking_v1"
     }
 
     /// Pad masses have been merged; target construction still needs a contact law.
