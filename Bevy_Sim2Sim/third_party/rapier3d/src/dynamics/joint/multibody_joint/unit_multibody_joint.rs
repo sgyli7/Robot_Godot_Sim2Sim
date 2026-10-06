@@ -248,7 +248,8 @@ fn unit_joint_predictive_limit_constraints(
 /// Generates the dry-friction (MuJoCo `frictionloss`) velocity constraint for
 /// one generalized DoF.
 ///
-/// `softness` supplies the CFM compliance (MuJoCo's `solreffriction`); only CFM
+/// `softness` supplies the default CFM; an explicit coefficient selects
+/// independent friction compliance without softening joint limits. Only CFM
 /// applies, never ERP, since there is no position error for a bias to chase.
 #[allow(clippy::too_many_arguments)]
 pub fn unit_joint_friction_constraint(
@@ -262,9 +263,10 @@ pub fn unit_joint_friction_constraint(
     constraints: &mut [GenericJointConstraint],
     insert_at: &mut usize,
     softness: SpringCoefficients<Real>,
+    cfm_coefficient: Option<Real>,
 ) {
     let ndofs = multibody.ndofs();
-    let cfm_coeff = softness.cfm_coeff(params.dt);
+    let cfm_coeff = cfm_coefficient.unwrap_or_else(|| softness.cfm_coeff(params.dt));
 
     let dof_j_id = *j_id + dof_id + link.assembly_id;
     jacobians.rows_mut(*j_id, ndofs * 2).fill(0.0);

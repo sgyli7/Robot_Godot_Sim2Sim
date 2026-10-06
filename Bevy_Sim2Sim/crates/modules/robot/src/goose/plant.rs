@@ -34,6 +34,25 @@ pub struct GoosePlant {
     pub numerical_experiment: Option<GooseNumericalExperiment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_initialization: Option<GooseNativeInitialization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_joint_friction: Option<GooseNativeJointFriction>,
+}
+
+/// Independent target numerical contract; source peak friction stays in SI.
+/// This uses dynamic target inverse mass and is not exact MuJoCo equivalence.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GooseNativeJointFriction {
+    pub revision: String,
+    pub source_model_sha256: String,
+    pub compiled_source_parameter_sha256: String,
+    pub coefficients_by_joint: BTreeMap<String, GooseJointFrictionCoefficient>,
+}
+
+/// The frozen source's zero-error impedance and its dimensionless CFM ratio.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GooseJointFrictionCoefficient {
+    pub source_impedance_low: f64,
+    pub cfm_coefficient: f64,
 }
 
 /// Cold-pose coordinates and both original CONNECT anchors, without pin snapping.
@@ -363,6 +382,40 @@ impl GoosePlant {
         }
         if !drives.into_iter().all(|value| value) || !feedback.into_iter().all(|value| value) {
             return Err(invalid("Goose drive/feedback mapping is incomplete"));
+        }
+        if let Some(friction) = &self.native_joint_friction {
+            let hash = &friction.compiled_source_parameter_sha256;
+            if !self.is_rigid_native()
+                || friction.revision != "goose_rapier_independent_joint_friction_impedance_v1"
+                || friction.source_model_sha256 != self.model_sha256
+                || hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                || friction.coefficients_by_joint.len() != self.joints.len()
+            {
+                return Err(invalid(
+                    "Independent Goose joint friction identity or coverage mismatch",
+                ));
+            }
+            for joint in &self.joints {
+                let value = friction
+                    .coefficients_by_joint
+                    .get(&joint.name)
+                    .ok_or_else(|| invalid("Independent Goose joint friction entry absent"))?;
+                let d = value.source_impedance_low;
+                let c = value.cfm_coefficient;
+                if !d.is_finite()
+                    || !(0.5..1.0).contains(&d)
+                    || !c.is_finite()
+                    || !(0.0..=1.0).contains(&c)
+                    || (c - (1.0 - d) / d).abs() > 1e-14
+                {
+                    return Err(invalid(
+                        "Goose friction coefficient differs from frozen source impedance",
+                    ));
+                }
+            }
         }
         match (&self.native_initialization, self.is_rigid_native()) {
             (Some(initial), true) => {

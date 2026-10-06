@@ -40,6 +40,10 @@ pub struct MultibodyJoint {
     /// Explicit opt-in to two unilateral velocity bounds at the actual stops.
     #[cfg_attr(feature = "serde-serialize", serde(default))]
     predictive_limits: bool,
+    /// Independent dimensionless dry-friction compliance, without changing
+    /// limit or locked-axis softness. None preserves the original coefficients.
+    #[cfg_attr(feature = "serde-serialize", serde(default))]
+    dry_friction_cfm_coefficient: Option<Real>,
     /// Explicitly selected, single-axis source-limit experiment.
     #[cfg(feature = "sim2sim-source-limit-probe")]
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
@@ -58,6 +62,7 @@ impl MultibodyJoint {
             spring_stiffness: Default::default(),
             spring_ref: Default::default(),
             predictive_limits: false,
+            dry_friction_cfm_coefficient: None,
             #[cfg(feature = "sim2sim-source-limit-probe")]
             sim2sim_source_limit_probe: None,
         }
@@ -108,6 +113,27 @@ impl MultibodyJoint {
     /// Whether this joint explicitly selected the predictive native rows.
     pub fn predictive_limits_enabled(&self) -> bool {
         self.predictive_limits
+    }
+
+    /// Select a dimensionless dry-friction CFM coefficient independently of
+    /// joint-limit softness. The existing friction row multiplies it by its
+    /// actual inverse effective mass. Peak friction and constraint bounds stay
+    /// unchanged. None restores the original joint-softness-derived value.
+    /// Returns false for non-finite/negative coefficients or non-scalar joints.
+    pub fn set_dry_friction_cfm_coefficient(&mut self, coefficient: Option<Real>) -> bool {
+        if self.kinematic
+            || self.ndofs() != 1
+            || coefficient.is_some_and(|v| !v.is_finite() || v < 0.0)
+        {
+            return false;
+        }
+        self.dry_friction_cfm_coefficient = coefficient;
+        true
+    }
+
+    /// Explicit dry-friction coefficient, independent of joint-limit softness.
+    pub fn dry_friction_cfm_coefficient(&self) -> Option<Real> {
+        self.dry_friction_cfm_coefficient
     }
 
     /// Select the MuJoCo-style AngX limit-row experiment on this joint only.
@@ -463,6 +489,7 @@ impl MultibodyJoint {
                         constraints,
                         &mut num_constraints,
                         self.data.softness,
+                        self.dry_friction_cfm_coefficient,
                     );
                 }
                 curr_free_dof += 1;
@@ -568,6 +595,7 @@ impl MultibodyJoint {
                         constraints,
                         &mut num_constraints,
                         self.data.softness,
+                        self.dry_friction_cfm_coefficient,
                     );
                 }
                 curr_free_dof += 1;

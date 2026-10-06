@@ -20,6 +20,8 @@ struct Input {
     absolute_targets_rad: Vec<[f64; 18]>,
     #[serde(default)]
     disable_joint_friction_for_diagnosis: bool,
+    #[serde(default)]
+    joint_friction_cfm_coefficient: Option<f64>,
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -49,6 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("Cold state absent")?
                 .initial_state_sha256
         || input.dt_s != 0.02
+        || input.joint_friction_cfm_coefficient.is_some_and(|v| {
+            !v.is_finite() || v < 0.0 || v > 1.0 || input.disable_joint_friction_for_diagnosis
+        })
         || input.absolute_targets_rad.is_empty()
         || input.absolute_targets_rad.len() > 100
         || input.absolute_targets_rad.iter().any(|row| {
@@ -82,6 +87,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get_mut(handle)
             .ok_or("Joint stale")?;
         multibody.frictions_mut().fill(0.0);
+    }
+    if let Some(coefficient) = input.joint_friction_cfm_coefficient {
+        let handles: Vec<_> = simulation
+            .world
+            .multibody_joints
+            .iter()
+            .map(|(h, _, _, _)| h)
+            .collect();
+        for handle in handles {
+            let (multibody, id) = simulation
+                .world
+                .multibody_joints
+                .get_mut(handle)
+                .ok_or("Joint stale")?;
+            let joint = &mut multibody.link_mut(id).ok_or("Link absent")?.joint;
+            if !joint.set_dry_friction_cfm_coefficient(Some(coefficient as f32)) {
+                return Err("Independent scalar joint friction coefficient rejected".into());
+            }
+        }
     }
     let support = support_vertices(&simulation, &assembly, &plant)?;
     let initial = boundary(&simulation, &assembly, &plant, &contract, &support)?;
@@ -145,6 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "executable_sha256":digest(&fs::read(env::current_exe()?)?),"configuration":simulation.configuration(),
         "world_gravity_engine":simulation.world.gravity.to_array(),"floor_present":false,
         "joint_friction_disabled_for_diagnosis":input.disable_joint_friction_for_diagnosis,
+        "joint_friction_cfm_coefficient":input.joint_friction_cfm_coefficient,
         "actual_integrals":simulation.snapshot().integration_count,"actual_torque_updates":simulation.snapshot().torque_update_count,
         "inferences":0,"optimizer_updates":0,"post_birth_pose_writes":0,"qualified":false,
         "scope":"native position-drive isolation; no Actor/task driver, 17 raw same position targets, true rotor torque0; no policy/driver qualification",
@@ -155,4 +180,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         json!({"output":paths[3],"actual_integrals":receipt["actual_integrals"],"failure":failure})
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn friction_compliance_is_independent_of_stops_motors_and_softness() {
+        let data = GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES)
+            .limits(JointAxis::AngX, [-0.2, 0.3])
+            .motor_model(JointAxis::AngX, MotorModel::ForceBased)
+            .motor_position(JointAxis::AngX, 0.1, 100.0, 0.875)
+            .motor_max_force(JointAxis::AngX, 22.0)
+            .build();
+        let mut joint = MultibodyJoint::new(data, false);
+        let original = joint.data;
+        assert_eq!(joint.dry_friction_cfm_coefficient(), None);
+        assert!(joint.set_dry_friction_cfm_coefficient(Some(1.0 / 9.0)));
+        assert_eq!(joint.data, original);
+        assert!(!joint.predictive_limits_enabled());
+        assert!(joint.set_dry_friction_cfm_coefficient(None));
+        assert_eq!(joint.data, original);
+        assert_eq!(joint.dry_friction_cfm_coefficient(), None);
+    }
+
+    #[test]
+    fn invalid_or_nonscalar_friction_override_is_rejected_without_mutation() {
+        let mut scalar = MultibodyJoint::new(
+            GenericJoint::new(JointAxesMask::LOCKED_REVOLUTE_AXES),
+            false,
+        );
+        assert!(scalar.set_dry_friction_cfm_coefficient(Some(0.1)));
+        for invalid in [-1.0, f32::NAN, f32::INFINITY] {
+            assert!(!scalar.set_dry_friction_cfm_coefficient(Some(invalid)));
+            assert_eq!(scalar.dry_friction_cfm_coefficient(), Some(0.1));
+        }
+        let mut free = MultibodyJoint::new(GenericJoint::default(), false);
+        assert!(!free.set_dry_friction_cfm_coefficient(Some(0.1)));
+        assert_eq!(free.dry_friction_cfm_coefficient(), None);
+    }
 }

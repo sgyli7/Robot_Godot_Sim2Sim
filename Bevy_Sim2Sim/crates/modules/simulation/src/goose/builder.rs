@@ -277,6 +277,20 @@ impl GooseAssembly {
             multibody.damping_mut()[slot] = joint.damping as f32;
             multibody.armature_mut()[slot] = joint.armature as f32;
             multibody.frictions_mut()[slot] = joint.frictionloss as f32;
+            if let Some(friction) = &plant.native_joint_friction {
+                let coefficient =
+                    friction.coefficients_by_joint[&joint.name].cfm_coefficient as f32;
+                if !multibody
+                    .link_mut(link_id)
+                    .unwrap()
+                    .joint
+                    .set_dry_friction_cfm_coefficient(Some(coefficient))
+                {
+                    return Err(invalid(
+                        "Independent Goose dry-friction coefficient rejected",
+                    ));
+                }
+            }
             if joint.stiffness_n_m > 0.0 {
                 multibody.link_mut(link_id).unwrap().joint.set_spring(
                     mapping.coordinate,
