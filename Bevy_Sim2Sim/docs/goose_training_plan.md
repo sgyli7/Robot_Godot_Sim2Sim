@@ -2,14 +2,23 @@
 
 版本：2026-10-07。实施分支：`codex/goose50_training`。
 
+**2026-10-07 唯一现行入口：Goose 自身支撑路径已实际执行，取得两步证据，完整能力仍未交付。** 学习MD指复用成熟的训练组织、任务/课程、物理接线与独立验收方法；不使用MD的ONNX、权重、normalizer、角度表或专家动作。本批连Goose父Actor也没有加载。保留`goose_task_proxy_11_discrete_mjlab160_v1`原21体/18主动轴/11叶/刚性足底/真实四杆/65→18/50Hz；root亲自推进移动与恢复，不联系硬件/G1、不派或唤醒agent。本批新增5267真实CPU积分（含650步独立重放），GPU物理/PPO/Adam/ONNX0；不是把规划查询算成能力训练。
 
-**2026-10-07 唯一现行入口：完整原生 Actor 动作坐标已采用，移动/恢复候选均拒绝。** 学习 MD 的完整方法，Goose 不使用 MD 的 ONNX、权重、normalizer、角度表或专家动作。本周期 root 亲自执行两条能力；不联系硬件/G1、不派新聊天或唤醒 agent。保留源本体 `goose_task_proxy_11_discrete_mjlab160_v1`：21体/18主动轴/11叶/刚性足底/65→18/真实四杆/50Hz。新增 `goose_native_physical_actor_coordinates_v1` 保留原生可训练参数、Gaussian边界和Adam坐标，将固定公共动作换算写入均值、概率密度及ONNX。上游G1 `.25*effort/stiffness` 按 Goose SI换算；不是拿MD策略，也不是只复制PPO配置。原生3次Adam/KL/边界/ONNX与两类非fresh拒绝，共6回归通过。旧“仅初始均值/方差换算”3项回归失败，冻结证据后关闭，不保留为生产接法。
+**两条能力的实际依据：** 原生Mink作者COM/足/姿态任务生成Goose自己的路径，HiGHS作必要的准静态支撑审核，项目已有努力→公共目标换算接原驱动，未加腿部前馈或改变物理。相同慢步路径由仅IK角度侧倒变为实际左右换脚，COM前进54.198mm，末端含角速度门站稳176Tick＝3.52秒，最大地穿3.293mm；独立原出生/原驱动重放qpos/qvel/目标/真实努力/热/65观测逐位一致。但左踝roll超限2.083mrad，静态连续努力/姿态/目标审核只有552/650帧通过，命令仍零且控制器使用私有计划，不晋升为合法参考或公共Actor。前倒直接慢抬升仍保持0；第100Tick参考仅脚支撑时COM超出支撑前缘245mm，第225Tick仍109mm，末端静态可行不弥补中间脱离支撑。它否定该慢速接触序列，不证明全局DOF/结构无法起身。
+
+**已冻结的修复和失败：** 新规划接线`kinematic_contact.py`按Mink1.3位移QP换算碰撞上界，并保留符合原mask/exclude的显式世界/自由根配对；旋转足目标高度按原box角点支撑求值。15项回归通过，物理/控制/观测/动作合同未动；规划线性最近点仍不能替代几何及实际积分验收。踝目标预留使实际范围错误增至21.602mrad，实际IK＋静态努力反馈提前停止，按原足宽内移COM在私有静态通过后实际侧倒，三条均拒绝；不继续预留量/目标偏置/反馈网格或自定义求解器扩展。原生Actor坐标、奖励/LR/std/seed旧失败保持关闭。
+
+**下一唯一共享问题：自己的参考能否在整个接触顺序中兼容原驱动和限制。** 移动以实际两步为依据接已有mjlab tracking/reference课程，先验证动态限位、合法公共观测及真实支撑，再推进自身策略和.4/.7；恢复改为先保持身体/腿部真实支撑、收脚承接COM后抬身，或独立验证动态翻转/动量路径，先剪掉无支撑私有关键帧再训练。两线共同推进，GPU有界串行；不拿其他机器人的策略或姿态当结果，不继续无支撑直接抬升训练网格。完整M0-S前不源端长训，M0-T前不目标训练/Bevy；原走.4/跑.7/转向/Shift/启停与四向/扰动起身/3秒/继续1m目标保留，均尚未通过。没有硬件或其他agent等待，goal保持active、未完成。
+
+[本批自身支撑路径报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_supported_path_admission_001/report.md) · [真实两步与起身失败录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_supported_path_admission_001/actual_supported_path_results.mp4) · [实际角速度/全轴核验](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_supported_path_admission_001/actual_path_summary.json) · [唯一资源账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_supported_path_admission_001/resource_ledger.json) · [复现](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_supported_path_admission_001/reproduction.md)。下列各检查点为历史，不覆盖本顶部顺序。
+
+**历史上一入口：完整原生 Actor 动作坐标已采用，移动/恢复候选均拒绝。** 学习 MD 的完整方法，Goose 不使用 MD 的 ONNX、权重、normalizer、角度表或专家动作。本周期 root 亲自执行两条能力；不联系硬件/G1、不派新聊天或唤醒 agent。保留源本体 `goose_task_proxy_11_discrete_mjlab160_v1`：21体/18主动轴/11叶/刚性足底/65→18/真实四杆/50Hz。新增 `goose_native_physical_actor_coordinates_v1` 保留原生可训练参数、Gaussian边界和Adam坐标，将固定公共动作换算写入均值、概率密度及ONNX。上游G1 `.25*effort/stiffness` 按 Goose SI换算；不是拿MD策略，也不是只复制PPO配置。原生3次Adam/KL/边界/ONNX与两类非fresh拒绝，共6回归通过。旧“仅初始均值/方差换算”3项回归失败，冻结证据后关闭，不保留为生产接法。
 
 **实际结果与边界：** 完整接法的移动、恢复各8＋128真实GPU PPO，各835584物理样本/2720Adam；自己checkpoint完整复载，clock192→3264，独立新进程Actor/Critic/Adam逐位相同、ONNX动作差0。移动真实曝光.4/.7、后退、横移、yaw及组合指令；恢复续批有521984真实前倒样本，前倒hold0，overall hold2来自站立出生。独立11移动＋4原倒地冷例17900Tick，走.4实际均速.00008362、跑.7实际.00013905m/s，仍主要静站；四向恢复hold0。已看2.50/12.50秒实际录像，足未持续迈步、躯干未转入站立足支撑。正式200例移动、四向/真实扰动/继续1m及Bevy资格仍未完成；完整M0-S/M0-T未过，不开源/目标长训、不缩小.4/.7目标。
 
 **两项诊断已收口：** 原实际103Tick窗口源端逐位重放，离地后一步无接触再跨入8.157mm；2.5mm sole margin主要抬高站立面，仍超过固定5mm，未采纳。完整原生接法后，两条任务的已保存首24Tick在冻结参数下仅更新已知23次normalizer，KL均值.00455/.00441、无样本超过原生降LR门槛.02，未复现“大normalizer漂移”的假设，不据此改流程。已完成的单位/源码/首段接线不等于学会能力，不能将这批失败唯一归给机械或PPO某一项。
 
-**下一唯一共享问题：冻结本体能否执行合法、有支撑的运动路径。** 从低信号重复PPO退回成熟的运动/接触规划与mjlab原生tracking/reference工作流，以Goose自己的数据分别验证一条交替足前进路径和原前倒起身路径，移动与恢复共同推进。只施公共18轴真实目标/力矩，实际50Hz积分；原出生、物理、限制和脚底保持冻结，逐程核对接触/穿透/限位/COM/支持。先取得可执行路径依据，再用于基础训练；不能通过投影/搬姿态/隐藏子步或MD动作凑参考资格。找到一条合法路径支持可行性，单路径失败不证明全局机械不可能。停止本两份候选继续PPO与LR/std/seed/奖励网格；原父/原文件与全部失败保留，源与目标资格独立。
+**历史下一共享问题（已在顶部路径周期执行）：冻结本体能否执行合法、有支撑的运动路径。** 从低信号重复PPO退回成熟的运动/接触规划与mjlab原生tracking/reference工作流，以Goose自己的数据分别验证一条交替足前进路径和原前倒起身路径，移动与恢复共同推进。只施公共18轴真实目标/力矩，实际50Hz积分；原出生、物理、限制和脚底保持冻结，逐程核对接触/穿透/限位/COM/支持。先取得可执行路径依据，再用于基础训练；不能通过投影/搬姿态/隐藏子步或MD动作凑参考资格。找到一条合法路径支持可行性，单路径失败不证明全局机械不可能。停止本两份候选继续PPO与LR/std/seed/奖励网格；原父/原文件与全部失败保留，源与目标资格独立。
 
 [本周期方法与实际失败报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/report.md) · [Goose实际移动/四向失败录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/actual_own_physical_units_endpoints.mp4) · [复现](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/reproduction.md) · [本周期唯一C＋D资源合并](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_actor_coordinates_001/cycle_ledger.json)。新增GPU3440640、CPU36100、560PPO/11200训练Adam、37848真实ONNX；小单测/离线观察重放/FK/显示另列，旧B/MD/历史样本不重复。任务已结束并释放GPU，goal保持未完成。
 
