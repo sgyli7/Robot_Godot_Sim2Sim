@@ -1,10 +1,22 @@
 # Goose V0.1｜Bevy Sim2Sim 长期训练计划
 
-版本：2026-10-06。实施分支：`codex/goose50_training`。
+版本：2026-10-07。实施分支：`codex/goose50_training`。
 
-**现行人类指令：继续推进，同时先把“训练方法还是机械设计阻断移动/起身”定清楚。** 不主动联系、读取或监控硬件／暂停G1，不新聊天/PM。用户最新允许移动、恢复、转向并行；“转板”已明确为左右转向/原地掉头，不新增板上运动。复用本聊天既有 `goose_asset_audit` 与 `recovery_planning_research` 做有界独立审查；最新恢复工作流002已完成并闲置；主实施继续负责移动/转向与集成，GPU有界串行，不以子agent为等待理由。十小时目标已超期，完整移动与恢复仍未交付，目标不缩小。临时产物严格ProjectBackups，生产仅对应crate，本文为唯一入口。
+**最新移动目标（2026-10-06）：** 前进走路 **0.4 m/s**、跑步 **0.7 m/s**，PC按住Shift＋前进加速，松Shift回走路，松前进停止；Shift单独不移动。学习Godot真实输入顺序、转弯中松Shift、反复切换、失焦和暂停恢复的回归经验，不能只给训练速度上限而漏掉游戏切换。优先由同一公共65→18移动Actor通过现有三维速度指令覆盖两档，不新增私有模式观测、不重置物理/驱动/历史。后退0.15、横移0.1m/s、yaw0.6rad/s及左右±π掉头保留。旧0.3及+.06只属历史/中间课程，不是最终目标；两档持续实际COM速度、路径、步态、启停及切换分别验收，不能以请求值或瞬时峰值授能力。自然鹅论文与Cassie官方成绩只作生物/成熟工作流参考，不当Goose速度可达证明。
 
-**当前执行入口（最新）：** 两组低速容差PPO和单路径原生BC均失败、已收口。已接通实际627帧50fps的原生MotionLoader格式。下一步只做成熟运动跟踪反馈教师接线与小GPU链路，原9奖励/原18驱动/20ms保留；参考仅实验教师可见，最终公共65→18不变。native MotionCommand的reset/clip结束会写实际root/q，必须隔离为真实冷重置，禁止运行中参考状态覆盖。资产格式通过不等于教师训练或任何能力通过；十小时目标已超期，完整移动/恢复仍active、未交付。
+**现行人类指令：继续推进，同时先把“训练方法还是机械设计阻断移动/起身”定清楚。** 不主动联系、读取或监控硬件／暂停G1，不新聊天/PM。移动、恢复、转向持续并行；“转板”已明确为左右转向/原地掉头，不新增板上运动。既有资产/恢复研究agent的审查已完成并闲置；当前主实施负责恢复与集成，既有`bevy_feasibility`负责移动/转向，GPU有界串行，不以子agent为等待理由。十小时目标已超期，完整移动与恢复仍未交付，目标不缩小。临时产物严格ProjectBackups，生产仅对应crate，本文为唯一入口。
+
+**当前执行入口（最新）：移动与恢复持续并行。** root负责恢复的成熟运动跟踪/参考准入及独立回放，本聊天既有`bevy_feasibility`负责走路0.4/跑步0.7、横移/转向/启停课程与评价。准备、诊断、回放并行，GPU有界串行接棒，不因新话题停另一线。恢复fixed-start和admitted-RSI各完成128主PPO，但原倒地独立回放分别0.32/1.92秒终止、保持0；原626公共动作在冻结GPU实际执行后9.54秒起连续保持3秒，证明该前倒路径结构/驱动可执行，仍有15.86mm地穿/0.08598rad越界，不能当自主恢复或全路径资格。移动v1课程计数缺陷保全，v2已修复真实resume-clock，完成预定192走路＋320扩档主PPO/3145728GPUworldTick；21例0通过，实际walk均速0.000776、run0.062513m/s，站立也退化，不能晋升或继续相同配置追加轮数。两条线下一步分别核对成熟奖励/驱动/采样与实际失败的关系，保留原14/9函数权重、SI、50Hz/1，最终65→18不变；不重开std/seed/网络/solver网格，也不将PPO数或曝光当能力。十小时目标超期，完整走跑/转向/四向恢复仍active、未交付。
+
+**2026-10-07单位公式实验已收口：** 两线保留原生Gaussian可学习性，仅用G1`.25*effort/stiffness`换算`.25*peak/(kp*action_scale)`初始化；原18公共目标/确定性初mean、SI、奖励/50Hz不变，没有std网格。恢复small100GPU/1PPO＋main786432/128PPO/172.51秒，后段覆盖76.27%、最长642Tick、raw越界53/14155776；独立原前倒仅32Tick/.64秒、hold0、floor19.887mm/self12.651mm，不晋升或加同族轮数。移动small96＋main786432/128PPO/142.43秒完成；真实92与002真实92配对、128另测，均只有站立1/21，走速.01660→.07770→.09389m/s仍不足.4且偏航大；run.00213→.00083→.00764仍不足.7。128仍在192扩档前，.7例属未曝光范围泛化，不能冒充跑步课程完成。raw/terminated/truncated记录完整。两线所有GPU已结束，移动做CPU录像与指令域审计，root自己负责恢复下一问题；不拿对方结果代替本线判断。
+
+**恢复当前下一问题：原静止起始段缺失。** 原生cold birth8076、后续有实际步8073（末3次reset未再积分），原frame0实际出生0；最早eligible15/.30秒相比frame0关节最多差.5749rad、root线速度(.141,.081,.558)m/s、最大关节速度2.129rad/s，原始qvel0。它不是原静止出生的近似复刻。原GPU动作已证明从原前倒可执行到3秒稳定，而全部路径接触/软范围仍未合格；先明确接回真实原出生及起始段参考/闭环适配，使用原生start/RSI成熟课程边界，不继续盲加后段样本。原frame0软范围小差仍如实记录，不投影、不改门槛或偷改出生。公共学生与其他方向待真实教师能力成立后再推进，不能把113参考教师当最终65。移动的下一步独立核对亲本指令归一化域及同状态确定性响应，0积分，只据实际证据决定后续成熟步态/课程方案。
+
+[恢复单位公式实际报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_tracking_action_units_001/report.md) · [原静止出生覆盖缺口](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_tracking_action_units_001/cold_rest_coverage_audit.json) · [实际失败三栏录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_native_tracking_action_units_001/actual_physical_gaussian_comparison.mp4)。
+
+**已核对的动作事实：** 恢复std1直接套原映射对应静态P请求1.47–21.67倍峰值（不是实际力矩）；teacher/RSI固定三块34214连续样本目标重构误差0，末块多颈/腿轴限速>90%，多轴实际绑定当前制动/热/功率cap。移动四块442368轴值没有裁剪边界，raw具体值未存但在这些样本可推出未越界；亲本std0.01332–0.03244、末0.01290–0.03228，合并slew11.97%、原峰命中0.593%。不能把两线失败归成同一个饱和问题，也不把相关性说成唯一因果。这两份审计新增积分/推理/优化0，私有控制重构34214另记。
+
+[恢复单位与实际动作审计](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_reference_gpu_execution_audit_001/tracking_action_unit_actual_audit.json) · [移动独立动作审计](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_walk_run_commands_002/action_unit_audit/README.md)。
 
 **冻结输入：** `goose_task_proxy_11_rigid_braking_v1`，MJCF SHA `3dd030f0475efd101ab129288e7f04f5694067757d85e0429933cecb9c5268e4`、合同SHA `d3fd7ba668678e1e1237d00bd7fac77e5d0625d77cc65bea85d3579ffb17061c`。21机器人刚体／18真实电机／2被动轴／11叶／10.430690821kg。每腿6主动轴；公共65→18、拾物82→18。9凸mesh＋2刚性足box；原鞋上部遗漏44.76%不继承实物资格。质量/完整惯量/轴位/嘴四杆/过滤/限速/力矩/热/350W保留；50Hz、每Tick一次20ms实际驱动/积分/当前Actor更新、decimation1，无隐藏子步/出生后实际root/q/qd/drive/history写入。电脑训练不考虑软底。
 
@@ -86,9 +98,15 @@
 
 [原生BC报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_native_distillation_001/report.md) · [实际12.52秒起身对照录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_native_distillation_001/actual_BC_failure.mp4) · [独立收据](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_native_distillation_001/independent_receipt.json)。新增CPU626/ONNX626；另导出1batch/626样本，1000原生Adam离线呈现626000数据行，不当新增物理样本。评价FK626/失败相机及修复绘图FK1252、4显式cold-forward均非积分。Torch SM提示与ONNX旧导出警告记录，实际更新与对照通过，未升级依赖；所有作业结束。
 
-**成熟跟踪资产已接通：** 原冷出生＋626真实状态转为安装mjlab1.3/BeyondMimic MotionLoader的627帧50fps、21个nonworld body-link世界姿态/速度、20树坐标（含2被动轴）、18真实motor不变。全部六字段由原Loader逐位加载验证；世界速度为body-link原点Jacobian，不混COM，原converter/command同测点已核。0积分/0PPO/0Adam、私有FK627；参考不投影/不改动，仍未合格。格式准入不是教师已实现或已训练。[资产及边界报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_mature_tracking_asset_001/report.md) · [原Loader接收收据](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_mature_tracking_asset_001/receipt.json)。
+**成熟跟踪资产已接通：** 原冷出生＋626真实状态转为安装mjlab1.3/BeyondMimic MotionLoader的627帧50fps、21个nonworld body-link世界姿态/速度、20树坐标（含2被动轴）、18真实motor不变。全部六字段由原Loader逐位加载验证；世界速度为body-link原点Jacobian，不混COM，原converter/command同测点已核。0积分/0PPO/0Adam、私有FK627；参考不投影/不改动，仍未合格。当时只是格式准入；本日后续教师实际训练结果见当前入口与恢复线。[资产及边界报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_mature_tracking_asset_001/report.md) · [原Loader接收收据](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_mature_tracking_asset_001/receipt.json)。
 
-**现行唯一下一问题：** 用安装的mjlab/BeyondMimic运动跟踪模块建立有参考输入和状态反馈的具名训练专用教师，检验能否执行原前倒28参考；不再把开环动作表冒充DAgger专家。复用原9奖励函数/权重和RSL，固定原SI/18轴driver/20ms/decimation1。先接线/小GPU rollout/优化器更新再有界pilot，禁止stock5ms/4隐藏积分。native MotionCommand的resample会写root/q，且clip结束亦会resample：必须将状态写入限制到真实冷重置，运行中结束只保持参考末帧或正常episode终止，不瞬移/投影实际状态。额外reference输入只属于明确标记的实验教师；最终公共Actor65→18、拾物82→18不变，不能给其暗加信息或资格。教师尚未实现/训练；接线通过再决定在线学生数据收集。原参考全路径仍未过，M0-S完整接触未过不长训，M0-T未过不目标训练/Bevy；完整200移动、左右转向/±π掉头、四向/自然跌倒起身3秒保持并继续1m仍未交付。无硬件或agent外部等待，不主动联系/读取硬件与暂停G1，不新聊天/agent/PM；必要机械具名微调最终统一交付。
+**恢复线当前问题：** 安装mjlab/BeyondMimic训练专用Actor113/Critic302反馈教师已经实现；保留原9奖励函数/权重/std与原生RSL、原18轴driver/20ms/decimation1。fixed-start完成small104GPU/1PPO及主786432GPU/128PPO，独立16Tick在0.32秒终止，COM最高0.17255m、地穿25.37mm、保持0；25488终止中25415含原生末端位置，最高参考330帧，未到477站稳段。Admitted-RSI只在真实冷重置调用原生writer，running与clip结束禁止写实际状态；原生adaptive提议映射到241个既有几何/限位合格MotionLoader帧，分布改变与13bin中的5空bin明确报告，不能修复原参考资格。它完成small100GPU/1PPO、主786432GPU/128PPO；59.56%样本进入站稳段参考，但独立原前倒28在96Tick/1.92秒终止，COM最高0.15818m、地穿24.30mm/self18.40mm、保持0，未改善完整起身。两次失败后不追加相同seed/权重/网络/轮数网格，原CPU参考GPU执行审计已完成：626实际Tick，9.54–12.52秒保持150Tick，0普通终止；最大地穿15.86mm、关节越界0.08598rad，目标序列误差≤4.748e−8。该单路径不是结构绝对不可起身，教师执行/学习差距仍由Lab解决；下一步核对成熟奖励/参考/持久drive状态的兼容性，不盲加样本。公共学生采集尚未启动。原参考全路径仍有10.10mm地穿及关节越界；627帧中21地穿/379关节超限（可重叠），仅241出生可用。参考格式、覆盖率、PPO和导出成功不能当恢复成功。M0-S完整接触未过不长训，M0-T未过不目标训练/Bevy；完整200移动、左右转向/±π掉头、四向/自然跌倒起身3秒保持并继续1m仍未交付。没有硬件或agent外部等待，不主动联系/读取硬件与暂停G1，不新聊天/PM。必要机械具名微调最终统一交付。
+
+[fixed-start真实报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_tracking_teacher_001/report.md) · [RSI实际报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_tracking_rsi_001/report.md) · [两教师实际失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_tracking_rsi_001/actual_teacher_rsi_failure.mp4) · [原动作GPU可执行性报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_reference_gpu_execution_audit_001/report.md) · [实际CPU/GPU起身对照](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_reference_gpu_execution_audit_001/actual_CPU_GPU_reference.mp4)。
+
+**移动线本周期结果：** v1实际load继承common_step12288，绝对4608课程门导致本地74Tick就扩档，376主PPO保全失败，不当正确两阶段课程。v2强制具名course_start_step取真实metadata（文件iter510不等于512），并首物理步前核对load；前192更新1179648GPUworldTick无run-band，后320更新1966080GPUworldTick有68358个run-band，原生reset在阈值后1Tick更新范围。完整512主PPO/10240Adam/492.17秒，small1另计；ONNX差1.788e−7。独立21例均失败：walk0.000776、run0.062513m/s，地穿15.783/16.604mm；站60秒漂155.60mm/地穿16.242mm/yaw−1.441；±π掉头未到，所有输入/Shift/停止组合不授能力。课程接线/曝光通过不等于技能通过。001+002总账CPU54502/GPU5458624/PPO890/Adam17800（含失败/设置/导出/实际复验，勿叠加目录累计再次计数）。现有稳定guided512保留，失败v1/v2不晋升、不作为后续父。
+
+[移动v1完整失败与计数缺陷](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_walk_run_commands_001/completion.json) · [修复v2完整收据](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_walk_run_commands_002/completion.json) · [实际走跑/切换失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_native_walk_run_commands_002/actual_walk_run_failure.mp4)。
 
 [尾段完整报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/diagnosis.md) · [Critic预热报告](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_value_warmup_001/diagnosis.md) · [实际尾段/四方向失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/actual_tail_course_comparison.mp4) · [预热实际录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_value_warmup_001/actual_valuewarm_comparison.mp4) · [联合唯一账本](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_recovery_state_course_001/resource_ledger.json)。冻结payload/manifest见两目录；完整资格均未通过。
 
@@ -116,7 +134,7 @@
 
 | 主线 | 最终行为 |
 | --- | --- |
-| 移动 | 站稳，前后、横移、转向、启停；通过室内接缝、低障碍、缓坡和小台阶 |
+| 移动 | 站稳；前进走路0.4m/s、跑步0.7m/s与Shift切换；后退、横移、转向、启停；通过室内接缝、低障碍、缓坡和小台阶 |
 | 跌倒恢复 | 前倒、后倒、左右侧倒、真实扰动跌倒中自主起身，站稳后继续移动 |
 | 拾物 | 用户在 Bevy 选定物体，接近、弯腰用嘴叼起、站直、携带、放到指定位置 |
 
@@ -177,7 +195,7 @@ Rapier 的 `num_solver_iterations=1`、每体 `additional_solver_iterations=0`�
 | --- | --- | --- |
 | M0 物理接入 | M0-S：统一 MJCF、原生源端逐轴／嘴／足底／接触短检查；M0-T：目标端同版本复核 | 分别报告源／目标资格；整体 M0 仍要求同版本两侧通过 |
 | M1 链路 | 优先锁源端依赖、小 batch GPU rollout、一次真实 PPO 更新、复载与 ONNX 对照；目标 batch 后续按需要接入 | 源端物理已通过，真实积分和优化器更新、有限数值与完整收据；目标资格单列 |
-| M2 平地 | 站立→低速前后→横移→转向→启停反向→混合指令 | 独立移动验收，首个可操作 Bevy 候选 |
+| M2 平地 | 站立→低速前后→横移→转向→启停反向→走路0.4/跑步0.7与切换→混合指令 | 两档持续速度、切换和独立移动验收；首个可操作 Bevy 候选 |
 | M3 恢复 | 四类倒地→随机初态→真实扰动→继续移动 | 完整链通过，自然跌倒与直接倒地分别报告 |
 | M4 地形 | 5/10/20 mm、正反缓坡、小台阶、方向变化与停止 | 各档达标，终点稳定 |
 | M5 拾物 | 空载探地→近夹取→三重量→随机位置→运输转向→放置 | 各重量完整物体任务通过 |
@@ -198,8 +216,8 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 | 物理 | 20 冷重置、逐轴/脚底/嘴部，无非有限状态、警告、异常能量增长或穿透逃逸；实际 dt 与次数符合 50 Hz |
 | 电脑刚性足底 | 原生接触、真实支撑面和滑移／穿透结果；取消软底压缩、曲线及行程验收前置条件 |
 | 站立 | 60 秒无跌倒，漂移≤5 cm |
-| 移动 | 前进0.3、后退0.15、横移0.1 m/s、转向0.6 rad/s；200独立案例整体≥95% |
-| 输入停止 | 短长按、松键、反向、失焦、暂停恢复；停止1秒内≤0.04 m/s，随后3秒漂移≤5 cm |
+| 移动 | 前进走路0.4、跑步0.7、后退0.15、横移0.1 m/s、转向0.6 rad/s与左右±π掉头；200独立案例整体≥95%，两档及切换分别报告；稳定前进段≥20秒，实际COM前进均速分别≥0.4/0.7m/s，同时报告速度分布、位移、路径/航向和步态，不用指令/峰值代替 |
+| 输入停止 | 短长按、Shift先/W先、单独Shift、走↔跑重复切换、两档带转向、转向中松Shift、松W、反向、失焦、暂停恢复；停止1秒内≤0.04 m/s，随后3秒漂移≤5 cm；切换保全实际姿态/驱动/动作历史，不靠重置过关 |
 | 地形 | 5/10/20 mm、±5°坡、20 mm台阶，每类≥50例、≥90%；不授予连续楼梯资格 |
 | 恢复 | 四方向各50例，10秒起身、稳定3秒、再移动1 m；整体≥95%、每类≥90%；真实扰动另测 |
 | 拾物 | 三重量、圆柱夹持段/带把手物体；底部离地≥80 mm、保持5秒、携带2 m并转向、放置误差≤100 mm；每重量≥60例、≥90% |
@@ -214,15 +232,15 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 每轮：**单一可检验问题→冻结版本与指标→短对照→≤两小时训练→独立评估→晋升或保留失败。**
 
 - 首轮5–15分钟 pilot 测吞吐、内存和接触容量，再定 batch/更新；记录真实物理样本、优化器更新和资源消耗。
-- 当前用户已明确G1暂停且禁止跨agent通信：GPU前仅检查实际占用，不发协调消息、不停止他人进程。后续人类新指令才能恢复跨聊天协调。
+- 当前用户已明确G1暂停且禁止主动联系其他聊天：GPU前仅检查实际占用，不发G1/硬件协调消息、不停止他人进程。最新人类要求本聊天移动/恢复并行，能力子agent只做必要的内部排期/交付，GPU串行；不得把它误解为禁止当前已授权的能力并行。
 - 两次受控实验无改善就回查物理、初态、观测、终止和奖励分项，避免局部死循环。
 - 保存模型/合同/代码/依赖/配置/seed/策略哈希；候选显式指定，不用 latest。M0-S 和源 GPU 链路未过禁止源端长训，M0-T 未过禁止目标训练；数值/约束/容量异常停止该批。
 - 每关交付通过/失败/适用范围、录像、算力和下一实验，基于真实吞吐滚动估时。
-- 当前实施聊天的 `Goose ProjectManager` heartbeat 每两小时检查产出与主线进度，不新建聊天。原用户授权的 `bevy_performance` 子 agent 当前闲置，不按历史周期自动启动。最新人类允许能力并行，当前两只有界审查子agent已收口，其余不自动唤醒。性能工作不得改碰撞形状／过滤、求解配置、物理参数或观测／动作合同来凑速度。
+- 当前实施聊天的 `Goose ProjectManager` heartbeat 每两小时检查产出与主线进度，不新建聊天。原用户授权的 `bevy_performance` 子 agent 当前闲置，不按历史周期自动启动。最新人类要求移动/恢复持续并行：root负责恢复、既有bevy_feasibility负责移动/转向，其他闲置agent不自动唤醒。性能工作不得改碰撞形状／过滤、求解配置、物理参数或观测／动作合同来凑速度。
 
 已实际启动源端有界PPO，当前结果以页面顶部最新检查点为准。最早M0产物归档 `/home/ethan/ProjectBackups/2026-10-02/Sai_Lab/goose_50hz_m0_001/`；本页为唯一计划和状态入口。最终交付冻结策略、本体/合同、Bevy包、复现命令、三主线报告及未通过清单。制造/电气/实物载荷仍由机器人工程侧维护；仿真资格不自动等于实物资格。
 
-完成当前可行性诊断后，长期路线仍为**统一MJCF／冻结碰撞代理 → 原生源端准入 → 成熟小批量PPO与导出 → 站立／移动／恢复源策略 → 目标迁移**。当前不唤醒Bevy性能agent或并发训练。每周期只选能解锁下一阶段的一个问题；局部实验达到诊断目的即收口，连续两次无改善就回到模型或成熟流程，不追加求解器分支。历史检查点中的“下一批”只记录当时决定，以本页顶部现行任务为准。
+完成当前可行性诊断后，长期路线仍为**统一MJCF／冻结碰撞代理 → 原生源端准入 → 成熟小批量PPO与导出 → 站立／移动／恢复源策略 → 目标迁移**。当前不唤醒Bevy性能agent；移动/恢复准备与评估并行，GPU有界串行。每条能力线每周期只选能解锁下一阶段的一个问题；局部实验达到诊断目的即收口，连续两次无改善就回到模型或成熟流程，不追加求解器分支。历史检查点中的“下一批”只记录当时决定，以本页顶部现行任务为准。
 
 现行首要工作以页面顶部为准；不重新启动已收口的300Actor/投影参考配置或扩大局部搜索。源/目标/正式三主线资格仍分别报告，完整目标未达。
 

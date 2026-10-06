@@ -1,0 +1,125 @@
+"""Reference playback cannot teleport physics or advance on partial reset."""
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+from bevy_microduck_tools.goose.native_tracking import (
+    AdmittedColdMotionCommand, GooseDevelopmentEnv, NativeTrackingColdResetEnv,
+    MotionCommand, ReadOnlyMotionCommand,
+)
+
+
+def command_fixture():
+    term = object.__new__(ReadOnlyMotionCommand)
+    drive = SimpleNamespace(completed_ticks=torch.tensor([0, 12]), _pending_action=None)
+    term._env = SimpleNamespace(action_manager=SimpleNamespace(
+        get_term=lambda _: SimpleNamespace(drive=drive)))
+    term.cfg = SimpleNamespace(sampling_mode="start")
+    term.motion = SimpleNamespace(time_step_total=627)
+    term.time_steps = torch.tensor([0, 13])
+    term.update_relative_body_poses = lambda: None
+    return term, drive
+
+
+def test_cold_subset_reset_does_not_advance_running_reference():
+    term, _ = command_fixture()
+    term._resample_command(torch.tensor([0]))
+    term.compute(0.)
+    assert term.time_steps.tolist() == [1, 13]
+    with pytest.raises(RuntimeError, match="genuine cold"):
+        term._resample_command(torch.tensor([1]))
+    assert term.time_steps.tolist() == [1, 13]
+
+
+def test_end_of_clip_holds_without_resampling_or_state_write():
+    term, _ = command_fixture()
+    term.time_steps[:] = torch.tensor([625, 626])
+    term._resample_command = lambda _: pytest.fail("Clip end attempted a reset")
+    for _ in range(3):
+        term._update_command()
+    assert term.time_steps.tolist() == [626, 626]
+    for operation in (term._write_reference_state_to_sim, term.reset_to_frame):
+        with pytest.raises(RuntimeError, match="actual robot state"):
+            operation()
+    assert term.time_steps.tolist() == [626, 626]
+
+
+def test_pending_tick_and_non20ms_reference_updates_are_rejected():
+    term, drive = command_fixture()
+    drive._pending_action = torch.zeros((2, 18))
+    with pytest.raises(RuntimeError, match="genuine cold"):
+        term._resample_command(torch.tensor([0]))
+    for dt in (.005, .01, .04):
+        with pytest.raises(ValueError, match="20ms"):
+            term.compute(dt)
+    assert term.time_steps.tolist() == [0, 13]
+
+
+def admitted_fixture():
+    term, drive = command_fixture()
+    term.__class__ = AdmittedColdMotionCommand
+    term.cfg = SimpleNamespace(sampling_mode="adaptive", adaptive_alpha=.001)
+    term._env._reference_birth_ids = None
+    term.eligible_frames = torch.tensor([15, 19, 426, 626])
+    term.birth_proposal = torch.zeros(2, dtype=torch.long)
+    return term, drive
+
+
+def test_adaptive_native_proposals_map_only_to_admitted_births(monkeypatch):
+    term, _ = admitted_fixture()
+    def proposals(command, ids):
+        command.time_steps[ids] = torch.tensor([17, 625])
+    monkeypatch.setattr(MotionCommand, "_adaptive_sampling", proposals)
+    term._adaptive_sampling(torch.tensor([0, 1]))
+    assert term.birth_proposal.tolist() == [17, 625]
+    assert term.time_steps.tolist() == [15, 626]  # Earlier frame wins a tie.
+
+
+def test_reference_state_restart_outside_selected_cold_reset_is_rejected(monkeypatch):
+    term, drive = admitted_fixture()
+    monkeypatch.setattr(MotionCommand, "_resample_command",
+                        lambda *args: pytest.fail("Attempted running state write"))
+    with pytest.raises(RuntimeError, match="genuine cold"):
+        term._resample_command(torch.tensor([0]))
+    term._env._reference_birth_ids = torch.tensor([0])
+    drive.completed_ticks[:] = 0
+    with pytest.raises(RuntimeError, match="genuine cold"):
+        term._resample_command(torch.tensor([1]))
+    drive._pending_action = torch.zeros((2, 18))
+    with pytest.raises(RuntimeError, match="genuine cold"):
+        term._resample_command(torch.tensor([0]))
+
+
+def test_invalid_birth_joint_is_rejected_before_native_projection(monkeypatch):
+    term, _ = admitted_fixture()
+    term._env._reference_birth_ids = torch.tensor([0])
+    term.robot = SimpleNamespace(data=SimpleNamespace(
+        soft_joint_pos_limits=torch.tensor([[[-1., 1.]], [[-1., 1.]]])))
+    monkeypatch.setattr(MotionCommand, "_write_reference_state_to_sim",
+                        lambda *args: pytest.fail("Native writer would project joint"))
+    root = torch.zeros((1, 3))
+    with pytest.raises(RuntimeError, match="joint projection"):
+        term._write_reference_state_to_sim(torch.tensor([0]), root,
+            torch.tensor([[1., 0., 0., 0.]]), root, root,
+            torch.tensor([[1.01]]), torch.zeros((1, 1)))
+
+
+def test_failed_cold_reset_cannot_leave_reference_writes_authorized(monkeypatch):
+    class ResetFixture(NativeTrackingColdResetEnv):
+        @property
+        def num_envs(self):
+            return 2
+
+        @property
+        def device(self):
+            return "cpu"
+
+    env = object.__new__(ResetFixture)
+    def fail_reset(self, **kwargs):
+        assert self._reference_birth_ids.tolist() == [0]
+        raise ValueError("Preserve failed cold reset")
+    monkeypatch.setattr(GooseDevelopmentEnv, "reset", fail_reset)
+    with pytest.raises(ValueError, match="Preserve failed"):
+        env.reset(env_ids=torch.tensor([0]))
+    assert env._reference_birth_ids is None

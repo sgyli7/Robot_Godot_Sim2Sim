@@ -8,6 +8,7 @@ mapping, without changing reward functions or weights.
 import copy
 from types import SimpleNamespace
 
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -15,6 +16,7 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import BuiltinSensorCfg, ContactMatch, ContactSensorCfg, ObjRef
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity
+from mjlab.tasks.velocity.mdp.curriculums import commands_vel
 from mjlab.tasks.velocity.mdp.velocity_command import UniformVelocityCommandCfg
 
 from .artifacts import JOINT_ORDER
@@ -26,6 +28,7 @@ from .source_training import commanded_observation, critic_motion_state
 
 REVISION = "goose_native_velocity_resume_v1"
 FORWARD_SCALE_REVISION = "goose_native_forward_tolerance_scale_v1"
+WALK_RUN_REVISION = "goose_native_walk_run_commands_v2"
 
 
 def track_root_com_linear_velocity(env, **kwargs):
@@ -125,4 +128,36 @@ def make_native_forward_scale_cfg(model_path, contract_path, *, num_envs=256,
         if source_speed != 1.:
             raise ValueError("Frozen upstream characteristic command speed changed")
         cfg.rewards["track_linear_velocity"].params["std"] *= .06/source_speed
+    return cfg
+
+
+def make_native_walk_run_cfg(model_path, contract_path, *, course_start_step,
+                             num_envs=256, seed=127,
+                             development_initial_qpos=None):
+    """Expose standing, .4m/s walking and .7m/s running with native commands.
+
+    The fixed pilot schedule expands command exposure, not earned capability.
+    Keep the original14 reward functions/weights/tolerances and native50Hz
+    drive. UniformVelocityCommand resamples commands without writing actual
+    robot state; directions and stops remain in the public three slots.
+
+    Pass the checkpoint's env_state.common_step_counter when resuming, or0
+    for fresh training. Mjlab restores that clock on load: an absolute4608
+    threshold otherwise skips the walking stage of an already trained actor.
+    """
+    if (isinstance(course_start_step, bool)
+            or not isinstance(course_start_step, int) or course_start_step < 0):
+        raise ValueError("Course start must match the nonnegative restored step clock")
+    cfg = make_native_velocity_cfg(model_path, contract_path, num_envs=num_envs,
+        seed=seed, development_initial_qpos=development_initial_qpos)
+    command = cfg.commands["velocity"]
+    command.ranges.lin_vel_x = (0., .4)
+    command.rel_standing_envs = .2
+    cfg.curriculum = {"walk_run_commands": CurriculumTermCfg(
+        func=commands_vel, params={"command_name": "velocity", "velocity_stages": [
+            {"step": course_start_step, "lin_vel_x": (0., .4), "lin_vel_y": (-.1, .1),
+             "ang_vel_z": (-.6, .6)},
+            {"step": course_start_step+192*24, "lin_vel_x": (-.15, .7), "lin_vel_y": (-.1, .1),
+             "ang_vel_z": (-.6, .6)},
+        ]})}
     return cfg

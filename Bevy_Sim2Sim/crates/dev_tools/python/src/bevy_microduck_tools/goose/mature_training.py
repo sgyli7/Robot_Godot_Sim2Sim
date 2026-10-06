@@ -14,8 +14,34 @@ from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 
 from .foot_curriculum import make_rigid_motion_course_cfg, rigid_contact_limit_exceeded
 from .source_training import commanded_observation, critic_motion_state
+from .artifacts import JOINT_ORDER
 
 REVISION = "goose_mature_humanoid_ppo_v1"
+
+
+def native_physical_action_std(contract):
+    """Convert pinned G1's .25*effort/stiffness radians to public Goose units.
+
+    This initializes a named experiment's native learnable Gaussian only.
+    It neither changes position-target semantics nor claims equivalent dynamic
+    exploration: slew, gravity, inertia, braking and contact still apply. The
+    original physical driver and every deterministic policy output stay intact.
+    """
+    joints = contract["joints"]
+    if (contract["joint_order"] != list(JOINT_ORDER)
+            or [joint["name"] for joint in joints] != list(JOINT_ORDER)):
+        raise ValueError("Physical action units require the original18-axis order")
+    result = []
+    for joint in joints:
+        peak, kp, scale = (float(joint[field]) for field in
+            ("torque_peak_limit_nm", "kp_nm_rad", "action_scale_rad"))
+        if any(not isfinite(value) or value <= 0 for value in (peak, kp, scale)):
+            raise ValueError("Physical action units require positive finite SI values")
+        std = .25*peak/(kp*scale)
+        if not isfinite(std) or std <= 0:
+            raise ValueError("Physical action units are outside a finite positive std")
+        result.append(std)
+    return tuple(result)
 
 
 def load_mature_checkpoint(runner, checkpoint_path, **load_kwargs):

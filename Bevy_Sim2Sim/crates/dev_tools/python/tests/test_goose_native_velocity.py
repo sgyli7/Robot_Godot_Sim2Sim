@@ -3,11 +3,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+import pytest
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity
 
 from bevy_microduck_tools.goose.native_velocity import (
-    make_native_velocity_cfg, track_root_com_linear_velocity)
+    make_native_velocity_cfg, make_native_walk_run_cfg, track_root_com_linear_velocity)
 
 
 def test_native_rewards_are_not_replaced_by_the_legacy_guidance(monkeypatch):
@@ -69,3 +70,41 @@ def test_com_point_adapter_uses_the_original_reward_including_vertical_velocity(
         track_linear_velocity(expected, std=.5, command_name="velocity"), atol=0, rtol=0)
     assert torch.equal(data.root_link_lin_vel_b, before[0])
     assert torch.equal(data.root_com_lin_vel_b, before[1])
+
+
+@pytest.mark.parametrize("course_start_step", [0, 512*24])
+def test_walk_run_course_uses_native_schedule_without_changing_rewards(
+        monkeypatch, course_start_step):
+    import bevy_microduck_tools.goose.native_velocity as module
+    cfg = SimpleNamespace(observations={"actor": SimpleNamespace(
+        terms={"base": SimpleNamespace(func=None)})}, scene=SimpleNamespace(sensors=()),
+        metrics={})
+    monkeypatch.setattr(module, "make_development_env_cfg", lambda *a, **kw: cfg)
+    monkeypatch.setattr(module, "add_foot_sensors", lambda c, p: c)
+    actual = make_native_walk_run_cfg(Path("unused.xml"), Path("unused.json"),
+        course_start_step=course_start_step)
+    stock = unitree_g1_flat_env_cfg()
+    for name, term in actual.rewards.items():
+        assert term.weight == stock.rewards[name].weight
+        expected = (track_root_com_linear_velocity if name == "track_linear_velocity"
+            else stock.rewards[name].func)
+        assert term.func is expected
+        if "std" in term.params:
+            assert term.params["std"] == stock.rewards[name].params["std"]
+    command = actual.commands["velocity"]
+    assert command.init_velocity_prob == 0.
+    assert command.rel_standing_envs == .2
+    curriculum = actual.curriculum["walk_run_commands"]
+    term = SimpleNamespace(cfg=command)
+    env = SimpleNamespace(common_step_counter=course_start_step,
+        command_manager=SimpleNamespace(get_term=lambda _: term))
+    curriculum.func(env, None, **curriculum.params)
+    assert command.ranges.lin_vel_x == (0., .4)
+    env.common_step_counter = course_start_step+192*24-1
+    curriculum.func(env, None, **curriculum.params)
+    assert command.ranges.lin_vel_x == (0., .4)
+    env.common_step_counter += 1
+    curriculum.func(env, None, **curriculum.params)
+    assert command.ranges.lin_vel_x == (-.15, .7)
+    assert command.ranges.lin_vel_y == (-.1, .1)
+    assert command.ranges.ang_vel_z == (-.6, .6)
