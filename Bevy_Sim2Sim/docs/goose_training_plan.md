@@ -2,34 +2,35 @@
 
 版本：2026-10-06。实施分支：`codex/goose50_training`。
 
-**现行人类指令：先确定起身失败责任，不盲目续训。** 主实施独立负责，不联系、读取或监控硬件／暂停G1，不新建聊天／PM，不派或唤醒agent。当前全部运行已退出，无后台PPO；十小时目标已超期，完整移动与恢复未交付，目标不缩小。临时代码、模型、依赖、轨迹、日志、收据、录像、构建与快照落ProjectBackups；生产仅对应crate，本文是指定唯一入口。
+**现行人类指令：先确定起身失败责任，不盲目续训。** 主实施独立负责，不联系、读取或监控硬件／暂停G1，不派或唤醒agent/Grok，不新建聊天／PM。当前所有运行已退出，无后台训练；十小时目标已超期，完整移动与恢复仍未交付，目标不缩小。临时代码、模型、依赖、轨迹、日志、收据、录像、构建与快照落ProjectBackups；生产仅对应crate，本文为指定唯一入口。
 
-**冻结输入：** `goose_task_proxy_11_rigid_braking_v1`，21机器人刚体／18实际电机／2被动轴／11叶／10.430690821kg，公共65→18，拾物82→18。9凸网格＋2原生刚性足box实际接触，足box遗漏原鞋44.76%上部体积，不继承完整鞋/实物资格。质量/COM/惯量/轴位/嘴四杆/过滤/速度/力矩/热/350W保留；每Tick一次真实20ms驱动/积分/当前Actor更新、decimation1，无隐藏子步、出生后实际root/q/qd/驱动/历史状态写入。旧软底不阻挡电脑训练。
+**冻结输入：** `goose_task_proxy_11_rigid_braking_v1`，21机器人刚体／18实际电机／2被动轴／11叶／10.430690821kg，公共65→18，拾物82→18。9凸网格＋2原生刚性足box，足box遗漏原鞋44.76%上部体积，不继承完整鞋／实物资格。质量/COM/惯量/轴位/嘴四杆/过滤/速度/力矩/热/350W保留；每Tick一次真实20ms驱动/积分/当前Actor更新、decimation1，无隐藏子步／出生后实际root/q/qd/驱动/历史写入。电脑训练不再考虑软底。
 
-**当前可定责任与边界：**
+**当前归因：先修Lab的任务／参考与初始化；不能把失败判成PPO不适用或硬件绝对不能起身。** 已证实采样、初始化及任务适配问题；原结构完整合法动态通路仍未认证，既不宣称一定可行，也不宣称一定不可行。暂无新增硬件需求／改动。
 
-| 问题 | 可复核结论 |
+| 问题 | 可复核证据与边界 |
 | --- | --- |
-| 当前策略失败 | 原434更新Actor四方向650Tick稳定保持全0，末段脚仅承重15.67%、脚底倒置。发现成功信号假阳性和工作流适配由Lab负责，不以奖励/loss晋升 |
-| 网络/优化器没运行 | 历史及本次真实GPU、参数变化、Adam和ONNX有收据。本次2PPO/40Adam，输出差7.45e−9；排除这类接线未执行，不能推断任务正确/收敛 |
-| 是否结构连站立都不允许 | CPU20冷重置＋60秒独立逐值通过；GPU8世界48000积分同合同通过，穿入1.826624mm、COM漂移4.630066mm。18轴/真实嘴输入四杆576GPU通过；只是名义源数值和接线子门 |
-| 冷目标时序 | 同机械初态和626动作，仅冷目标中性→实测，全程19.12→10.10mm穿入，独立逐值复现；属于Lab初始化责任。仍未达到5mm恢复资格 |
-| 原结构全程动态可行性 | 原开发路径626Tick、self0、末150Tick双脚正确承托，但全程10.10mm穿入/关节软限位越界，不能当合法教师，也不能当结构全局不可能证明。暂无必须改硬件证据 |
-| 这次真正采样瓶颈 | 3072样本1266终止，完整片段平均2.383Tick、中位2、95分位4、最大12，远短于627帧参考。独立同出生零动作/实测目标保持25Tick≤0.7mm；新ONNX第4Tick上嘴壳穿入26.37mm/self0，CPU/GPU同处失败，深度差0.000149mm。该次由策略输出触发，不能归因一出生就无法稳定或GPU差异 |
+| 策略是否学会 | 原434更新Actor脚底倒置/足承重15.67%，新300更新Actor独立四方向各650Tick正确稳定保持全0。脚／身体真实结果判失败，reward不晋升 |
+| 训练是否真正执行 | 本轮302PPO/6104Adam/463884真实GPU积分；300更新pilot单批实际端到端257.785秒，参数改变，900ONNX对照最大9.54e−7。排除只初始化、优化器不执行；不能推断收敛 |
+| Lab过早终止 | 同模型/drive/奖励/seed113/64世界/2更新，3072样本原5mm普通终止1266次；具名原生50mm开发逃逸只有9次。作者跟踪没有该5mm普通终止。正式独立5mm资格不变 |
+| 修正采样是否就解决 | 300更新2079完整片段平均218.48Tick、中位228、最大259，0段到627帧末端，保持全0。该配置停止续训，不能再用更多更新解释问题 |
+| 具体卡在哪 | 保存终止状态独立private FK：2078头高误差/1原生逃逸，速度/机身高度失败0；后段中位Tick230，实际头高6.74cm、参考16.27cm、up−0.241。从趴地支撑抬升到双脚承重阶段没有跟上参考 |
+| 成熟函数的适用边界 | HumanUP原AST/权重与聚合通过，最大聚合差5.96e−8；未改函数对正反足底orientation损失都0。直接函数移植不等于有效动作参考＋历史＋初态/课程完整工作流，不据此编造新权重 |
+| 结构能否支撑站立 | 原CPU20冷重置＋60秒及GPU8世界48000积分通过，穿入1.826624mm、漂移4.630066mm；18轴/真实嘴四杆576GPU通过，只是名义源数值/接线子门 |
+| 原结构动态可行性 | 原开发626Tick路径self0、末150Tick真双脚支撑，但全程10.10mm穿入/实际软限位越界；不是合格教师，也不是结构全局不可能证明 |
+| 冷目标/离线拟合 | 旧同初态626动作冷目标中性→实测，19.12→10.10mm，仍失败。安装版RSL原Distillation64Adam拟合264倍改善，但CPU/GPU第4Tick左脚9.62mm失败；该初始化族关闭，未用于300更新pilot |
 
-**本轮已完成实现：** 薄适配`crates/dev_tools/python/src/bevy_microduck_tools/goose/recovery_tracking.py`，复用原mjlab/Warp/RSL环境/drive，按SHA加载作者原奖励AST与权重，23语义槽映射18真实轴、空轴0；10项必要测试通过。冷目标按原范围夹紧实测关节、历史动作0；参考帧浮点往返修正；私有FK读积分后的COM/几何；实际本Tick接触与电机力在forward/commit前捕获，嘴能量用真实转子速度。Actor65不新增参考/时间/负载；Critic92额外27私有值。627×18开发参考做原公开范围/20ms限速确定性投影，最大修正0.08258rad，0积分且不是合格动力学路线/教师。
+**正式独立失败：** 新Actor原前/后/左/右出生、无自动reset／辅助姿态、各13秒；峰值地面24.39/15.29/20.78/17.68mm，self29.57/36.05/28.24/30.32mm，稳定0。最深self是躯干—嘴/头，另有躯干—胫部；实际软限位越界最大0.1284/0.1936/0.1592/0.2716rad均jaw轴5。后倒一度up0.9997但无正确脚承重，不判起身。训练仅前倒，其他方向是泛化取证，不称已训练完整四方向。
 
-**成熟方案边界：** HumanUP是发现→受约束跟踪，原函数/权重移植不等于复现完整训练。[作者实现](https://github.com/RunpeiDong/HumanUP)、[论文](https://arxiv.org/abs/2502.12152)。当前名义小链路固定原前倒出生、无DR/随机初态、正则比例1；作者还有初态分布/历史/课程。作者reset随机的是`facingup_poses.npy`并将phase归0，不误说成随机参考中间帧，其root抬升和隐藏reset积分不照搬。此前Lab“先有全程合格教师才允许受约束跟踪”的循环条件仍撤回；正式5mm/self/驱动/50Hz门槛不降。
+**已修生产薄适配：** `crates/dev_tools/python/src/bevy_microduck_tools/goose/recovery_tracking.py` v2，普通训练默认具名`native_escape50`，可显式选择`qualification5`；原5mm普通训练条件是Lab自加采样错误，前版“不能解除它”的发展约束撤回。保持独立正式5mm/self/轴范围/驱动/50Hz资格。反例回归先失败，修正后11项通过；不改本体/碰撞/求解器/65→18。原作者AST/23语义映射18实轴、实际本Tick接触/力矩捕获、私有完成状态FK、冷目标实测夹紧、历史0、Critic92私有27仍保留。开发参考627×18按原范围/20ms限速投影，不是合格动力学路线/教师；不注入root/q/qd。
 
-**唯一下一问题：** 对照作者跟踪的初始化/历史/课程实际接线，确定保留65→18与原机械边界的成熟适配，先验证能产生覆盖起身阶段的有效训练片段，再给一个预冻结问题的有界pilot。不追加长训、奖励/噪声/seed/solver/积分器网格，不用改变验收出生、抬root、隐藏积分或放宽穿入换片段长度。源数值与真实小GPU/PPO链路已经通过，不代表恢复接触域/完整M0-S通过；源长训须满足相应源门槛，M0-T未过不目标训练/授予Bevy资格。完整合法动态路径仍是实际评估输出，不要求它已存在才能做具名受约束开发。
+**唯一下一问题：** 只验证前倒从趴地支撑抬升、转向双脚承重的参考阶段，在原轴限位／真实接触下是否可执行，并核对头高参考映射。以当前已保存的终止状态／原路径分段证据为入口；先解释具体参考/跟踪失败，停止这组配置的PPO续训。不重开静态/局部/保持平滑/MPPI/KMPPI/kernel/SLSQP/solver/margin/积分器/seed/噪声/权重网格。必须有具体受限阶段及同初态对照，才能提出具名几何微调；当前不全面改硬件。不会要求先有完整合格教师才能做所有开发诊断，但也不以未认证参考或离线拟合分数自证长期训练有效。
 
-**新收据：** 本轮2627CPU＋51652GPU＋2PPO/40Adam＋19ONNX调用；含常规失败及独立复现，不重复计此前32618/3772/171524CPU。参考/FK/公式/统计/渲染0积分。首次初态诊断终止后被原manual-reset guard拒绝，没有绕过或新增积分；修正为首个正式终止即停止，独立完整失败轨迹已保存。未启动5–15分钟pilot或长训，无硬件改动/跨agent沟通，其他GPU进程保留。
+**成熟方案与资格：** 继续统一MJCF、原生MuJoCo、MicroDuck组织、mjlab/Warp/RSL-RL，不重造训练框架。[HumanUP作者实现](https://github.com/RunpeiDong/HumanUP)、[论文](https://arxiv.org/abs/2502.12152)。作者reset随机的是倒地初态库并将phase归0，不误称随机参考中间帧，不照搬root抬升/隐藏reset积分。源数值与小GPU/PPO链路通过不代表恢复接触域／完整M0-S通过，源长训须相应源门槛；M0-T未过不目标训练或授予Bevy资格。移动全指令、四方向/自然跌倒、3秒保持、恢复后1m、Bevy分别独立验收，全部达标才完成。
 
-[当前归因报告与同状态图](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_humanup_tracking_001/diagnosis.md) · [GPU站立准入](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_humanup_tracking_001/GPU_admission/receipt.json) · [真实PPO/导出](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_humanup_tracking_001/PPO_chain/receipt.json) · [独立CPU失败与对照](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_humanup_tracking_001/entry_audit_v2/cpu_receipt.json) · [冷目标独立因果](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_cold_reset_audit_001/diagnosis.md) · [原模型全程开发录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_kernel_native_trajectory_001/native_getup_comparison.mp4)。历史报告/下一项保留，不覆盖本顶部派工。
+**新收据：** 本轮2612CPU＋463884GPU＋302PPO/6104Adam＋3520ONNX＋1真实Distillation更新；FK/参考/公式/统计/测试/渲染0积分。routine constructor/Path失败0积分0Adam，最初constructor误填Distillation1在账本注明实际0，原证据保留。前一轮2627CPU／51652GPU及历史路径不重复计。所有运行退出，其他GPU进程保留，无跨agent沟通。
 
-**不重开的已闭族：** 原静态/边/事件速度、局部接触、保持/65Tick平滑入场、MPPI/KMPPI/kernel、SLSQP两轮生命周期、gap/margin/solver/积分器。局部搜索失败/迭代上限不是结构不可行证书；名义PD线性代数没证明原驱动发散。必要结构问题由本聊天具名微调并留同状态对照，交付时统一记录，不主动找硬件。
-
-**最终资格仍未交付：** 完整前后/横移/转向/启停、四方向/自然跌倒、恢复后1m、Bevy分别独立报告；全过才完成。未合格参考、名义站立、GPU运行和优化器更新均不替代能力验收。
+[完整归因／下一阶段边界](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_termination_admission_001/diagnosis.md) · [四方向真实失败录像](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_termination_admission_001/four_direction_failure.mp4) · [独立评估收据](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_termination_admission_001/independent_native_evaluation/receipt.json) · [实际终止归因](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_termination_admission_001/terminal_cause_audit.json) · [资源账本](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_tracking_termination_admission_001/resource_ledger.json) · [旧名义源门](/home/ethan/ProjectBackups/2026-10-06/Sai_Lab/goose_humanup_tracking_001/GPU_admission/receipt.json)。历史下一项不覆盖本顶部派工。
 
 ## 1. 目标与当前基线
 
@@ -145,4 +146,4 @@ M2/M3 共享站立基础并行；M4 需要稳定移动与恢复；拾物可达�
 
 完成当前可行性诊断后，长期路线仍为**统一MJCF／冻结碰撞代理 → 原生源端准入 → 成熟小批量PPO与导出 → 站立／移动／恢复源策略 → 目标迁移**。当前不唤醒Bevy性能agent或并发训练。每周期只选能解锁下一阶段的一个问题；局部实验达到诊断目的即收口，连续两次无改善就回到模型或成熟流程，不追加求解器分支。历史检查点中的“下一批”只记录当时决定，以本页顶部现行任务为准。
 
-现行首要工作为顶部指定的**跟踪初始化／历史／课程接线与有效训练片段覆盖**。本轮名义源数值、GPU和真实小PPO/ONNX链路已通过，早期接触域仍失败，不追加长训；50Hz、真实接触、嘴机制及正式指标不变。下一有界pilot须针对冻结问题并独立评价，不把开发参考或训练重置当资格。
+现行首要工作为顶部指定的**前倒从趴地支撑抬升到双脚承重的参考可执行性／头高映射**。名义源数值和真实小GPU/PPO链路已通过，300更新pilot独立恢复仍全失败，停止该配置续训；50Hz、真实接触、嘴机制及正式指标不变，不把开发参考、训练重置或拟合分数当资格。

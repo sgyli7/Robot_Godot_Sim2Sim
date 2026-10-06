@@ -29,7 +29,7 @@ from .mjlab_env import (
 from .native_geometry import collision_geom_vertices
 from .source_training import episode_timeout
 
-REVISION = "goose_humanup_constrained_tracking_v1"
+REVISION = "goose_humanup_constrained_tracking_v2"
 CONTACT_SENSOR = "goose_tracking_ground"
 # Author: left leg6, right leg6, waist3, upper8. Unused coordinates are zero;
 # the18 real coordinates retain their original meaning, limits and units.
@@ -282,8 +282,14 @@ def reward(env, name):
     return getattr(ctx, "_reward_"+name)()
 
 
-def contact_failure(env):
-    return snapshot(env).depth > .005
+def contact_failure(env, depth_limit_m=.05):
+    """Ordinary native training escape, separate from formal qualification.
+
+    The original50mm runtime escape permits diagnostic recovery sampling.
+    An independent evaluator still rejects any path breaching5mm. Applying
+    that formal verdict here erased almost every episode after2–4Ticks.
+    """
+    return snapshot(env).depth > depth_limit_m
 
 
 def tracking_failure(env):
@@ -324,12 +330,17 @@ def make_tracking_cfg(model_path, contract_path, reference_path, reference_sha25
                       author_path, author_sha256, author_config_path,
                       author_config_sha256, author_base_path, author_base_sha256,
                       *, initial_qpos, num_envs=16, seed=113,
-                      align_cold_target=True):
+                      align_cold_target=True,
+                      contact_termination_profile="native_escape50"):
     """Fixed original birth; no random state injection or reference root writes.
 
     Single nominal pilot freezes regularization1 and disables domain
     randomization/RSI. This is a declared Goose adaptation, not full HumanUP.
+    Named development termination never grants independent qualification.
     """
+    thresholds = {"native_escape50": .05, "qualification5": .005}
+    if contact_termination_profile not in thresholds:
+        raise ValueError("Explicit named contact termination profile required")
     _, weights = load_author(author_path, author_sha256,
         author_config_path, author_config_sha256, author_base_path, author_base_sha256)
     cfg = make_development_env_cfg(model_path, contract_path, num_envs=num_envs,
@@ -354,7 +365,8 @@ def make_tracking_cfg(model_path, contract_path, reference_path, reference_sha25
     cfg.rewards = {name: RewardTermCfg(func=reward, weight=weight, params={"name": name})
                    for name, weight in weights.items()}
     cfg.terminations = {"time_out": TerminationTermCfg(func=episode_timeout, time_out=True),
-        "contact_failure": TerminationTermCfg(func=contact_failure),
+        "contact_failure": TerminationTermCfg(func=contact_failure,
+            params={"depth_limit_m": thresholds[contact_termination_profile]}),
         "tracking_failure": TerminationTermCfg(func=tracking_failure)}
     cfg.events["tracking_hold"] = EventTermCfg(func=record_hold, mode="step")
     cfg.metrics["tracking_depth"] = MetricsTermCfg(func=lambda env: snapshot(env).depth)

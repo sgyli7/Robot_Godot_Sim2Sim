@@ -8,7 +8,19 @@ import torch
 
 from bevy_microduck_tools.goose.artifacts import sha256
 from bevy_microduck_tools.goose.recovery_tracking import (
-    canonical, load_author, qualified_support, reference_phase)
+    canonical, contact_failure, load_author, qualified_support, reference_phase)
+
+
+def test_training_escape_does_not_apply_formal_qualification_gate(monkeypatch):
+    # A newly contacting foot at9mm is an independent qualification failure.
+    # Applying that verdict as ordinary training termination erased the
+    # recovery rollout after only2–4Ticks. Native50mm escape stays distinct.
+    depth = torch.tensor([.001, .009, .026, .051])
+    monkeypatch.setattr(
+        "bevy_microduck_tools.goose.recovery_tracking.snapshot",
+        lambda env: SimpleNamespace(depth=depth))
+    assert contact_failure(None).tolist() == [False, False, False, True]
+    assert contact_failure(None, depth_limit_m=.005).tolist() == [False, True, True, True]
 
 
 def test_canonical_axes_keep_real_ankles_upper_jaw_and_all18_gradients():
