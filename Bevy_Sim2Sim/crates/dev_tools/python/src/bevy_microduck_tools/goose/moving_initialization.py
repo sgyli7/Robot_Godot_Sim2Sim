@@ -5,6 +5,7 @@ carry integration, driver, command, action and contact/reward history; they
 are development initial conditions, never runtime body assistance or experts.
 """
 from pathlib import Path
+from math import isfinite
 
 import torch
 
@@ -108,13 +109,22 @@ def _validate(env, state):
 class GooseMovingStateEnv(GooseDevelopmentEnv):
     """Restore own full history only inside a genuine public reset boundary.
 
-    Source episode age is retained: this is reference-state initialization,
-    not a demonstration of cold birth or an in-game policy transition.
+    Reference worlds retain their source episode age. A declared fraction
+    can instead keep the native cold reset, covering policy activation as
+    well as intermediate support. References are training initial conditions,
+    never an in-game policy transition.
     Global PPO/curriculum time belongs to the runner and is never restored.
     """
 
     def __init__(self, cfg, device, *, moving_bank_path: Path,
-                 moving_bank_sha256: str, **kwargs):
+                 moving_bank_sha256: str, reference_fraction: float = 1., **kwargs):
+        if (isinstance(reference_fraction, bool)
+                or not isfinite(reference_fraction)
+                or not 0. <= reference_fraction <= 1.):
+            raise ValueError("Reference reset fraction must be finite and within [0, 1]")
+        self._reference_fraction = float(reference_fraction)
+        self._reset_world_cursor = 0
+        self.cold_reset_worlds = self.reference_reset_worlds = 0
         self._moving_path = moving_bank_path
         self._moving_digest = moving_bank_sha256
         if sha256(moving_bank_path) != moving_bank_sha256:
@@ -144,19 +154,29 @@ class GooseMovingStateEnv(GooseDevelopmentEnv):
         ids = kwargs.get("env_ids")
         if ids is None:
             ids = torch.arange(self.num_envs, device=self.device)
+        slots = torch.arange(self._reset_world_cursor,
+            self._reset_world_cursor+len(ids), device=self.device, dtype=torch.float64)
+        reference_mask = ((slots+1)*self._reference_fraction).floor() > (
+            slots*self._reference_fraction).floor()
+        reference_ids = ids[reference_mask]
         states = [self._moving_states[(self._moving_cursor+k) % len(self._moving_states)]
-            for k in range(len(ids))]
+            for k in range(len(reference_ids))]
         for state in states:
             _validate(self, state)  # Validate before native reset can mutate a world.
-        super().reset(**kwargs)
-        self._moving_cursor = (self._moving_cursor+len(ids)) % len(self._moving_states)
+        result = super().reset(**kwargs)
+        self._reset_world_cursor += len(ids)
+        self.reference_reset_worlds += len(reference_ids)
+        self.cold_reset_worlds += len(ids)-len(reference_ids)
+        self._moving_cursor = (self._moving_cursor+len(reference_ids)) % len(self._moving_states)
+        if not len(reference_ids):
+            return result
         inventory = _world_buffers(self)
         for key, target in inventory.items():
             source = torch.stack([s["buffers"][key] for s in states]).to(self.device)
             if key == "data.qpos":
-                source[:,term.root_q:term.root_q+3] += self.scene.env_origins[ids]
-            target[ids] = source
-        self.episode_length_buf[ids] = torch.tensor(
+                source[:,term.root_q:term.root_q+3] += self.scene.env_origins[reference_ids]
+            target[reference_ids] = source
+        self.episode_length_buf[reference_ids] = torch.tensor(
             [s["episode_age"] for s in states], device=self.device)
         command = self.command_manager.get_term("velocity")
         # Curriculum stage is global runner time. A partial reference reset
@@ -170,7 +190,7 @@ class GooseMovingStateEnv(GooseDevelopmentEnv):
         inventory = _world_buffers(self)
         for key, target in inventory.items():
             if key == "data.qacc_warmstart" or key.startswith(("sensor.", "reward.")):
-                target[ids] = torch.stack([s["buffers"][key] for s in states]).to(self.device)
+                target[reference_ids] = torch.stack([s["buffers"][key] for s in states]).to(self.device)
         for sensor in self.scene.sensors.values():
             sensor._invalidate_cache()
         self.obs_buf = self.observation_manager.compute(update_history=True, env_ids=ids)

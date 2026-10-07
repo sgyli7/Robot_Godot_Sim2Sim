@@ -22,7 +22,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import BuiltinSensorCfg, ContactMatch, ContactSensorCfg, ObjRef
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
-from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity
+from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity, variable_posture
 from mjlab.tasks.velocity.mdp.curriculums import commands_vel
 from mjlab.tasks.velocity.mdp.velocity_command import (
     UniformVelocityCommand, UniformVelocityCommandCfg)
@@ -41,6 +41,39 @@ SOLE_WALK_RUN_REVISION = "goose_sole_walk_run_task_v1"
 SOLE_NATIVE_UNITS_REVISION = "goose_sole_walk_run_native_reward_units_v2"
 SOLE_HEADING_REVISION = "goose_sole_native_heading_course_v1"
 SOLE_CONTACT_DOMAIN_REVISION = "goose_sole_walk_run_completed_contact_domain_v1"
+PREFERRED_POSTURE_REVISION = "goose_native_preferred_support_posture_v1"
+
+
+class GooseNativePreferredPosture(variable_posture):
+    """Calibrate the installed posture reward to a declared support pose.
+
+    Native humanoid tasks set a bent-leg default pose. Goose's CAD zero pose
+    is an encoder reference, and need not be its preferred locomotion posture.
+    Clone this reward's target only: entity defaults, observations, reset pose,
+    actuator targets and physical state remain owned by their original paths.
+    The installed speed-dependent posture formula and weights are unchanged.
+    """
+
+    def __init__(self, cfg, env):
+        values = torch.as_tensor(cfg.params["preferred_joint_pos_rad"],
+            device=env.device, dtype=torch.float32)
+        contract = json.loads(env.cfg.actions["goose"].contract_path.read_text())
+        asset_cfg = cfg.params["asset_cfg"]
+        if (values.shape != (18,) or not bool(torch.isfinite(values).all())
+                or contract["joint_order"] != list(JOINT_ORDER)
+                or tuple(asset_cfg.joint_names) != tuple(JOINT_ORDER)
+                or not asset_cfg.preserve_order):
+            raise ValueError("Preferred posture requires the original finite18-axis order")
+        ranges = values.new_tensor([j["range_rad"] for j in contract["joints"]])
+        if bool(((values < ranges[:,0]) | (values > ranges[:,1])).any()):
+            raise ValueError("Preferred posture exceeds original joint ranges")
+        super().__init__(cfg, env)
+        self.default_joint_pos = self.default_joint_pos.clone()
+        self.default_joint_pos[:,asset_cfg.joint_ids] = values
+
+    def __call__(self, env, preferred_joint_pos_rad, **kwargs):
+        del preferred_joint_pos_rad  # Frozen and validated at construction.
+        return super().__call__(env, **kwargs)
 
 
 def track_root_com_linear_velocity(env, **kwargs):

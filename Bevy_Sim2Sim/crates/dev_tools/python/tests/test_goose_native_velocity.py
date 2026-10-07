@@ -1,6 +1,8 @@
 """Keep the velocity task's reward math and numeric lineage upstream-owned."""
 from pathlib import Path
 from types import SimpleNamespace
+import copy
+import json
 
 import torch
 import pytest
@@ -8,8 +10,57 @@ from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity
 
 from bevy_microduck_tools.goose.native_velocity import (
-    GooseSoleWalkRunCommandCfg, make_sole_walk_run_task_cfg,
+    GooseNativePreferredPosture, GooseSoleWalkRunCommandCfg, make_sole_walk_run_task_cfg,
     make_native_velocity_cfg, make_native_walk_run_cfg, track_root_com_linear_velocity)
+
+
+def preferred_posture_fixture(tmp_path):
+    from bevy_microduck_tools.goose.artifacts import JOINT_ORDER
+    term = copy.deepcopy(unitree_g1_flat_env_cfg().rewards["pose"])
+    term.params["asset_cfg"] = SimpleNamespace(name="robot", joint_names=JOINT_ORDER,
+        joint_ids=list(range(18)), preserve_order=True)
+    for key in ("std_standing", "std_walking", "std_running"):
+        term.params[key] = {".*": .35}
+    term.params["preferred_joint_pos_rad"] = [0.] * 18
+    contract = tmp_path/"contract.json"
+    contract.write_text(json.dumps({"joint_order": list(JOINT_ORDER),
+        "joints": [{"range_rad": [-1., 1.]} for _ in JOINT_ORDER]}))
+    joints = torch.zeros((2,18)); joints[0,8] = .2
+    default = torch.zeros_like(joints)
+    asset = SimpleNamespace(data=SimpleNamespace(default_joint_pos=default, joint_pos=joints),
+        find_joints=lambda _: (list(range(18)), JOINT_ORDER))
+    env = SimpleNamespace(scene={"robot": asset}, device="cpu",
+        cfg=SimpleNamespace(actions={"goose": SimpleNamespace(contract_path=contract)}),
+        command_manager=SimpleNamespace(get_command=lambda _: torch.zeros(2,3)))
+    return term, env
+
+
+def test_preferred_reward_zero_target_matches_native_formula(tmp_path):
+    term, env = preferred_posture_fixture(tmp_path)
+    stock_params = {k:v for k,v in term.params.items() if k != "preferred_joint_pos_rad"}
+    native = term.func(term, env)(env, **stock_params)
+    calibrated = GooseNativePreferredPosture(term, env)(env, **term.params)
+    torch.testing.assert_close(calibrated, native, atol=0, rtol=0)
+
+
+def test_preferred_reward_changes_only_its_target_without_mutating_entity(tmp_path):
+    term, env = preferred_posture_fixture(tmp_path)
+    entity = env.scene["robot"].data
+    before_default, before_q = entity.default_joint_pos.clone(), entity.joint_pos.clone()
+    term.params["preferred_joint_pos_rad"][8] = .2
+    pose = GooseNativePreferredPosture(term, env)
+    result = pose(env, **term.params)
+    assert result[0] == 1. and result[1] < result[0]
+    assert torch.equal(entity.default_joint_pos, before_default)
+    assert torch.equal(entity.joint_pos, before_q)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 1.1])
+def test_preferred_reward_rejects_nonfinite_or_out_of_range_target(tmp_path, value):
+    term, env = preferred_posture_fixture(tmp_path)
+    term.params["preferred_joint_pos_rad"][8] = value
+    with pytest.raises(ValueError, match="Preferred posture"):
+        GooseNativePreferredPosture(term, env)
 
 
 def test_native_rewards_are_not_replaced_by_the_legacy_guidance(monkeypatch):
