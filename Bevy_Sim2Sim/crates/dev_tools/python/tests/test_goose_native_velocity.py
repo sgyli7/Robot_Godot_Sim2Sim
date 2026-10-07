@@ -259,3 +259,65 @@ def test_native_units_profile_preserves_task_and_delegates_original_penalty(monk
     term = corrected.rewards["action_rate_l2"]
     torch.testing.assert_close(term.func(public_view, **term.params), mdp.action_rate_l2(original_view))
     torch.testing.assert_close(public_view.action_manager.action, native*scale, atol=0, rtol=0)
+
+
+def test_native_heading_course_preserves_goals_across_prefix_and_partial_reset():
+    from bevy_microduck_tools.goose.native_velocity import GooseHeadingVelocityCommandCfg
+
+    cfg = GooseHeadingVelocityCommandCfg(entity_name="robot",
+        resampling_time_range=(3., 8.), heading_command=True, rel_heading_envs=1.,
+        rel_standing_envs=0., ranges=GooseHeadingVelocityCommandCfg.Ranges(
+            lin_vel_x=(-.15, .4), lin_vel_y=(-.1, .1), ang_vel_z=(-.6, .6),
+            heading=(-3.14, 3.14)))
+    # No physics write methods are present in this fixture.
+    data = SimpleNamespace(heading_w=torch.tensor([.1, -.2, 0., 0.]),
+        root_link_lin_vel_b=torch.zeros(4, 3), root_link_ang_vel_b=torch.zeros(4, 3))
+    env = SimpleNamespace(num_envs=4, device="cpu", step_dt=.02,
+        episode_length_buf=torch.tensor([0, 49, 50, 200]),
+        scene={"robot": SimpleNamespace(data=data)})
+    term = cfg.build(env)
+    term.reset(torch.arange(4))
+    sampled = torch.tensor([[.4, 0., .3], [.2, .1, -.3], [.1, 0., .4], [-.1, 0., -.4]])
+    term.sampled_commands.copy_(sampled)
+    term.heading_target.copy_(torch.tensor([0., .1, .5, -.5]))
+    term.is_heading_env.copy_(torch.tensor([True, True, True, False]))
+    term.time_left.fill_(1e6)
+    term.compute(.02)
+    torch.testing.assert_close(term.command[:2], torch.zeros(2, 3), atol=0, rtol=0)
+    torch.testing.assert_close(term.command[2:], torch.tensor([[.1, 0., .5], [-.1, 0., -.4]]))
+    env.episode_length_buf[:2] = 50
+    term.compute(.02)
+    torch.testing.assert_close(term.command[:, :2], sampled[:, :2], atol=0, rtol=0)
+    torch.testing.assert_close(term.command[:2, 2], torch.tensor([-.1, .3]))
+    preserved = term.command[1:].clone()
+    env.episode_length_buf[0] = 0
+    term.reset(torch.tensor([0]))
+    term.compute(.02)
+    torch.testing.assert_close(term.command[0], torch.zeros(3), atol=0, rtol=0)
+    torch.testing.assert_close(term.command[1:], preserved, atol=0, rtol=0)
+    cfg.init_velocity_prob = 1.
+    with pytest.raises(ValueError, match="state-free"):
+        cfg.build(env)
+
+
+def test_heading_profile_only_changes_command_course(monkeypatch):
+    import copy
+    import bevy_microduck_tools.goose.native_velocity as module
+
+    sentinel = SimpleNamespace(commands={"velocity": object()},
+        rewards={"native": object()}, events={"reset": object()},
+        observations=object(), actions=object(), sim=object(), terminations=object())
+    captured = {}
+    def original(*args, **kwargs):
+        captured.update(kwargs)
+        return copy.copy(sentinel)
+    monkeypatch.setattr(module, "make_sole_walk_run_native_units_cfg", original)
+    cfg = module.make_sole_heading_velocity_cfg(Path("unused.xml"), Path("unused.json"),
+        course_start_step=15360, num_envs=128, seed=179)
+    assert captured["course_start_step"] == 15360 and captured["num_envs"] == 128
+    for field in ("rewards", "events", "observations", "actions", "sim", "terminations"):
+        assert getattr(cfg, field) is getattr(sentinel, field)
+    command = cfg.commands["velocity"]
+    assert command.heading_command and command.rel_heading_envs == .8
+    assert command.init_velocity_prob == 0. and command.standing_ticks == 50
+    assert command.ranges.lin_vel_x == (-.15, .4)

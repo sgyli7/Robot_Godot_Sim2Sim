@@ -7,6 +7,7 @@ mapping, without changing reward functions or weights.
 """
 import copy
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +39,7 @@ FORWARD_SCALE_REVISION = "goose_native_forward_tolerance_scale_v1"
 WALK_RUN_REVISION = "goose_native_walk_run_commands_v2"
 SOLE_WALK_RUN_REVISION = "goose_sole_walk_run_task_v1"
 SOLE_NATIVE_UNITS_REVISION = "goose_sole_walk_run_native_reward_units_v2"
+SOLE_HEADING_REVISION = "goose_sole_native_heading_course_v1"
 
 
 def track_root_com_linear_velocity(env, **kwargs):
@@ -318,4 +320,62 @@ def make_sole_walk_run_native_units_cfg(model_path, contract_path, *, course_sta
     term.func = native_coordinate_action_rate_l2
     term.params = {"public_action_scale": native_physical_action_std(
         json.loads(Path(contract_path).read_text()))}
+    return cfg
+
+
+class GooseHeadingVelocityCommand(UniformVelocityCommand):
+    """Native heading commands with the existing real standing prefix.
+
+    Retain sampled velocities while the prefix emits zero commands. Heading
+    conversion, command timers and resampling remain upstream-owned. This
+    term only writes command buffers, never robot position or velocity.
+    """
+
+    def __init__(self, cfg, env):
+        if (cfg.init_velocity_prob != 0. or cfg.rel_world_envs != 0.
+                or cfg.rel_forward_envs != 0. or cfg.standing_ticks < 0):
+            raise ValueError("Goose heading course requires state-free commands")
+        super().__init__(cfg, env)
+        self.sampled_commands = torch.zeros_like(self.vel_command_b)
+
+    def _resample_command(self, env_ids):
+        super()._resample_command(env_ids)
+        self.sampled_commands[env_ids] = self.vel_command_b[env_ids]
+
+    def _update_command(self, env_ids=None):
+        self.vel_command_b.copy_(self.sampled_commands)
+        super()._update_command(env_ids)
+        prefix = self._env.episode_length_buf < self.cfg.standing_ticks
+        self.vel_command_b[prefix] = 0.
+
+
+@dataclass(kw_only=True)
+class GooseHeadingVelocityCommandCfg(UniformVelocityCommandCfg):
+    standing_ticks: int = 50
+
+    def build(self, env):
+        return GooseHeadingVelocityCommand(self, env)
+
+
+def make_sole_heading_velocity_cfg(model_path, contract_path, *, course_start_step,
+                                   num_envs=256, seed=127,
+                                   development_initial_qpos=None):
+    """Named command-only continuation course; no baseline replacement.
+
+    Use native heading goals in 80% of worlds and native signed twist goals
+    in the remainder. Retain the own-foot task's fourteen reward functions,
+    parameters, events, observation/action interfaces and actual physics.
+    Keep the course within walking commands until route and signed turning
+    improve independently; this profile grants no walk/run qualification.
+    """
+    cfg = make_sole_walk_run_native_units_cfg(model_path, contract_path,
+        course_start_step=course_start_step, num_envs=num_envs, seed=seed,
+        development_initial_qpos=development_initial_qpos)
+    cfg.commands = {"velocity": GooseHeadingVelocityCommandCfg(
+        entity_name="robot", standing_ticks=50,
+        resampling_time_range=(3., 8.), rel_standing_envs=.2,
+        heading_command=True, rel_heading_envs=.8, rel_world_envs=0.,
+        rel_forward_envs=0., init_velocity_prob=0.,
+        ranges=UniformVelocityCommandCfg.Ranges(lin_vel_x=(-.15, .4),
+            lin_vel_y=(-.1, .1), ang_vel_z=(-.6, .6), heading=(-math.pi, math.pi)))}
     return cfg
