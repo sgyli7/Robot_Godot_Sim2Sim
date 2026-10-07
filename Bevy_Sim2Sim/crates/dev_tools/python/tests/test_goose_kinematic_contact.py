@@ -114,3 +114,37 @@ def test_invalid_box_goal_does_not_silently_project_inputs():
         box_support_height([.1,-.1,.1],np.eye(3))
     with pytest.raises(ValueError):
         box_support_height([.1,.1,.1],np.diag([1.,1.,-1.]))
+
+
+def test_sole_corner_switch_does_not_evade_the_plane_constraint():
+    # The real recovery failure alternated the lowest left/right sole corner.
+    # A single closest-point row stayed feasible while the other corner sank.
+    model=mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+    <geom name="ground" type="plane" size="1 1 .01"/>
+    <body name="sole" pos="0 0 .008"><freejoint/>
+    <geom name="sole_geom" type="box" size=".079 .03 .00775" mass="1"/>
+    </body></worldbody></mujoco>''')
+    cfg=mink.Configuration(model)
+    rotation=Rotation.from_euler('x',.01).as_matrix()
+    initial=cfg.q.copy()
+    initial[2]=box_support_height(model.geom_size[1],rotation)+.0001
+    initial[3:7]=np.roll(Rotation.from_matrix(rotation).as_quat(),1)
+    cfg.update(initial)
+    task=mink.FrameTask('sole','body',20.,5.,lm_damping=1.)
+    limit=GoosePlanningCollisionLimit(model,[([0],[1])],
+        minimum_distance_from_collisions=0.,collision_detection_distance=.02)
+    identity=(model.geom_size.copy(),model.geom_contype.copy(),
+        model.geom_conaffinity.copy(),model.body_mass.copy(),model.body_inertia.copy())
+    clearance=[]
+    for k in range(30):
+        rotation=Rotation.from_euler('x',-.03 if k%2==0 else .03).as_matrix()
+        task.set_target(mink.SE3.from_rotation_and_translation(
+            mink.SO3.from_matrix(rotation),np.array([0.,0.,.00775])))
+        velocity=mink.solve_ik(cfg,[task],.02,'daqp',damping=.1,limits=[limit])
+        cfg.integrate_inplace(velocity,.02)
+        clearance.append(mujoco.mj_geomDistance(model,cfg.data,0,1,.02,None))
+    assert min(clearance) >= -1e-6
+    assert cfg.data.time == 0.
+    for actual,original in zip((model.geom_size,model.geom_contype,
+            model.geom_conaffinity,model.body_mass,model.body_inertia),identity):
+        np.testing.assert_array_equal(actual,original)

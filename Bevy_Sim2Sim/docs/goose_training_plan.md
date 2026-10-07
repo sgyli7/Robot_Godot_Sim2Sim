@@ -2,7 +2,17 @@
 
 版本：2026-10-07。实施分支：`codex/goose50_training`。
 
-**2026-10-07 唯一现行入口：Goose 自身参考已接入原生 tracking PPO，实际候选失败，不晋升。** 学习MD是复用训练组织、任务/课程、控制接线与独立验收；不加载MD的ONNX、权重、normalizer、角度表或专家动作。本批fresh Actor只用Goose自己的真实两步参考和mjlab/BeyondMimic原9奖励/原PPO配置，没有MD或Goose父权重。root亲自完成移动训练、独立ONNX与起身对照，不联系硬件/G1、不派或唤醒agent。原21体/18主动轴/11叶/刚性足底/真实四杆/公共65→18、50Hz和decimation1保持；113教师/302 Critic是显式私有训练入口，不授公共策略资格。
+**2026-10-07 唯一现行入口：自身参考的学习单位和规划角点已修复；两个初始化策略仍实际失败。** 用户要求学习MD训练方法，Goose不采用MD ONNX、权重、normalizer、角度表或专家动作。本批仅650行Goose自身真实控制数据，fresh Actor、原生RSL5.4.2 Distillation/Adam、显式113私有教师输入，公共65→18身份不变。root亲自推进移动与起身，不联系硬件/G1、不派/唤醒agent。21机器人刚体、18主动轴、11实际碰撞叶、刚性足底/真实四杆、50Hz/一次20ms/decimation1、驱动/限制/物理参数保持；无硬件改动。
+
+**移动实际结果与裁决：** 两份各1000原生Distillation更新/训练Adam，只是旧650行数据的离线学习，不冒充PPO或新增机器人样本。公共值MSE经固定动作单位换算，隐式轴权重比218.233；将预测/自身标签一起返回原生坐标后，与原生三次Adam一致，原PPO/KL/边界/ONNX回归亦过，共14项。两份初始化Actor/normalizer及数据逐位相同，安装算法源码哈希相同，原生MSE .011931→.010400。独立实际回放仍56/53Tick终止、最多稳定7Tick、地穿24.172/20.554mm，均未跟完自己的两步。修复有数学依据，但不是已解决唯一瓶颈；未启动原条件要求的后续128PPO，关闭此BC/epoch/LR/std/seed族。首帧观测与正例逐位相同，最初归一化值未超旧数据范围；原生全局位置/朝向奖励存在，不据猜测改奖励。
+
+**起身同步结果：** 原最近点行QP残差约1e−17，但脚底最低角点交替，另一角点下沉到5.830mm；最小旋转box真实回归红。只给已有静态plane/box的原8角点加规划位移行，原生Mink/DAQP不变，不加物理碰撞/不搬实际root/不改20ms。含原15项共16回归绿；同原cold28/任务/时间表650个私有姿态完成，floor峰.815mm/self0，末up.999685/COM.280298m。原HiGHS必要静态筛查仅385/650帧峰值努力可行，第82帧首次失败、最坏至少1.733922倍峰值；拒绝实际播放或当合格恢复参考。几何可行不代表动态起身，也不据一条慢速序列失败判机械/DOF全局不可能。
+
+**下一共享问题：可执行路径如何成为真实反馈能力。** 移动回到Goose自身反馈教师与成熟reference-state课程，先区分已有路径标签和纠偏能力，不追加离线拟合或奖励网格。起身解决中段支持切换与动态努力可执行性，采用成熟接触工作流；不抬私有root凑结果或扩自定义求解器。两线共同继续，GPU有界串行；完整M0-S前不源端长训，M0-T前不目标训练/Bevy。走.4/跑.7/Shift、横移/转向/启停及四向/扰动起身/3秒/继续1m均未完成，goal active，没有外部等待。
+
+本批新增GPU109真实积分/109实际ONNX；离线2000训练Adam/130万旧数据行呈现/1300导出样本另列，PPO0、CPU真实积分0。规划/FK/LP/显示/单测不作机器人训练；原批样本不重复。全部进程结束，GPU已释放。已看真实.50/1.10秒失败图像，录像中早停者仅冻结最后保存姿态并显示实际时间。30项最终回归通过，全部初稿错误保留。[本批报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_own_tracking_initialization_001/report.md) · [实际自身控制/两个学生失败录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_own_tracking_initialization_001/actual_own_initialization.mp4) · [唯一资源账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_own_tracking_initialization_001/resource_ledger.json) · [复现](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_own_tracking_initialization_001/reproduction.md)。以下均为历史，不能代替顶部派工。
+
+**历史上一入口（自身参考PPO候选）：Goose 自身参考已接入原生 tracking PPO，实际候选失败，不晋升。** 学习MD是复用训练组织、任务/课程、控制接线与独立验收；不加载MD的ONNX、权重、normalizer、角度表或专家动作。本批fresh Actor只用Goose自己的真实两步参考和mjlab/BeyondMimic原9奖励/原PPO配置，没有MD或Goose父权重。root亲自完成移动训练、独立ONNX与起身对照，不联系硬件/G1、不派或唤醒agent。原21体/18主动轴/11叶/刚性足底/真实四杆/公共65→18、50Hz和decimation1保持；113教师/302 Critic是显式私有训练入口，不授公共策略资格。
 
 **实际证据：** 原公共动作在GPU完成650真实Tick，两步COM前进54.20mm；原2.083mrad踝超限保留。原生1.6的空传感器枚举比较与scoped reset API已修复；12单位/Adam/KL/ONNX＋9时钟/出生保护＋2真实配置回归通过，4世界实际部分冷重置也通过。fresh小准入1＋主128 PPO共393312训练GPU样本/2580Adam，主约69.83秒；独立Actor/Critic/Adam逐位复载、clock3072、ONNX输出差0。650Tick独立教师闭环仍失败：COM−68.08mm/侧移108.78mm，稳定最多3Tick，地穿5.507mm、关节超限20.206mrad；持续转体从第4Tick开始，而非只看高度/直立授成功。已看实际2.5/12.5秒图像，未得到稳定两步跟踪。
 

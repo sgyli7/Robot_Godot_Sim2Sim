@@ -8,6 +8,7 @@ from .mature_training import native_physical_action_std
 
 REVISION = "goose_native_physical_actor_coordinates_v1"
 TRACKING_REVISION = "goose_native_tracking_physical_actor_coordinates_v1"
+DISTILLATION_REVISION = "goose_native_distillation_action_coordinates_v2"
 
 
 class PublicActionScale(torch.nn.Module):
@@ -38,6 +39,23 @@ class PublicUnitsGaussian(GaussianDistribution):
         # clamping stays in the original coordinates before this conversion.
         super().update(mlp_output)
         self._distribution = Normal(self.mean, self.std * self.public_action_scale)
+
+
+def native_coordinate_mse(actor, predicted_public, target_public):
+    """Use installed RSL MSE after undoing the fixed public action unit map.
+
+    PPO density already accounts for this coordinate map. MSE does not:
+    squaring public outputs would implicitly weight native axes by scale**2.
+    Both predictions and own expert labels must return to the same native
+    coordinates. This does not alter exported means, Gaussian exploration,
+    model parameters or the native optimizer/storage/update implementation.
+    """
+    if (not isinstance(actor.distribution, PublicUnitsGaussian)
+            or predicted_public.shape != target_public.shape
+            or predicted_public.shape[-1] != 18):
+        raise ValueError("Native-coordinate MSE requires matching mapped18-axis actions")
+    scale = actor.distribution.public_action_scale
+    return torch.nn.functional.mse_loss(predicted_public/scale, target_public/scale)
 
 
 def initialize_native_action_units(runner, contract):

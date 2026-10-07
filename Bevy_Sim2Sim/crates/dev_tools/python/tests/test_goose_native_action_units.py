@@ -11,7 +11,8 @@ from tensordict import TensorDict
 from rsl_rl.models import MLPModel
 
 from bevy_microduck_tools.goose.native_action_units import (
-    initialize_native_action_units, initialize_native_tracking_action_units)
+    initialize_native_action_units, initialize_native_tracking_action_units,
+    native_coordinate_mse)
 
 
 @pytest.fixture(params=[(65, "log", initialize_native_action_units),
@@ -168,3 +169,36 @@ def test_actual_native_onnx_export_contains_public_unit_map(contract, tmp_path, 
         dynamic_axes={'obs': {0: 'batch'}, 'actions': {0: 'batch'}})
     actual = ReferenceEvaluator(str(path)).run(None, {'obs': obs['actor'].numpy()})[0]
     torch.testing.assert_close(torch.from_numpy(actual), actor(obs), rtol=2e-6, atol=1e-7)
+
+
+def test_native_distillation_mse_preserves_adam_units(contract, recipe):
+    from rsl_rl.algorithms import Distillation
+    from rsl_rl.storage import RolloutStorage
+    native, obs = fresh_runner(recipe)
+    base = native.alg.actor
+    mapped = copy.deepcopy(base)
+    algorithms = []
+    for actor in (base, mapped):
+        storage = RolloutStorage('distillation', 32, 1, obs, [18], device='cpu')
+        algorithms.append(Distillation(actor, copy.deepcopy(actor), storage,
+            num_learning_epochs=1, gradient_length=1, learning_rate=1e-3,
+            loss_type='mse', optimizer='adam', device='cpu'))
+    recipe[2](SimpleNamespace(alg=SimpleNamespace(actor=mapped,
+        optimizer=algorithms[1].optimizer)), contract)
+    algorithms[1].loss_fn = lambda prediction, target: native_coordinate_mse(
+        mapped, prediction, target)
+    scale = mapped.distribution.public_action_scale
+    label = torch.sin(torch.arange(32*18, dtype=torch.float32)).reshape(32, 18)
+    for _ in range(3):
+        for algorithm, targets in zip(algorithms, (label, label*scale)):
+            transition = RolloutStorage.Transition()
+            transition.observations = obs
+            transition.actions = transition.privileged_actions = targets
+            transition.rewards = torch.zeros(32)
+            transition.dones = torch.zeros(32, dtype=torch.bool)
+            algorithm.storage.add_transition(transition)
+            algorithm.update()
+        torch.testing.assert_close(mapped(obs), base(obs)*scale,
+            rtol=2e-6, atol=2e-7)
+        for left, right in zip(base.parameters(), mapped.parameters()):
+            torch.testing.assert_close(left, right, rtol=2e-6, atol=2e-7)

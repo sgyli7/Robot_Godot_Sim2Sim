@@ -3,12 +3,13 @@ import importlib.metadata
 import itertools
 import math
 
+import mujoco
 import numpy as np
 
 from mink.limits.collision_avoidance_limit import CollisionAvoidanceLimit
 from mink.limits.limit import Constraint
 
-REVISION = 'goose_mink_planning_contact_units_v1'
+REVISION = 'goose_mink_planning_contact_corners_v2'
 
 
 def box_support_height(half_size, rotation_world):
@@ -60,7 +61,41 @@ class GoosePlanningCollisionLimit(DisplacementCollisionLimit):
     MuJoCo treats world contacts as an exception to its parent filter. Restore
     only intended static-world pairs with a dynamic weld, compatible masks
     and no explicit exclusion. Ordinary robot parent pairs stay untouched.
+    Static plane/box pairs constrain every original box corner: the nearest
+    corner can switch during rotation while its single native row is feasible.
+    All rows remain planning displacement constraints, not physical contacts.
     """
+
+    def compute_qp_inequalities(self, configuration, dt):
+        native = super().compute_qp_inequalities(configuration, dt)
+        m, data = self.model, configuration.data
+        rows, bounds = [], []
+        signs = np.array(list(itertools.product((-1., 1.), repeat=3)))
+        for a, b in self.geom_id_pairs:
+            if (m.geom_type[b] == mujoco.mjtGeom.mjGEOM_PLANE
+                    and m.geom_type[a] == mujoco.mjtGeom.mjGEOM_BOX):
+                a, b = b, a
+            if (m.geom_type[a] != mujoco.mjtGeom.mjGEOM_PLANE
+                    or m.geom_type[b] != mujoco.mjtGeom.mjGEOM_BOX
+                    or m.body_weldid[m.geom_bodyid[a]] != 0):
+                continue
+            normal = data.geom_xmat[a].reshape(3, 3)[:, 2]
+            corners = signs*m.geom_size[b]
+            world = corners@data.geom_xmat[b].reshape(3, 3).T+data.geom_xpos[b]
+            distance = (world-data.geom_xpos[a])@normal
+            if distance.min() >= self.collision_detection_distance:
+                continue
+            for point, height in zip(world, distance):
+                jacobian = np.zeros((3, m.nv))
+                mujoco.mj_jac(m, data, jacobian, None, point, int(m.geom_bodyid[b]))
+                rows.append(-normal@jacobian)
+                bounds.append(self.gain*max(height-self.minimum_distance_from_collisions, 0.)
+                    +self.bound_relaxation*dt)
+        if not rows:
+            return native
+        if native.inactive:
+            return Constraint(G=np.asarray(rows), h=np.asarray(bounds))
+        return Constraint(G=np.vstack((native.G, rows)), h=np.r_[native.h, bounds])
 
     def _construct_geom_id_pairs(self, geom_pairs):
         pairs = set(super()._construct_geom_id_pairs(geom_pairs))
