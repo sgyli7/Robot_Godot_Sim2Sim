@@ -40,6 +40,7 @@ WALK_RUN_REVISION = "goose_native_walk_run_commands_v2"
 SOLE_WALK_RUN_REVISION = "goose_sole_walk_run_task_v1"
 SOLE_NATIVE_UNITS_REVISION = "goose_sole_walk_run_native_reward_units_v2"
 SOLE_HEADING_REVISION = "goose_sole_native_heading_course_v1"
+SOLE_CONTACT_DOMAIN_REVISION = "goose_sole_walk_run_completed_contact_domain_v1"
 
 
 def track_root_com_linear_velocity(env, **kwargs):
@@ -322,6 +323,30 @@ def make_sole_walk_run_native_units_cfg(model_path, contract_path, *, course_sta
     term.func = native_coordinate_action_rate_l2
     term.params = {"public_action_scale": native_physical_action_std(
         json.loads(Path(contract_path).read_text()))}
+    return cfg
+
+
+def make_contact_bounded_sole_walk_run_cfg(model_path, contract_path, *,
+                                         course_start_step, num_envs=256,
+                                         seed=127, development_initial_qpos=None):
+    """Keep the own task within the independently evaluated floor domain.
+
+    The retained v1 profile has a 50mm numerical escape guard. This named
+    profile instead ends an episode at its first completed 5mm floor
+    violation. The existing private FK query reads the integrated state;
+    it does not refresh live solved forces, integrate again, project the
+    robot or change collision geometry. RSL receives the terminal sample
+    before the existing adapter resets that world.
+
+    Rewards, commands, Actor inputs, actions and physics remain the v1
+    profile. The different termination changes the learning task; old
+    policy qualifications do not transfer to this profile.
+    """
+    cfg = make_sole_walk_run_task_cfg(model_path, contract_path,
+        course_start_step=course_start_step, num_envs=num_envs, seed=seed,
+        development_initial_qpos=development_initial_qpos)
+    cfg.terminations["contact_domain_failure"] = TerminationTermCfg(
+        func=rigid_contact_limit_exceeded, params={"max_depth_m": .005})
     return cfg
 
 
