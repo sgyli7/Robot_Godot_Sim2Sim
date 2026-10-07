@@ -64,6 +64,24 @@ def native_coordinate_mse(actor, predicted_public, target_public):
     return torch.nn.functional.mse_loss(predicted_public/scale, target_public/scale)
 
 
+def native_coordinate_symmetry_loss(compute_loss, actor, batch, original_batch_size):
+    """Call the installed RSL mirror loss on native-coordinate means.
+
+    The fixed export layer maps the actor to public motor units. RSL's mirror
+    MSE must see the original learning units on both sides, just like native
+    teacher MSE. Delegate its augmentation, target detachment and gradient
+    calculation unchanged. This view is only used for the auxiliary loss;
+    rollout actions, Gaussian densities and exported means remain public.
+    """
+    if (not isinstance(actor.distribution, PublicUnitsGaussian)
+            or not isinstance(actor.mlp[-1], PublicActionScale)
+            or not torch.equal(actor.mlp[-1].public_action_scale,
+                               actor.distribution.public_action_scale)):
+        raise ValueError("Native mirror loss requires matching mapped18-axis means")
+    scale = actor.distribution.public_action_scale
+    return compute_loss(lambda obs: actor(obs)/scale, batch, original_batch_size)
+
+
 def native_coordinate_action_rate_l2(env, public_action_scale):
     """Delegate the installed penalty in its original unscaled action units.
 

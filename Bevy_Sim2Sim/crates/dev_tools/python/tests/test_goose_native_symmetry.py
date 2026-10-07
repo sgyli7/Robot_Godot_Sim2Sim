@@ -15,6 +15,8 @@ from rsl_rl.models import MLPModel
 from bevy_microduck_tools.goose.native_symmetry import (
     augment_native_symmetry, mirror_public_axes, mirror_public_observation,
     require_bilateral_contract)
+from bevy_microduck_tools.goose.native_action_units import (
+    PublicActionScale, PublicUnitsGaussian, native_coordinate_symmetry_loss)
 
 
 @pytest.fixture
@@ -65,6 +67,35 @@ def test_native_extension_uses_auxiliary_loss_without_relabeling_ppo_samples():
     _,augmented = augment_native_symmetry(env=None,actions=actions)
     assert torch.equal(augmented[:12],actions)
     assert torch.equal(mirror_public_axes(augmented[12:]),actions)
+
+
+def test_native_mirror_loss_is_invariant_to_public_action_units_and_has_gradients():
+    torch.manual_seed(211)
+    obs = TensorDict({'actor':torch.randn(12,65),'critic':torch.randn(12,69)},batch_size=[12])
+    base = MLPModel(obs,{'actor':['actor']},'actor',18,hidden_dims=(16,),
+        obs_normalization=True,distribution_cfg={'class_name':'GaussianDistribution',
+            'std_type':'log','init_std':.2})
+    extension = Symmetry(env=None,data_augmentation_func=augment_native_symmetry,
+        use_data_augmentation=False,use_mirror_loss=True,mirror_loss_coeff=.1)
+    native_losses, public_losses = [], []
+    for scale in (torch.ones(18), torch.tensor([.08,.02,.03,.04,.05,.16,
+            .07,.06,.03,.02,.03,.1,.07,.06,.03,.02,.03,.1])):
+        actor = copy.deepcopy(base)
+        actor.distribution = PublicUnitsGaussian(actor.distribution,scale)
+        actor.mlp.add_module('public_units',PublicActionScale(scale))
+        actions = torch.randn(12,18)
+        batch = SimpleNamespace(observations=obs.clone(),actions=actions)
+        native = native_coordinate_symmetry_loss(extension.compute_loss,actor,batch,12)
+        native_losses.append(native.detach())
+        public_losses.append(extension.compute_loss(actor,
+            SimpleNamespace(observations=obs.clone(),actions=actions),12).detach())
+        native.backward()
+        assert any(p.grad is not None and torch.count_nonzero(p.grad)>0
+            for p in actor.parameters())
+        assert batch.actions is actions
+        assert torch.equal(actor.mlp[-1].public_action_scale,scale)
+    torch.testing.assert_close(native_losses[0],native_losses[1],rtol=1e-6,atol=1e-7)
+    assert public_losses[1] < public_losses[0]/10
 
 
 def test_map_matches_native_leg_fk_and_preserves_original_target_limits(robot_input):
