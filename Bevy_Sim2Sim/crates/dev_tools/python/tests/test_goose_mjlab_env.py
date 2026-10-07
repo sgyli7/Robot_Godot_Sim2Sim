@@ -10,11 +10,43 @@ import torch
 pytest.importorskip("mjlab")
 from bevy_microduck_tools.goose.artifacts import CANDIDATES, sha256
 from bevy_microduck_tools.goose.mjlab_baseline import build_reference
-from bevy_microduck_tools.goose.mjlab_env import GooseDevelopmentEnv, make_development_env_cfg
+from bevy_microduck_tools.goose.mjlab_env import (
+    GooseDevelopmentEnv, make_development_env_cfg, native_tick_clock_error,
+)
 from bevy_microduck_tools.goose.runtime import GooseSourceRuntime
 from test_goose_50hz import fixture_runtime
 from test_goose_batch_drive import nominal_graph
 from test_goose_mjlab_baseline import make_euler_reference
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float64))
+@pytest.mark.parametrize("seconds", (0., 64., 1800.))
+def test_native_clock_accepts_one_step_after_long_running_time(dtype, seconds):
+    before = torch.tensor([seconds], dtype=dtype)
+    after = before + .02
+    error = native_tick_clock_error(before, after)
+    if dtype == torch.float32 and seconds == 64.:
+        assert error.item() > 2e-6  # The previous guard falsely rejected this Tick.
+    assert torch.equal(error, (after-before-.02).abs())
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.float64))
+@pytest.mark.parametrize("seconds", (0., 64., 1800.))
+def test_native_clock_rejects_missing_or_duplicate_integrations(dtype, seconds):
+    before = torch.tensor([seconds, seconds], dtype=dtype)
+    expected = before + .02
+    for wrong in (before, expected + .02):
+        with pytest.raises(RuntimeError, match="exactly one"):
+            native_tick_clock_error(before, wrong)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        native_tick_clock_error(before, torch.stack((expected[0], before[1])))
+
+
+def test_native_clock_rejects_nonfinite_or_unresolvable_timestamps():
+    for before, after in ((0., float("nan")), (float("inf"), float("inf")),
+                          (float(2**24), float(2**24))):
+        with pytest.raises(RuntimeError, match="cannot resolve"):
+            native_tick_clock_error(torch.tensor([before]), torch.tensor([after]))
 
 
 @pytest.fixture(autouse=True)

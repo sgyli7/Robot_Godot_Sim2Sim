@@ -31,6 +31,28 @@ from .mjlab_baseline import (
 REVISION = "goose_mjlab_development_env_v1"
 
 
+def native_tick_clock_error(before, after):
+    """Verify one native time addition in the clock's actual precision.
+
+    Warp's float32 clock rounds ``time + .02``. At 64 seconds that
+    rounding exceeds the former fixed 2us subtraction tolerance. Compare
+    the rounded next timestamp, while still rejecting zero or two steps.
+    This reads timestamps only; the integrator and its 20ms timestep stay
+    unchanged. Reject clocks whose precision cannot distinguish steps.
+    """
+    if before.dtype != after.dtype or before.shape != after.shape:
+        raise ValueError("Native clock layout changed within a Tick")
+    expected = before + DT
+    if (not bool(torch.isfinite(before).all())
+            or not bool(torch.isfinite(after).all())
+            or not bool((expected > before).all())
+            or not bool((expected + DT > expected).all())):
+        raise RuntimeError("Native clock cannot resolve one 20ms integration")
+    if not torch.equal(after, expected):
+        raise RuntimeError("Goose Tick must contain exactly one actual 20ms integration")
+    return (after-before-DT).abs()
+
+
 def _require_development_timing(cfg):
     if cfg.decimation != 1 or cfg.sim.mujoco.timestep != DT or cfg.auto_reset:
         raise ValueError("Goose development requires 50 Hz, decimation=1, auto_reset=false")
@@ -120,13 +142,12 @@ class GooseAction(ActionTerm):
         d, wp_data = self._env.sim.data, self._env.sim.wp_data
         if not all(bool(torch.isfinite(getattr(d, n)).all()) for n in ("qpos", "qvel", "qacc", "qacc_warmstart", "ctrl")):
             raise FloatingPointError("Nonfinite Goose state; preserve failed Tick without reset")
-        if bool(((d.time-self._before_time-DT).abs() > 2e-6).any()):
-            raise RuntimeError("Goose Tick must contain exactly one actual 20ms integration")
+        clock_error = native_tick_clock_error(self._before_time, d.time)
         if bool((d.nefc >= wp_data.njmax).any()) or int(d.nacon[0]) >= wp_data.naconmax:
             raise RuntimeError("Goose constraint/contact capacity exhausted; no reset")
         if adapter := self._env.contact_adapter:
             adapter.assert_valid()
-        return (d.time-self._before_time-DT).abs()
+        return clock_error
 
     def commit_after_step(self):
         self.verify_actual_step()
