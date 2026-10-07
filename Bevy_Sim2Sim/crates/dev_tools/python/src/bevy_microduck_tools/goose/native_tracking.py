@@ -6,7 +6,9 @@ write running robot state. A separately named RSI profile admits writes only
 inside the environment's genuine cold reset, with original drive history reset.
 """
 import copy
+import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import mujoco
 import torch
@@ -27,6 +29,8 @@ from .mjlab_env import (
 
 REVISION = "goose_native_tracking_teacher_v1"
 RSI_REVISION = "goose_native_tracking_admitted_rsi_v1"
+RSI_CLIP_REVISION = "goose_native_tracking_admitted_rsi_clip_v2"
+PHYSICAL_REWARD_REVISION = "goose_native_tracking_physical_reward_units_v3"
 GROUND_SENSOR = "goose_teacher_ground"
 
 
@@ -274,4 +278,48 @@ def make_native_tracking_rsi_cfg(model_path, contract_path, motion_file, *,
     fields["sampling_mode"] = "adaptive"
     cfg.commands["motion"] = AdmittedColdMotionCommandCfg(
         **fields, eligible_frames=tuple(eligible_frames))
+    return cfg
+
+
+def native_motion_clip_ended(env, command_name="motion"):
+    """End the finite reference episode before a repeated final-frame Tick.
+
+    The native environment checks termination before advancing the reference.
+    The VecEnv then cold-resets completed worlds outside the physical step;
+    this function only reads the clock and cannot write a running body state.
+    """
+    motion = env.command_manager.get_term(command_name)
+    return motion.time_steps >= motion.motion.time_step_total - 1
+
+
+def make_native_tracking_rsi_clip_cfg(model_path, contract_path, motion_file, *,
+                                     cold_qpos, eligible_frames, num_envs=256, seed=133):
+    """Native admitted births with finite-clip timeout rather than extended hold.
+
+    Preserve the diagnostic v1 profile separately. Rewards, drives, physical
+    model and public interface remain those of the original teacher profile.
+    """
+    cfg = make_native_tracking_rsi_cfg(model_path, contract_path, motion_file,
+        cold_qpos=cold_qpos, eligible_frames=eligible_frames, num_envs=num_envs, seed=seed)
+    cfg.terminations["motion_clip_end"] = TerminationTermCfg(
+        func=native_motion_clip_ended, time_out=True)
+    return cfg
+
+
+def make_native_tracking_physical_reward_cfg(model_path, contract_path, motion_file, *,
+                                            cold_qpos, eligible_frames, num_envs=256, seed=133):
+    """Named finite-clip course with native action-rate units explicitly restored.
+
+    Delegate the installed penalty, retaining its weight and every other native
+    reward. This new profile cannot inherit a previous policy's qualification.
+    """
+    from .mature_training import native_physical_action_std
+    from .native_action_units import native_coordinate_action_rate_l2
+
+    cfg = make_native_tracking_rsi_clip_cfg(model_path, contract_path, motion_file,
+        cold_qpos=cold_qpos, eligible_frames=eligible_frames, num_envs=num_envs, seed=seed)
+    term = cfg.rewards["action_rate_l2"]
+    term.func = native_coordinate_action_rate_l2
+    term.params = {"public_action_scale": native_physical_action_std(
+        json.loads(Path(contract_path).read_text()))}
     return cfg

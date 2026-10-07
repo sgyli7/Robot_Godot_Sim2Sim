@@ -1,6 +1,10 @@
 """Native learning coordinates with exported Goose public position actions."""
 
+from math import isfinite
+from types import SimpleNamespace
+
 import torch
+from mjlab.envs import mdp as native_mdp
 from rsl_rl.modules.distribution import GaussianDistribution
 from torch.distributions import Normal
 
@@ -9,6 +13,7 @@ from .mature_training import native_physical_action_std
 REVISION = "goose_native_physical_actor_coordinates_v1"
 TRACKING_REVISION = "goose_native_tracking_physical_actor_coordinates_v1"
 DISTILLATION_REVISION = "goose_native_distillation_action_coordinates_v2"
+ACTION_RATE_REVISION = "goose_native_action_rate_coordinates_v1"
 
 
 class PublicActionScale(torch.nn.Module):
@@ -56,6 +61,25 @@ def native_coordinate_mse(actor, predicted_public, target_public):
         raise ValueError("Native-coordinate MSE requires matching mapped18-axis actions")
     scale = actor.distribution.public_action_scale
     return torch.nn.functional.mse_loss(predicted_public/scale, target_public/scale)
+
+
+def native_coordinate_action_rate_l2(env, public_action_scale):
+    """Delegate the installed penalty in its original unscaled action units.
+
+    The Goose manager stores public actions after PublicActionScale. Undo that
+    fixed map for both action histories in this reward-only view. Actual motor
+    targets, action history and exported policy values are never modified.
+    """
+    if (len(public_action_scale) != 18
+            or any(not isfinite(x) or x <= 0 for x in public_action_scale)):
+        raise ValueError("Action-rate units require positive finite18-axis scales")
+    manager = env.action_manager
+    if manager.action.shape != manager.prev_action.shape or manager.action.shape[-1] != 18:
+        raise ValueError("Action-rate units require matching18-axis histories")
+    scale = manager.action.new_tensor(public_action_scale)
+    view = SimpleNamespace(action_manager=SimpleNamespace(
+        action=manager.action/scale, prev_action=manager.prev_action/scale))
+    return native_mdp.action_rate_l2(view)
 
 
 def initialize_native_action_units(runner, contract):

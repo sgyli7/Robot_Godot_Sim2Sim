@@ -70,6 +70,20 @@ def test_end_of_clip_holds_without_resampling_or_state_write():
     assert term.time_steps.tolist() == [626, 626]
 
 
+def test_clip_timeout_observes_final_frame_without_restarting_physics():
+    from bevy_microduck_tools.goose.native_tracking import native_motion_clip_ended
+
+    term, _ = command_fixture()
+    term.time_steps[:] = torch.tensor([625, 626])
+    env = SimpleNamespace(command_manager=SimpleNamespace(get_term=lambda _: term))
+    term._resample_command = lambda _: pytest.fail("Timeout attempted a state reset")
+    assert native_motion_clip_ended(env).tolist() == [False, True]
+    assert term.time_steps.tolist() == [625, 626]
+    term._update_command()
+    assert native_motion_clip_ended(env).tolist() == [True, True]
+    assert term.time_steps.tolist() == [626, 626]
+
+
 def test_pending_tick_and_non20ms_reference_updates_are_rejected():
     term, drive = command_fixture()
     drive._pending_action = torch.zeros((2, 18))
@@ -148,3 +162,32 @@ def test_failed_cold_reset_cannot_leave_reference_writes_authorized(monkeypatch)
     with pytest.raises(ValueError, match="Preserve failed"):
         env.reset(env_ids=torch.tensor([0]))
     assert env._reference_birth_ids is None
+
+
+def test_native_action_rate_undoes_public_units_before_installed_penalty():
+    from mjlab.envs import mdp
+    from bevy_microduck_tools.goose.native_action_units import native_coordinate_action_rate_l2
+
+    scale = tuple(torch.linspace(.02, .3, 18).tolist())
+    raw = (torch.arange(54, dtype=torch.float64).reshape(3, 18)/10).requires_grad_()
+    previous = raw.detach()*.4
+    env = SimpleNamespace(action_manager=SimpleNamespace(action=raw, prev_action=previous))
+    expected = mdp.action_rate_l2(env)
+    factor = raw.new_tensor(scale)
+    public = SimpleNamespace(action_manager=SimpleNamespace(action=raw*factor, prev_action=previous*factor))
+    before = public.action_manager.action.clone()
+    corrected = native_coordinate_action_rate_l2(public, scale)
+    torch.testing.assert_close(corrected, expected)
+    torch.testing.assert_close(torch.autograd.grad(corrected.sum(), raw, retain_graph=True)[0],
+                               torch.autograd.grad(expected.sum(), raw)[0])
+    assert torch.equal(public.action_manager.action, before)
+    assert not torch.allclose(mdp.action_rate_l2(public), expected)
+
+
+@pytest.mark.parametrize('invalid', [(0.,)*18, (float('inf'),)*18, (.1,)*17])
+def test_native_action_rate_rejects_invalid_coordinate_contract(invalid):
+    from bevy_microduck_tools.goose.native_action_units import native_coordinate_action_rate_l2
+
+    env = SimpleNamespace(action_manager=SimpleNamespace(action=torch.zeros(2, 18), prev_action=torch.zeros(2, 18)))
+    with pytest.raises(ValueError, match='positive finite18'):
+        native_coordinate_action_rate_l2(env, invalid)
