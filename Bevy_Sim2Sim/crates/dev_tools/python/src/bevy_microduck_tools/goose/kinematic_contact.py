@@ -1,4 +1,4 @@
-"""Convert Mink1.3 contact velocity bounds to its QP displacement units."""
+"""Mink planning contact units and independent native collision validation."""
 import importlib.metadata
 import itertools
 import math
@@ -10,6 +10,34 @@ from mink.limits.collision_avoidance_limit import CollisionAvoidanceLimit
 from mink.limits.limit import Constraint
 
 REVISION = 'goose_mink_planning_contact_corners_v2'
+VALIDATION_REVISION = 'goose_planning_fresh_native_self_contact_v1'
+
+
+def fresh_native_self_contact_depth(model, private_data):
+    """Refresh contacts at a private planned pose and return robot overlap.
+
+    Mink1.3 Configuration.update refreshes transforms and Jacobians without
+    running collision detection. Its contact array can therefore be empty or
+    belong to an earlier pose. A QP collision limit also only constrains its
+    linearized step; neither is independent geometric acceptance.
+
+    This native position query preserves qpos, qvel and simulation time and
+    must be used on planning/validation data, never as a physical integrator.
+    World-body geoms are excluded from this self-contact metric; ground
+    clearance remains a separate check on the original collision surfaces.
+    """
+    if not np.isfinite(private_data.qpos).all():
+        raise ValueError('Finite private planning pose required')
+    mujoco.mj_fwdPosition(model, private_data)
+    depth = 0.
+    for contact in private_data.contact:
+        if (model.geom_bodyid[int(contact.geom1)] != 0
+                and model.geom_bodyid[int(contact.geom2)] != 0):
+            distance = float(contact.dist)
+            if not math.isfinite(distance):
+                raise FloatingPointError('Non-finite native self-contact distance')
+            depth = max(depth, -distance)
+    return depth
 
 
 def box_support_height(half_size, rotation_world):

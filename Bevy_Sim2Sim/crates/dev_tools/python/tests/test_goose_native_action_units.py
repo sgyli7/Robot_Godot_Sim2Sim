@@ -12,7 +12,8 @@ from rsl_rl.models import MLPModel
 
 from bevy_microduck_tools.goose.native_action_units import (
     initialize_native_action_units, initialize_native_tracking_action_units,
-    native_coordinate_mse)
+    native_coordinate_mse, native_coordinate_action_rate_l2,
+    require_matching_action_rate_coordinates)
 
 
 @pytest.fixture(params=[(65, "log", initialize_native_action_units),
@@ -40,6 +41,46 @@ def fresh_runner(recipe):
     optimizer = torch.optim.Adam((*actor.parameters(), *critic.parameters()))
     return SimpleNamespace(alg=SimpleNamespace(actor=actor, critic=critic,
                                                optimizer=optimizer)), obs
+
+
+def test_plain_parent_rejects_reward_unit_remapping_without_changing_state(contract, recipe):
+    from mjlab.envs import mdp
+    from bevy_microduck_tools.goose.mature_training import native_physical_action_std
+
+    runner, obs = fresh_runner(recipe)
+    actor = runner.alg.actor
+    actor.update_normalization(obs)
+    before = copy.deepcopy(actor.state_dict())
+    native = SimpleNamespace(func=mdp.action_rate_l2, params={})
+    remapped = SimpleNamespace(func=native_coordinate_action_rate_l2,
+        params={"public_action_scale": native_physical_action_std(contract)})
+    assert require_matching_action_rate_coordinates(native, actor) == "public_raw"
+    with pytest.raises(ValueError, match="public action-rate"):
+        require_matching_action_rate_coordinates(remapped, actor)
+    for name, value in before.items():
+        assert torch.equal(actor.state_dict()[name], value)
+
+
+def test_mapped_parent_requires_matching_mean_sigma_and_reward_coordinates(contract, recipe):
+    from mjlab.envs import mdp
+    from bevy_microduck_tools.goose.mature_training import native_physical_action_std
+
+    runner, _ = fresh_runner(recipe)
+    recipe[2](runner, contract)
+    actor = runner.alg.actor
+    values = native_physical_action_std(contract)
+    term = SimpleNamespace(func=native_coordinate_action_rate_l2,
+        params={"public_action_scale": values})
+    assert require_matching_action_rate_coordinates(term, actor) == "native_mapped"
+    with pytest.raises(ValueError, match="native action-rate"):
+        require_matching_action_rate_coordinates(
+            SimpleNamespace(func=mdp.action_rate_l2, params={}), actor)
+    term.params["public_action_scale"] = tuple(v*2 for v in values)
+    with pytest.raises(ValueError, match="unit maps disagree"):
+        require_matching_action_rate_coordinates(term, actor)
+    actor.mlp[-1].public_action_scale.mul_(2)
+    with pytest.raises(ValueError, match="mean and Gaussian"):
+        require_matching_action_rate_coordinates(term, actor)
 
 
 def test_native_mean_and_sigma_map_to_real_Goose_radians(contract, recipe):

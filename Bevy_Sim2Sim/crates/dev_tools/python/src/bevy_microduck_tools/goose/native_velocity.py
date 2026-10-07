@@ -305,9 +305,11 @@ def make_sole_walk_run_native_units_cfg(model_path, contract_path, *, course_sta
     This named profile delegates the installed loss after undoing the Actor's
     fixed output unit map. Other rewards, commands, genuine reset events,
     driver and physics are identical to the preserved v1 task. Fresh native
-    Actors use initialize_native_action_units. A retained public-action
-    checkpoint keeps its own output topology, sigma and Adam coordinates;
-    verify full restoration and action continuity before any physical Tick.
+    Actors use initialize_native_action_units. For a retained plain public
+    Gaussian, this reward mapping changes the v1 learning objective even
+    when its output topology, sigma and Adam are restored. An unchanged v1
+    resume uses make_sole_walk_run_task_cfg and checks the actual Actor with
+    require_matching_action_rate_coordinates before the first physical Tick.
     Previous policy qualifications do not transfer to this learning profile.
     """
     from .mature_training import native_physical_action_std

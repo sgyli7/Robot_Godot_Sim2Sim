@@ -14,6 +14,7 @@ REVISION = "goose_native_physical_actor_coordinates_v1"
 TRACKING_REVISION = "goose_native_tracking_physical_actor_coordinates_v1"
 DISTILLATION_REVISION = "goose_native_distillation_action_coordinates_v2"
 ACTION_RATE_REVISION = "goose_native_action_rate_coordinates_v1"
+ACTION_RATE_MATCH_REVISION = "goose_parent_action_rate_coordinate_match_v1"
 
 
 class PublicActionScale(torch.nn.Module):
@@ -80,6 +81,39 @@ def native_coordinate_action_rate_l2(env, public_action_scale):
     view = SimpleNamespace(action_manager=SimpleNamespace(
         action=manager.action/scale, prev_action=manager.prev_action/scale))
     return native_mdp.action_rate_l2(view)
+
+
+def require_matching_action_rate_coordinates(reward_term, actor):
+    """Check an unchanged-parent resume against its actual learning topology.
+
+    A retained plain Gaussian already learns in public action coordinates.
+    Dividing its histories by a fresh native unit map changes the objective;
+    restoring its weights, sigma and Adam does not restore that objective.
+    A deliberately remapped task remains possible, but cannot pass this
+    unchanged-coordinate check. This function never modifies the actor.
+    """
+    distribution = getattr(actor, "distribution", None)
+    mapped = isinstance(distribution, PublicUnitsGaussian)
+    if mapped:
+        output = actor.mlp[-1]
+        if (not isinstance(output, PublicActionScale)
+                or not torch.equal(output.public_action_scale,
+                                   distribution.public_action_scale)):
+            raise ValueError("Actor mean and Gaussian action unit maps disagree")
+        if reward_term.func is not native_coordinate_action_rate_l2:
+            raise ValueError("Mapped actor needs its original native action-rate coordinates")
+        values = reward_term.params.get("public_action_scale", ())
+        expected = distribution.public_action_scale
+        actual = expected.new_tensor(values)
+        if not torch.equal(actual, expected):
+            raise ValueError("Action-rate reward and actor unit maps disagree")
+        return "native_mapped"
+    if (type(distribution) is not GaussianDistribution
+            or any(isinstance(layer, PublicActionScale) for layer in actor.mlp)):
+        raise ValueError("Unknown parent action coordinate topology")
+    if reward_term.func is not native_mdp.action_rate_l2 or reward_term.params:
+        raise ValueError("Raw public parent needs its original public action-rate coordinates")
+    return "public_raw"
 
 
 def initialize_native_action_units(runner, contract):

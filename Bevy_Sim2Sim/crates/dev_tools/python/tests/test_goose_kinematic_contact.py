@@ -10,7 +10,8 @@ pytest.importorskip('scipy')
 from scipy.spatial.transform import Rotation
 
 from bevy_microduck_tools.goose.kinematic_contact import (
-    DisplacementCollisionLimit, GoosePlanningCollisionLimit, box_support_height)
+    DisplacementCollisionLimit, GoosePlanningCollisionLimit, box_support_height,
+    fresh_native_self_contact_depth)
 
 ROOT_BOX = '''<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .01"/>
 <body name="box" pos="0 0 .101"><freejoint/>
@@ -22,6 +23,56 @@ CHILD_BOX = '''<mujoco><worldbody><geom name="floor" type="plane" size="1 1 .01"
 <body name="box"><joint name="yaw" axis="0 0 1"/>
 <geom name="box_geom" type="box" size=".1 .1 .1" mass="1"/>
 </body></body></worldbody></mujoco>'''
+
+
+def test_native_validation_refreshes_empty_and_stale_mink_contacts_without_a_step():
+    model = mujoco.MjModel.from_xml_string('''<mujoco><worldbody>
+    <geom name="ground" type="plane" size="1 1 .01"/>
+    <body name="a" pos="0 0 1"><freejoint/>
+    <geom type="sphere" size=".1" mass="1"/></body>
+    <body name="b" pos=".5 0 1"><freejoint/>
+    <geom type="sphere" size=".1" mass="1"/></body>
+    </worldbody></mujoco>''')
+    cfg = mink.Configuration(model)
+    identity = [a.copy() for a in (model.geom_contype, model.geom_conaffinity,
+        model.geom_size, model.body_mass, model.body_inertia)]
+    assert fresh_native_self_contact_depth(model, cfg.data) == 0.
+    colliding = cfg.q.copy()
+    colliding[7] = .15
+    cfg.update(colliding)
+    # Kinematics moved the second sphere, but native contacts are still empty.
+    assert cfg.data.ncon == 0
+    cfg.data.time = 7.
+    cfg.data.qvel[:] = np.arange(model.nv)*.01
+    before = (cfg.q.copy(), cfg.data.qvel.copy(), cfg.data.time)
+    assert fresh_native_self_contact_depth(model, cfg.data) == pytest.approx(.05)
+    np.testing.assert_array_equal(cfg.q, before[0])
+    np.testing.assert_array_equal(cfg.data.qvel, before[1])
+    assert cfg.data.time == before[2]
+
+    separated = colliding.copy()
+    separated[7] = .5
+    cfg.update(separated)
+    # The inverse case must clear old overlap, rather than trusting ncon.
+    assert cfg.data.ncon > 0
+    assert fresh_native_self_contact_depth(model, cfg.data) == 0.
+    # Ground contact is deliberately a separate metric.
+    below_ground = separated.copy()
+    below_ground[2] = .09
+    cfg.update(below_ground)
+    assert fresh_native_self_contact_depth(model, cfg.data) == 0.
+    assert any(0 in (c.geom1, c.geom2) and c.dist < 0 for c in cfg.data.contact)
+    for current, original in zip((model.geom_contype, model.geom_conaffinity,
+            model.geom_size, model.body_mass, model.body_inertia), identity):
+        np.testing.assert_array_equal(current, original)
+
+
+def test_private_native_collision_validation_rejects_nonfinite_pose():
+    model = mujoco.MjModel.from_xml_string(ROOT_BOX)
+    cfg = mink.Configuration(model)
+    cfg.data.qpos[0] = np.nan
+    with pytest.raises(ValueError, match='Finite private planning pose'):
+        fresh_native_self_contact_depth(model, cfg.data)
 
 
 def private_displacement(xml, limit_type, dt):
