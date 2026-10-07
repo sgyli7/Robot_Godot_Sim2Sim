@@ -6,7 +6,9 @@ The named low-speed comparison additionally tests a dimensional tolerance
 mapping, without changing reward functions or weights.
 """
 import copy
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
@@ -35,6 +37,7 @@ REVISION = "goose_native_velocity_resume_v1"
 FORWARD_SCALE_REVISION = "goose_native_forward_tolerance_scale_v1"
 WALK_RUN_REVISION = "goose_native_walk_run_commands_v2"
 SOLE_WALK_RUN_REVISION = "goose_sole_walk_run_task_v1"
+SOLE_NATIVE_UNITS_REVISION = "goose_sole_walk_run_native_reward_units_v2"
 
 
 def track_root_com_linear_velocity(env, **kwargs):
@@ -289,4 +292,30 @@ def make_sole_walk_run_task_cfg(model_path, contract_path, *, course_start_step,
     cfg.rewards["pose"].params.update(std_standing={".*": .15},
         std_walking=moving_widths.copy(), std_running=moving_widths.copy(),
         walking_threshold=.01, running_threshold=.55)
+    return cfg
+
+
+def make_sole_walk_run_native_units_cfg(model_path, contract_path, *, course_start_step,
+                                       num_envs=256, seed=127,
+                                       development_initial_qpos=None):
+    """Keep the own-foot task, restore the native action-rate input coordinates.
+
+    This named profile delegates the installed loss after undoing the Actor's
+    fixed output unit map. Other rewards, commands, genuine reset events,
+    driver and physics are identical to the preserved v1 task. Fresh native
+    Actors use initialize_native_action_units. A retained public-action
+    checkpoint keeps its own output topology, sigma and Adam coordinates;
+    verify full restoration and action continuity before any physical Tick.
+    Previous policy qualifications do not transfer to this learning profile.
+    """
+    from .mature_training import native_physical_action_std
+    from .native_action_units import native_coordinate_action_rate_l2
+
+    cfg = make_sole_walk_run_task_cfg(model_path, contract_path,
+        course_start_step=course_start_step, num_envs=num_envs, seed=seed,
+        development_initial_qpos=development_initial_qpos)
+    term = cfg.rewards["action_rate_l2"]
+    term.func = native_coordinate_action_rate_l2
+    term.params = {"public_action_scale": native_physical_action_std(
+        json.loads(Path(contract_path).read_text()))}
     return cfg

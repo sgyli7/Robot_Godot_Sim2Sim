@@ -216,3 +216,46 @@ def test_sole_landing_memory_reset_only_affects_the_reset_worlds():
     reset_sole_landing_history(env, torch.tensor([1]))
     torch.testing.assert_close(peaks, torch.tensor([[.02, .03], [0., 0.], [.06, .07]]),
         atol=0, rtol=0)
+
+
+def test_native_units_profile_preserves_task_and_delegates_original_penalty(monkeypatch, tmp_path):
+    import json
+    import bevy_microduck_tools.goose.native_velocity as module
+    from bevy_microduck_tools.goose.artifacts import JOINT_ORDER
+    from bevy_microduck_tools.goose.mature_training import native_physical_action_std
+    from mjlab.envs import mdp
+
+    def base_cfg(*args, **kwargs):
+        return SimpleNamespace(observations={"actor": SimpleNamespace(
+            terms={"base": SimpleNamespace(func=None)})}, scene=SimpleNamespace(sensors=()),
+            metrics={}, events={})
+
+    monkeypatch.setattr(module, "make_development_env_cfg", base_cfg)
+    monkeypatch.setattr(module, "add_foot_sensors", lambda cfg, _: cfg)
+    contract = {"joint_order": list(JOINT_ORDER), "joints": [
+        {"name": name, "torque_peak_limit_nm": 4.+i,
+         "kp_nm_rad": 20.+i, "action_scale_rad": .1+.01*i}
+        for i, name in enumerate(JOINT_ORDER)]}
+    path = tmp_path/"contract.json"
+    path.write_text(json.dumps(contract))
+    original = module.make_sole_walk_run_task_cfg(Path("unused.xml"), path, course_start_step=0)
+    corrected = module.make_sole_walk_run_native_units_cfg(Path("unused.xml"), path,
+        course_start_step=0)
+    assert corrected.commands == original.commands
+    assert corrected.events == original.events
+    assert corrected.terminations == original.terminations
+    for name, term in corrected.rewards.items():
+        before = original.rewards[name]
+        assert term.weight == before.weight
+        if name != "action_rate_l2":
+            assert (term.func, term.params) == (before.func, before.params)
+    native = torch.arange(36, dtype=torch.float64).reshape(2, 18)/20
+    previous = native.flip(-1)/2
+    scale = native.new_tensor(native_physical_action_std(contract))
+    original_view = SimpleNamespace(action_manager=SimpleNamespace(
+        action=native, prev_action=previous))
+    public_view = SimpleNamespace(action_manager=SimpleNamespace(
+        action=native*scale, prev_action=previous*scale))
+    term = corrected.rewards["action_rate_l2"]
+    torch.testing.assert_close(term.func(public_view, **term.params), mdp.action_rate_l2(original_view))
+    torch.testing.assert_close(public_view.action_manager.action, native*scale, atol=0, rtol=0)
