@@ -26,6 +26,7 @@ from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity, variable_pos
 from mjlab.tasks.velocity.mdp.curriculums import commands_vel
 from mjlab.tasks.velocity.mdp.velocity_command import (
     UniformVelocityCommand, UniformVelocityCommandCfg)
+from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from .artifacts import JOINT_ORDER
 from .foot_curriculum import (
@@ -42,6 +43,7 @@ SOLE_NATIVE_UNITS_REVISION = "goose_sole_walk_run_native_reward_units_v2"
 SOLE_HEADING_REVISION = "goose_sole_native_heading_course_v1"
 SOLE_CONTACT_DOMAIN_REVISION = "goose_sole_walk_run_completed_contact_domain_v1"
 PREFERRED_POSTURE_REVISION = "goose_native_preferred_support_posture_v1"
+WHOLE_ROBOT_COM_REVISION = "goose_native_whole_robot_com_velocity_v1"
 
 
 class GooseNativePreferredPosture(variable_posture):
@@ -89,6 +91,46 @@ def track_root_com_linear_velocity(env, **kwargs):
     proxy = SimpleNamespace(scene={name: SimpleNamespace(data=data)},
         command_manager=env.command_manager)
     return track_linear_velocity(proxy, **kwargs)
+
+
+def track_whole_robot_com_linear_velocity(env, *, sensor_name, **kwargs):
+    """Feed native subtree COM velocity to the installed tracking formula.
+
+    The builtin subtreelinvel sensor supplies world velocity for the entire
+    robot, whereas root_com_lin_vel_b describes the rigid torso alone. Rotate
+    the sensor's canonical physics snapshot into the same root body frame.
+    Keep the upstream vertical error, tolerance and command semantics; neither
+    refresh live physics nor add this privileged measurement to the Actor.
+    """
+    name = kwargs.get("asset_cfg", SceneEntityCfg("robot")).name
+    asset = env.scene[name]
+    velocity = quat_apply_inverse(asset.data.root_link_quat_w,
+        env.scene[sensor_name].data)
+    proxy = SimpleNamespace(scene={name: SimpleNamespace(data=SimpleNamespace(
+        root_link_lin_vel_b=velocity))}, command_manager=env.command_manager)
+    return track_linear_velocity(proxy, **kwargs)
+
+
+def with_whole_robot_com_velocity_reward(cfg, *, root_body_name="torso"):
+    """Return a named opt-in measurement profile, preserving legacy configs.
+
+    Only the linear tracking input changes. All installed reward formulas,
+    coefficients, observations, drive settings and reset rules remain intact.
+    The entity-scoped sensor key is used exactly as mjlab registers it.
+    """
+    result = copy.deepcopy(cfg)
+    reward = result.rewards["track_linear_velocity"]
+    name = reward.params.get("asset_cfg", SceneEntityCfg("robot")).name
+    sensor = BuiltinSensorCfg(name="whole_robot_com_velocity",
+        sensor_type="subtreelinvel", obj=ObjRef(type="body",
+            name=root_body_name, entity=name))
+    if any(getattr(s, "prefixed_name", s.name) == sensor.prefixed_name
+            for s in result.scene.sensors):
+        raise ValueError("Whole-robot COM velocity sensor is already configured")
+    result.scene.sensors = (*result.scene.sensors, sensor)
+    reward.func = track_whole_robot_com_linear_velocity
+    reward.params["sensor_name"] = sensor.prefixed_name
+    return result
 
 
 def make_native_velocity_cfg(model_path, contract_path, *, num_envs=256,

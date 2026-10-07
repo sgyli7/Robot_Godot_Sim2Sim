@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import copy
 import json
+import math
 
 import torch
 import pytest
@@ -11,7 +12,8 @@ from mjlab.tasks.velocity.mdp.rewards import track_linear_velocity
 
 from bevy_microduck_tools.goose.native_velocity import (
     GooseNativePreferredPosture, GooseSoleWalkRunCommandCfg, make_sole_walk_run_task_cfg,
-    make_native_velocity_cfg, make_native_walk_run_cfg, track_root_com_linear_velocity)
+    make_native_velocity_cfg, make_native_walk_run_cfg, track_root_com_linear_velocity,
+    track_whole_robot_com_linear_velocity, with_whole_robot_com_velocity_reward)
 
 
 def preferred_posture_fixture(tmp_path):
@@ -122,6 +124,62 @@ def test_com_point_adapter_uses_the_original_reward_including_vertical_velocity(
         track_linear_velocity(expected, std=.5, command_name="velocity"), atol=0, rtol=0)
     assert torch.equal(data.root_link_lin_vel_b, before[0])
     assert torch.equal(data.root_com_lin_vel_b, before[1])
+
+
+@pytest.mark.parametrize("entity_name", ["robot", "goose"])
+def test_whole_com_reward_rotates_world_sensor_and_preserves_vertical_error(entity_name):
+    from mjlab.managers.scene_entity_config import SceneEntityCfg
+    half = 2**-.5
+    quaternion = torch.tensor([[half, 0., 0., half]])
+    world_velocity = torch.tensor([[.1, .2, .3]])
+    commands = torch.tensor([[.2, -.1, 0.]])
+    data = SimpleNamespace(root_link_quat_w=quaternion,
+        root_link_lin_vel_b=torch.tensor([[9., 8., 7.]]),
+        root_com_lin_vel_b=torch.tensor([[-9., -8., -7.]]))
+    key = entity_name+"/whole_robot_com_velocity"
+    env = SimpleNamespace(scene={entity_name: SimpleNamespace(data=data),
+        key: SimpleNamespace(data=world_velocity)},
+        command_manager=SimpleNamespace(get_command=lambda _: commands))
+    before = quaternion.clone(), world_velocity.clone()
+    result = track_whole_robot_com_linear_velocity(env, sensor_name=key,
+        std=.3, command_name="velocity", asset_cfg=SceneEntityCfg(entity_name))
+    # XY tracking is exact after a 90-degree inverse rotation; the native
+    # vertical penalty still makes the reward exp(-.3**2/.3**2), not one.
+    torch.testing.assert_close(result, torch.tensor([math.exp(-1.)]))
+    assert torch.equal(quaternion, before[0])
+    assert torch.equal(world_velocity, before[1])
+    assert torch.equal(data.root_link_lin_vel_b, torch.tensor([[9., 8., 7.]]))
+
+
+def test_whole_com_profile_is_opt_in_and_preserves_native_task(monkeypatch):
+    import bevy_microduck_tools.goose.native_velocity as module
+    cfg = SimpleNamespace(observations={"actor": SimpleNamespace(
+        terms={"base": SimpleNamespace(func=None)})}, scene=SimpleNamespace(sensors=()),
+        metrics={})
+    monkeypatch.setattr(module, "make_development_env_cfg", lambda *a, **kw: cfg)
+    monkeypatch.setattr(module, "add_foot_sensors", lambda c, p: c)
+    original = make_native_velocity_cfg(Path("unused.xml"), Path("unused.json"))
+    actual = with_whole_robot_com_velocity_reward(original)
+    assert original.rewards["track_linear_velocity"].func is track_root_com_linear_velocity
+    assert "sensor_name" not in original.rewards["track_linear_velocity"].params
+    assert len(actual.scene.sensors) == len(original.scene.sensors)+1
+    sensor = actual.scene.sensors[-1]
+    assert sensor.sensor_type == "subtreelinvel"
+    assert sensor.prefixed_name == "robot/whole_robot_com_velocity"
+    for name, term in actual.rewards.items():
+        assert term.weight == original.rewards[name].weight
+        params = dict(term.params)
+        if name == "track_linear_velocity":
+            assert term.func is track_whole_robot_com_linear_velocity
+            assert params.pop("sensor_name") == sensor.prefixed_name
+        else:
+            assert term.func is original.rewards[name].func
+        assert params == original.rewards[name].params
+    assert actual.observations == original.observations
+    assert actual.commands == original.commands
+    assert actual.terminations == original.terminations
+    with pytest.raises(ValueError, match="already configured"):
+        with_whole_robot_com_velocity_reward(actual)
 
 
 @pytest.mark.parametrize("course_start_step", [0, 512*24])
