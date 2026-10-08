@@ -44,6 +44,7 @@ SOLE_HEADING_REVISION = "goose_sole_native_heading_course_v1"
 SOLE_CONTACT_DOMAIN_REVISION = "goose_sole_walk_run_completed_contact_domain_v1"
 PREFERRED_POSTURE_REVISION = "goose_native_preferred_support_posture_v1"
 WHOLE_ROBOT_COM_REVISION = "goose_native_whole_robot_com_velocity_v1"
+FREE_MOVE_REVISION = "goose_native_body_frame_free_move_v1"
 
 
 class GooseNativePreferredPosture(variable_posture):
@@ -325,6 +326,34 @@ class GooseSoleWalkRunCommandCfg(UniformVelocityCommandCfg):
         return GooseSoleWalkRunCommand(self, env)
 
 
+class GooseFreeMoveCommand(GooseSoleWalkRunCommand):
+    """Native uniform commands with the existing declared reset inventory.
+
+    Retain the supported-state bank's warm-prefix/history fields. The
+    installed native sampler chooses all three velocities independently;
+    bucket IDs distinguish only native standing from moving worlds here.
+    They never select a direction, Actor or motion template.
+    """
+
+    @property
+    def course_stage(self):
+        return 0
+
+    def _resample_command(self, env_ids):
+        UniformVelocityCommand._resample_command(self, env_ids)
+        standing = self.is_standing_env[env_ids].clone()
+        self.sampled_commands[env_ids] = torch.where(standing[:, None],
+            torch.zeros_like(self.vel_command_b[env_ids]), self.vel_command_b[env_ids])
+        self.bucket_ids[env_ids] = (~standing).long()
+        self._apply_sampled_commands(env_ids)
+
+
+@dataclass(kw_only=True)
+class GooseFreeMoveCommandCfg(GooseSoleWalkRunCommandCfg):
+    def build(self, env):
+        return GooseFreeMoveCommand(self, env)
+
+
 def reset_sole_landing_history(env, env_ids):
     """Reset native reward memory for reset worlds, without a physics write.
 
@@ -423,6 +452,36 @@ def make_contact_bounded_sole_walk_run_cfg(model_path, contract_path, *,
     cfg.terminations["contact_domain_failure"] = TerminationTermCfg(
         func=rigid_contact_limit_exceeded, params={"max_depth_m": .005})
     return cfg
+
+
+def make_free_move_cfg(model_path, contract_path, *, num_envs=256, seed=127,
+                       development_initial_qpos=None):
+    """Train one Actor on independent body-frame translation and yaw commands.
+
+    Reuse the installed native uniform sampler instead of a fixed world
+    heading or discrete direction table. Its three axes may be nonzero
+    together. Zero commands are sampled by the native standing fraction.
+    The supported-state training reset and actual cold-start deployment
+    remain separate responsibilities of their existing runtime paths.
+
+    The physical plant, 65/18 interface and native reward formulas remain
+    unchanged. Explicit velocity tolerances match this smaller robot's
+    task scale; this is a new learning profile, not inherited qualification.
+    """
+    cfg = make_contact_bounded_sole_walk_run_cfg(model_path, contract_path,
+        course_start_step=0, num_envs=num_envs, seed=seed,
+        development_initial_qpos=development_initial_qpos)
+    cfg.commands = {"velocity": GooseFreeMoveCommandCfg(
+        entity_name="robot", resampling_time_range=(2., 4.),
+        rel_standing_envs=.2, heading_command=False,
+        rel_heading_envs=0., rel_world_envs=0., rel_forward_envs=0.,
+        init_velocity_prob=0., ranges=UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(-.15, .3), lin_vel_y=(-.1, .1),
+            ang_vel_z=(-.6, .6)))}
+    cfg.curriculum = {}
+    cfg.rewards["track_linear_velocity"].params["std"] = .15
+    cfg.rewards["track_angular_velocity"].params["std"] = .3
+    return with_whole_robot_com_velocity_reward(cfg)
 
 
 class GooseHeadingVelocityCommand(UniformVelocityCommand):

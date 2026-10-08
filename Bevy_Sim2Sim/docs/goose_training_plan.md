@@ -2,13 +2,18 @@
 
 版本：2026-10-07。独立实施分支：`codex/goose_move`。
 
-**现行范围：本聊天独立负责 Move。** 用户已将起身工作拆到其他聊天；本分支只负责站立、前后横移、转向、启停、0.4m/s稳定走路、接近0.7m/s尽可能快的跑步以及走跑模式切换。保留三小时最佳实际连续录像交付窗口（截至2026-10-07 16:57:01 UTC），按最新目标在十小时内推进可检验移动版本。未达到的能力直接报告；不等待其他聊天，不联系硬件/G1，不派额外Agent。
-
+**现行范围：本聊天独立负责 Move。** 用户最新目标为十小时内让 Goose 像 MicroDuck 一样自由移动，先完成快慢档、前后与侧移、原地转向和移动中转弯的统一操作版本。起身、拾物与其他聊天不在本分支派工中。原0.4/0.7m/s目标仍列为未通过速度档，不用请求速度或单项录像冒充实际能力；当前首先完成三轴组合覆盖与热切换。只推进本分支，不联系硬件/G1，不派额外Agent。
 本分支代码工作树：`/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim`。原工作树与恢复分支不改写；本分支临时实验、收据、录像集中在[Move产物](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001)。继承的历史状态另存[原计划快照](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/inherited_training_plan.md)。
 
-**当前实际结果（2026-10-08 01:07 UTC）。** 本聊天十小时目标窗口截至2026-10-08 01:09:36 UTC。原B本体、18轴驱动和65Actor接口保持，原始移动9份保护hash不覆盖。最新独立复验直行约0.14351m/s；左右移动—停止—转向—再移动固定程序各连续27秒。0.4/0.7m/s、0.6rad/s转向与完整走跑切换均未完成；本分支不承担起身或拾物。
+**当前实际结果（2026-10-08，自由移动重定向）。** 原保护直行051/128约0.14351m/s，原左右转向和固定组合不覆盖用户自由操作。078已核验实际MicroDuck016 Walking ONNX与合同SHA、输入源码：W/S前后、Q/E侧移、A/D转向，三个轴可同时输入；MD原训练版本不可准确追溯，不声称完整源复现，更不把61/14权重装到Goose65/18。
 
-**现行顺序。** GPU批次全部结束，保护第051/128直行、036/128及028/512旧前进、原站立和019/022左右转向。062/064/068/072/074受控短训均未交付更好的公开版本；不自动晋升最终检查点，不重复同一MLP或5帧历史短训。当前选择一个全局问题：复用已能连续12步的Mink/原生MuJoCo链路，建立较快步幅的连续动力学Teacher见证，先检查在原驱动、碰撞和50Hz下能否合法实现更快步态，再决定成熟模仿/PPO学习或有证据的局部结构修改。Teacher只输出电机目标，实际原冷出生→S站立启动；不得写本体位姿、隐藏积分、重置身体/驱动来修轨迹。期间保留已验证移动/转向，目标0.4/0.7、完整输入切换和Bevy资格仍未过。历史“解锁问题”不是当前派工。
+**现行顺序。** 暂停本轮尚未执行的IK扩展。078按直接机身三轴、不覆写玩家yaw、同一Actor处理松键停止，对四份保护Actor各10例实测，共17605真实CPU积分/ONNX/FK；无一份满足统一自由移动，023虽然40项中的自己10项物理完成，但几乎原地，不能记能力通过。新生产 `make_free_move_cfg` 复用安装的UniformVelocityCommand独立三轴采样，保留原站立50Tick及完整reset状态库存、原11叶/21体/18轴驱动、65Actor/69Critic与50Hz；没有新增奖励公式，仅明确适配原生线/角速度误差尺度.15m/s/.3rad/s。命令与旧固定世界航向任务分开命名，旧配置、策略和证据不覆盖。
+
+**081完成，统一移动未通过；084正在做MicroDuck运动追踪对照。** 081完成18,874,368真实GPU积分/768PPO/15,360Adam、683.15秒；四检查点各11条直接机身指令与连续热切换独立实测，共29,702CPU积分，43条物理完成，但没有一份Actor满足冻结功能门槛。第256前进约0.11696m/s，后退、侧移和转向几乎原地；后期退回站立，不晋升、不覆盖保护基线。源端开发小链不是完整M0-S或Bevy资格，Goal保持未完成。
+
+084复用已冻结MicroDuck工作流的0.2秒已完成运动EMA、平面线速度及完整角速度跟踪公式；仅把MD单刚体速度测量改接Goose整机COM原生传感器，不使用MD权重，不继承其训练原始版本资格。原11叶/21体/18轴、50Hz/一次积分、65Actor/69Critic、原动作、物理及稳定性惩罚不改。083实际轨迹只读比较显示当前瞬时角速度追踪信号受摆动压低，它不是已证明的唯一根因。34项当前栈回归通过；084八世界链192GPU积分/1PPO/20Adam，24个实际奖励Tick逐项与冻结MD函数对照最大差4.77e-7、ONNX误差5.96e-8。084主批1024世界/768PPO、最多900秒，以082已预先冻结的功能标准评估；两次对照不改善便收口该局部路径。保护051/036/028、站立及019/022，不自动晋升latest。旧reset误标签及084链路的奖励公式文字误标签各自留勘误，执行代码和原收据保留。
+
+[三轴对齐/实测](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/microduck_command_alignment_078/comparison.json)、[081协议](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/ppo_native_free_move_081/protocol.json)、[冻结功能评估](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/free_move_independent_evaluation_082/comparison.json)、[084协议](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/ppo_md_motion_free_move_084/protocol.json)。历史“解锁问题”不是当前派工。
 
 - **第051/128独立复验直行。** 原冷出生→原站立Actor真实50Tick→新Actor，22秒实际世界前向0.14350695m/s，位移X+2.941m/Y−0.402m、偏航−0.05615rad，最大穿地3.548mm、最低直立度0.983；8秒移动后停止1秒速度0.02074m/s，后3秒漂移4.69mm。五例另进程4350积分/4350ONNX/4350私有FK全部记录字段逐位一致。0.7指令实际仅0.105m/s且绕偏，停止1秒0.05296m/s未过；不授予跑步。原生航向目标只通过公开yaw指令提供，Actor仍65维。[冻结清单](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/whole_com_straight_baseline_056/manifest.json)。
 - **第053/054组合程序已保护。** 零指令在前进后选择原站立Actor，在转向后保留该转向Actor处理自己的停止；各留1秒实际中性控制，身体/动作/驱动历史不重置。左右两条27秒连续程序各1350Tick通过物理门槛；快切左右405Tick穿地6.08mm失败。另进程3105Tick逐字段逐位一致，不授予完整切换或0.6rad/s资格。[组合清单](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/source_move_capabilities_054/manifest.json)、[左转组合录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/source_move_capabilities_visuals_055/move_stop_left_turn_move_stop_27s_continuous.mp4)、[右转组合录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/source_move_capabilities_visuals_055/move_stop_right_turn_move_stop_27s_continuous.mp4)。录像只渲染实际连续轨迹，零额外积分。
