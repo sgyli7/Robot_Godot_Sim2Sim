@@ -1,15 +1,23 @@
 # Goose V0.1｜Move 训练计划
 
-版本：2026-10-07。独立实施分支：`codex/goose_move`。
+版本：2026-10-08。独立实施分支：`codex/goose_move`。
 
 **现行范围：本聊天独立负责 Move。** 用户最新目标为十小时内让 Goose 像 MicroDuck 一样自由移动，先完成快慢档、前后与侧移、原地转向和移动中转弯的统一操作版本。起身、拾物与其他聊天不在本分支派工中。原0.4/0.7m/s目标仍列为未通过速度档，不用请求速度或单项录像冒充实际能力；当前首先完成三轴组合覆盖与热切换。只推进本分支，不联系硬件/G1，不派额外Agent。
 本分支代码工作树：`/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim`。原工作树与恢复分支不改写；本分支临时实验、收据、录像集中在[Move产物](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001)。继承的历史状态另存[原计划快照](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/inherited_training_plan.md)。
+
+**当前执行与最新证据（2026-10-08，148/153/155）。** 148从实际0.24m/s的141/512继续同一原生PPO课程，完成12582912 GPU积分、512PPO、10240Adam、870.36秒，无批级数值失败。153独立五检查点14780真实CPU积分；末512的8/20秒速度为0.2716/0.2703m/s，冷启动、停止和再启动通过物理/停止检查，但0.4速度门槛仍未通过。当前155继续这一有改善的课程，不改本体、奖励、Gaussian或输入编码；156把0.27快档接回受保护的慢档/双向转向组合，正在独立检查热切换，未检查通过前不替换143。[148训练收据](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/ppo_forward04_continuation_148/pilot/receipt.json)、[153独立评估](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/forward_continuation_eval_153/independent_comparison.json)。
+
+151步频时钟对照收口：原1.2Hz的3150Tick状态、观测、动作、力矩和接触与145逐位一致；1.8/2.4Hz降低速度并穿地失败，总4740CPU积分，不投入GPU续训。147左弧线PPO完成12582912GPU积分，但149末检查点同时运动比例仅0.5533/0.5733，部分停止失败，不晋升。154实测更强的前进Actor在后退/侧移指令下仍近乎静止，0.7指令第78Tick自碰撞失败；2028CPU积分不能证明硬件不可行。开发工具[停止选择器](/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim/crates/dev_tools/python/src/bevy_microduck_tools/goose/move_supervisor.py)已用143的14731条真实命令/角色记录验证等价与暂停序列化，新增积分为零，该验证不授予物理资格。[151收口](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/phase_clock_ramp_preflight_151/closure.json)、[152选择器回归](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/production_stop_selector_regression_152/receipt.json)。以下为历史证据，不作为新的派工。
+
+**现行成果与派工（2026-10-08，143/141）。** 143具名开发组合保住约0.14/0.20m/s两档、约±0.3rad/s纯转、右弧线及启停；13条独立程序共15381真实CPU积分，11条通过原冻结开发门槛。慢→快→慢、左转→停→右转→停、60秒直行后停止、左右各20秒转向后停止均通过。零指令时显式按上一次非零用户指令类别选择停止Actor（平移0.25动作历史系数、纯转0.75），不读取速度/穿透等验收指标；公开65→18、每Tick一个网络/一次20ms积分不变。左弧线同时运动比例0.5867仍低于0.6；全动作连续串接第1781Tick穿地5.329mm，失败保留。0.4/0.7、后退/侧移、200例总体及Bevy资格均未通过，不能将此开发组合称为完整MicroDuck对齐。[143独立收据](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/command_history_stop_supervisor_143/evaluate_supervised136/receipt.json)、[快慢切换连续录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/mode_switch_visuals_144/slow_fast_slow_stop_29s_continuous.mp4)、[左右转向连续录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/mode_switch_visuals_144/left_stop_right_stop_25s_continuous.mp4)。
+
+141以保留133/128函数和原生PPO固定学习率5e-5，完成12582912 GPU积分/512 PPO/10240 Adam、756.91秒；145五检查点独立15750 CPU积分，末512的8/20秒前进约0.2413/0.2399m/s、停止及再走物理完成，仍未达到0.4功能门槛。这个方向有实际改善，下一批148继续同课程，不重复改变Gaussian或编码器；147同时从原051的有效左弧线函数进入原生PPO，待GPU依次执行与独立验收。保护143/112/119及旧原件，不加载latest。131/138两次侧移反馈参数搜索均只得到毫米每秒级位移，收口；137仅是实际站姿的静态FK可达性证据，不能据此授予侧移或硬件不可行结论。源端开发小链不继承完整M0-S，目标M0-T与Bevy仍未授予资格。
 
 **当前实际结果（2026-10-08，自由移动重定向）。** 原保护直行051/128约0.14351m/s，原左右转向和固定组合不覆盖用户自由操作。078已核验实际MicroDuck016 Walking ONNX与合同SHA、输入源码：W/S前后、Q/E侧移、A/D转向，三个轴可同时输入；MD原训练版本不可准确追溯，不声称完整源复现，更不把61/14权重装到Goose65/18。
 
 **现行顺序。** 暂停本轮尚未执行的IK扩展。078按直接机身三轴、不覆写玩家yaw、同一Actor处理松键停止，对四份保护Actor各10例实测，共17605真实CPU积分/ONNX/FK；无一份满足统一自由移动，023虽然40项中的自己10项物理完成，但几乎原地，不能记能力通过。新生产 `make_free_move_cfg` 复用安装的UniformVelocityCommand独立三轴采样，保留原站立50Tick及完整reset状态库存、原11叶/21体/18轴驱动、65Actor/69Critic与50Hz；没有新增奖励公式，仅明确适配原生线/角速度误差尺度.15m/s/.3rad/s。命令与旧固定世界航向任务分开命名，旧配置、策略和证据不覆盖。
 
-**统一移动未通过；现行105从103/384改进直行继续接入MD九方向课程。** 081完成18,874,368真实GPU积分/768PPO/15,360Adam、683.15秒；四检查点各11条直接机身指令与连续热切换独立实测，共29,702CPU积分，43条物理完成，但没有一份Actor满足冻结功能门槛。第256前进约0.11696m/s，后退、侧移和转向几乎原地；后期退回站立，不晋升、不覆盖保护基线。源端开发小链不是完整M0-S或Bevy资格，Goal保持未完成。
+**统一移动未通过；当前保护112的走停再走，119从有效转向函数初始化原生PPO。** 081完成18,874,368真实GPU积分/768PPO/15,360Adam、683.15秒；四检查点各11条直接机身指令与连续热切换独立实测，共29,702CPU积分，43条物理完成，但没有一份Actor满足冻结功能门槛。第256前进约0.11696m/s，后退、侧移和转向几乎原地；后期退回站立，不晋升、不覆盖保护基线。源端开发小链不是完整M0-S或Bevy资格，Goal保持未完成。
 
 084复用已冻结MicroDuck工作流的0.2秒已完成运动EMA、平面线速度及完整角速度跟踪公式；仅把MD单刚体速度测量改接Goose整机COM原生传感器，不使用MD权重，不继承其训练原始版本资格。原11叶/21体/18轴、50Hz/一次积分、65Actor/69Critic、原动作、物理及稳定性惩罚不改。34项当前栈回归通过，八世界链192GPU积分/1PPO/20Adam，24实际奖励Tick与冻结MD函数最大差4.77e-7。084主批18,874,368GPU/768PPO/15,360Adam、679.47秒；独立30,013CPU积分，42/44条物理完成、功能门槛零通过。086改为单轴左侧移课程，同数量GPU更新、806.80秒；四检查点29,678CPU积分，41/44条物理完成、功能门槛零通过，最终侧移约0.001m/s。两次广范围对照和该单侧课程均已收口，不重复同条件重训。保护051/036/028、站立及019/022，不自动晋升latest；旧误标签留勘误。
 
@@ -29,9 +37,19 @@
 
 103保持100全部课程/奖励/编码器、原051均值权重/Critic/Adam/物理，只将18轴原生log-sigma显式加log(0.25)，随后仍由原生PPO学习；不是保留原Gaussian函数。主批12,582,912GPU/512PPO/10,240Adam、349.81秒，有限失败重置22,872次，100同量为60,613次；该下降不是完整资格。四检查点101独立44,757CPU积分，60/92条物理完成，第256/384各一个直行程序通过开发功能门槛，其余方向未过。384的0.2指令实际0.190872m/s、偏航−0.018862rad/s，停止1秒0.031394m/s、随后3秒漂移8.20mm；已具名哈希保护，不用最后512替代。104三份实际连续对照录像已生成并查看原噪声失败抽帧，零额外积分。累计台账407,371,776GPU样本仅为25份已结束短谱系统计，不是一份收敛策略或能力证明。
 
-**当前105：复用MD等概率九方向，并保留103/384。** 生产适配只替换命令采样：原MD九模板、每桶1/9、幅度0.75–1.25；保留Goose真实50Tick站立前缀、历史/重置、原生2–4秒命令计时，65/69/18、50Hz、本体/驱动/奖励与父Actor/Critic/Adam及已降低Gaussian均保持，不再把vx编码器缩放第二次。42项回归通过；八世界链192GPU/1PPO/20Adam，四次实际CUDA随机采样与冻结MD类体完全一致、24Tick奖励误差4.77e-7。当前最多900秒1024世界/512更新pilot，以101同23条直接机身指令与热切换程序独立评估；原0.4/0.7仍未过。
+**105已收口：复用MD等概率九方向，未补出缺失方向；保留103/384。** 生产适配只替换命令采样：原MD九模板、每桶1/9、幅度0.75–1.25；保留Goose真实50Tick站立前缀、历史/重置、原生2–4秒命令计时，65/69/18、50Hz、本体/驱动/奖励与父Actor/Critic/Adam及已降低Gaussian均保持，不再把vx编码器缩放第二次。42项回归通过；八世界链192GPU/1PPO/20Adam，四次实际CUDA随机采样与冻结MD类体完全一致、24Tick奖励误差4.77e-7。主批已完成12,582,912GPU/512PPO/10,240Adam、521.71秒；四检查点独立45,962CPU积分，14/16/16/16条物理完成，只有旧直行功能通过，侧移/后退/原地转向未补出，收口；原0.4/0.7仍未过。
 
 106已将103/384另进程复验：20/60秒直行分别约0.189915/0.189823m/s，完整物理合法，但长段停止仍未过；8秒走→停→再走时第二段未继续移动，快慢热切也未过。两进程各6800积分、记录全部字段逐位一致，13600积分不授予连续自由移动资格。当前Pose实际walking_threshold=0.01、腿宽0.35rad，不误拿上游G1默认0.5/.05阈值来诊断本配置，也不照抄更窄MD0.12作为放宽。
+
+**112–120现行收口与解锁问题。** 112只在零指令选原Goose站立策略的0.5动作历史混合，非零仍是逐位相同的103/384输出；一个65→18 ONNX If每Tick只执行所选网络，不改本体、驱动、历史或时间步。20/60秒直行后停止与走停再走三条开发程序通过；两独立进程各6800积分、全部记录字段逐位一致，具名保护。113原输入0.14/0.20m/s分别实际约0.14165/0.19087m/s，3250CPU积分五例均物理完成；快慢热切换、200例总体资格和原0.4/0.7仍未过。实际25秒走停再走录像已生成并检查，渲染没有新增物理或推理。
+
+109/110使用安装的RSL-RL Distillation、RolloutStorage和原生MSE单位视图，四份实际合法Goose轨迹2580个标签，120更新/5160Adam、38.18秒、零新增物理；五检查点独立29,003CPU积分，未补出转向，关闭。111从保护父权重运行原生在线蒸馏，八世界链240GPU/1更新/2Adam，教师与原ONNX最大差5.96e-8；主批3,932,160真实GPU/512蒸馏更新/1024Adam、457.51秒，每Tick只应用学生动作，教师另计为训练标签推理。114四检查点独立41,555CPU积分，只保留前进，转向仍未过，关闭；它不是PPO样本或完全M0-S资格。
+
+116用一个公开ONNX条件执行已保留Goose直行/左右转向/零指令站立网络，14745CPU积分，单独0.14/0.20前进及左右转向的真实行为仍在，不能把组合权重当完整热切换资格。117十二组仅髋偏航输出的有界反馈对照，15600CPU积分、物理全程完成但移动转弯未过，关闭、不改引擎。118对116失败轨迹继续执行原Actor和原命令作诊断：2150实际Tick只有一个Tick超5mm（5.108mm），随后自行恢复；首个验收失败保留，未授予资格。
+
+119现行问题是直接从有效转向函数进入标准原生PPO，避免再依靠不成功的蒸馏。以原S隐藏权重、已验证019正转向仿射控制和原生ELU非负恒等通道初始化标准RSL MLP；公开65→18、所有单位及本体不变，内部71个编码量只包含原有gyroX/gyroZ/yaw指令的正负拆分，没有新增传感器或私有Actor输入。58个实际正转状态的施加动作与冻结108最大差1.79e-7，ONNX均值差2.09e-7，零优化/零物理；它只准入正向纯转角色，零指令由原站立策略显式处理，不能冒称全域等价。更换首层后必须重新建立原生Adam并验证所有参数引用，不继承旧优化器；新native sigma为0.25，不声称保留原教师Gaussian。先120独立闭环与GPU小链，再最多900秒正转pilot；旧直行/转向保护件不覆盖。
+
+[112保护清单](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/source_move_stop112_protected_manifest.json)、[走停再走录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/source_move_stop_visuals_115/source112_forward_stop_restart_25s_continuous.mp4)、[119函数初始化收据](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/exact_turn_native_initialization_119/build_receipt.json)。
 
 [103/384保护清单](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/forward_q103384_protected_manifest.json)、[105冻结九方向协议](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/ppo_md_balanced_commands_105/protocol.json)、[106独立长段复验](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/improved_forward_baseline_106/independent_replay_receipt.json)。
 
