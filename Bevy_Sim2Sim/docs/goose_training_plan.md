@@ -6,7 +6,7 @@
 
 **最新用户授权：另建200Hz源端快跑候选，尝试达到0.7m/s。** 策略及数字驱动目标/历史仍50Hz，四次真实5ms积分；原50Hz默认、Actor基线及Bevy目标保持。该追加速度课程独立于四频相同课程的因果实验，不把新增课程成绩归入频率单变量比较。根主线自行实施，串行使用GPU。
 
-**当前派工：首轮200Hz低速pilot未形成步态，不晋升。下一份具名短对照从保留148前进策略承接，复用其fixed5e-5学习配方，直接加入0.4/0.55/0.7命令。** 先测父策略200Hz，再训练、独立测候选200Hz和50Hz；不以此声称中间课程已通过。当前GPU归独立频率研究seed3103，其批次自然结束后接入约8分钟主线窗口。
+**当前派工：200Hz高速追加短对照已完成，不晋升或覆盖旧基线。** 保留148父策略、fixed5e-5与0/.4/.55/.7课程完成256更新；200Hz六程序×八银行出生物理48/48、行为0/48，0.4实速0.3028m/s、0.7实速0.2917m/s。50Hz迁移物理2/48，行为0/48。下一问题是高速请求为何没有带来步态幅值/节奏的相应变化，先核查课程、奖励分项和动作限制，不重复同条件长训。两份连续录像、原始失败与资源收据已冻结；GPU已释放给独立频率研究的能力/迁移评估。
 
 代码工作树为`/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim`。临时模型、脚本、录像、收据及构建均落[Move备份目录](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001)。原工作树和恢复分支不改写。
 
@@ -81,7 +81,13 @@
 
 独立评估修正另名v3：手工新命令须重新读取原无历史Actor组，缓存compute(False)不能代表新指令；NumPy结果须显式转换JSON。原评估与两次失败保留（0积分、32积分），训练、物理、案例及门槛保持。评价刚体能量未计armature，不作完整能量结论。首轮含接线和评估共13,226,944 GPU积分、257 PPO/5,140 Adam；正式200例、真冷启动和Bevy均未授予资格。
 
-[第二份冻结协议](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/fast148_run70_002/protocol_v2.json)固定自己的148/updates512.pt（0eb265c3…），CPU装载及Torch/ONNX最大差5.22e-8通过。保留Actor/Critic/高斯/归一化/Adam及原fixed5e-5配方；原生PPO、奖励和200Hz本体与首轮保持。新命令桶为0/.4/.55/.7各25%，512世界×256更新，先测父策略200Hz，再测新Actor200Hz与50Hz。直接run70暴露是未晋升的诊断，不继承课程资格，也不进入四频单变量因果对照。GPU研究运行期间仅CPU准备与录像，待seed3103自然完成接入。
+[第二份冻结协议](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/fast148_run70_002/protocol_v3.json)固定自己的148/updates512.pt（0eb265c3…），CPU装载及Torch/ONNX最大差5.22e-8通过。保留Actor/Critic/高斯/归一化/Adam及原fixed5e-5配方；原生PPO、奖励和200Hz本体与首轮保持。新命令桶为0/.4/.55/.7各25%。v3仅修正v2接线证明中父频率的文字，原v2收据保留；实际父权重与学习/物理语义未改。
+
+[第二轮报告](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/second_pilot_closeout_002/report.md)与[103文件冻结清单](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/second_pilot_closeout_002/manifest.json)记录512世界×256更新、12,582,912真实GPU积分、3,145,728控制决策、5,120 Adam及241.25秒。200Hz父策略物理8/48→新Actor48/48，0.4实速0.2685→0.3028m/s；0.7平均0.2917、60秒段0.2806m/s，仍偏航。48例停止阶段均通过，但行为0/48。0.27实速0.2300→0.1255，不能声称保留全部低速能力。50Hz物理仅2/48；其余46例首次失败都含穿地>5mm，0.4/0.7各八例分别在0.66/0.80秒结束，未迁移成功。
+
+[30秒0.4→0.7→0.4→停止连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/videos/speed_switch_from148_200hz_002/continuous.mp4)、[12秒0.7指令失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/videos/run70_from148_200hz_002/continuous.mp4)来自完整真实保存轨迹，无重置/拼接/回滚/换Actor。1,200次离线私有FK确认确实交替迈步；三速度档主要节奏约1.17Hz，0.7的摆幅没有成比例增加。这是已学策略的描述，不是相位硬限制或硬件最大速度证明。本轮没有同条件50Hz续训臂，不将增益因果归于升频；直接run70暴露也不代表中间课程晋升。
+
+第二轮含参考/接线/两层评估13,342,080 GPU、257 PPO/5,140 Adam；与首轮合计26,569,024 GPU、514 PPO/10,280 Adam，[两轮独立账本](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/second_pilot_closeout_002/combined_local_resource_ledger.json)。不重计148或子研究。独立频率研究12臂已经训练完成，320,864,256 GPU、6,144 PPO/122,880 Adam；目前进行自身频率、共同50Hz与真冷启动测试，正式学习/迁移结论尚未收口。银行与训练共享、确定性Torch已核对ONNX；本轮不授予完整M0-S、正式200例、ONNX独立运行或Bevy资格。
 
 ## 已收口训练路线
 
