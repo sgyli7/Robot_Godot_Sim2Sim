@@ -39,7 +39,8 @@ def require_upstream_stack():
 def require_candidate_stack(contract):
     """Dispatch an explicit named plant; never relax the original baseline."""
     from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
-    if contract["candidate"] == DISCRETE_CANDIDATE:
+    from .native_actuator_calibration import CANDIDATE as CALIBRATED_CANDIDATE
+    if contract["candidate"] in (DISCRETE_CANDIDATE, CALIBRATED_CANDIDATE):
         from .upstream_discrete_mjlab import require_upstream_stack as require_discrete_stack
         require_discrete_stack()
     else:
@@ -175,7 +176,10 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
         make_source_runtime as make_rigid_runtime)
     from .upstream_discrete_mjlab import (CANDIDATE as DISCRETE_CANDIDATE,
         make_source_runtime as make_discrete_runtime)
-    is_discrete = contract["candidate"] == DISCRETE_CANDIDATE
+    from .native_actuator_calibration import (CANDIDATE as CALIBRATED_CANDIDATE,
+        make_source_runtime as make_calibrated_runtime)
+    is_calibrated = contract["candidate"] == CALIBRATED_CANDIDATE
+    is_discrete = contract["candidate"] == DISCRETE_CANDIDATE or is_calibrated
     is_rigid = contract["candidate"] in RIGID_CANDIDATES or is_discrete
     from .speculative_contact import PREDICTION_CANDIDATES, REVISION as PREDICTION_REVISION, validate_prediction
     is_prediction = contract["candidate"] in PREDICTION_CANDIDATES
@@ -187,7 +191,8 @@ def make_entity_cfg(model_path: Path, contract_path: Path):
         raise ValueError("Explicit native mjlab reference required")
     model = mujoco.MjModel.from_xml_path(str(model_path))
     if is_discrete:
-        make_discrete_runtime(model_path, contract_path)  # Full identity,0 integrals.
+        runtime_factory = make_calibrated_runtime if is_calibrated else make_discrete_runtime
+        runtime_factory(model_path, contract_path)  # Full identity,0 integrals.
     elif is_rigid:
         if contract["candidate"] not in MJLAB_CANDIDATES:
             raise ValueError("Explicit rigid mjlab candidate without C-only flags required")

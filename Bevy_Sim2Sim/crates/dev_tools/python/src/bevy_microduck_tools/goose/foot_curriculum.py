@@ -114,8 +114,9 @@ def rigid_collision_depth(env):
 
     if not hasattr(env, "_goose_rigid_support"):
         from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
+        from .native_actuator_calibration import CANDIDATE as CALIBRATED_CANDIDATE
         contract = json.loads(env.cfg.actions["goose"].contract_path.read_text())
-        if contract["candidate"] == DISCRETE_CANDIDATE:
+        if contract["candidate"] in (DISCRETE_CANDIDATE, CALIBRATED_CANDIDATE):
             from .native_geometry315 import collision_geom_vertices
         else:
             from .native_geometry import collision_geom_vertices

@@ -2,7 +2,7 @@
 
 版本：2026-10-08。独立分支：`codex/goose_move`。
 
-**当前状态：取得部分源端能力，完整任务未完成。** 本聊天只负责Move，不推进起身或拾物，不联系其他聊天，不派Agent。目标保持：走路0.4m/s、Shift跑步0.7m/s，前后／侧移／双向原地转向／移动中转向／启停及任意切换，操作与MicroDuck三轴组合对齐。不能以请求速度、单段录像或开发小集代替这些资格。
+**当前状态：取得部分源端能力，完整任务未完成。** 本聊天只负责Move，不推进起身或拾物，不联系其他聊天，不派Agent。目标保持：走路0.4m/s、Shift跑步0.7m/s，前后／侧移／双向原地转向／移动中转向／启停及任意切换，操作与MicroDuck三轴组合对齐。不能以请求速度、单段录像或开发小集代替这些资格。最新196回归确认原176的16条程序全部保存字段逐位一致，仍为12/16通过；188增益候选独立保存，不替换143/176。
 
 代码工作树为`/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim`。临时模型、脚本、录像、收据及构建均落[Move备份目录](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001)。原工作树和恢复分支不改写。
 
@@ -24,13 +24,23 @@
 
 175核对21,800条真实命令／相位记录，8次相位事件和167次状态序列化恢复一致；12条未触发新逻辑的程序与原156所有保存字段逐位一致。176使用实际生产模块重新执行21,800真实CPU积分／推理／私有FK查询，全部轨迹与173逐位一致，[接线回归收据](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/production_hot_turn_integration_176/integration_regression.json)。0.27候选60秒行走后的停止速度0.0489m/s仍超过0.04门槛；转向后接弧线也仍失败，所以保留原默认。178低速版本复核保住原11/13通过项，却在新冷快→左转中失败；不授予任意热切换资格。
 
+## 最新物理诊断与独立对照
+
+[197收口报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/gain_calibration_closeout_197/report.md)固定本轮代码、模型、训练与失败收据。182实际GPU训练记录到饱和踝滚转在一个20ms步内由0.279rad到1.044rad、速度38.26rad/s；185的原生CPU单步复现。该版本原生执行器在力矩饱和时不保留隐式增益导数，不能仅凭启用隐式位置驱动认为所有轴在50Hz下都已校准。签名制动已启用，此事件并非遗漏反向制动。
+
+具名开发本体`goose_task_proxy_11_discrete_ankle_kp10_v1`仅将左右踝滚转位置增益20→10Nm/rad，阻尼、力矩、速度、惯量、几何、接触、积分与公共65→18合同均保持；原本体和策略不改写。189实际8世界×50GPU步站立筛查通过，不等于完整M0-S。190与182同父策略、种子、奖励、课程和探索量对照，各完成3,145,728GPU步／128PPO：关节越限终止39,803→1,203，接触终止42,267→22,624，但这些是可重叠的终止原因计数，不是能力资格。
+
+191对16/64/128三个检查点独立执行8,100CPU步；24个方向案例均完成物理区间，侧移、后退和左右弧线均未通过。64检查点只有前进段达到开发指标，尚无停止闭环资格。194足底刚度和195踝俯仰增益各12事件单步对照未解决脚底穿透；两条调参路线收口，不继续网格搜索或同条件加长训练。[真实GPU踝越限连续录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/saturated_ankle_failure_visuals_192/actual_saturated_ankle_failure_continuous.mp4)保留全部59个20ms样本，属于带探索噪声的训练失败，不冒充确定性ONNX能力。
+
+196用当前生产模块、原模型和原Actor重跑21,800CPU积分／ONNX调用／私有FK；16程序全部保存字段与176逐位一致，原12/16通过项保留，[回归收据](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/protected_move_baseline_regression_196/regression.json)。193的增益机制、身份拒绝和原模型测试11项通过。当前证据定位了一个实际驱动失效机制，但尚未证明它是全部移动瓶颈，也不能据此断言结构无法行走。
+
 ## 训练路线与已收口对照
 
 主线仍为统一MJCF、原生MuJoCo、mjlab／Warp／RSL-RL，然后独立Rapier／Bevy迁移。MD016的输入、合同和已有奖励源码已核对；学习其工作流和任务定义，不把61→14权重装到Goose65→18，也不声称复现无法追溯的原完整训练。
 
 实际训练停止覆盖不足已定位：155的8个保存世界97,976Tick只出现7次移动转零、保持中位4Tick；恢复成熟2–4秒命令重采样后，162的92,160Tick有51次、中位75Tick。覆盖改善，但独立行为未通过，不覆盖148。165三轴课程完成11,796,480GPU积分／480PPO／9,600Adam，655.65秒；五检查点75条程序共47,329CPU积分，未获得合格新方向，[收口结论](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/continuous_axes_independent_eval_166/closure.json)。155未改善续训、147／158左弧线、151提步频及165同条件路线均已收口，不重复盲加长。
 
-[累计资源账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/completed_move_ppo_resource_ledger.json)记录35个完成的短主批、531,628,032GPU积分、22,592PPO、451,840Adam及约5.86小时批次计时；这是多个策略分支，不是单个已收敛训练或仅本轮十小时的统计。155中断批另列，链路、CPU、搜索与录像不混计。
+[累计资源账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/completed_move_ppo_resource_ledger.json)记录37个完成的短主批、537,919,488GPU积分、22,848PPO、456,960Adam及约5.93小时批次计时；这是多个策略分支，不是单个已收敛训练或仅本轮十小时的统计。155中断批另列，链路、CPU、搜索与录像不混计。
 
 ## 固定合同与后续门槛
 

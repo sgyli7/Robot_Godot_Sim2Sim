@@ -261,7 +261,8 @@ class GooseDevelopmentEnv(ManagerBasedRlEnv):
         contract = _read_native_contract(action.model_path, action.contract_path)
         require_candidate_stack(contract)
         from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
-        if contract["candidate"] == DISCRETE_CANDIDATE:
+        from .native_actuator_calibration import CANDIDATE as CALIBRATED_CANDIDATE
+        if contract["candidate"] in (DISCRETE_CANDIDATE, CALIBRATED_CANDIDATE):
             from .upstream_discrete_mjlab import DiscreteMujocoCfg
             if not isinstance(cfg.sim.mujoco, DiscreteMujocoCfg):
                 raise ValueError("Named discrete plant requires its explicit mjlab bridge")
@@ -358,7 +359,8 @@ def make_development_env_cfg(model_path: Path, contract_path: Path, *, num_envs=
 
     opt = native.opt
     from .upstream_discrete_mjlab import CANDIDATE as DISCRETE_CANDIDATE
-    is_discrete = contract["candidate"] == DISCRETE_CANDIDATE
+    from .native_actuator_calibration import CANDIDATE as CALIBRATED_CANDIDATE
+    is_discrete = contract["candidate"] in (DISCRETE_CANDIDATE, CALIBRATED_CANDIDATE)
     option_type = MujocoCfg
     if is_discrete:
         from .upstream_discrete_mjlab import DiscreteMujocoCfg
