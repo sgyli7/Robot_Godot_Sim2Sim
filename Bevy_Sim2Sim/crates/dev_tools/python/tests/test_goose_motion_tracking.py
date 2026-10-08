@@ -5,7 +5,8 @@ import torch
 
 from bevy_microduck_tools.goose.motion_tracking import (
     CompletedMotionState, FilteredAngularVelocityTracking,
-    FilteredPlanarVelocityTracking, with_microduck_motion_tracking)
+    FilteredPlanarVelocityTracking, FilteredCommandStop,
+    with_microduck_motion_tracking, with_microduck_stop_precision)
 
 
 def make_env():
@@ -86,3 +87,63 @@ def test_opt_in_preserves_old_reward_profile_and_all_other_configuration():
     assert result.rewards["upright"] == cfg.rewards["upright"]
     for field in ("commands", "observations", "physics", "action_contract"):
         assert getattr(result, field) == getattr(cfg, field)
+
+
+@pytest.mark.parametrize("axis", (0, 1, 2))
+def test_stop_reward_requires_all_three_command_axes_to_be_zero(axis):
+    env, _, velocity, commands = make_env()
+    params = dict(command_name="velocity", vel_std=.035, tracking_tau_s=.2,
+        velocity_sensor_name="com")
+    stop = FilteredCommandStop(SimpleNamespace(params=params), env)
+    velocity.data[1, :2] = torch.tensor([.025, -.02])
+    commands[0, axis] = .1
+    result = stop(env, **params)
+    assert result[0] == 0.
+    expected = torch.exp(-velocity.data[1, :2].square().sum() / .035**2)
+    assert torch.allclose(result[1], expected)
+    assert torch.equal(commands[0], torch.eye(3)[axis] * .1)
+
+
+def test_stop_and_tracking_share_once_per_tick_filter_and_reset():
+    env, _, velocity, _ = make_env()
+    tracking = dict(command_name="velocity", std=.15, tracking_tau_s=.2,
+        velocity_sensor_name="com")
+    stopping = dict(command_name="velocity", vel_std=.035, tracking_tau_s=.2,
+        velocity_sensor_name="com")
+    linear = FilteredPlanarVelocityTracking(SimpleNamespace(params=tracking), env)
+    stop = FilteredCommandStop(SimpleNamespace(params=stopping), env)
+    assert stop.state is linear.state
+    linear(env, **tracking)
+    env.common_step_counter += 1
+    velocity.data[:, 0] = .1
+    stop(env, **stopping)
+    saved = stop.state.mean.clone()
+    linear(env, **tracking)
+    assert torch.equal(saved, stop.state.mean)
+    stop.reset(torch.tensor([0]))
+    env.common_step_counter += 1
+    velocity.data[:, 0] = .2
+    stop(env, **stopping)
+    assert stop.state.mean[0, 0] == .2
+    assert stop.state.mean[1, 0] < .2
+
+
+def test_stop_precision_is_explicit_and_does_not_change_old_configuration():
+    params = dict(command_name="velocity", std=.15, tracking_tau_s=.2,
+        velocity_sensor_name="com")
+    cfg = SimpleNamespace(rewards={
+        "track_linear_velocity": SimpleNamespace(func=FilteredPlanarVelocityTracking,
+            weight=5., params=params),
+        "track_angular_velocity": SimpleNamespace(func=FilteredAngularVelocityTracking,
+            weight=2., params=dict(params))}, commands=[-.15, .3, .1, .6],
+        physics=[.02, 1], observations=[65, 69])
+    result = with_microduck_stop_precision(cfg)
+    assert "command_stop" not in cfg.rewards
+    assert result.rewards["command_stop"].func is FilteredCommandStop
+    assert result.rewards["command_stop"].weight == 2.
+    assert result.rewards["command_stop"].params["vel_std"] == .035
+    for name in ("commands", "physics", "observations"):
+        assert getattr(result, name) == getattr(cfg, name)
+    cfg.rewards["track_linear_velocity"].func = object()
+    with pytest.raises(ValueError, match="requires MicroDuck"):
+        with_microduck_stop_precision(cfg)

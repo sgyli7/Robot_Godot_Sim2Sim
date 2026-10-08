@@ -77,6 +77,17 @@ class FilteredAngularVelocityTracking(_FilteredTracking):
         return torch.exp(-error / std ** 2)
 
 
+class FilteredCommandStop(_FilteredTracking):
+    """Reuse MicroDuck's zero-three-axis-command stopping reward."""
+
+    def __call__(self, env, command_name, vel_std, tracking_tau_s, velocity_sensor_name):
+        del tracking_tau_s, velocity_sensor_name
+        command = env.command_manager.get_command(command_name)
+        enabled = command[:, :3].square().sum(-1) < 1e-10
+        velocity = self.state.update(env)[:, :2]
+        return enabled * torch.exp(-velocity.square().sum(-1) / vel_std ** 2)
+
+
 def with_microduck_motion_tracking(cfg, *, tracking_tau_s=.2):
     """Return a named reward-only comparison; preserve the native profile."""
     result = copy.deepcopy(cfg)
@@ -90,4 +101,30 @@ def with_microduck_motion_tracking(cfg, *, tracking_tau_s=.2):
         term.params = {"command_name": term.params["command_name"],
             "std": term.params["std"], "tracking_tau_s": tracking_tau_s,
             "velocity_sensor_name": sensor_name}
+    return result
+
+
+def with_microduck_stop_precision(cfg):
+    """Opt into the MD precision stage's weight2, .035 m/s stop term.
+
+    This requires the named completed-motion profile so all three rewards
+    share its single filter. It does not smooth or alter player commands.
+    """
+    from mjlab.managers.reward_manager import RewardTermCfg
+
+    linear = cfg.rewards["track_linear_velocity"]
+    angular = cfg.rewards["track_angular_velocity"]
+    if (linear.func is not FilteredPlanarVelocityTracking
+            or angular.func is not FilteredAngularVelocityTracking):
+        raise ValueError("Stop precision requires MicroDuck motion tracking")
+    for name in ("command_name", "tracking_tau_s", "velocity_sensor_name"):
+        if linear.params[name] != angular.params[name]:
+            raise ValueError("Stopping and tracking must share one motion filter")
+    if "command_stop" in cfg.rewards:
+        raise ValueError("A command stopping reward is already configured")
+    result = copy.deepcopy(cfg)
+    result.rewards["command_stop"] = RewardTermCfg(func=FilteredCommandStop,
+        weight=2., params={"command_name": linear.params["command_name"],
+            "vel_std": .035, "tracking_tau_s": linear.params["tracking_tau_s"],
+            "velocity_sensor_name": linear.params["velocity_sensor_name"]})
     return result
