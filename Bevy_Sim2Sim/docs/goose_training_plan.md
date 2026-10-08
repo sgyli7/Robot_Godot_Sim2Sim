@@ -1,8 +1,8 @@
 # Goose V0.1｜Move 训练计划
 
-版本：2026-10-08。独立分支：`codex/goose_move`。
+版本：2026-10-09。独立分支：`codex/goose_move`。
 
-**当前状态：取得部分源端能力，完整任务未完成。** 本聊天只负责Move，不推进起身或拾物，不联系其他聊天，不派Agent。目标保持：走路0.4m/s、Shift跑步0.7m/s，前后／侧移／双向原地转向／移动中转向／启停及任意切换，操作与MicroDuck三轴组合对齐。不能以请求速度、单段录像或开发小集代替这些资格。最新196回归保留176全部字段逐位一致、12/16通过；本轮214/216驱动与MD九方向对照仍未补齐功能，不晋升或覆盖143/176。
+**当前状态：取得部分源端能力，完整任务未完成。** 本聊天只负责Move，不推进起身或拾物，不联系其他聊天。用户新授权的唯一独立子Agent专项调查物理频率，其实验不改主线。目标保持：走路0.4m/s、Shift跑步0.7m/s，前后／侧移／双向原地转向／移动中转向／启停及任意切换，操作与MicroDuck三轴组合对齐。不能以请求速度、单段录像或开发小集代替这些资格。最新225的可选左右弧线增量保留176全部12个通过项，原16条开发程序14条通过，扩展集17/25通过；不覆盖143/176或授予完整资格。
 
 代码工作树为`/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim`。临时模型、脚本、录像、收据及构建均落[Move备份目录](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001)。原工作树和恢复分支不改写。
 
@@ -14,6 +14,7 @@
 | --- | --- |
 | 默认保留143 | 约0.14／0.20m/s与±0.3rad/s，13条开发程序11条通过；左弧线及完整串接未通过。停止选择只依赖真实用户命令历史 |
 | 较快开发176 | 约0.14／0.27m/s；37秒慢→快→左→右→停无重置通过，左右转约+0.334／−0.343rad/s。16条开发程序12条通过；不是默认替换或完整MD资格 |
+| 可选左右弧线229 | 保留176原12个通过项，新增冷左弧线及45秒慢→快→左→右→右弧线→停；原16条14条通过，扩展集17/25。29秒慢走→左右弧线→停通过，任意热切换与完整串接仍失败 |
 | 原目标 | 0.4／0.7m/s、后退／侧移、完整左右弧线、任意停走切换、正式200例及Bevy资格均未通过 |
 
 [最佳37秒连续录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/hot_turn_continuous_visuals_172/slow_fast_left_right_stop_37s_continuous.mp4)、[29秒快慢切换](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/speed_increment_visuals_159/slow14_fast27_slow14_stop_29s_continuous.mp4)、[41.10秒完整失败录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/hot_turn_failure_visuals_179/right_start_after_stop_failure_41_10s_continuous.mp4)。画面使用真实保存轨迹，不拼接、不回撤；摄像机与世界视图同时显示，保留失败及门槛数据。
@@ -42,7 +43,25 @@
 
 [命令／动作审计](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/target_window_closeout_218/command_action_audit.json)核对24,576个保存训练Tick，九方向真实出现，PPO裁剪输出与提交动作历史逐位一致；未发现按非前进指令强制切回站立的分支。198／203／207／210侧移Teacher、200／201速度伺服、209反射惯量和202奖励精度路线未获得资格，均收口；代码、真实轨迹和失败保留在备份目录。相关接触失败尚未解决，不能断言DOF不足，也不再用同条件加长训练代替诊断。
 
-## 训练路线与已收口对照
+## 最新左右弧线增量与边界
+
+[229阶段报告](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/mirrored_arc_closeout_229/report.md)固定可选`goose_move_mirrored_arc_v1`。只镜像自己的Goose右弧线网络并声明左弧线编码标定，不使用MD权重。原65→18、真实动作历史、原本体与50Hz物理／驱动保持。223的具名相位规则只在纯转向或直线快档直接进入前进弧线时重启；慢走、弧线互转、零指令与冷启动不重启。222的广泛重启规则破坏弧线串接，未采用。
+
+225用[实际可选模块](/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim/crates/dev_tools/python/src/bevy_microduck_tools/goose/move_arc_entry.py)执行28,490CPU积分／ONNX调用／私有FK，与223的525个保存字段逐位一致，4次相位事件和219次暂停状态恢复，23项测试通过。冷左实际vx0.14145m/s、yaw+0.09824rad/s，冷右vx0.14346、yaw−0.09946。近门槛通过不能外推任意切换。
+
+[29秒左右弧线连续录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/arc_progress_continuous_visuals_228/camera_revision_v2/slow_left_arc_right_arc_stop_29s_continuous.mp4)、[45秒快慢／转向／右弧线连续录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/arc_progress_continuous_visuals_228/camera_revision_v2/slow_fast_turns_right_arc_stop_45s_continuous.mp4)。它们是原生源端真实轨迹及碰撞代理可视化，无拼接、回撤或中途重置，不是Bevy游戏资格。
+
+完整六段串接、纯转向后切左弧线、60秒快档停止及原0.4／0.7、后退、侧移仍失败。224停止平滑两档未改善，227扩大自己学得的矢状步幅在68Tick自碰／穿地；两条路线收口，未改默认、硬件或验收门槛。[1.36秒步幅失败录像](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/arc_progress_continuous_visuals_228/camera_revision_v2/sagittal_stride_collision_failure_1_36s_continuous.mp4)。本轮151,146CPU积分，零新增主线GPU/PPO/Adam；旧资源账本v25保留。
+
+## 独立物理频率调查：用户新增授权
+
+唯一子Agent`integration_frequency_audit`在[独立备份](/home/ethan/ProjectBackups/2026-10-08/Sai_Lab/goose_integration_frequency_audit_001)核查真实源码与50/100/200/500Hz，策略决策统一50Hz。冻结ONNX跨频与真实失败回放只用于数值和旧策略适应性，不能证明高频环境的可学习性。
+
+用户进一步授权四频率独立PPO：同本体、驱动约束、奖励、MD九方向课程、初态银行及三个共同种子，从新网络／归一化／探索／优化器初始化出发。统一模拟时间、控制决策数及PPO更新预算；先以500Hz小链路吞吐冻结预算，再记录各组真实GPU积分数、Adam及耗时。策略／目标限速／驱动历史／相位／奖励／折扣／课程与终止的时间单位保持20ms；原生隐式PD子步内状态依赖与数字控制提交区分说明。
+
+先在各自训练频率独立测试，再全部部署到50Hz对照，保留学习曲线、越限、穿地、自碰、接触、速度、任务成功与首个失败。源端50Hz迁移结果不能直接授予Rapier／Bevy资格。不得降低标准、覆盖已有基线或修改主线频率／训练参数。最终分别回答50Hz对学习的影响、高频独立学习新增能力及50Hz迁移保留程度；有限预算内未学会不能证明能力不可能。
+
+## 已收口训练路线
 
 主线仍为统一MJCF、原生MuJoCo、mjlab／Warp／RSL-RL，然后独立Rapier／Bevy迁移。MD016的输入、合同和已有奖励源码已核对；学习其工作流和任务定义，不把61→14权重装到Goose65→18，也不声称复现无法追溯的原完整训练。
 
