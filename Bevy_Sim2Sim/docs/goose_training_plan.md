@@ -6,7 +6,7 @@
 
 **最新用户授权：另建200Hz源端快跑候选，尝试达到0.7m/s。** 策略及数字驱动目标/历史仍50Hz，四次真实5ms积分；原50Hz默认、Actor基线及Bevy目标保持。该追加速度课程独立于四频相同课程的因果实验，不把新增课程成绩归入频率单变量比较。根主线自行实施，串行使用GPU。
 
-**当前派工：200Hz高速追加短对照已完成，不晋升或覆盖旧基线。** 保留148父策略、fixed5e-5与0/.4/.55/.7课程完成256更新；200Hz六程序×八银行出生物理48/48、行为0/48，0.4实速0.3028m/s、0.7实速0.2917m/s。50Hz迁移物理2/48，行为0/48。下一问题是高速请求为何没有带来步态幅值/节奏的相应变化，先核查课程、奖励分项和动作限制，不重复同条件长训。两份连续录像、原始失败与资源收据已冻结；GPU已释放给独立频率研究的能力/迁移评估。
+**当前派工：200Hz高速奖励宽度单参数短对照已完成，不晋升或覆盖旧基线。** 同148父学习状态、seed4122、512世界、fixed5e-5与0/.4/.55/.7课程，各256更新，仅线速度奖励std从.15改为上游默认.5。新候选200Hz物理48/48、行为0/48，0.4实速.3344、0.7实速.3617m/s，60秒段.3620；.4移动区间8/8达开发门槛，但停止均失败，全部停止仅16/48通过。50Hz迁移物理12/48、行为0/48。初始学习状态、出生与预算相同，首24Tick逐位物理回归未通过，失败证据保留，不作奖励宽度单变量因果结论。下一问题是已学约1.2Hz步频与目标限速的关系：具名小幅步频增量先短筛，不原样加长本轮；保持实际驱动/物理限制，不改硬件。髋偏航部分饱和与停止/迁移缺口分别记录。30秒连续录像、全部轨迹及资源已冻结，GPU已释放给独立频率研究。
 
 代码工作树为`/home/ethan/Projects/TempWorktree/Sai_Lab/goose_move/Bevy_Sim2Sim`。临时模型、脚本、录像、收据及构建均落[Move备份目录](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001)。原工作树和恢复分支不改写。
 
@@ -86,6 +86,10 @@
 [第二轮报告](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/second_pilot_closeout_002/report.md)与[103文件冻结清单](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/second_pilot_closeout_002/manifest.json)记录512世界×256更新、12,582,912真实GPU积分、3,145,728控制决策、5,120 Adam及241.25秒。200Hz父策略物理8/48→新Actor48/48，0.4实速0.2685→0.3028m/s；0.7平均0.2917、60秒段0.2806m/s，仍偏航。48例停止阶段均通过，但行为0/48。0.27实速0.2300→0.1255，不能声称保留全部低速能力。50Hz物理仅2/48；其余46例首次失败都含穿地>5mm，0.4/0.7各八例分别在0.66/0.80秒结束，未迁移成功。
 
 [30秒0.4→0.7→0.4→停止连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/videos/speed_switch_from148_200hz_002/continuous.mp4)、[12秒0.7指令失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/videos/run70_from148_200hz_002/continuous.mp4)来自完整真实保存轨迹，无重置/拼接/回滚/换Actor。1,200次离线私有FK确认确实交替迈步；三速度档主要节奏约1.17Hz，0.7的摆幅没有成比例增加。这是已学策略的描述，不是相位硬限制或硬件最大速度证明。本轮没有同条件50Hz续训臂，不将增益因果归于升频；直接run70暴露也不代表中间课程晋升。
+
+[第三轮报告](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/reward_signal_003/report.md)记录实际完整配置树仅std变化、成熟配置出处、真实奖励密度×20ms接线及严格回归失败。[实际PPO收据](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/runtime/runs/fast200_run70_from148_sigma05_pilot_003/receipt.json)为12,582,912 GPU/256PPO/5,120Adam/248.59秒。源端快档比第二轮约提高.07m/s，但仍有偏航；部分短停止1秒残速约.10m/s，不能以移动段通过替代整条资格。训练首/末32更新XY RMSE .2868/.2857，奖励跨宽度不直接比较能力。
+
+[第三轮30秒连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/videos/sigma05_speed_switch_003/continuous.mp4)为1,500控制Tick/1,501帧/50fps，CPU llvmpipe渲染零积分/推理；已抽帧核查。[关节/驱动诊断](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/reward_signal_003/saved_joint_drive_diagnostic.json)显示髋/膝俯仰主周期仍约1.17Hz，快档俯仰端点速度已接近名义4.189rad/s目标限速；髋偏航端点静态峰值95%占约8.67%/14.71%。端点/静态界不足以排除子步或动态饱和，也不能证明硬件最大速度。本轮总13,230,096 GPU/257PPO/5,140Adam，三份快速实验共39,799,120 GPU/771PPO/15,420Adam，与独立四频研究分账。原65→18、默认50Hz和生产模块保持。
 
 第二轮含参考/接线/两层评估13,342,080 GPU、257 PPO/5,140 Adam；与首轮合计26,569,024 GPU、514 PPO/10,280 Adam，[两轮独立账本](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/second_pilot_closeout_002/combined_local_resource_ledger.json)。不重计148或子研究。独立频率研究12臂已经训练完成，320,864,256 GPU、6,144 PPO/122,880 Adam；目前进行自身频率、共同50Hz与真冷启动测试，正式学习/迁移结论尚未收口。银行与训练共享、确定性Torch已核对ONNX；本轮不授予完整M0-S、正式200例、ONNX独立运行或Bevy资格。
 
