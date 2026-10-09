@@ -15,7 +15,7 @@
 | --- | --- | --- |
 | S0 源端准入 | 14叶动态、时钟、接触容量与GPU小批量；原本体/驱动限制/奖励，通过后才训练 | 057冷动态及058实际PPO链路通过有界训练入口，不能扩大为完整任务资格 |
 | S1 平地全向 | 行进转弯→原地转向→行进侧移→纯侧移，同时后退/XYZ/Idle/启停/快慢切换；正式平地验收及旧基线回归 | 078单Student为63/240、真冷5/11，冷慢走±0.3及±0.6双向转弯、站立、慢走、快慢切换通过；单独快跑偏航0.1033>0.1失败。对077失4/增26，旧基线保留。082原课程/增加跑步采样同预算对照进行中；仍无完整S1资格 |
-| S2 地形与抗冲击 | 随机起伏、±5°坡、5/10/20mm错落台阶，随机高度/间距/横向错位/方向；推、擦碰及真实物体撞击先单项再组合 | 079/080查明旧粗糙场出生即穿脚；081复用原生flat-patch采样/reset，5项组件检查及80个真实本体CPU出生姿态通过、最大接触穿深0。保持本体/驱动，明确版本化粗糙边界与难度递增。GPU reset、接触容量、真实粗糙区穿越及动态冲击准入待完成 |
+| S2 地形与抗冲击 | 随机起伏、±5°坡、5/10/20mm错落台阶，随机高度/间距/横向错位/方向；推、擦碰及真实物体撞击先单项再组合 | 079/080查明旧粗糙场出生即穿脚；081复用原生flat-patch采样/reset，5项组件检查及80个真实本体CPU出生姿态通过、最大接触穿深0。保持本体/驱动，明确版本化粗糙边界与难度递增。084接触角色/原生signed-depth组件及6检查通过，四实际模型14机器人叶/43地形几何正确区分。GPU reset、逐子步接线/容量、真实粗糙区穿越及动态冲击准入待完成 |
 | S3 真实带载 | 圆柱夹持段及把手物体，先真实夹持保持，再Idle/前后/侧移/转向/停止，随后带载×S2联合 | 066两类×四重量原生自由物体冻结、14项资产检查通过；尚无夹持/运输资格 |
 | S4 源端冻结 | 独立通过平地、地形、冲击、带载和组合；冻结模型/控制器/物体/场景/策略/适用范围，提交基线和连续录像 | 待S1—S3通过 |
 | T1 Rapier/Bevy 50/200 | S4后零样本接收及必要后训练，先恢复基础移动，再接Godot键位/相机；实际窗口验收后提交平地可玩基线 | 源端未冻结，目标训练未开始；不继承源端资格 |
@@ -78,6 +78,7 @@ CPU严格完整复载和768观测原078 ONNX对照已通过（最大差1.20e−7
 | 078 | 原生完整复载及512更新：63/240、真冷5/11；冷慢走±0.3及±0.6双向程序通过，冷站漂移13.854mm、快慢切换通过；单独跑步偏航0.1033467>0.1失败。对077失4/增26，未晋升。26,670,412GPU、514蒸馏/1,028Adam、15,763实际ONNX；640主Student谱系更新与native iterator638分记 |
 | 079 / 080 / 081 | CPU真实地形表面查出生穿脚，80个唯一出生姿态及640真实角点射线经原生采样/reset通过，最大原生接触穿深0；5项组件检查通过。0真实积分/GPU/Actor，GPU动态准入与地形资格未授予；最初CPU夹具配置/reset API适配错误在查询前失败，失败记录保留 |
 | 061 / 073 | 原生5/10/20/50mm场景及冲量接线；073替换平面、传感器重定向，19检查及四高度Goose CPU编译通过。21体/18主动轴/14叶及逐名物理数组保持；组件冲量检查15CPU积分，真实Goose0积分；不授予地形/抗撞资格 |
+| 083 / 084 | 旧平地Probe在地形场景误数54叶，按geom>0判自碰/z=0判地面不可沿用。新增显式body ancestry角色与原生signed-contact depth测量；四实际模型14机器人叶/43地形几何、物理数组不变，6原生接触检查通过，0真实积分/GPU/Actor。尚未接入GPU子步，不授予动态资格 |
 | 066 | 圆柱/把手×100/200/300/500g八个实际自由物体，3/4叶、零附着/驱动；14资产检查、0物理/PPO。尚无夹持、运输或载荷上限资格 |
 
 [072报告及29秒连续失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_moving_turn_continuation_072/report.md)、[075速度复算](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/moving_velocity_measurement_075/report.md)、[073装配收据](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/terrain_scene_assembly_073/receipt.json)。072/074/075结果清单SHA256分别`78920aa01289c57eaec7ee2f090d71082346cec0ac90575873b5428cd9723d44`、`7eef3fc0f647f87e0ef62e6f35087546392ada83c18b3edcbf6bd09eb587f87c`、`0d24a339773aef813548e47bc9518519cc51c7cbd1254393db594f1168ada448`；073为`2d9f167d88d7eecf58a6296c2d30937e4029c163fca4b0881b199a237a67a3b3`。所有原失败、输入和旧基线保留。
@@ -86,5 +87,7 @@ CPU严格完整复载和768观测原078 ONNX对照已通过（最大差1.20e−7
 
 
 078的[29秒单Student左右行进转弯连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_continuation_078/cold_bilateral_turn_video078/continuous.mp4)与[17秒单独快跑偏航失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_continuation_078/cold_fast_yaw_failure_video078/continuous.mp4)来自完整真实冷轨迹，已查看帧；零新增物理/推理，无重置/接管/回滚/拼接。078结果298份清单SHA256为`09734854cee03770071f6bac78ad9b25747a41cb4df750435c381cd8942786cf`，完整原生checkpoint为`dc084b84f641c5d16bdb010f20498ac71ad7680209e98bbc69d508facf7188a7`；081结果17份清单为`91148713fbde84bcb5f05f1c75a47fc2e71e54997bcac9426cf411ebc71fe15a`。
+
+[084接触测量组件报告](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_move_contact_roles_084/report.md)与清单SHA256 `98dcc80ca21363b6bd1fae0471b71c4a0326933c369134e68a0b85101a86dc49`。测量只读实际原生contact，不写世界、参数、动作或历史；指定载荷角色不代表已夹持，穿深不代表撞击通过。GPU接线须缓存role tensor、逐真实子步取峰值并独立验证reset/历史/容量/时钟；原平地Probe不变。测试初次错误期待native默认过滤的焊接同体接触，显式pair夹具修正后6项通过，生产测量代码未变，失败日志保留。
 
 完整旧检查点已移到[历史计划快照](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/plan_history_before_move_robustness_closeout072_20261010.md)，仅追溯，不作为当前任务入口；更早资源见[旧累计账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/completed_move_ppo_resource_ledger_v25.json)。GitHub主页已展示MicroDuck、Goose、G1实录GIF，来源与资格见[媒体清单](sim2sim_results_gallery.md)。最终交付仍须冻结策略、场景/本体/合同、复现命令、完整能力报告、实际录像、Bevy运行包及未通过清单。
