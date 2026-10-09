@@ -51,13 +51,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_bytes = fs::read(&paths[4])?;
     let input: Input = serde_json::from_slice(&input_bytes)?;
     let pgs8_diagnostic = input.schema == "goose_move023_beak_stop_pgs8_replay_v1";
-    let beak_stop_diagnostic =
-        input.schema == "goose_move023_beak_stop_diagnostic_replay_v1" || pgs8_diagnostic;
+    let all_mouth_stop_diagnostic = input.schema == "goose_move023_all_mouth_stops_replay_v1";
+    let beak_stop_diagnostic = input.schema == "goose_move023_beak_stop_diagnostic_replay_v1"
+        || pgs8_diagnostic
+        || all_mouth_stop_diagnostic;
     let replay = matches!(
         input.schema.as_str(),
         "goose_native_motor_replay_v1"
             | "goose_move023_beak_stop_diagnostic_replay_v1"
             | "goose_move023_beak_stop_pgs8_replay_v1"
+            | "goose_move023_all_mouth_stops_replay_v1"
     );
     if !plant.is_rigid_native()
         || (contract.candidate == robot_minigame::goose::contract::GOOSE_MOVE023_RAPIER50_CANDIDATE
@@ -71,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | "goose_native_motor_replay_v1"
                 | "goose_move023_beak_stop_diagnostic_replay_v1"
                 | "goose_move023_beak_stop_pgs8_replay_v1"
+                | "goose_move023_all_mouth_stops_replay_v1"
         )
         || replay != input.replay_actions.is_some()
         || input.replay_actions.as_ref().is_some_and(|rows| {
@@ -115,27 +119,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let assembly = GooseAssembly::build(&mut simulation, &plant)?;
     if beak_stop_diagnostic {
-        // One-row causal comparison; not an Actor deployment or qualification.
-        let handle = simulation
-            .world
-            .multibody_joints
-            .iter()
-            .find_map(|(handle, _, _, link)| {
-                (link.rigid_body_handle() == assembly.body_handles["beak_hinge"]).then_some(handle)
-            })
-            .ok_or("Beak diagnostic joint absent")?;
-        let (multibody, link_id) = simulation
-            .world
-            .multibody_joints
-            .get_mut(handle)
-            .ok_or("Beak diagnostic handle stale")?;
-        if !multibody
-            .link_mut(link_id)
-            .ok_or("Beak diagnostic link absent")?
-            .joint
-            .set_predictive_limits_enabled(true)
-        {
-            return Err("Beak diagnostic stop selection refused".into());
+        // Named action-replay diagnosis only. The coupled mouth has three
+        // scalar ranges; selecting one does not protect its other coordinates.
+        let bodies: &[&str] = if all_mouth_stop_diagnostic {
+            &["beak_hinge", "beak_input_rotor", "beak_coupler_link"]
+        } else {
+            &["beak_hinge"]
+        };
+        for &body in bodies {
+            let handle = simulation
+                .world
+                .multibody_joints
+                .iter()
+                .find_map(|(handle, _, _, link)| {
+                    (link.rigid_body_handle() == assembly.body_handles[body]).then_some(handle)
+                })
+                .ok_or("Beak diagnostic joint absent")?;
+            let (multibody, link_id) = simulation
+                .world
+                .multibody_joints
+                .get_mut(handle)
+                .ok_or("Beak diagnostic handle stale")?;
+            if !multibody
+                .link_mut(link_id)
+                .ok_or("Beak diagnostic link absent")?
+                .joint
+                .set_predictive_limits_enabled(true)
+            {
+                return Err("Beak diagnostic stop selection refused".into());
+            }
         }
     }
     let support = support_vertices(&simulation, &assembly, &plant)?;
@@ -232,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "input_sha256":digest(&input_bytes),"runtime_code_sha256":hashes,"executable_sha256":digest(&fs::read(env::current_exe()?)?),
         "candidate_id":contract.candidate,"strict_physics_gate":input.strict_physics_gate,
         "beak_stop_diagnostic":beak_stop_diagnostic,
-        "diagnostic_numerical_change":if beak_stop_diagnostic {json!({"existing_predictive_hard_stop":"beak_hinge only","native_PGS_iterations":if pgs8_diagnostic {8} else {4},"main_configuration_changed":false,"qualification_inherited":false})} else {Value::Null},
+        "diagnostic_numerical_change":if beak_stop_diagnostic {json!({"existing_predictive_hard_stop":if all_mouth_stop_diagnostic {"beak_hinge + beak_input_rotor + beak_coupler_link"} else {"beak_hinge only"},"native_PGS_iterations":if pgs8_diagnostic {8} else {4},"main_configuration_changed":false,"qualification_inherited":false})} else {Value::Null},
         "native_onnx_runtime":actor.runtime_identity(),"inference_calls":actor.inference_count(),
         "successful_inferences":actor.successful_inference_count(),"drive_updates":drive.control_count(),
         "actual_integrals":simulation.snapshot().integration_count,"actual_torque_updates":simulation.snapshot().torque_update_count,
