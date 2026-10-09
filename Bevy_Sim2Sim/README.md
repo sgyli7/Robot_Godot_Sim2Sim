@@ -48,6 +48,14 @@ candidate008／native012 的 **50Hz Rapier＋CPU ONNX** 实际记录，八个独
 
 [完整MP4原片](assets/game/arts/game_play/videos/goose_move023_continuous.mp4) · [冻结速度基线与模型身份](docs/goose_move_baseline.md) · [Move实现分支](https://github.com/sgyli7/Sai_Lab/tree/codex/goose_move/Bevy_Sim2Sim)
 
+### 快跑中左右转弯：041开发候选
+
+![Goose041站立、快跑、左转、右转和停止的完整29秒连续实录](assets/game/arts/game_play/textures/goose_move041_fast_left_right_stop.gif)
+
+自身同一个 **65→18 Actor** 从冷启动连续完成站立→快跑→左转→右转→停止。独立CPU ONNX复测的左／右段前进速度约 **0.756／0.729m/s**，偏航约 **+0.513／−0.499rad/s**；原验收银行快跑转弯完整通过 **16/48**。当前属于MuJoCo200Hz源端开发候选，原地转向、完整侧移与Bevy50Hz资格仍待验收。
+
+该29秒GIF展示完整保存轨迹，只缩小画面和降低显示采样率，保留速度、命令与姿态读数；没有重置、回滚或更换Actor。[版本与原片哈希](docs/sim2sim_results_gallery.md) · [Move训练记录](https://github.com/sgyli7/Sai_Lab/blob/codex/goose_move/Bevy_Sim2Sim/docs/goose_training_plan.md)
+
 ### 历史低速双向转向与停止
 
 ![Goose历史低速左转、右转与停止](assets/game/arts/game_play/textures/goose_historical_turns_stop.gif)
