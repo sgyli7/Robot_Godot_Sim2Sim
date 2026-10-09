@@ -1,10 +1,67 @@
 # Bevy_Sim2Sim
 
-以 **Rust + Bevy + Rapier + 本地模型** 实现 MicroDuck 与 Unitree G1 的 Sim2Sim。当前原生物理默认 **50 Hz，每 Tick 一次积分**；G1 使用独立本体、观测和动作合同，保留科学站场景及中文任务入口。MicroDuck 的完整 BAM、九技能与 Sprint 仍在推进。
+**MicroDuck、Goose 与 Unitree G1 是并行推进的 Sim2Sim 课题。** 项目以 Rust＋Bevy＋Rapier 接入真实物理、ONNX策略及本地模型，保留各课题的成果与历史实录。默认游戏物理为 **50Hz，每Tick一次真实积分**；源端高频候选和开发诊断单独标注。
 
-当前已建立单世界固定步运行时、科学站渲染、腿式／轮式机器人显示和实时 ONNX 诊断。G1 已有科学站取放、持箱行走、视觉容器放置的成功开发样例，并新跑通一次中文指令 → 初始本地 Qwen 准入 → 新 RGB 目标选择 → 搬运松手 → 新图像反馈。**完整任务尚未通过验收**：该链路仍是固定任务的开发入口。2026-10-05 冻结十例成绩为 T1 **3/10**、T2 **2/10**；有限中文启动／停止／重置入口已实现，各 8/10、连续运行、变化与恢复、低坡／门槛仍未完成。MicroDuck 旧 200/50 ONNX 的历史 60/60 P-only 诊断也仍会失稳。
+[MicroDuck](#microduck) · [Goose](#goose) · [Unitree G1](#unitree-g1) · [成果录像来源](docs/sim2sim_results_gallery.md) · [开发交接](docs/handoff.md) · [工程规范](bevy_engineering_rules.md) · [CPU CI](https://github.com/sgyli7/Sai_Lab/actions/workflows/bevy_sim2sim_cpu.yml)
 
-[仓库主页](../README.md) · [开发交接](docs/handoff.md) · [实施计划](docs/implementation_plan.md) · [工程规范](bevy_engineering_rules.md) · [CPU CI](https://github.com/sgyli7/Sai_Lab/actions/workflows/bevy_sim2sim_cpu.yml)
+| 课题 | 已记录的阶段成果 | 当前范围 |
+| --- | --- | --- |
+| MicroDuck | 三轴移动、倒地起身、轮滑；历史坐站／踢球／翻滚 | 保留Godot与Bevy各版本；九技能整体仍待正式验收 |
+| Goose | 自身策略慢走约0.413m/s、快跑约0.729m/s及快慢切换停止；历史低速双向转向 | 023为MuJoCo200Hz源端速度基线；新高速全向与Bevy50待验收 |
+| Unitree G1 | 科学站抓取、持箱行走、容器放置与中文操作回归 | 冻结T1为3/10、T2为2/10；完整任务仍待验收 |
+
+## MicroDuck
+
+### 三轴移动：前后、左右侧移、双向转向与行进转弯
+
+![MicroDuck三轴移动八案例原速实录](assets/game/arts/game_play/textures/microduck_native012_move_cases.gif)
+
+candidate008／native012 的 **50Hz Rapier＋CPU ONNX** 实际记录，八个独立案例并排原速展示；原固定测试8/8，随机测试59/64。画面重现保存的原生刚体位姿，不是一个串接全部动作的单世界回合，也不是新Bevy窗口录像。完整九技能资格仍未通过。
+
+### 从前倒、后倒起身
+
+![MicroDuck前后倒地起身的原速双视图](assets/game/arts/game_play/textures/microduck_native010_front_back_recovery.gif)
+
+冻结Stand策略／native010 Rapier＋BAM的两个真实恢复案例，完整10秒原速展示；原四姿态固定12/12复现通过。任意随机扰动、轮式恢复及跨机器人起身资格仍需各自验证。
+
+### Bevy轮滑阶段实录
+
+![MicroDuck轮滑推进、刹车、转向与蹲姿](assets/game/arts/game_play/textures/microduck_bevy_game009_roller_preview.gif)
+
+早期Bevy game009的19秒连续窗口录像，物理／策略50Hz，展示轮滑推进、刹车、转向与蹲姿。保留该版本实际成果，不继承后来game015的验收数字。
+
+### 历史Godot成果保留
+
+| 坐下与站起 · 13秒 | 右脚踢球 · 6秒 | 翻滚回正 · 6秒 |
+| --- | --- | --- |
+| ![MicroDuck历史坐站](assets/game/arts/game_play/textures/microduck_legacy_godot_sit_stand.gif) | ![MicroDuck历史右脚踢球](assets/game/arts/game_play/textures/microduck_legacy_godot_kick_right.gif) | ![MicroDuck历史翻滚](assets/game/arts/game_play/textures/microduck_legacy_godot_roulade.gif) |
+
+均来自旧Godot dt=20ms版本的完整原速原片，局部单次演示判分通过；保留历史成果，不作为当前Bevy迁移或九技能整体资格。每段来源、版本和哈希见[录像清单](docs/sim2sim_results_gallery.md)。
+
+## Goose
+
+### 新速度基线：站立→慢走→快跑→慢走→停止
+
+![Goose023快慢切换与停止的完整连续33秒实录](assets/game/arts/game_play/textures/goose_move023_walk_run_stop.gif)
+
+自身 **65→18 Actor** 的真实冷启动连续33秒：该次慢走约 **0.413m/s**，快跑约 **0.729m/s**，全程无重置、回滚、Teacher或换Actor。这是 **MuJoCo200Hz物理／50Hz策略与数字驱动** 的源端成绩；Bevy／Rapier50Hz接收尚未通过。
+
+[完整MP4原片](assets/game/arts/game_play/videos/goose_move023_continuous.mp4) · [冻结速度基线与模型身份](docs/goose_move_baseline.md) · [Move实现分支](https://github.com/sgyli7/Sai_Lab/tree/codex/goose_move/Bevy_Sim2Sim)
+
+### 历史低速双向转向与停止
+
+![Goose历史低速左转、右转与停止](assets/game/arts/game_play/textures/goose_historical_turns_stop.gif)
+
+保留原37秒连续录像中的17–37秒，旧显式170时钟候选完成左转→右转→停止。该片属于历史低速策略，不能与023速度录像合并为一个已合格的高速全向Actor。当前训练按 **移动中左右转→原地左右转→移动中平移→纯平移** 扩展，同时保留快慢速和停止回归。
+
+## Unitree G1
+
+![G1中文操作入口重置后真实搬箱并松手](docs/media/g1_science_station_controls_box_release_12s.gif)
+
+2026-10-05实际中文窗口回归：停止并重置旧回合后，新回合完成2527Tick、四次N1.6、三次本回合Qwen，箱子移动 **1.99米**，放稳并松手 **2.76秒**。GIF为行走与释放两段原速节选，完整原片与审计保留。冻结成绩 **T1 3/10、T2 2/10**，各8/10与全程连续运行仍待验收。[中文操作入口](docs/g1_station_session.md) · [G1阶段记录](docs/g1_milestone.md)
+
+<details>
+<summary>G1完整阶段成果：视觉松手、持箱行走、真实取放、源任务搬箱与抓箱</summary>
 
 ## G1 新进展：科学站视觉搬运并松手
 
@@ -60,6 +117,9 @@
 录像只裁切时间和显示区域、降低 GIF 导出尺寸／采样率，没有加速、补造动作或替换物理轨迹。原始窗口均为 1920×1080、8×MSAA。完整录像、物理日志和模型身份保存在外部证据目录；准备与运行入口见 [G1 阶段运行与录像](docs/g1_milestone.md)，外部权重和本体许可见 [制品清单](docs/g1_artifact_inventory.md)。
 
 主页片段均来自 URI 展示渲染的实际窗口重录。G1 外壳为官方银灰色，头部、关节、手和脚使用深色；蓝色环境反光与暖白建筑表面分开。展示层修复了毫米级网格的无效法线和黑色破面，保留原网格形状。VLA 仍使用原本体／辅助相机，新科学站持箱行走重录的七张传感器图、52 个模型输入／动作数组和 1,354 个物理步骤与原渲染一致；原有取放、源场景搬箱的对照见运行说明。实现、逐像素核对的边界和关闭方式见 [G1 展示渲染](docs/g1_uri_presentation.md)。
+
+
+</details>
 
 ## 当前功能与验收
 
