@@ -14,7 +14,7 @@
 | 阶段 | 工作与退出依据 | 当前状态 |
 | --- | --- | --- |
 | S0 源端准入 | 14叶动态、时钟、接触容量与GPU小批量；原本体/驱动限制/奖励，通过后才训练 | 057冷动态及058实际PPO链路通过有界训练入口，不能扩大为完整任务资格 |
-| S1 平地全向 | 行进转弯→原地转向→行进侧移→纯侧移，同时后退/XYZ/Idle/启停/快慢切换；正式平地验收及旧基线回归 | 069保留41/240、真冷3/11；071和072未过保留门槛，已停止续训。076自身Teacher的冷站/快慢切换/慢走左右转三条程序通过，快转失败；077在已验证范围做原生单MLP蒸馏pilot，未授予Student资格 |
+| S1 平地全向 | 行进转弯→原地转向→行进侧移→纯侧移，同时后退/XYZ/Idle/启停/快慢切换；正式平地验收及旧基线回归 | 077单Student为41/240、真冷4/11，保住冷站/慢走/快跑并新增快慢切换；右转改善，左转不足，逐例丢失18个旧通过案例。078只做一次同课程原生蒸馏有界续训；仍无完整S1资格 |
 | S2 地形与抗冲击 | 随机起伏、±5°坡、5/10/20mm错落台阶，随机高度/间距/横向错位/方向；推、擦碰及真实物体撞击先单项再组合 | 061原生场景/冲量准备；073地形替换与19项检查、四高度真实CPU场景编译通过。出生原点、地形相对足底测量、GPU容量和动态准入待完成 |
 | S3 真实带载 | 圆柱夹持段及把手物体，先真实夹持保持，再Idle/前后/侧移/转向/停止，随后带载×S2联合 | 066两类×四重量原生自由物体冻结、14项资产检查通过；尚无夹持/运输资格 |
 | S4 源端冻结 | 独立通过平地、地形、冲击、带载和组合；冻结模型/控制器/物体/场景/策略/适用范围，提交基线和连续录像 | 待S1—S3通过 |
@@ -25,11 +25,15 @@
 
 ## 当前批次与下一步
 
-**077：只在076已验证的范围，用原生RSL蒸馏合并已有Goose知识。** 冻结自身069/028/041 Teacher和069 Student初始化；一份完全可学习的原生65→18 MLP，训练时只有Student控制世界，Teacher只给监督标签。策略/数字驱动50Hz、物理200Hz、原模型/驱动/奖励/终止、cold/reference各50%及首次4—6秒Idle保持。使用已安装RSL5.4.2的`Distillation`、`DistillationRunner`、storage和Adam；MSE复用既有`native_coordinate_mse`恢复原学习坐标，不改公共动作或奖励。此为新工作流试验，不作单因素PPO因果结论。
+**078：一次有界原生蒸馏续训，检查双向慢转能否合并。** 077 pilot及原240库、11条真冷独立ONNX回归已全部结束：冷站/慢走/快跑/停止保住，快慢切换新增通过；左右转没有同时通过。总分41/240与069相同，但逐例保留23、丢失18、新增18，不称为无回归或自动晋升。
 
-CPU逐位复载及三Teacher各768个观测的Torch/ONNX对照已过，最大差1.12e−7。实际8世界×6原生更新、512世界×128更新pilot按序执行，随后原240库和11条真冷独立ONNX回归。仅训练Idle、0.4慢走、0.7直跑和慢走±0.3转弯；快转在076未过，**没有修改其门槛或把076完整gate改为通过**。未验证方向仍是S1待办。
+冻结077整个单MLP Student、Gaussian、归一化、Teacher、原生Adam及native iteration；用安装的`DistillationRunner.load(strict=True)`完整复载，不重新初始化优化器，也不声称延续世界/RNG。先CPU严格身份与原Student ONNX对照、8世界×2更新短pilot，再512世界×512更新，最多两小时，随后重跑原240库及11条真冷独立ONNX。保留学习率、同课程、原奖励/驱动/终止和50/200Hz；Teacher只监督，Student独自控制世界。增加训练预算不是PPO因果对照，实际蒸馏/Adam/Teacher标签/控制推理分别计数。
 
-[077协议](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_077/protocol.json)。执行器运行时不重复启动，不并发渲染/GPU训练；无自动长训或晋升。收口后先判断是否保住冷站/慢走/快跑/停止并获得双向慢转，再选择一个解锁下一阶段的问题；未改善不追加同条件网格。最终必须单Student独立验收，076多Teacher接续不作为部署能力。
+CPU完整复载及768观测原Student ONNX对照通过，最大差1.05e−7；实际8×2短pilot完成1,536GPU积分/2蒸馏更新/4Adam步，原Teacher及动作单位缓冲未变。512世界主批已开始；实际主批成绩以收据和原240/11回归为准，不按loss晋升。
+
+范围仍只包含Idle、0.4慢走、0.7直跑与慢走±0.3；原076快转失败gate保持失败，原地转/侧移/后退及鲁棒性没有资格。078收口后若仍不能在保住冷站/慢走/快跑/切换/停止的同时获得双向慢转，就回查Teacher标签、覆盖和成熟课程，不延长同条件网格。最终必须单Student独立验收，076多Teacher接续不作为部署能力。
+
+[078协议](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_continuation_078/protocol.json)、[077收口报告](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_077/report.md)。运行中的执行器不重复启动，不并发渲染/GPU训练，无自动续批或晋升。
 
 ## 固定实现合同
 
@@ -70,9 +74,12 @@ CPU逐位复载及三Teacher各768个观测的Torch/ONNX对照已过，最大差
 | 072 | 原生512更新续训，240/240物理、8/240完整，真冷10/11物理、2/11完整；偏航+0.354/-0.306rad/s但慢档约0.491m/s超速。26,673,496GPU/518PPO/10,360Adam/15,766实际ONNX控制推理；未晋升 |
 | 074 / 075 | 64/128/256中间模型三例均未完整过左右转；17,400GPU/4,350ONNX、0训练。移动奖励测量与验收均值仅差约2—3mm/s，未隐藏072超速；2,900私有CPU运动学、0积分/训练，不证明PPO唯一根因 |
 | 076 | 自身069/028/041真实热接续：冷站、快慢切换、慢走左右转三程序通过；快转平均达标但左转同时满足比例0.57<0.6，完整gate失败。30,400GPU、7,600实际ONNX、0训练；仅Teacher可行性证据 |
+| 077 | 原生RSL单Student蒸馏8×6与512×128更新；41/240、真冷4/11。冷站漂移18.435mm，慢走约0.438、快跑约0.698m/s，33秒快慢切换程序通过；左慢转约+0.208不足，右转−0.343通过。7,799,108GPU、134蒸馏/268Adam、15,761实际ONNX；逐例失18/增18，未晋升 |
 | 061 / 073 | 原生5/10/20/50mm场景及冲量接线；073替换平面、传感器重定向，19检查及四高度Goose CPU编译通过。21体/18主动轴/14叶及逐名物理数组保持；组件冲量检查15CPU积分，真实Goose0积分；不授予地形/抗撞资格 |
 | 066 | 圆柱/把手×100/200/300/500g八个实际自由物体，3/4叶、零附着/驱动；14资产检查、0物理/PPO。尚无夹持、运输或载荷上限资格 |
 
 [072报告及29秒连续失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_moving_turn_continuation_072/report.md)、[075速度复算](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/moving_velocity_measurement_075/report.md)、[073装配收据](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/terrain_scene_assembly_073/receipt.json)。072/074/075结果清单SHA256分别`78920aa01289c57eaec7ee2f090d71082346cec0ac90575873b5428cd9723d44`、`7eef3fc0f647f87e0ef62e6f35087546392ada83c18b3edcbf6bd09eb587f87c`、`0d24a339773aef813548e47bc9518519cc51c7cbd1254393db594f1168ada448`；073为`2d9f167d88d7eecf58a6296c2d30937e4029c163fca4b0881b199a237a67a3b3`。所有原失败、输入和旧基线保留。
+
+077的[33秒单Student快慢切换连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_077/cold_walk_run_switch_video077/continuous.mp4)与[29秒左右转失败连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_077/cold_bilateral_turn_failure_video077/continuous.mp4)均无重置/Teacher接管/回滚/拼接；已查看真实轨迹帧。077结果297份清单SHA256为`b1b05254e7440132090b742d9292c189a40ae51bd6e38cd6ec98301a74fe083c`，原生完整蒸馏checkpoint为`9d991f12e9f9df26b76077091d73e3cbcc1597c5a34005194b5f7b9278b0afb9`。
 
 完整旧检查点已移到[历史计划快照](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/plan_history_before_move_robustness_closeout072_20261010.md)，仅追溯，不作为当前任务入口；更早资源见[旧累计账本](/home/ethan/ProjectBackups/2026-10-07/Sai_Lab/goose_move_continuous_001/completed_move_ppo_resource_ledger_v25.json)。GitHub主页已展示MicroDuck、Goose、G1实录GIF，来源与资格见[媒体清单](sim2sim_results_gallery.md)。最终交付仍须冻结策略、场景/本体/合同、复现命令、完整能力报告、实际录像、Bevy运行包及未通过清单。
