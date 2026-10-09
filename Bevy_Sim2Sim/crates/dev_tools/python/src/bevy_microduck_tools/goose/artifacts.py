@@ -195,12 +195,21 @@ def _condense_pads(root: ET.Element, contract: dict) -> None:
 def export_rapier_plant(bundle: dict, destination: Path, *, initial_state_path: Path | None = None) -> dict:
     """Export compiled collision frames and complete rigid tensors, never visuals."""
     import mujoco
-    from .native_geometry import (
-        ENGINE_VERSION, EXPORT_REVISION, collision_mesh_vertices, require_supported_engine)
-    require_supported_engine()
     contract_path = Path(bundle["contract_path"])
     contract = json.loads(contract_path.read_text())
-    rigid = contract.get("candidate") == "goose_task_proxy_11_rigid_braking_v1"
+    move023 = contract.get("candidate") == "goose_move023_rapier50_intake_v1"
+    if move023:
+        from .native_geometry315 import (
+            ENGINE_VERSION, EXPORT_REVISION, collision_mesh_vertices, require_supported_engine)
+        if (contract.get("phase_frequency_hz") != 1.5
+                or any(contract.get(k) != DT for k in ("physics_dt_s", "torque_dt_s", "policy_dt_s"))):
+            raise ValueError("Move023 target export requires its 1.5Hz cadence and single-step50 clock")
+    else:
+        from .native_geometry import (
+            ENGINE_VERSION, EXPORT_REVISION, collision_mesh_vertices, require_supported_engine)
+    require_supported_engine()
+    rigid = contract.get("candidate") in (
+        "goose_task_proxy_11_rigid_braking_v1", "goose_move023_rapier50_intake_v1")
     if rigid:
         if (contract.get("schema") != "goose_task_proxy_si_v1"
                 or contract.get("runtime_revision") != "goose_rigid_native_implicit_drive_v1"

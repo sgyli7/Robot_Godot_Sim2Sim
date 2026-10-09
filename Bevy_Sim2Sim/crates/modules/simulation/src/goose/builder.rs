@@ -41,6 +41,7 @@ struct JointMapping {
     active_axis: Option<usize>,
     feedback_axis: Option<usize>,
     source_coordinate_offset: f64,
+    source_joint_range: [f64; 2],
 }
 
 /// Handles remain bound to the caller's world; no second world or FK controller.
@@ -60,6 +61,8 @@ pub struct GooseAssembly {
     jaw: RigidBodyHandle,
     #[cfg(feature = "goose_native_drive")]
     rigid_native_model_sha256: Option<String>,
+    #[cfg(feature = "goose_native_drive")]
+    rigid_native_candidate_id: Option<String>,
     #[cfg(feature = "goose_native_drive")]
     pre_position_implicit_velocity: bool,
 }
@@ -236,6 +239,7 @@ impl GooseAssembly {
                 active_axis: joint.active_axis,
                 feedback_axis: joint.feedback_axis,
                 source_coordinate_offset: offset,
+                source_joint_range: joint.range,
             });
         }
         let first = mappings
@@ -360,6 +364,8 @@ impl GooseAssembly {
             #[cfg(feature = "goose_native_drive")]
             rigid_native_model_sha256: plant.is_rigid_native().then(|| plant.model_sha256.clone()),
             #[cfg(feature = "goose_native_drive")]
+            rigid_native_candidate_id: plant.is_rigid_native().then(|| plant.candidate_id.clone()),
+            #[cfg(feature = "goose_native_drive")]
             pre_position_implicit_velocity: plant.native_position_drive_mode.as_deref()
                 == Some("pre_position_implicit_velocity_v1"),
         })
@@ -426,6 +432,35 @@ impl GooseAssembly {
         })
     }
 
+    /// Read all twenty coordinates, including passive linkage limits, without stepping.
+    pub fn source_joint_limit_violation_rad(
+        &self,
+        simulation: &SimulationWorld,
+    ) -> Result<f64, RobotError> {
+        let mut violation = 0.0_f64;
+        for mapping in &self.joints {
+            let (multibody, link_id) = simulation
+                .world
+                .multibody_joints
+                .get(mapping.handle)
+                .ok_or_else(|| invalid("Stale Goose joint handle"))?;
+            let link = multibody
+                .link(link_id)
+                .ok_or_else(|| invalid("Goose joint link absent"))?;
+            let q =
+                link.joint.coords()[mapping.coordinate] as f64 + mapping.source_coordinate_offset;
+            if !q.is_finite() {
+                return Err(invalid("Nonfinite Goose source joint coordinate"));
+            }
+            violation = violation.max(
+                (mapping.source_joint_range[0] - q)
+                    .max(q - mapping.source_joint_range[1])
+                    .max(0.0),
+            );
+        }
+        Ok(violation)
+    }
+
     /// True motor encoders, including the input rotor rather than jaw feedback.
     pub fn motor_velocity_rad_s(
         &self,
@@ -462,7 +497,8 @@ impl GooseAssembly {
     ) -> Result<(StepSnapshot, [f64; 18]), Box<dyn std::error::Error>> {
         contract.validate()?;
         if self.rigid_native_model_sha256.as_deref() != Some(contract.model_sha256.as_str())
-            || contract.candidate != "goose_task_proxy_11_rigid_braking_v1"
+            || self.rigid_native_candidate_id.as_deref() != Some(contract.candidate.as_str())
+            || !contract.is_rigid_native()
             || command.update != simulation.snapshot().torque_update_count + 1
             || command
                 .motor_target_rad

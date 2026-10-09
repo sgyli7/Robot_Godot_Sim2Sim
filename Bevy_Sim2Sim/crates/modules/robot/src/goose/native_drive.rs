@@ -48,7 +48,7 @@ impl GooseNativeDrive {
         delayed: bool,
     ) -> Result<Self, RobotError> {
         contract.validate()?;
-        if contract.candidate != "goose_task_proxy_11_rigid_braking_v1"
+        if !contract.is_rigid_native()
             || contract.joints.iter().any(|j| j.kp_nm_rad <= 0.0)
             || !strength.is_finite()
             || strength <= 0.0

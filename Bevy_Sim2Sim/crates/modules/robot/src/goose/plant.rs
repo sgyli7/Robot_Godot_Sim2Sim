@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     RobotError,
-    goose::contract::{GOOSE_JOINT_ORDER, GooseControlContract},
+    goose::contract::{
+        GOOSE_JOINT_ORDER, GOOSE_MOVE023_RAPIER50_CANDIDATE, GooseControlContract,
+        is_rigid_native_candidate,
+    },
 };
 
 /// A source-derived mechanical tree, including collision and linkage provenance.
@@ -212,7 +215,7 @@ impl GoosePlant {
                 | ("goose_task_proxy_plant_v1", "goose_task_proxy_11_v1")
                 | (
                     "goose_rigid_native_plant_v1",
-                    "goose_task_proxy_11_rigid_braking_v1"
+                    "goose_task_proxy_11_rigid_braking_v1" | GOOSE_MOVE023_RAPIER50_CANDIDATE
                 )
         );
         if !identity_valid
@@ -529,7 +532,7 @@ impl GoosePlant {
     /// Rigid source geometry intake; this does not qualify a target controller.
     pub fn is_rigid_native(&self) -> bool {
         self.schema == "goose_rigid_native_plant_v1"
-            && self.candidate_id == "goose_task_proxy_11_rigid_braking_v1"
+            && is_rigid_native_candidate(&self.candidate_id)
     }
 
     /// Pad masses have been merged; target construction still needs a contact law.

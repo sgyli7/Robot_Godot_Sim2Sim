@@ -27,6 +27,8 @@ struct Input {
     commands: Vec<[f64; 3]>,
     #[serde(default)]
     replay_actions: Option<Vec<[f64; 18]>>,
+    #[serde(default)]
+    strict_physics_gate: bool,
 }
 
 fn digest(b: &[u8]) -> String {
@@ -48,11 +50,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let contract = plant.bound_control_contract(&contract_bytes)?;
     let input_bytes = fs::read(&paths[4])?;
     let input: Input = serde_json::from_slice(&input_bytes)?;
-    let replay = input.schema == "goose_native_motor_replay_v1";
+    let pgs8_diagnostic = input.schema == "goose_move023_beak_stop_pgs8_replay_v1";
+    let beak_stop_diagnostic =
+        input.schema == "goose_move023_beak_stop_diagnostic_replay_v1" || pgs8_diagnostic;
+    let replay = matches!(
+        input.schema.as_str(),
+        "goose_native_motor_replay_v1"
+            | "goose_move023_beak_stop_diagnostic_replay_v1"
+            | "goose_move023_beak_stop_pgs8_replay_v1"
+    );
     if !plant.is_rigid_native()
+        || (contract.candidate == robot_minigame::goose::contract::GOOSE_MOVE023_RAPIER50_CANDIDATE
+            && !input.strict_physics_gate)
+        || (beak_stop_diagnostic
+            && contract.candidate
+                != robot_minigame::goose::contract::GOOSE_MOVE023_RAPIER50_CANDIDATE)
         || !matches!(
             input.schema.as_str(),
-            "goose_native_motor_actor_v1" | "goose_native_motor_replay_v1"
+            "goose_native_motor_actor_v1"
+                | "goose_native_motor_replay_v1"
+                | "goose_move023_beak_stop_diagnostic_replay_v1"
+                | "goose_move023_beak_stop_pgs8_replay_v1"
         )
         || replay != input.replay_actions.is_some()
         || input.replay_actions.as_ref().is_some_and(|rows| {
@@ -81,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     simulation
         .world
         .integration_parameters
-        .num_internal_pgs_iterations = 4;
+        .num_internal_pgs_iterations = if pgs8_diagnostic { 8 } else { 4 };
     let floor = simulation.world.bodies.insert(RigidBodyBuilder::fixed());
     simulation.world.colliders.insert_with_parent(
         ColliderBuilder::halfspace(rapier3d::na::Unit::new_unchecked(Vector::Y))
@@ -96,6 +114,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut simulation.world.bodies,
     );
     let assembly = GooseAssembly::build(&mut simulation, &plant)?;
+    if beak_stop_diagnostic {
+        // One-row causal comparison; not an Actor deployment or qualification.
+        let handle = simulation
+            .world
+            .multibody_joints
+            .iter()
+            .find_map(|(handle, _, _, link)| {
+                (link.rigid_body_handle() == assembly.body_handles["beak_hinge"]).then_some(handle)
+            })
+            .ok_or("Beak diagnostic joint absent")?;
+        let (multibody, link_id) = simulation
+            .world
+            .multibody_joints
+            .get_mut(handle)
+            .ok_or("Beak diagnostic handle stale")?;
+        if !multibody
+            .link_mut(link_id)
+            .ok_or("Beak diagnostic link absent")?
+            .joint
+            .set_predictive_limits_enabled(true)
+        {
+            return Err("Beak diagnostic stop selection refused".into());
+        }
+    }
     let support = support_vertices(&simulation, &assembly, &plant)?;
     let initial = boundary(&simulation, &assembly, &plant, &contract, &support)?;
     let initial_snapshot = simulation.snapshot();
@@ -128,7 +170,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let measured = boundary(&simulation, &assembly, &plant, &contract, &support)?;
             let fallen = measured["upright"].as_f64().ok_or("Upright absent")? < 0.65
                 || measured["com_engine_m"][1].as_f64().ok_or("COM absent")? < 0.18;
+            let joint_violation = assembly.source_joint_limit_violation_rad(&simulation)?;
+            row["max_source_joint_limit_violation_rad"] = json!(joint_violation);
+            let strict_failure = input.strict_physics_gate
+                && (measured["upright"].as_f64().ok_or("Upright absent")? < 0.95
+                    || measured["floor_support_depth_m"]
+                        .as_f64()
+                        .ok_or("Floor depth absent")?
+                        > 0.005
+                    || measured["fresh_self_depth_m"]
+                        .as_f64()
+                        .ok_or("Self depth absent")?
+                        > 0.0001
+                    || joint_violation > 0.0001);
             row["boundary"] = measured;
+            if strict_failure {
+                return Err("Strict physical gate: preserve failed state".into());
+            }
             if fallen {
                 return Err("Operational fall: preserve failed state".into());
             }
@@ -172,6 +230,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "native_position_drive_mode":plant.native_position_drive_mode,
         "contract_sha256":plant.derived_contract_sha256,"plant_sha256":plant_hash,"actor_sha256":input.actor_sha256,
         "input_sha256":digest(&input_bytes),"runtime_code_sha256":hashes,"executable_sha256":digest(&fs::read(env::current_exe()?)?),
+        "candidate_id":contract.candidate,"strict_physics_gate":input.strict_physics_gate,
+        "beak_stop_diagnostic":beak_stop_diagnostic,
+        "diagnostic_numerical_change":if beak_stop_diagnostic {json!({"existing_predictive_hard_stop":"beak_hinge only","native_PGS_iterations":if pgs8_diagnostic {8} else {4},"main_configuration_changed":false,"qualification_inherited":false})} else {Value::Null},
         "native_onnx_runtime":actor.runtime_identity(),"inference_calls":actor.inference_count(),
         "successful_inferences":actor.successful_inference_count(),"drive_updates":drive.control_count(),
         "actual_integrals":simulation.snapshot().integration_count,"actual_torque_updates":simulation.snapshot().torque_update_count,

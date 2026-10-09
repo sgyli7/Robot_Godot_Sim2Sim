@@ -19,11 +19,10 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::contract::GOOSE_JOINT_ORDER;
+use super::contract::{GOOSE_JOINT_ORDER, is_rigid_native_candidate};
 use crate::RobotError;
 
 const SCHEMA: &str = "goose_task_proxy_si_v1";
-const CANDIDATE: &str = "goose_task_proxy_11_rigid_braking_v1";
 const GRAVITY_M_S2: f64 = 9.81;
 const DRIVEN_JOINTS: usize = 6;
 const TORQUE_JOINTS: usize = 5;
@@ -105,7 +104,7 @@ impl GooseNominalGravity {
     ///
     /// The bytes may be the full frozen contract or a smaller document with
     /// the fields this feedforward reads. Schema and candidate must be
-    /// `goose_task_proxy_si_v1` and `goose_task_proxy_11_rigid_braking_v1`.
+    /// `goose_task_proxy_si_v1` and an explicitly registered native candidate.
     /// The first six joints must match `GOOSE_JOINT_ORDER` and form a
     /// parent-first chain from `torso`, as must any passive links. Used masses
     /// must be finite and positive, axes must be unit length, and every used
@@ -114,7 +113,7 @@ impl GooseNominalGravity {
     pub fn from_contract_bytes(bytes: &[u8]) -> Result<Self, RobotError> {
         let parsed: NominalContract = serde_json::from_slice(bytes)
             .map_err(|error| invalid(format!("malformed Goose nominal gravity subset: {error}")))?;
-        if parsed.schema != SCHEMA || parsed.candidate != CANDIDATE {
+        if parsed.schema != SCHEMA || !is_rigid_native_candidate(&parsed.candidate) {
             return Err(invalid(
                 "Goose nominal gravity schema or candidate mismatch",
             ));

@@ -9,6 +9,15 @@ pub const GOOSE_OBSERVATION_DIMENSION: usize = 65;
 pub const GOOSE_PICKUP_OBSERVATION_DIMENSION: usize = 82;
 pub const GOOSE_HZ: u32 = 50;
 pub const GOOSE_DT: f64 = 0.02;
+/// Explicit, unqualified reception of Move023 into single-step Rapier50.
+pub const GOOSE_MOVE023_RAPIER50_CANDIDATE: &str = "goose_move023_rapier50_intake_v1";
+
+pub fn is_rigid_native_candidate(candidate: &str) -> bool {
+    matches!(
+        candidate,
+        "goose_task_proxy_11_rigid_braking_v1" | GOOSE_MOVE023_RAPIER50_CANDIDATE
+    )
+}
 pub const GOOSE_JOINT_ORDER: [&str; GOOSE_ACTION_DIMENSION] = [
     "neck_yaw",
     "neck_pitch",
@@ -83,7 +92,7 @@ impl GooseControlContract {
                 | ("goose_task_proxy_si_v1", "goose_task_proxy_11_v1")
                 | (
                     "goose_task_proxy_si_v1",
-                    "goose_task_proxy_11_rigid_braking_v1"
+                    "goose_task_proxy_11_rigid_braking_v1" | GOOSE_MOVE023_RAPIER50_CANDIDATE
                 )
         );
         let task_proxy = self.schema == "goose_task_proxy_si_v1";
@@ -96,7 +105,7 @@ impl GooseControlContract {
                 Some("goose_rigid_native_implicit_drive_v1"),
                 Some("goose_rigid_native_implicit_drive_v1"),
                 true,
-            ) if self.candidate == "goose_task_proxy_11_rigid_braking_v1" => true,
+            ) if self.is_rigid_native() => true,
             (
                 Some("goose_task_proxy_be_contact_v1"),
                 Some("sampled_pd_kp_parent_kd_quarter_v1"),
@@ -108,6 +117,8 @@ impl GooseControlContract {
         if self.robot != "Goose_V0.1"
             || !identity_valid
             || !revision_valid
+            || (self.candidate == GOOSE_MOVE023_RAPIER50_CANDIDATE
+                && self.phase_frequency_hz != 1.5)
             || self.action_size != GOOSE_ACTION_DIMENSION
             || self.observation_size != GOOSE_OBSERVATION_DIMENSION
             || [self.physics_dt_s, self.torque_dt_s, self.policy_dt_s]
@@ -174,6 +185,10 @@ impl GooseControlContract {
             return Err(fail("Goose jaw action must drive the actual input rotor"));
         }
         Ok(())
+    }
+
+    pub fn is_rigid_native(&self) -> bool {
+        self.schema == "goose_task_proxy_si_v1" && is_rigid_native_candidate(&self.candidate)
     }
 
     /// The 65-field layout is kept in the original SI ordering and scales.
@@ -422,7 +437,7 @@ impl GooseActuatorState {
 }
 
 fn reject_native_drive(contract: &GooseControlContract) -> Result<(), RobotError> {
-    if contract.candidate == "goose_task_proxy_11_rigid_braking_v1" {
+    if contract.is_rigid_native() {
         Err(RobotError::Contract(
             "Rigid Goose uses native implicit drive; legacy sampled PD cannot substitute it".into(),
         ))
@@ -540,6 +555,30 @@ mod tests {
         candidate.runtime_revision = Some("goose_task_proxy_be_contact_v1".into());
         candidate.controller_revision = Some("sampled_pd_kp_parent_kd_quarter_v1".into());
         assert!(candidate.validate().is_err());
+    }
+
+    #[test]
+    fn move023_target_requires_explicit_identity_cadence_and_single_step_clock() {
+        let mut candidate = contract();
+        candidate.schema = "goose_task_proxy_si_v1".into();
+        candidate.candidate = GOOSE_MOVE023_RAPIER50_CANDIDATE.into();
+        candidate.runtime_revision = Some("goose_rigid_native_implicit_drive_v1".into());
+        candidate.controller_revision = candidate.runtime_revision.clone();
+        assert!(candidate.validate().is_err());
+        candidate.phase_frequency_hz = 1.5;
+        candidate.validate().unwrap();
+        assert!(GooseActuatorState::new(&candidate).is_err());
+        for dt in [0.005, 0.01] {
+            candidate.physics_dt_s = dt;
+            assert!(candidate.validate().is_err());
+        }
+        candidate.physics_dt_s = GOOSE_DT;
+        candidate.controller_revision = Some("sampled_pd_kp_parent_kd_quarter_v1".into());
+        assert!(candidate.validate().is_err());
+        candidate.controller_revision = candidate.runtime_revision.clone();
+        candidate.candidate = "goose_move023_rapier50_intake_unregistered".into();
+        assert!(candidate.validate().is_err());
+        assert!(!candidate.is_rigid_native());
     }
 
     #[test]
