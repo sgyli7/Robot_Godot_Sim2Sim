@@ -7,12 +7,15 @@ before training. A generated scene alone never grants terrain qualification.
 """
 from __future__ import annotations
 
+import copy
 from math import isfinite, radians, tan
 
+import mujoco
 import torch
 from mjlab.envs.mdp.events import apply_body_impulse
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.terrains import TerrainEntityCfg, TerrainGeneratorCfg
 from mjlab.terrains import config as terrain_presets
 from mjlab.utils.lab_api.math import quat_apply
@@ -77,6 +80,53 @@ def make_move_terrain(*, ground_model, seed: int, height_m: float,
         max_init_terrain_level=0, textures=(), materials=(), lights=(),
         collisions=(collision,), geoms=(GeomCfg(geom_names_expr=(".*",),
             group=int(ground_model.geom_group[ground])),))
+
+
+def with_move_terrain(cfg, *, ground_model, seed: int, height_m: float,
+                      evaluation: bool = False, ground_name: str = "ground"):
+    """Assemble native terrain in a separate copy of the flat scene config.
+
+    Keep the original scene callback that copies native solver options. Remove
+    its plane after it runs so a hidden infinite floor cannot support rough
+    terrain episodes. Ground-contact sensors retain their primary matches,
+    fields and history, and instead match the native terrain body.
+
+    This adapter only assembles scenes. Reset origins, terrain-relative foot
+    measurements, capacity and GPU rollout still require independent admission.
+    Native explicit material pairs need a separately frozen mapping and are
+    rejected rather than discarded or expanded with guessed mixing rules.
+    """
+    if cfg.scene.terrain is not None or cfg.scene.spec_fn is None:
+        raise ValueError("Move terrain requires a flat native scene callback")
+    if ground_model.npair:
+        raise ValueError("Explicit ground material pairs need a frozen terrain mapping")
+    result = copy.deepcopy(cfg)
+    result.scene.terrain = make_move_terrain(ground_model=ground_model, seed=seed,
+        height_m=height_m, evaluation=evaluation, ground_name=ground_name)
+    flat_scene_callback = result.scene.spec_fn
+
+    def replace_native_plane(spec):
+        flat_scene_callback(spec)
+        ground = spec.geom(ground_name)
+        if ground is None or ground.type != mujoco.mjtGeom.mjGEOM_PLANE:
+            raise ValueError("Native callback did not create the declared ground plane")
+        for pair in spec.pairs:
+            if ground_name in (pair.geomname1, pair.geomname2):
+                raise ValueError("Terrain cannot remove a plane with explicit material pairs")
+        spec.delete(ground)
+
+    result.scene.spec_fn = replace_native_plane
+    matched = 0
+    for sensor in result.scene.sensors:
+        if (isinstance(sensor, ContactSensorCfg) and sensor.secondary is not None
+                and sensor.secondary.mode == "geom"
+                and sensor.secondary.pattern == ground_name
+                and sensor.secondary.entity is None):
+            sensor.secondary = ContactMatch(mode="body", pattern="terrain")
+            matched += 1
+    if not matched:
+        raise ValueError("Native terrain requires declared ground-contact sensors")
+    return result
 
 
 class HorizontalBodyImpulse(apply_body_impulse):
