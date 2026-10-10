@@ -6,7 +6,18 @@
 
 ## 当前成果与下一步
 
-**142学出的侧移增量已通过四条独立开发程序。** 实际CPU ONNX控制原14叶MuJoCo/Warp世界，50Hz策略/数字驱动、200Hz物理。每条真冷Idle4秒→移动7秒→停止5秒，800Tick连续无重置。
+**147新增四条同世界接续开发程序全部通过：左右侧移分别接直行/行进转弯，再停止。** 原142神经策略、14叶本体、数字驱动与验收门槛未改。每条真冷Idle4秒→侧移7秒→接续7秒→停止5秒，共23秒、1,150Tick，命令切换保留真实姿态、前次动作、驱动目标、相位与热历史；全程无重置。
+
+| 接续程序 | 接续vx m/s | 接续yaw rad/s | 同时跟踪比例 | 停止1秒速度 m/s | 后3秒漂移 mm | 运动/物理/停止 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 左移→直行 | 0.433935 | +0.026457 | 1.0000 | 0.009668 | 2.433 | 通过 |
+| 右移→直行 | 0.437120 | +0.031012 | 1.0000 | 0.008871 | 2.345 | 通过 |
+| 左移→行进左转 | 0.431134 | +0.288540 | 0.7000 | 0.007813 | 1.809 | 通过 |
+| 右移→行进右转 | 0.446927 | -0.250486 | 0.6533 | 0.008596 | 2.332 | 通过 |
+
+147累计18,400真实GPU积分、4,600世界CPU ONNX推理；四条独立进程开发程序通过，不授予正式200例、任意热切换或完整Move/Bevy资格。入口：[149附加证据清单](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_hot_transition_freeze_149/baseline_selection.json)、[完整报告](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_hot_transition_freeze_149/report.md)。[左移→行进左转→停止连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_direct_transition_video_148/left_to_turn/continuous.mp4)、[右移→行进右转→停止连续录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_direct_transition_video_148/right_to_turn/continuous.mp4)。
+
+**142此前已通过四条独立侧移开发程序，继续冻结保留。** 实际CPU ONNX控制原14叶MuJoCo/Warp世界，50Hz策略/数字驱动、200Hz物理。每条真冷Idle4秒→移动7秒→停止5秒，800Tick连续无重置。
 
 | 程序 | 实际vx m/s | 实际vy m/s | 实际yaw rad/s | 持续同时跟踪比例 | 运动/物理/停止 |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -23,7 +34,9 @@
 
 138原生RSL学生实际控制蒸馏学会左侧；141精确恢复原生Adam的一次续训学会右侧、左侧回退。因此142只读合成已通过的138左侧和141右侧，按原Actor命令选择均值，单个65→18 ONNX每Tick一次调用、内部两个冻结神经分支。两个父策略的归一化/动作单位/原非纯侧移均值相同；800实际输入选择均值逐位保持，Torch/ONNX最大差2.086e-7。不能将该只读合成快照当单头PPO恢复点。135动作Teacher和所有旧策略独立保留。
 
-**下一批只验证142同一世界中的左右切换及侧移→直行/转弯/停止，保留全部失败轨迹。** 不继续138/141的同头蒸馏、不重开失败PPO或参数网格；通过片段仍须冻结，不能被新训练覆盖。再补原地转向、后退和完整指令库；地形、带载、抗冲击开发继续，不把完整S1正式资格变成开发S2/S3的额外启动条件。
+144完整镜像串联未过：左→右切换后1.90秒触发直立度0.946224；另一条右→左和侧移→直行通过，但直行再切纯右移0.44秒后触发0.944563。此前穿地≤2.562mm、自碰0、关节越限≤0.000985mrad。评价停在姿态门槛，未证明已完全倒地；未执行的后续阶段不记作独立失败。146只改输入缓变，固定0.8/0.4/0.6每秒的vx/vy/yaw上限，两条仍失败且更早触发姿态门槛，不晋升、不继续缓变参数网格。本周期共29,640真实GPU积分、7,410世界推理，0PPO/0Adam；八条实际轨迹、计数、边界历史与连续录像全部保留。
+
+**下一批先核验冻结135动作Teacher能否完成已记录的两处失败接续，用相同指令程序对照142，确认连续监督后再设计新的接续训练分布。** Teacher只作诊断，不当学出的PPO、不替换142；不继续138/141同头蒸馏、不重开失败PPO或参数网格。源码硬选择和训练域窄是待检验假设，尚不能将失败归因于积分、本体DOF或某一个门控。通过片段仍须冻结；原地转向、后退和完整库继续欠账。地形、真实带载、抗冲击开发继续，不把完整S1正式资格变成开发S2/S3的额外启动条件。
 
 ## 目标与阶段
 
@@ -32,7 +45,7 @@
 | 阶段 | 工作与退出依据 | 当前范围 |
 | --- | --- | --- |
 | S0 源端准入 | 14叶动态、时钟、容量、GPU小批量和原生训练链路 | 057/058及后续实际运行支持有界源训练；新场景另验 |
-| S1 平地全向 | 行进转弯、原地转向、行进侧移、纯侧移、后退、XYZ、Idle、启停、快慢切换；正式平地验收 | 078快慢/双向行进转弯保留；110/116行进侧移、142双向纯/行进侧移开发通过。原地转向/后退/完整热切换及正式200例仍欠。078原开发63/240、真冷5/11；单独快跑yaw0.1033>0.1失败保留 |
+| S1 平地全向 | 行进转弯、原地转向、行进侧移、纯侧移、后退、XYZ、Idle、启停、快慢切换；正式平地验收 | 078快慢/双向行进转弯保留；110/116行进侧移、142双向纯/行进侧移、147双侧接直行/行进转弯/停止开发通过。左右互切及直行切纯侧移仍有缺口；原地转向/后退/完整热切换及正式200例仍欠。078原开发63/240、真冷5/11；单独快跑yaw0.1033>0.1失败保留 |
 | S2 地形/抗冲击 | 随机起伏、±5°坡、5/10/20mm错落台阶；高度/间距/横向错位/方向随机；推/擦碰/真实撞击先单项后组合 | 原078在5mm及20mm真实随机起伏各一次穿越/停止通过，非50例资格；坡面/错落台阶/冲击仍欠 |
 | S3 真实带载 | 冻结指定圆柱夹持段/把手物体，先保持，再Idle/前后/侧移/转弯/停止，随后与S2联合 | 八个自由物体资产保留；109/120真实100g嘴闭环越限，保持/运输未过，不自动归因于出生目标 |
 | S4 源端冻结 | 独立通过平地、地形、冲击、载荷及组合；冻结全部合同/策略/场景/适用范围、连续录像 | 待S1—S3 |
@@ -64,6 +77,7 @@
 每批冻结一个问题→短pilot→最多两小时训练→独立评价→具名保留/失败。连续两次受控实验未改善就回到模型/观测/测量/课程或成熟流程，不无限网格。一个GPU批次，未结束不重复训练/评估/渲染；数值、约束或容量错误停止留证据。代码/依赖/配置/种子/hash、PPO/蒸馏/Adam/物理及资源分别记账。两小时`goose-move`续跑保持启用，无变化不频繁轮询，不改Standup任务。
 
 - [135动作Teacher接收](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/qualified_side_teacher_replay_135/report.md)、[138/139学生实际回放](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_onpolicy_side_distillation_138/report.md)、[141续训及左侧回退](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_side_student_continuation_141/report.md)、[142神经侧移冻结](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_freeze_142/report.md)。
+- [144/146失败及147接续增量独立复核](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_hot_transition_freeze_149/independent_counts_check.json)、[原左→右连续失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_hot_switch_video_145/left_first/continuous.mp4)、[原串联右→左→直行→右移连续失败录像](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/learned_sides_hot_switch_video_145/right_first/continuous.mp4)。输入缓变146未改善，独立保留，未改现行142策略或控制器。
 - 原078、110、116及023/028/041/069等不覆盖。112/116/127失败纯侧移PPO、129/131/133未过Teacher、136/137学生失败及103关闭诊断全部保留，不重开Critic/归一化/Gaussian/LR/速度容差网格。
 - [原078双向行进转弯实录](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/native_own_move_distillation_continuation_078/cold_bilateral_turn_video078/continuous.mp4)、[20mm随机起伏真实穿越](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/actual_twenty_mm_video_130/video/continuous.mp4)。20mm起伏均速0.404849m/s、真实高差19.773765mm、行进1.65956m；停止1秒0.010329m/s、后3秒漂移1.024mm、物理通过，仅一例，不是20mm错落台阶资格。
 - 更早实验、误测撤回、资源及合同身份见[精简前完整快照](/home/ethan/ProjectBackups/2026-10-09/Sai_Lab/goose_move_200hz_fast_001/plan_before_learned_sides142_entry_20261010.md)及其历史链接，仅追溯、不派工。GitHub主页继续展示MicroDuck、Goose、G1的实际GIF，来源见[媒体清单](sim2sim_results_gallery.md)。
