@@ -16,7 +16,7 @@ from mjlab.entity import EntityCfg
 
 REVISION = "goose_move_real_payload_assets_v1"
 MASS_TIERS_G = (100, 200, 300, 500)
-FAMILIES = ("cylinder_grip", "open_handle")
+FAMILIES = ("cylinder_grip", "open_handle", "open_handle_wide")
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,9 @@ def make_move_payload_spec(*, payload: MovePayload, contact: PayloadContact):
 
     The cylinder family is a 12mm x 70mm grip bar, connecting stem and lower
     weight. The handle family has a 12mm grip bar and two arms around a real
-    opening, joined to a solid case. All three/four collision leaves count.
+    opening, joined to a solid case. The separately named wide handle places
+    its side arms at +/-60mm to clear the measured 103.74mm upper bill; the
+    original narrow handle remains unchanged. All three/four leaves count.
     Component masses scale together within each family; MuJoCo aggregates the
     COM and inertia. No claim of exact manufactured material density is made.
     """
@@ -85,11 +87,13 @@ def make_move_payload_spec(*, payload: MovePayload, contact: PayloadContact):
         geom("weight", mujoco.mjtGeom.mjGEOM_CYLINDER, (.030, .025, 0.), .88,
              pos=(0., 0., -.055))
     else:
-        geom("grip", mujoco.mjtGeom.mjGEOM_CAPSULE, (.006, .027, 0.), .04, quat=y_axis)
+        half_span = .060 if payload.family == "open_handle_wide" else .027
+        case_half_width = .065 if payload.family == "open_handle_wide" else .035
+        geom("grip", mujoco.mjtGeom.mjGEOM_CAPSULE, (.006, half_span, 0.), .04, quat=y_axis)
         for side in (-1, 1):
             geom("arm_left" if side > 0 else "arm_right", mujoco.mjtGeom.mjGEOM_CAPSULE,
-                 (.004, .0225, 0.), .03, pos=(.0225, side*.027, 0.), quat=x_axis)
-        geom("case", mujoco.mjtGeom.mjGEOM_BOX, (.035, .035, .035), .90,
+                 (.004, .0225, 0.), .03, pos=(.0225, side*half_span, 0.), quat=x_axis)
+        geom("case", mujoco.mjtGeom.mjGEOM_BOX, (.035, case_half_width, .035), .90,
              pos=(.080, 0., -.035))
     return spec
 

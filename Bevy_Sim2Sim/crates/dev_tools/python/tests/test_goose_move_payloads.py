@@ -17,7 +17,8 @@ def contact():
     return PayloadContact.from_model(spec.compile(), "mouth")
 
 
-@pytest.mark.parametrize("family,leaves", [("cylinder_grip", 3), ("open_handle", 4)])
+@pytest.mark.parametrize("family,leaves", [("cylinder_grip", 3), ("open_handle", 4),
+                                         ("open_handle_wide", 4)])
 @pytest.mark.parametrize("grams", [100, 200, 300, 500])
 def test_native_free_payload_has_declared_mass_positive_inertia_and_grip_axis(family, leaves, grams):
     surface = contact()
@@ -36,8 +37,9 @@ def test_native_free_payload_has_declared_mass_positive_inertia_and_grip_axis(fa
     assert ((m.geom_contype == 2) & (m.geom_conaffinity == 3)).all()
 
 
-def test_actual_handle_opening_is_empty_and_bars_remain_collidable():
-    m = make_move_payload_spec(payload=MovePayload("open_handle", 300), contact=contact()).compile()
+@pytest.mark.parametrize("family", ["open_handle", "open_handle_wide"])
+def test_actual_handle_opening_is_empty_and_bars_remain_collidable(family):
+    m = make_move_payload_spec(payload=MovePayload(family, 300), contact=contact()).compile()
     d = mujoco.MjData(m)
     mujoco.mj_fwdPosition(m, d)
     geomid = np.zeros(1, dtype=np.int32)
@@ -47,6 +49,16 @@ def test_actual_handle_opening_is_empty_and_bars_remain_collidable():
     bar = mujoco.mj_ray(m, d, np.array([0., 0., -.1]), np.array([0., 0., 1.]),
                       None, 1, -1, geomid)
     assert bar > 0 and geomid[0] == m.geom("grip").id
+
+
+def test_wide_handle_keeps_side_arms_outside_measured_upper_bill_envelope():
+    m = make_move_payload_spec(payload=MovePayload("open_handle_wide", 100),
+                              contact=contact()).compile()
+    measured_bill_half_width = .051870000403818665
+    for name in ("arm_left", "arm_right"):
+        g = m.geom(name).id
+        clearance = abs(m.geom_pos[g, 1]) - m.geom_size[g, 0] - measured_bill_half_width
+        assert clearance >= .004
 
 
 def test_native_entity_owns_only_reset_pose_not_robot_attachment():
